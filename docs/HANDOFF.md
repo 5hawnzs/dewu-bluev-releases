@@ -342,7 +342,7 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
 | `tools/run-all.sh` | 一键回归：六套测试 + 隐藏窗口界面自检，共 147 项断言 |
-| `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好；仓库尚未提交（见 §10） |
+| `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好并生效 |
 
 复现本次拆解（万一要重看原始录屏）：
 
@@ -374,21 +374,37 @@ npm i tesseract.js
 
 # 10. 版本控制（git）
 
-现状：工程**还不是 git 仓库**，一直靠整包 tarball 当回滚点。
-`.gitignore` 与 `tools/` 已就绪，`git init` + `git add -A` 已执行过（**44 个文件 / 12,887 行，`.git` 只有 428KB**），但**还没有 commit**。
+## 现状：已推上私有远端 ✅
 
-## 建议推私有仓库（GitHub private / Gitee 私有 / 内部 GitLab 都行）
+```
+远端      git@gitee.com:abulaitifans/dewu-bluev-publisher.git     （Gitee · 私有）
+首次提交  4622e1a「首次提交：得物蓝V素材发布工具」 44 个文件 / 12,962 行
+分支      main（已 set upstream 到 origin/main）
+忽略规则  .gitignore：node_modules/（522MB）、dist/（169MB 安装包）、运行时数据、快照 tar
+```
 
-1. 现在回滚只能整包还原，看不出「哪一步改了什么、谁改的」；
-2. §2 里「另一个任务在同一棵树上改 `app.js` / `store.js`」这个问题，本质是**没有分支**。
-   有 git 之后：一人一分支、小步提交，冲突在合并时暴露，而不是互相覆盖后才发现。
+`.git` 只有 428KB。**安装包不要进 git**（二进制进了历史就删不干净）→ 发给同事走 Releases / 网盘。
+仓库是**私有**的：`docs/HANDOFF.md` 里有得物业务流程与真机口径，不能公开。
 
-## 要做的事（远端与凭证只有你有）
+## ⚠️ 第一个要做的：把仓库里的身份改成真实的
+
+`git config user.name/user.email`（本仓库范围）现在还是占位符字面值 `你的名字 / 你的邮箱`，
+**不改的话以后每次提交都会是那个假署名**：
 
 ```bash
-git commit -m "首次提交：素材发布工具（含 ①②③④ 与回归测试）"
-git remote add origin <你的私有仓库地址>
-git push -u origin main        # 或按团队约定用 master
+git config user.name  "张硕"
+git config user.email "shawnz2000@outlook.com"   # 换成 Gitee 账号绑定的邮箱，提交才会关联到你的账号
+```
+
+（换机器 `git clone` 之后也要先配一次。）
+
+## 日常流程（针对 §2「另一个任务也在同一棵树里改」）
+
+```bash
+git pull --rebase             # 开工前先拉
+git switch -c feat/xxx        # 一人一分支，别都在 main 上改
+git add -A && git commit -m "改了什么"
+git push -u origin HEAD       # 合并走 PR，冲突在合并时暴露，而不是互相覆盖后才发现
 ```
 
 ## 边界
