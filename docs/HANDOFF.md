@@ -28,6 +28,9 @@
 ```
 
 > 想更"重"一点也行：把 §1 的完整会话直接粘贴。**但优先推荐上面这种**——文档改了提示词不用改，单一事实来源。
+>
+> **在 Windows + 雷电模拟器上测整体流程**：本文档 §0~§3 里的工作区路径与环境坑都是 macOS 侧的，
+> 直接照 [`WINDOWS-E2E.md`](WINDOWS-E2E.md) 走（那份第 0 节有给 Windows 端 WorkBuddy 的第一条消息）。
 
 ---
 
@@ -189,8 +192,13 @@
 ✅ **测试已全部收进仓库 `tools/`**（不再散在 `/tmp`），一条命令跑完：
 
 ```bash
-bash tools/run-all.sh        # 五套主进程测试 + 隐藏窗口界面自检，逐套打印 PASS/FAIL 数与退出码
+bash tools/run-all.sh        # macOS / Linux
+node tools/run-all.js        # Windows（跨平台入口，两个脚本跑的是同一套）
+node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 ```
+
+> **Windows + 雷电模拟器的端到端测试手册见 [`WINDOWS-E2E.md`](WINDOWS-E2E.md)**：
+> 环境清单、逐环节操作与预期、常见坑、待确认问题清单、问题回传格式。
 
 | 测试 | 覆盖 | 断言数 |
 | --- | --- | --- |
@@ -372,7 +380,8 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` | 一键回归：六套测试 + 隐藏窗口界面自检，共 147 项断言 |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：八套测试，共 176 项断言 |
+| `docs/WINDOWS-E2E.md` | Windows + 雷电模拟器的端到端测试手册（怎么跑、每步预期、坑、问题回传） |
 | `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好并生效 |
 
 复现本次拆解（万一要重看原始录屏）：

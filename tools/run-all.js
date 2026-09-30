@@ -1,0 +1,96 @@
+'use strict';
+/**
+ * 一键回归（跨平台：macOS / Linux / Windows 都能跑）
+ *   node tools/run-all.js            跑全部
+ *   node tools/run-all.js smoke      只跑名字里带 smoke 的
+ *
+ * 覆盖：
+ *   smoke          造临时素材跑完整流水线
+ *   adbtest        假 adb 验证真实发布通道
+ *   pendingtest    发布单被占用 → 整批暂存 → 下次补写
+ *   compliancetest 合规边界 + 导出报告
+ *   batchtest      多批次并行 / 取消 / 按批次重导出日志
+ *   reporttest     「AI 内容报告」导入 → 发布 → 回写
+ *   uicheck        隐藏窗口加载真实渲染层（7 个页签 + 零控制台报错）
+ *   logintest      登录门（未登录拦截 / 口令 / 权限 / 防爆破）
+ *
+ * 两个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
+ */
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const ROOT = path.resolve(__dirname, '..');
+const FILTER = process.argv[2] || '';
+const IS_WIN = process.platform === 'win32';
+
+/** 在 Node 里 require('electron') 返回的是可执行文件路径（不是模块） */
+function electronBin() {
+  try {
+    const p = require(path.join(ROOT, 'node_modules', 'electron'));
+    if (typeof p === 'string' && fs.existsSync(p)) return p;
+  } catch (e) { /* 没装 electron */ }
+  return path.join(ROOT, 'node_modules', '.bin', IS_WIN ? 'electron.cmd' : 'electron');
+}
+
+const NODE = process.execPath;
+const ELECTRON = electronBin();
+
+const SUITES = [
+  ['smoke', 'node', ['tools/smoke.js']],
+  ['adbtest', 'node', ['tools/adbtest.js']],
+  ['pendingtest', 'node', ['tools/pendingtest.js']],
+  ['compliancetest', 'node', ['tools/compliancetest.js']],
+  ['batchtest', 'node', ['tools/batchtest.js']],
+  ['reporttest', 'node', ['tools/reporttest.js']],
+  ['uicheck', 'electron', ['tools/uicheck.js']],
+  ['logintest', 'electron', ['tools/logintest.js']]
+];
+
+/** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */
+function fixElectronOnMac() {
+  if (process.platform !== 'darwin') return;
+  const app = path.join(ROOT, 'node_modules', 'electron', 'dist', 'Electron.app');
+  if (!fs.existsSync(app)) return;
+  spawnSync('xattr', ['-cr', app], { stdio: 'ignore' });
+  spawnSync('codesign', ['--force', '--sign', '-', app], { stdio: 'ignore' });
+}
+
+console.log(`node: ${NODE}`);
+console.log(`electron: ${ELECTRON}`);
+if (!fs.existsSync(ELECTRON) && !ELECTRON.endsWith('.cmd')) {
+  console.log('⚠️ 找不到 Electron 可执行文件：先 npm install（跑 uicheck / logintest 需要它）');
+}
+fixElectronOnMac();
+console.log('回归开始（每改一处都要跑完这一套）\n');
+
+let failed = 0;
+let totalPass = 0;
+for (const [name, kind, args] of SUITES) {
+  if (FILTER && !name.includes(FILTER)) continue;
+  const bin = kind === 'electron' ? ELECTRON : NODE;
+  const r = spawnSync(bin, args, { cwd: ROOT, encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 });
+  const out = `${r.stdout || ''}${r.stderr || ''}`;
+  const pass = (out.match(/^PASS/gm) || []).length;
+  const fail = (out.match(/^FAIL/gm) || []).length;
+  totalPass += pass;
+  const code = r.status == null ? 1 : r.status;
+  if (code === 0 && fail === 0 && pass > 0) {
+    console.log(`  ✅ ${name.padEnd(16)} PASS ${String(pass).padEnd(4)}`);
+  } else {
+    failed++;
+    console.log(`  ❌ ${name.padEnd(16)} PASS ${String(pass).padEnd(4)} FAIL ${fail} (exit ${code})`);
+    const bad = out.split(/\r?\n/).filter(l => /^FAIL/.test(l) || /ERROR|Error:/.test(l)).slice(0, 12);
+    if (bad.length) console.log(bad.map(l => '       ' + l).join('\n'));
+    if (!pass && !bad.length) console.log(`       ${(out.split(/\r?\n/).filter(Boolean).slice(0, 8).join('\n       '))}`);
+  }
+}
+
+console.log('');
+if (failed === 0) {
+  console.log(`全部通过，共 ${totalPass} 项断言。`);
+} else {
+  console.log(`有 ${failed} 套没过（通过 ${totalPass} 项），失败项已列在上面。`);
+}
+process.exit(failed === 0 ? 0 : 1);
