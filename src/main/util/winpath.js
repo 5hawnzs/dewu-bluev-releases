@@ -1,0 +1,168 @@
+'use strict';
+/**
+ * Windows 文件系统适配层
+ * PRD 里点名的三个 Windows 坑，都收敛在这里：
+ *   1) 长路径：扁平化后「货号+颜色+序号」变长，容易撞 MAX_PATH(260) → 统一加 \\?\ 前缀
+ *   2) 硬链接：同卷建链接（元数据操作，秒级）；跨卷只能实体复制
+ *   3) 占用阻塞：网盘同步 / 看图软件 / 资源管理器预览会锁目录 → 改名与删除要重试
+ */
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const IS_WIN = process.platform === 'win32';
+
+const MEDIA_EXT = ['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.bmp', '.tif', '.tiff'];
+const VIDEO_EXT = ['.mp4', '.mov', '.m4v', '.avi', '.webm', '.mkv'];
+const JUNK_NAME = ['.ds_store', 'thumbs.db', 'desktop.ini', '.localized', 'ehthumbs.db'];
+const JUNK_DIR = ['__macosx', '.ipynb_checkpoints', 'system volume information', '$recycle.bin'];
+
+function isWin() { return IS_WIN; }
+
+/** Windows 下加 \\?\ 长路径前缀（UNC 走 \\?\UNC\） */
+function toLong(p) {
+  if (!IS_WIN || !p) return p;
+  const abs = path.resolve(p);
+  if (abs.startsWith('\\\\?\\')) return abs;
+  if (abs.startsWith('\\\\')) return '\\\\?\\UNC\\' + abs.slice(2);
+  return '\\\\?\\' + abs;
+}
+
+/** 去掉长路径前缀，用于界面展示 */
+function toDisplay(p) {
+  if (!p) return p;
+  let s = String(p);
+  if (s.startsWith('\\\\?\\UNC\\')) return '\\\\' + s.slice(8);
+  if (s.startsWith('\\\\?\\')) return s.slice(4);
+  return s;
+}
+
+/** 长度超限预警（Windows MAX_PATH 260，留 40 字符余量给文件名） */
+function pathRisk(p) {
+  if (!IS_WIN) return null;
+  const len = path.resolve(p).length;
+  if (len > 200) return 'long';
+  return null;
+}
+
+function sameVolume(a, b) {
+  if (!IS_WIN) return true;
+  const ra = path.parse(path.resolve(a)).root.toLowerCase();
+  const rb = path.parse(path.resolve(b)).root.toLowerCase();
+  return ra === rb;
+}
+
+const RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'UNKNOWN']);
+
+async function retry(fn, { tries = 6, delay = 350, factor = 1.7, onRetry = null } = {}) {
+  let lastErr = null;
+  let wait = delay;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); } catch (e) {
+      lastErr = e;
+      if (!RETRY_CODES.has(e && e.code)) throw e;
+      if (onRetry) onRetry(e, i + 1);
+      if (i < tries - 1) await new Promise(r => setTimeout(r, wait));
+      wait = Math.round(wait * factor);
+    }
+  }
+  throw lastErr;
+}
+
+async function mkdirp(dir) {
+  await fs.promises.mkdir(toLong(dir), { recursive: true });
+}
+
+async function readdirSafe(dir) {
+  try {
+    return await fs.promises.readdir(toLong(dir), { withFileTypes: true });
+  } catch (e) {
+    if (e.code === 'ENOENT' || e.code === 'EACCES') return [];
+    throw e;
+  }
+}
+
+async function statSafe(p) {
+  try { return await fs.promises.stat(toLong(p)); } catch (e) { return null; }
+}
+
+async function exists(p) {
+  try { await fs.promises.access(toLong(p)); return true; } catch (e) { return false; }
+}
+
+/** 建硬链接；跨卷或不支持时自动退化为实体复制 */
+async function linkOrCopy(src, dst, { force = false } = {}) {
+  const s = toLong(src), d = toLong(dst);
+  await mkdirp(path.dirname(dst));
+  if (!force) { const st = await statSafe(dst); if (st) return 'skip'; }
+  if (sameVolume(src, dst)) {
+    try {
+      await retry(() => fs.promises.link(s, d));
+      return 'link';
+    } catch (e) {
+      if (e.code !== 'EXDEV' && e.code !== 'ENOSYS' && e.code !== 'EPERM' && e.code !== 'EACCES') throw e;
+    }
+  }
+  await retry(() => fs.promises.copyFile(s, d));
+  return 'copy';
+}
+
+async function copyFile(src, dst) {
+  await mkdirp(path.dirname(dst));
+  await retry(() => fs.promises.copyFile(toLong(src), toLong(dst)));
+}
+
+/** 目录改名：网盘/预览占用会失败，重试并回传是哪一层被占用 */
+async function renameDir(src, dst, onRetry) {
+  return retry(() => fs.promises.rename(toLong(src), toLong(dst)), { onRetry });
+}
+
+async function moveFile(src, dst) {
+  await mkdirp(path.dirname(dst));
+  try {
+    await retry(() => fs.promises.rename(toLong(src), toLong(dst)));
+  } catch (e) {
+    await retry(() => fs.promises.copyFile(toLong(src), toLong(dst)));
+    await fs.promises.unlink(toLong(src)).catch(() => {});
+  }
+}
+
+function isJunk(name, isDir) {
+  const n = String(name).toLowerCase();
+  if (isDir) return JUNK_DIR.includes(n);
+  return JUNK_NAME.includes(n) || n.startsWith('~$') || n.startsWith('.');
+}
+
+function ext(name) { return path.extname(String(name)).toLowerCase(); }
+function isMedia(name) { return MEDIA_EXT.includes(ext(name)); }
+function isVideo(name) { return VIDEO_EXT.includes(ext(name)); }
+
+function stamp(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+function humanSize(b) {
+  if (b == null) return '—';
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+  if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+  return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+/** 默认目录：Windows 落在 C:\Users\<你>\素材 这类位置 */
+function defaultPaths() {
+  const home = os.homedir();
+  return {
+    source: path.join(home, '素材'),
+    output: path.join(home, '输出', '得物'),
+    rejected: path.join(home, '素材', '_rejected')
+  };
+}
+
+module.exports = {
+  isWin, toLong, toDisplay, pathRisk, sameVolume, retry,
+  mkdirp, readdirSafe, statSafe, exists, linkOrCopy, copyFile, renameDir, moveFile,
+  isJunk, ext, isMedia, isVideo, stamp, humanSize, defaultPaths,
+  MEDIA_EXT, VIDEO_EXT
+};

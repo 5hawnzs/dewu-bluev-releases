@@ -1,0 +1,34 @@
+# ---------- 依赖与构建产物：体积大、可重装/可重打，不进仓库 ----------
+# node_modules 522MB、dist 169MB（两个 ~88MB 的安装包），提交上去仓库就废了。
+# 装机包给同事用 → 走 GitHub Releases / 网盘，不要塞进 git 历史（历史里的二进制删不干净）。
+node_modules/
+dist/
+out/
+*.log
+
+# ---------- 应用运行时数据 ----------
+# 正常情况下它们在 %APPDATA%\dewu-bluev-publisher（userData），不在仓库里；
+# 这里再兜一层，避免有人把输出目录指到工程内之后误提交。
+auth.json
+auth.seed.json
+config.json
+project.json
+pending-results.json
+publish-log.jsonl
+dumps/
+batches/
+failures/
+素材/
+输出/
+_rejected/
+
+# ---------- 代码快照（回滚点，按约定放在工程外） ----------
+_snapshot-*.tar.gz
+
+# ---------- 系统 / 编辑器 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp

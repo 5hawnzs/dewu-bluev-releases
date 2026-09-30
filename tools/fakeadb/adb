@@ -1,0 +1,33 @@
+#!/bin/bash
+# 假 adb：模拟一台在线设备，记录所有调用，用于验证驱动的指令序列。
+# 注意：目录用 $0 反推，方便整套复制到临时目录里跑，不依赖 /tmp/fakeadb 这个固定路径。
+DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$DIR/calls.log"
+echo "$*" >> "$LOG"
+
+if [ "$1" = "version" ]; then echo "Android Debug Bridge version 1.0.41"; exit 0; fi
+if [ "$1" = "devices" ]; then printf "List of devices attached\n127.0.0.1:5555\tdevice\n"; exit 0; fi
+if [ "$1" = "-s" ]; then shift 2; fi
+
+case "$1" in
+  shell)
+    shift
+    cmd="$*"
+    case "$cmd" in
+      "wm size")                 echo "Physical size: 1080x2400" ;;
+      "input")                   echo "usage: input [<source>] <command>" ;;
+      "input tap "*)             echo "" ;;
+      "input keyevent "*)        echo "" ;;
+      "input text "*)            echo "" ;;
+      "am broadcast "*)          echo "Broadcast completed: result=0" ;;
+      "uiautomator dump "*)      echo "UI hierchary dumped to: /sdcard/bluev_window.xml" ;;
+      "cat /sdcard/bluev_window.xml") [ -f "$DIR/window.xml" ] && cat "$DIR/window.xml" || echo "<hierarchy/>" ;;
+      "pm list packages")        printf "package:com.shizhuang.duapp\npackage:com.android.adbkeyboard\npackage:com.android.shell\n" ;;
+      *)                         echo "" ;;
+    esac
+    ;;
+  exec-out) cat "$DIR/shot.png" ;;
+  push)     echo "1 file pushed. 0.4 MB/s" ;;
+  *)        echo "" ;;
+esac
+exit 0

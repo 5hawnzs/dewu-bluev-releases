@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+<title>得物蓝V 素材发布工具</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="locked">
+<div class="app">
+
+  <div class="titlebar">
+    <div class="tb-left">
+      <span class="logo" id="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="17" height="17">
+          <rect width="32" height="32" rx="7" fill="#0f6e56"/>
+          <path d="M9.5 10l6.5 13 6.5-13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="name">得物蓝V 素材发布工具</span>
+    </div>
+    <div class="tb-drag"></div>
+    <div class="tb-right">
+      <div class="chips">
+        <span class="chip chip-proj" id="chipProj">项目 —</span>
+        <span class="chip" id="runChip">空闲</span>
+        <span class="chip chip-user" id="chipUser" title="当前登录账号">未登录</span>
+        <button class="tbbtn" id="btnLogout" title="退出登录">退出</button>
+      </div>
+      <div class="cap">
+        <button id="capMin" title="最小化" aria-label="最小化">
+          <svg viewBox="0 0 10 10"><path d="M0 5h10"/></svg>
+        </button>
+        <button id="capMax" class="max" title="最大化" aria-label="最大化">
+          <svg viewBox="0 0 10 10" id="capMaxIcon"><rect x=".7" y=".7" width="8.6" height="8.6" rx="1"/></svg>
+        </button>
+        <button id="capClose" class="close" title="关闭" aria-label="关闭">
+          <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="body">
+    <nav class="side" id="side">
+      <div class="grp">生产</div>
+      <button class="nav" data-tab="1">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M3 7V6a2 2 0 0 1 2-2h4l2 2"/></svg></span>
+        <span>素材整理</span><span class="st" data-st="1">—</span>
+      </button>
+      <button class="nav" data-tab="2">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.2-2.9 7.7-7 9-4.1-1.3-7-4.8-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+        <span>合规检查</span><span class="st" data-st="2">—</span>
+      </button>
+      <button class="nav" data-tab="3">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg></span>
+        <span>文案生成</span><span class="st" data-st="3">—</span>
+      </button>
+      <button class="nav" data-tab="4">
+        <span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><path d="M14 17.5a3.5 3.5 0 1 0 7 0 3.5 3.5 0 0 0-7 0z"/></svg></span>
+        <span>货号颜色校验</span><span class="st" data-st="4">—</span>
+      </button>
+      <button class="nav" data-tab="5">
+        <span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11M15 9v11"/></svg></span>
+        <span>发布单</span><span class="st" data-st="5">—</span>
+      </button>
+      <div class="grp">执行</div>
+      <button class="nav" data-tab="6">
+        <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10.5 8.8l5 3.2-5 3.2V8.8z"/></svg></span>
+        <span>模拟器发布</span><span class="st" data-st="6">—</span>
+      </button>
+      <div class="grp">其他</div>
+      <button class="nav" data-tab="7">
+        <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2.6M12 17.9v2.6M4.9 7.8l2.2 1.3M16.9 14.9l2.2 1.3M4.9 16.2l2.2-1.3M16.9 9.1l2.2-1.3"/></svg></span>
+        <span>设置</span>
+      </button>
+    </nav>
+
+    <div class="main">
+      <div class="head" id="head"></div>
+      <section class="pane" id="pane"></section>
+    </div>
+  </div>
+
+  <div class="logbar">
+    <div class="lt">
+      <span>运行日志</span>
+      <span class="grow"></span>
+      <button id="logClear" type="button">清空</button>
+    </div>
+    <div class="lines" id="log"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<div class="gate" id="gate">
+  <form class="gcard" id="loginForm" autocomplete="off">
+    <div class="gbrand">
+      <span class="glogo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26">
+          <rect width="32" height="32" rx="7" fill="#0f6e56"/>
+          <path d="M9.5 10l6.5 13 6.5-13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <div>
+        <div class="gname">得物蓝V 素材发布工具</div>
+        <div class="gsub">请输入账号密码进入</div>
+      </div>
+    </div>
+
+    <label class="gfld">
+      <span>账号</span>
+      <input class="inp" id="lgUser" autocomplete="off" spellcheck="false" autocapitalize="off">
+    </label>
+    <label class="gfld">
+      <span>密码</span>
+      <input class="inp" id="lgPwd" type="password" autocomplete="off">
+    </label>
+
+    <label class="grem"><input type="checkbox" id="lgRem" checked> 记住登录（本机 7 天内免输入）</label>
+
+    <div class="gerr" id="lgErr"></div>
+
+    <button class="btn primary ggo" id="lgGo" type="submit">登 录</button>
+    <p class="gtip" id="lgTip" hidden></p>
+  </form>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

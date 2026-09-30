@@ -1,0 +1,83 @@
+{
+  "name": "dewu-bluev-publisher",
+  "version": "1.0.0",
+  "description": "得物蓝V 素材发布工具 · Windows 桌面版（素材整理 / 合规检查 / 文案生成 / 货号颜色校验 / 发布单 / 模拟器发布）",
+  "main": "src/main/index.js",
+  "author": "TW男装 蓝V",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "addon:win": "npm install --no-save --force --os=win32 --cpu=x64 @img/sharp-win32-x64@0.33.5 @img/sharp-libvips-win32-x64@1.0.4",
+    "dist:win": "npm run addon:win && electron-builder --win --x64",
+    "dist:win-only": "electron-builder --win --x64"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.bluev.publisher",
+    "productName": "得物蓝V素材发布工具",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/@img/sharp-darwin-*/**",
+      "!**/@img/sharp-linux-*/**",
+      "!**/@img/sharp-libvips-darwin-*/**",
+      "!**/@img/sharp-libvips-linux-*/**",
+      "!**/@img/sharp-libvips-linuxmusl-*/**"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "**/*.node",
+      "**/sharp/**/*",
+      "**/@img/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}-win.${ext}",
+      "legalTrademarks": "得物蓝V 素材发布工具"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "得物蓝V素材发布工具",
+      "language": "2052",
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": ["zh_CN"]
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${arch}-便携版.${ext}"
+    },
+    "compression": "maximum"
+  }
+}
