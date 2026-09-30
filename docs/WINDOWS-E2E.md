@@ -12,20 +12,48 @@
 
 ## 0. 在 Windows 的 WorkBuddy 里新建任务时，第一条消息粘这个
 
-```text
-接手「得物蓝V 素材发布工具」的 Windows 端到端测试。
+````text
+我要在这台 Windows 上把「得物蓝V 素材发布工具」的整条流程测一遍。
 
-仓库：git@gitee.com:abulaitifans/dewu-bluev-publisher.git（私有，main 分支）
-第一步：完整读 docs/HANDOFF.md 与 docs/WINDOWS-E2E.md，再读 README.md。
+仓库（私有，main 分支）：
+git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+请克隆到 D:\work\dewu-bluev-publisher（路径不要有中文和空格，也别放 OneDrive/网盘同步目录）：
 
-要点：
-① 这个工程不要改名/移动（应用把绝对路径存在 %APPDATA%\dewu-bluev-publisher）；
-② src/renderer/app.js 与 src/main/store.js 是多人重叠文件，只用局部替换、禁止整文件重写；
-③ 不许造假成功：失败必须说清「缺什么」；
-④ 每改一处都要跑回归：node tools\run-all.js（176 项断言，含登录门与界面自检）；
-⑤ 测试时用 BLUEV_NO_LOGIN=1 免登录（省得反复输密码）。
-本次任务：按 docs/WINDOWS-E2E.md 第 4 节逐条做，逐条记录「预期 / 实际」，有差异按第 7 节格式回传。
-```
+  cd /d D:\work
+  git clone git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+
+动手前先确认环境：` node -v `、` git --version `、` adb devices `。
+如果缺 git / node，或者克隆失败（Permission denied / 要求输账号密码），
+**停下来把原文告诉我**，别自己改 git 配置、别换镜像源、别改用 https 猜密码。
+克隆成功后：
+
+1. 完整读 docs/HANDOFF.md 与 docs/WINDOWS-E2E.md，再读 README.md；
+2. 按 WINDOWS-E2E 第 2 节备环境、第 3 节跑自动化回归：
+     node tools\run-all.js
+   预期最后一行「全部通过，共 176 项断言。」——先跑绿再动别的；
+3. 再按第 4 节逐条做手动全流程，每步记录「预期 / 实际」。
+
+硬约束（必须遵守）：
+① 这个工程不要改名、不要移动 —— 应用把绝对路径存在 %APPDATA%\dewu-bluev-publisher；
+② src/renderer/app.js 与 src/main/store.js 是多人重叠文件：只用局部替换，禁止整文件重写；
+③ 不许造假成功：失败必须说清「缺什么」，不准写 ok=true / 静默跳过糊过去；
+④ 每改一处都要跑一遍 node tools\run-all.js；
+⑤ 测试时用 BLUEV_NO_LOGIN=1 免登录（PowerShell 写法：$env:BLUEV_NO_LOGIN=1; npm start）。
+
+本次任务只要「测」，不要顺手改功能：
+- 发现问题按 WINDOWS-E2E 第 7 节格式整理给我（哪一步 / 预期 / 实际 / 报错原文 / 现场文件 / 环境）；
+- 我确认之前，不要动 src/ 下的代码。
+
+环境事实（省得你猜）：
+- 模拟器：雷电 9，设备 emulator-5554，adb 用雷电自带的那份；
+- 得物 App 已装好并登录好发布账号，ADBKeyboard 已装；
+- tools\ 目录是回归测试，不进安装包。
+````
+
+> 备选（克隆实在过不去时）：把 `docs/HANDOFF.md` 与 `docs/WINDOWS-E2E.md` 两个文件直接拖进对话当附件，
+> 并让 WorkBuddy 先只做第 3 节的自动化回归（那部分不需要仓库之外的任何东西）。
+>
+> ⚠️ 不要发出去的：Gitee 密码、私人令牌、`id_ed25519` 私钥（只有 `.pub` 公钥可以贴到网站上）。
 
 ---
 
