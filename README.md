@@ -94,6 +94,12 @@ npm run dist:win
      真机是「回退转发页」「删除卡片」这类动作，每个账号/版本都不一样，所以做成文本框可编辑（默认给一条示例，不用猜格式）。
      只认真正会被执行的 `tapText / tapId / tapDesc / wait`（返回键回退时本来就会先按，不用写）；
      写错 action、value 为空、wait 不是毫秒数，都会**报错并列出可用值**，不静默跳过 —— 跳过等于「以为回退了，其实没有」。
+   - **导入「AI 内容报告」**（发布单页「导入 AI 内容报告」）：真机那条流水线的中间产物 —— 26 列 xlsx，
+     `素材路径 / 素材来源 / 标题 / 文案 / 内容类型 / 好物1~9_货号+颜色`。按**列名**识别（列顺序无关，
+     他们的报告和我们导出的发布单都能吃）；素材路径是**绝对路径**（如 `D:\卡宾\20260901`），
+     表里没写就追问一次「这一批的素材目录」。**一个叶子文件夹 = 一条内容**，行数与叶子数不等会直接报错并说明，
+     绝不猜着配；标题/文案空着由本地生成；发布结果回写报告的 **B 实际执行时间 / C 执行结果**两列
+     （被 WPS 占用就整批暂存、下次导入或发布时先补写）。
 
 ## 登录与账号（默认开启）
 
@@ -139,7 +145,7 @@ npm run dist:win
 
 ## 开发期自检
 
-测试都在仓库里（`tools/`），一条命令跑完全部 **147** 项断言：
+测试都在仓库里（`tools/`），一条命令跑完全部 **176** 项断言：
 
 ```bash
 bash tools/run-all.sh          # 五套主进程测试 + 隐藏窗口界面自检
@@ -152,7 +158,8 @@ bash tools/run-all.sh          # 五套主进程测试 + 隐藏窗口界面自�
 | `tools/pendingtest.js` | 发布单 chmod 只读模拟「Excel 被 WPS 占用」→ 整批暂存 `pending-results.json` → 恢复可写后**先补写上次的**；设备增删去重与固定间隔预估 | 9 |
 | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 不会把好图搬进 `_rejected`；「导出报告」两个工作表 + csv 带 BOM | 16 |
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、恢复动作保存与校验 | 22 |
-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、7 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置（`userData` 指到临时目录，不动本机数据） | 18 |
+| `tools/reporttest.js` | 「AI 内容报告」导入：列名匹配（列顺序打乱）、行↔叶子一一对应与数量不等报错、标题/文案空则生成、好物 1~9 带全、含视频行明确标出、发布结果回写 B/C 列、被占用→暂存→补写 | 28 |
+| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、7 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置（`userData` 指到临时目录，不动本机数据） | 19 |
 | `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定 | 32 |
 
 **没测到的**：真机上的得物 App 页面结构（发布页按钮文本 / resource-id 各版本不同）、
@@ -167,7 +174,7 @@ src/main/window.js       无边框窗口 + 尺寸记忆
 src/main/ipc.js          IPC 白名单（业务通道统一做登录门禁）
 src/main/auth.js         本机账号：scrypt 口令哈希 / 登录会话 / 账号管理
 src/main/jobs.js         任务编排（任务实例化：进度/日志/取消/运行中批次/任务栏进度/通知）
-src/main/services/       flatten / compliance / copywriter / verify / sheet / publisher / pool / imaging
+src/main/services/       flatten / compliance / copywriter / verify / sheet / report / publisher / pool / imaging
 src/main/util/winpath.js Windows 长路径 · 硬链接 · 占用重试
 src/preload/index.js     contextBridge（contextIsolation，渲染层无 node 权限）
 src/renderer/            Windows 风格 UI

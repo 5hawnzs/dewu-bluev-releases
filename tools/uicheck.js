@@ -101,6 +101,7 @@ app.whenReady().then(async () => {
   };
   ok('页签 2 有「导出报告」', await onTab(2, 'comp:export'));
   ok('页签 3 有「选择素材目录并启动任务」', await onTab(3, 'copy:pickRun'));
+  ok('页签 5 有「导入 AI 内容报告」', await onTab(5, 'sheet:importReport'));
   ok('页签 6 有「重导出日志」', await onTab(6, 'pub:exportLog'));
   ok('页签 6 有「失败恢复动作」', await onTab(6, 'pub:recoverEdit'));
 

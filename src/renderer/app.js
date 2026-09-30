@@ -184,6 +184,35 @@ function recoverHtml() {
   </div>`;
 }
 
+/**
+ * 「AI 内容报告」（真机流水线的中间产物）：导入后直接发布，结果回写它的 B/C 列
+ */
+function reportBoxHtml() {
+  const pub = state.project.publish || {};
+  if (!pub.reportFile) {
+    return `<p class="hint">也可以直接点「<b>导入 AI 内容报告</b>」（真机那份 26 列 xlsx）：表里是
+      <code>素材路径 / 标题 / 文案 / 内容类型 / 好物1~9_货号+颜色</code>，按<b>列名</b>识别、不认列位置。
+      一个叶子文件夹 = 一条内容；报告里标题/文案空着就本地生成；发布完把「实际执行时间 / 执行结果」写回那两列。</p>`;
+  }
+  const rows = pub.rows || [];
+  const blocked = rows.filter(r => r.result === '校验未通过').length;
+  const done = rows.filter(r => r.result === '发布成功').length;
+  return `<div class="box">
+    <h3>当前批次来自 AI 内容报告</h3>
+    <div class="row">
+      <input class="inp mono" value="${esc(pub.reportFile)}" readonly>
+      <span class="chip">表「${esc(pub.reportSheet || '')}」</span>
+      ${pub.reportDir ? `<span class="chip" title="报告的「素材路径」是空的，用的是这次选的素材目录">素材目录 ${esc(pub.reportDir)}</span>` : ''}
+      <span class="chip">${rows.length} 条</span>
+      ${done ? `<span class="chip">已发 ${done}</span>` : ''}
+      ${blocked ? `<span class="chip warn">${blocked} 条暂不发布</span>` : ''}
+      <button class="btn sm" data-act="sheet:openReport">打开报告</button>
+    </div>
+    <p class="hint">发布完会回写报告的 <b>实际执行时间（B）/ 执行结果（C）</b> 两列；报告被 WPS 占用时整批暂存，
+      下次导入或发布时先补写。含视频的叶子目前不发布（真实通道只推图片），该行会标成「校验未通过」并写明原因。</p>
+  </div>`;
+}
+
 /** 只重绘批次面板：进度是按行推进的，整页重排会把大任务拖慢 */
 function refreshBatches() {
   document.querySelectorAll('[data-batches]').forEach(el => {
@@ -400,6 +429,7 @@ TABS[5] = {
   title: '发布单',
   desc: '26 列，与前司发布文件结构一致 · 运营确认后交发布端',
   actions: () => [
+    { act: 'sheet:importReport', label: '导入 AI 内容报告' },
     { act: 'sheet:open', label: '打开文件', disabled: !state.project.sheet.file },
     { act: 'sheet:dir', label: '打开目录' },
     { act: 'sheet:export', label: '导出 xlsx', primary: true }
@@ -416,6 +446,7 @@ TABS[5] = {
           <span class="chip">${sh.locked ? '被占用' : '未占用'}</span>
         </div>
       </div>
+      ${reportBoxHtml()}
       ${preview.length ? `<div class="tw"><table>
         <thead><tr><th>#</th><th>期待发布时间</th><th>素材路径</th><th>标题</th><th>好物1</th><th>执行结果</th></tr></thead>
         <tbody>${preview.map(r => `<tr class="${r.result === '校验未通过' ? 'flag' : ''}">
@@ -862,6 +893,28 @@ const ACTS = {
   },
   'sheet:open': async () => { if (state.project.sheet.file) await appApi.openPath(state.project.sheet.file); },
   'sheet:dir': async () => { await appApi.openPath(state.config.paths.output); },
+  'sheet:openReport': async () => { const f = (state.project.publish || {}).reportFile; if (f) await appApi.openPath(f); },
+  'sheet:importReport': async () => {
+    const f = await appApi.pickFile({
+      title: '选择「AI 内容报告」xlsx（一个叶子文件夹 = 一条内容）',
+      filters: [{ name: 'Excel 报告', extensions: ['xlsx'] }]
+    });
+    if (!f) return;
+    // 先静默试一次：报告里自带「素材路径」就直接用；没有的话再问一次这一批的素材目录
+    let r = await appApi.run('report.import', { file: f });
+    if (!r.ok && /素材路径/.test(r.error || '')) {
+      const d = await appApi.pickDir({
+        title: '这份报告的「素材路径」是空的 —— 请选择这一批的素材目录（D:\\卡宾\\20260901 这种，里面每个叶子文件夹 = 一条内容）'
+      });
+      if (!d) { toast('已取消：报告里没有素材路径，也没有选素材目录', 'err'); return; }
+      r = await appApi.run('report.import', { file: f, dir: d });
+    }
+    if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
+    const x = r.result;
+    toast(`报告已导入：${x.total} 条待发布（用报告里的标题文案 ${x.fromReport} 条 · 本地生成 ${x.generated} 条${x.blocked ? ` · ${x.blocked} 条暂不发布` : ''}）`, x.blocked ? '' : 'ok');
+    state.tab = 5;
+    renderAll();
+  },
 
   'pub:connect': async () => {
     const r = await appApi.run('publish.connect', {});

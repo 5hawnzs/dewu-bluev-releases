@@ -8,6 +8,7 @@
 #   pendingtest.js    发布单被占用 → 整批暂存 → 下次补写；设备矩阵
 #   compliancetest.js 合规边界（合格图不会被误隔离）+ 导出报告
 #   batchtest.js      多批次并行 / 逐个取消 / 全部取消 / 按批次重导出日志
+#   reporttest.js     「AI 内容报告」导入 → 发布 → 回写（列名匹配 / 行叶配对 / 占用暂存）
 #   uicheck.js        隐藏窗口加载真实渲染层：7 个页签渲染 + 零控制台报错
 #   logintest.js      登录门：未登录拦截 / 口令与记住登录 / 权限 / 防爆破 / 退出
 set -u
@@ -50,6 +51,7 @@ run adbtest        node tools/adbtest.js
 run pendingtest    node tools/pendingtest.js
 run compliancetest node tools/compliancetest.js
 run batchtest      node tools/batchtest.js
+run reporttest     node tools/reporttest.js
 run uicheck        ./node_modules/.bin/electron tools/uicheck.js
 run logintest      ./node_modules/.bin/electron tools/logintest.js
 

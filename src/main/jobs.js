@@ -11,6 +11,7 @@ const compliance = require('./services/compliance');
 const copywriter = require('./services/copywriter');
 const verify = require('./services/verify');
 const sheet = require('./services/sheet');
+const report = require('./services/report');
 const publisher = require('./services/publisher');
 const pool = require('./services/pool');
 const wp = require('./util/winpath');
@@ -35,7 +36,8 @@ const TYPE_LABEL = {
   'compliance.fix': '合规处理', 'compliance.exportReport': '导出合规报告',
   'copy.generate': 'AI 文案生成',
   'verify.check': '好物货号颜色预检',
-  'sheet.export': '导出发布单', 'publish.run': '自动发布', 'publish.rerun': '发布重跑',
+  'sheet.export': '导出发布单', 'report.import': '导入 AI 内容报告',
+  'publish.run': '自动发布', 'publish.rerun': '发布重跑',
   'publish.exportLog': '重导出日志', 'publish.setRecover': '编辑失败恢复动作', 'pool.import': '导入商品池'
 };
 
@@ -161,6 +163,53 @@ async function dispatch(type, args, ctx) {
       project.patch({ sheet: { file: r.file, rowCount: r.rowCount, colCount: r.colCount, locked: false, exportedAt: Date.now() }, publish: Object.assign({}, s.publish, { rows: pubRows, batch: path.basename(r.file, '.xlsx') }) });
       return r;
     }
+    case 'report.import': {
+      // 真机流水线的中间产物：上游产「AI 内容报告」xlsx，我们直接吃它 → 生成发布队列
+      const file = args.file;
+      // 先把上次被占用的报告结果补写掉（对齐真机「下次运行先补写」）
+      const flushed = await report.mergeResults(file, []);
+      if (flushed.updated) logbus.ok(`先补写了上次暂存的 ${flushed.updated} 条报告结果`);
+
+      const rep = await report.readReport(file);
+      const batch = args.batch || path.basename(file, path.extname(file));
+      const built = await report.build(rep, {
+        batch,
+        dir: args.dir || '',              // 报告里没写素材路径时，用界面上选的这一批素材目录
+        generateCopy: async sub => (await copywriter.generate(sub, ctx)).rows
+      });
+      if (!built.pairs.length) {
+        const why = built.problems.slice(0, 3).map(p => `第 ${p.rowNo} 行 ${p.why}`).join('；');
+        throw new Error(
+          `报告里没有一条能用的（共 ${built.problems.length} 行有问题：${why}${built.problems.length > 3 ? '…' : ''}）` +
+          '。如果这份报告的「素材路径」是空的，导入时选一下这一批的素材目录即可'
+        );
+      }
+
+      // 含视频 / 没有图片的行：走现有「校验未通过」机制跳过，界面标红并写明原因（不静默丢）
+      const verifyRows = built.blocked.map(b => ({ id: b.id, pass: false, conclusion: '校验未通过', note: b.note, level: 'bad' }));
+      project.patch({
+        items: built.items,
+        copyRows: built.copyRows,
+        verify: { rows: verifyRows, checkedAt: Date.now(), stats: null },
+        publish: {
+          rows: built.publishRows,
+          batch, connected: false, running: false, startedAt: 0,
+          reportFile: file, reportSheet: rep.sheetName, reportDir: args.dir || (rep.hasDir ? '' : '')
+        }
+      });
+
+      logbus.ok(`报告已导入：${built.publishRows.length} 条待发布 · 批次「${batch}」`);
+      const fromReport = built.copyRows.filter(r => r.from === '报告').length;
+      const generated = built.copyRows.filter(r => r.from === '本地生成').length;
+      if (generated) logbus.info(`其中 ${fromReport} 条用报告里的标题/文案，${generated} 条报告里是空的、已本地生成`);
+      built.problems.forEach(p => logbus.warn(`第 ${p.rowNo} 行跳过：${p.why}`));
+      logbus.warn(`${built.blocked.length ? built.blocked.length + ' 条暂不发布（含视频/没图片）' : '全部 ' + built.publishRows.length + ' 条可发布'}；发布结果会回写到报告的第 B（实际执行时间）/ C（执行结果）列`);
+      return {
+        batch, total: built.publishRows.length, fromReport, generated,
+        blocked: built.blocked.length, problems: built.problems, notes: built.notes,
+        reportFile: file, reportSheet: rep.sheetName
+      };
+    }
     case 'publish.connect': {
       const r = await publisher.connect(args.device);
       project.patch({
@@ -241,6 +290,15 @@ async function dispatch(type, args, ctx) {
           logbus.ok(`已合并回写发布单：${m.updated} 行${m.flushed ? `（含补写上次的 ${m.flushed} 条）` : ''}`);
         }
       }
+      // 从「AI 内容报告」导入的批次：回写它的 B（实际执行时间）/ C（执行结果）列
+      if (s.publish.reportFile) {
+        const mr = await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
+        if (mr.busy) {
+          logbus.warn(`报告仍被占用，${mr.pending} 条已暂存，下次导入/发布时先补写`);
+        } else if (mr.updated || mr.skipped) {
+          logbus.ok(`已回写报告：${mr.updated} 行${mr.flushed ? `（含补写上次的 ${mr.flushed} 条）` : ''} → ${path.basename(s.publish.reportFile)}`);
+        }
+      }
       notify('发布批次结束', `成功 ${r.okCount} / ${r.total} 条，记得回查审核状态`);
       return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch };
     }
@@ -257,6 +315,7 @@ async function dispatch(type, args, ctx) {
       const r = await publisher.run(subset, Object.assign({}, ctx, { onRow: rw => send('publish:row', rw) }));
       project.patch({ publish: Object.assign({}, s.publish, { rows: s.publish.rows }) });
       if (s.sheet.file) await sheet.mergeResults(s.sheet.file, r.results);
+      if (s.publish.reportFile) await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
       return { okCount: r.okCount, total: 1 };
     }
     case 'pool.import': {

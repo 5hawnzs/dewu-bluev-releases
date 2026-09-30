@@ -185,10 +185,24 @@ function savePending(list) {
 }
 function pendingCount() { return loadPending().length; }
 
+/**
+ * 暂存队列按「回写目标」分开取放：
+ *   sheet  —— 我们自己的 26 列发布单
+ *   report —— 真机的「AI 内容报告」（只回写 实际执行时间 / 执行结果 两列）
+ * 两个目标互不覆盖，各自的积压只在自己的下一次运行时补写。
+ */
+function takePending(target = 'sheet') {
+  return loadPending().filter(e => (e.target || 'sheet') === target);
+}
+function putPending(target, entries) {
+  const rest = loadPending().filter(e => (e.target || 'sheet') !== target);
+  savePending(rest.concat(entries || []));
+}
+
 /** 一批结束后一次性合并回写 Excel；写不进去（被占用）就整批暂存，下次先补写 */
-async function mergeResults(file, results) {
-  const backlog = loadPending();
-  const all = backlog.concat(results || []);
+async function mergeResults(file, results, target = 'sheet') {
+  const backlog = takePending(target);
+  const all = backlog.concat((results || []).map(r => Object.assign({ target }, r)));
   if (!file || !all.length) return { updated: 0, pending: all.length };
 
   try {
@@ -209,16 +223,16 @@ async function mergeResults(file, results) {
       updated++;
     });
     await wb.xlsx.writeFile(wp.toLong(file));
-    savePending([]);
+    putPending(target, []);
     return { updated, pending: 0, flushed: backlog.length };
   } catch (e) {
     // 真机日志原话：Excel 仍被占用，暂存保留，下次再试（可只读打开但不建议编辑保存）
-    savePending(all);
+    putPending(target, all);
     return { updated: 0, pending: all.length, busy: true, error: e.message };
   }
 }
 
 module.exports = {
   COLUMNS, buildRows, exportSheet, appendLog, readLog, mergeResults, fmt, logFile,
-  exportPublishLog, pendingCount, loadPending
+  exportPublishLog, pendingCount, loadPending, takePending, putPending
 };

@@ -333,7 +333,11 @@ async function run(state, ctx = {}) {
     else log(`行 ${row.seq} 发布失败：${row.reason}（耗时 ${row.elapsed}s）`, 'warn');
 
     sheet.appendLog({ batch, seq: row.seq, id: row.id, dir: row.dir, at: row.startAt, result: row.result, reason: row.reason, retries: row.retries, elapsed: row.elapsed, mode });
-    results.push({ batch, seq: row.seq, at: row.startAt, result: row.result, reason: row.reason, retries: row.retries, elapsed: row.elapsed, audit: row.result === '发布成功' ? '审核中' : '' });
+    results.push({
+      batch, seq: row.seq, at: row.startAt, result: row.result, reason: row.reason,
+      retries: row.retries, elapsed: row.elapsed, audit: row.result === '发布成功' ? '审核中' : '',
+      reportRow: row.reportRow || 0   // 从「AI 内容报告」导入的行：回写时需要它在 Excel 里的行号
+    });
     done++;
     progress({ done, total: todo.length, label: row.dir, succeeded: rows.filter(r => r.result === '发布成功').length });
   }
