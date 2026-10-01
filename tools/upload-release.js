@@ -195,7 +195,7 @@ function main() {
 
     console.log('\n完成。公网地址：');
     for (const j of jobs) console.log('  ' + DOMAIN + '/' + encodeURI(j.key));
-    console.log('\n提醒：本机正在用的那份要更新，得先装一次安装版（便携版收不到自动更新）。');
+    console.log('\n提醒：自动更新只对**安装版**生效 —— 本机若还在跑开发版（npm start）或早先的便携版，收不到这次更新。');
   })().catch(e => {
     console.error('\n上传失败：' + ((e && (e.code || e.message)) || e));
     process.exit(1);

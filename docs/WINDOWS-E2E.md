@@ -210,16 +210,20 @@ set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 npm run dist:win
 ```
-- 预期：`dist\` 出 `得物蓝V素材发布工具-1.0.0-x64-win.exe`（安装版）和 `…-便携版.exe`。
+- 预期：`dist\` 出 `得物蓝V素材发布工具-1.0.0-x64-win.exe`（NSIS 安装版，**只有这一个 exe**）。
 - **一定要在一台干净 Windows 上装一遍**，重点验：窗口按钮/拖动、HEIC 转换、长路径、卸载后 `%APPDATA%` 数据保留。
+
+> **变更（2026-10-01 起）**：原先还会出一个 `…-便携版.exe`（portable 免安装版），
+> 已按「只保留正式版 / 测试版两条通道」的要求从 `build.win.target` 里去掉 ⇒ **`dist\` 只有一个 exe**。
+> ★ 别再把它当成"三个版本"：**便携版是打包格式**，正式版 / 测试版是**发布通道**（决定应用从哪取更新）。
 
 > **实测（2026-10-01，Windows 10 22631 / node 22.22.2 / electron-builder 24.13.3）**
 >
-> ✅ 两个产物都在，与预期一致：
+> ✅ 两个产物都在，与当时的预期一致：
 > | 产物 | 大小 |
 > | --- | --- |
 > | `dist\得物蓝V素材发布工具-1.0.0-x64-win.exe`（NSIS 安装版） | 88,807,540 B |
-> | `dist\得物蓝V素材发布工具-1.0.0-x64-便携版.exe`（portable） | 88,672,906 B |
+> | `dist\得物蓝V素材发布工具-1.0.0-x64-便携版.exe`（portable，**现已不再产出**） | 88,672,906 B |
 >
 > ✅ 产物内容检查：`resources\app.asar.unpacked\node_modules\@img\` 下**只有 `sharp-win32-x64`**，没有混进 darwin / linux 版（`files` 里的排除规则生效，这也是 HEIC 能在 Windows 上用的前提）。
 >

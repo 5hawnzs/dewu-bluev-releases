@@ -66,10 +66,6 @@
         {
           "target": "nsis",
           "arch": ["x64"]
-        },
-        {
-          "target": "portable",
-          "arch": ["x64"]
         }
       ],
       "icon": "build/icon.ico",
@@ -86,9 +82,6 @@
       "language": "2052",
       "deleteAppDataOnUninstall": false,
       "installerLanguages": ["zh_CN"]
-    },
-    "portable": {
-      "artifactName": "${productName}-${version}-${arch}-便携版.${ext}"
     },
     "compression": "maximum"
   }
