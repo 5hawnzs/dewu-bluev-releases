@@ -15,6 +15,12 @@ function defaults() {
   return {
     projectName: 'TW男装 蓝V',
     paths: { source: d.source, output: d.output, rejected: d.rejected },
+    // 品牌注册表：[{ id, name, enabled, note, createdAt }]，增删改与权限判定都在 src/main/brands.js
+    // 品牌是跨模块维度（文案 / 发布单 / 发布日志 / 统计 / 账号权限），所以放在顶层而不是 copy 下面
+    brands: [],
+    // 是否已把旧的 `copy.brand` 迁进 brands。用标记而不是「数组为空就补」——
+    // 否则管理员故意把品牌删空时，会被下一次启动悄悄塞回来
+    brandsSeeded: false,
     // 真机做法：扁平名用 _ 连接层级路径；原素材完全不动（不改名、不移动）
     flatten: { mode: 'auto', connector: '_', touchOriginal: false, withStamp: true },
     // 真机规格：必须 JPG / ≥1764 像素²(约42×42) / 边长 150~1500 / 超限自动等比缩放 / 视频按扩展名判 .mp4 且 <600s
@@ -28,7 +34,8 @@ function defaults() {
       rotateStrategy: 'F01-F10 轮换',
       requiredTopic: '#TW男装',
       extraTopics: 4,
-      brand: 'TW男装',                 // 真机有「品牌管理」，文案生成按品牌取词
+      brand: 'TW男装',                 // 【已降级为 legacy】只在首次启动时作为 brands 的迁移种子，界面不再直接编辑
+      defaultBrandId: '',              // 「设置 → 品牌管理」里选的默认品牌（brd_xxx），新建任务时预选
       promptFilter: '',                // 筛选排序提示词
       promptWrite: '',                 // 文案生成提示词
       llm: { enabled: false, endpoint: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.9 },

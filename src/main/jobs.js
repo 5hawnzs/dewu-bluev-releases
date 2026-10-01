@@ -6,6 +6,8 @@ const path = require('path');
 const logbus = require('./logbus');
 const project = require('./project');
 const store = require('./store');
+const auth = require('./auth');
+const brands = require('./brands');
 const flatten = require('./services/flatten');
 const compliance = require('./services/compliance');
 const copywriter = require('./services/copywriter');
@@ -14,6 +16,7 @@ const sheet = require('./services/sheet');
 const report = require('./services/report');
 const publisher = require('./services/publisher');
 const pool = require('./services/pool');
+const runlog = require('./services/runlog');
 const wp = require('./util/winpath');
 
 /**
@@ -28,6 +31,13 @@ const byType = new Map();
 
 /** 可并行的任务：批次级（一个批次一个实例，互不覆盖） */
 const PARALLEL_TYPES = new Set(['copy.generate']);
+
+/**
+ * 产出「可发布内容」的任务 —— 这几个必须有品牌归属，否则发出去的东西查不到是谁做的、算哪个品牌的。
+ * 素材整理 / 合规 / 校验 / 商品池属于准备动作，归属可有可无（没有就记「未标品牌」）。
+ * 归属规则与提示语都在 brands.resolveFor 里，这里只声明「哪些任务必须有」。
+ */
+const BRAND_SCOPED = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
 
 /** 任务类型 → 界面上给人的名字 */
 const TYPE_LABEL = {
@@ -120,6 +130,8 @@ async function dispatch(type, args, ctx) {
         const file = path.join(out, 'copy.json');
         await fs.promises.writeFile(wp.toLong(file), JSON.stringify({
           batchId, sourceDir: dir, createdAt: Date.now(), count: r.rows.length,
+          brandId: ctx.brand.brandId, brandName: ctx.brand.brandName,
+          actor: ctx.actor && ctx.actor.username ? ctx.actor.username : '',
           warning: r.warning || '', llm: r.llm || null,
           items: items.map(i => ({ id: i.id, dir: i.dir, sku: i.sku, color: i.color, files: i.files.length })),
           rows: r.rows
@@ -174,7 +186,7 @@ async function dispatch(type, args, ctx) {
           reportRow: Number(prev.reportRow || 0)      // 0 = 不是从报告导进来的，回写时会被跳过
         };
       });
-      project.patch({ sheet: { file: r.file, rowCount: r.rowCount, colCount: r.colCount, locked: false, exportedAt: Date.now() }, publish: Object.assign({}, s.publish, { rows: pubRows, batch: path.basename(r.file, '.xlsx') }) });
+      project.patch({ sheet: { file: r.file, rowCount: r.rowCount, colCount: r.colCount, locked: false, exportedAt: Date.now() }, publish: Object.assign({}, s.publish, { rows: pubRows, batch: path.basename(r.file, '.xlsx'), brandId: ctx.brand.brandId, brandName: ctx.brand.brandName }) });
       return r;
     }
     case 'report.import': {
@@ -208,7 +220,9 @@ async function dispatch(type, args, ctx) {
         publish: {
           rows: built.publishRows,
           batch, connected: false, running: false, startedAt: 0,
-          reportFile: file, reportSheet: rep.sheetName, reportDir: args.dir || (rep.hasDir ? '' : '')
+          reportFile: file, reportSheet: rep.sheetName, reportDir: args.dir || (rep.hasDir ? '' : ''),
+          // 批次归属定在「导入/导出」这一刻，发布时沿用 —— 中途换品牌不该把这一批的账改掉
+          brandId: ctx.brand.brandId, brandName: ctx.brand.brandName
         }
       });
 
@@ -385,6 +399,28 @@ async function dispatch(type, args, ctx) {
 }
 
 async function run(type, args = {}) {
+  // 品牌归属与权限放在最前面：不通过就连任务都不起、日志也不写 ——
+  // 否则「被拒绝」这件事会以一条正常任务日志的样子留在台账里，越查越乱
+  const actor = auth.enabled() ? auth.current() : null;
+  const picked = brands.resolveFor(actor, args.brandId, { required: BRAND_SCOPED.has(type) });
+  if (!picked.ok) return { ok: false, error: picked.error, brandDenied: true };
+  const brand = picked.brand || null;
+  const actorInfo = actor
+    ? { userId: actor.id, username: actor.username, displayName: actor.displayName || actor.username }
+    : { userId: '', username: '', displayName: '' };
+  const brandInfo = brand ? { brandId: brand.id, brandName: brand.name } : { brandId: '', brandName: '' };
+  const who = brand ? brand.name : brands.UNKNOWN_NAME;
+
+  // 文案生成必须有「这个品牌自己的」提示词。拦在这里（job 实例化之前）而不是生成中途：
+  // 中途失败会在 runlog 里留下一条「开始 + 失败」，台账上多出一堆没跑成的批次更难查。
+  // 没配提示词时**不回退到内置模板** —— 那样产出的文案看不出归属，比直接拦住更难发现。
+  if (type === 'copy.generate' && brand && !brands.hasWritePrompt(brand)) {
+    const lb = args.label || args.batchId || TYPE_LABEL[type] || type;
+    const msg = `品牌「${brand.name}」还没配「文案生成提示词」——到「文案生成 → 提示词配置」里补上再跑`;
+    logbus.error(`[${lb}] ${msg}`, Object.assign({ type, label: lb }, brandInfo, actorInfo));
+    return { ok: false, error: msg, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
+  }
+
   const parallel = PARALLEL_TYPES.has(type);
   const ids = typeIds(type);
   // 起不来就直接回 {ok:false}（不抛异常）：渲染层拿得到原因能弹提示，不会变成未捕获的 Promise 报错
@@ -398,7 +434,7 @@ async function run(type, args = {}) {
 
   const id = 'j' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const label = args.label || args.batchId || TYPE_LABEL[type] || type;
-  const job = { id, type, label, batch: args.batchId || '', token: { cancel: false }, progress: null, startedAt: Date.now() };
+  const job = { id, type, label, batch: args.batchId || '', token: { cancel: false }, progress: null, startedAt: Date.now(), brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   running.set(id, job);
   if (!byType.has(type)) byType.set(type, new Set());
   byType.get(type).add(id);
@@ -406,11 +442,20 @@ async function run(type, args = {}) {
   const ctx = {
     jobId: id,
     batch: job.batch,
+    // 品牌与执行人跟着 ctx 走：发布侧要用它写进 publish-log（每一条都要能追到人）
+    // brand 只放 id/name —— 它会整条 Object.assign 进每条日志的 meta，
+    // 完整品牌对象带着上千字的提示词，塞进去等于每条日志都抄一遍模板
+    brand: brandInfo,
+    brandFull: brand,
+    actor: actorInfo,
     cancelled: () => job.token.cancel,
     log: (msg, level) => {
       const fn = { ok: logbus.ok, warn: logbus.warn, error: logbus.error }[level] || logbus.info;
+      const meta = Object.assign({ jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo);
       // 日志带上批次，界面「查看详情」能按批次把这一步的日志筛出来
-      fn(`[${label}] ${msg}`, { jobId: id, batch: job.batch, label, type });
+      fn(`[${label}] ${msg}`, meta);
+      // 同时落盘：logbus 只有内存 500 条，关了程序就没了，管理员事后查不到
+      runlog.append(Object.assign({ kind: 'log', level: level || 'info', msg: String(msg), jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo));
     },
     progress: p => {
       job.progress = Object.assign({ done: 0, total: 0 }, p);
@@ -419,20 +464,26 @@ async function run(type, args = {}) {
     }
   };
 
-  send('job:started', { id, type, label, batch: job.batch, startedAt: job.startedAt });
+  send('job:started', { id, type, label, batch: job.batch, startedAt: job.startedAt, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
+  runlog.append(Object.assign({ kind: 'start', jobId: id, label, type, batch: job.batch }, brandInfo, actorInfo));
+  if (picked.auto) logbus.info(`[${label}] 你的品牌权限只有一个，本次归属「${who}」`, Object.assign({ jobId: id, type, label }, brandInfo, actorInfo));
   try {
     const res = await dispatch(type, args, ctx);
-    send('job:done', { id, type, label, batch: job.batch, ok: true, busy: false, elapsedSec: +((Date.now() - job.startedAt) / 1000).toFixed(1) });
+    const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
+    send('job:done', { id, type, label, batch: job.batch, ok: true, busy: false, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
+    runlog.append(Object.assign({ kind: 'end', ok: true, jobId: id, label, type, batch: job.batch, elapsedSec }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
-    return { ok: true, result: res, jobId: id, batch: job.batch };
+    return { ok: true, result: res, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } catch (e) {
     // 被取消的任务统一报「任务已取消」：否则各步骤自己的报错（如「没找到叶子目录」）会误导人
     const msg = job.token.cancel ? '任务已取消' : e.message;
+    const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
     if (job.token.cancel) logbus.warn(`[${label}] 任务已取消`, { jobId: id, batch: job.batch, label, type });
-    else logbus.error(`[${label}] ${type} 失败：${e.message}`, { jobId: id, batch: job.batch, label, type });
-    send('job:done', { id, type, label, batch: job.batch, ok: false, cancelled: job.token.cancel, error: msg, elapsedSec: +((Date.now() - job.startedAt) / 1000).toFixed(1) });
+    else logbus.error(`[${label}] ${type} 失败：${e.message}`, Object.assign({ jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo));
+    send('job:done', { id, type, label, batch: job.batch, ok: false, cancelled: job.token.cancel, error: msg, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
+    runlog.append(Object.assign({ kind: 'end', ok: false, error: msg, cancelled: !!job.token.cancel, jobId: id, label, type, batch: job.batch, elapsedSec }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
-    return { ok: false, error: msg, cancelled: job.token.cancel, jobId: id, batch: job.batch };
+    return { ok: false, error: msg, cancelled: job.token.cancel, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } finally {
     running.delete(id);
     const s = byType.get(type);
@@ -466,6 +517,7 @@ function list() {
   const now = Date.now();
   return [...running.values()].map(j => ({
     id: j.id, type: j.type, label: j.label, batch: j.batch,
+    brandId: j.brandId || '', brandName: j.brandName || '',
     startedAt: j.startedAt, elapsedSec: +((now - j.startedAt) / 1000).toFixed(1),
     progress: j.progress
   }));

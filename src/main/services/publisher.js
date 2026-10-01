@@ -334,7 +334,18 @@ async function run(state, ctx = {}) {
       .map((r, i) => ({ seq: i + 1, id: state.items[i] ? state.items[i].id : String(i + 1), dir: r[1], goods: 1, images: 0, startAt: '', status: '排队', result: '', retries: 0, reason: '' }));
   // 批次名跟着日志走：「重导出日志」要能按批次导出（真机日志行里也带批次）
   const batch = (state.publish && state.publish.batch) || `批${wp.stamp()}`;
+  // 归属：优先用 ctx 传进来的（jobs 已按账号权限校验过），退回批次上记录的那一个。
+  // 两者都没有就是「未标品牌」—— 如实标出来，绝不拿某个品牌顶上（顶上了统计就是错的）
+  const who = {
+    brandId: (ctx.brand && ctx.brand.brandId) || (state.publish && state.publish.brandId) || '',
+    brandName: (ctx.brand && ctx.brand.brandName) || (state.publish && state.publish.brandName) || ''
+  };
+  const actor = ctx.actor || {};
   const tAll = Date.now();   // 批量总耗时（真机日志：批量发布完成，总耗时 86.6s）
+
+  log(`本次归属：品牌「${who.brandName || '未标品牌'}」${actor.username ? ' · 执行人 ' + (actor.displayName || actor.username) : ''}`,
+    who.brandId ? 'info' : 'warn');
+  if (!who.brandId) log('这条批次没有品牌归属：发布日志里会记成「未标品牌」，统计时单独列出（不会并进任何品牌）', 'warn');
 
   const todo = rows.filter(r => r.result !== '发布成功');
   // 预估要按图文/视频分开算：视频单条更慢（推得久 + 还要等媒体库索引），混着算会明显偏短
@@ -417,10 +428,19 @@ async function run(state, ctx = {}) {
     if (success) log(`行 ${row.seq}[${tag}] 发布完成，已回填时间 ${row.startAt}（耗时 ${row.elapsed}s）`, 'ok');
     else log(`行 ${row.seq}[${tag}] 发布失败：${row.reason}（耗时 ${row.elapsed}s）`, 'warn');
 
-    sheet.appendLog({ batch, seq: row.seq, id: row.id, dir: row.dir, at: row.startAt, result: row.result, reason: row.reason, retries: row.retries, elapsed: row.elapsed, mode, kind: tag });
+    sheet.appendLog({
+      batch, seq: row.seq, id: row.id, dir: row.dir, at: row.startAt, result: row.result, reason: row.reason,
+      retries: row.retries, elapsed: row.elapsed, mode, kind: tag,
+      // 品牌 + 执行人：统计按品牌聚合、管理员追责，全靠这两个字段。
+      // 品牌名存快照，日后改名/删品牌时旧账里的名字不会跟着变
+      brandId: who.brandId, brandName: who.brandName,
+      userId: actor.userId || '', username: actor.username || '', displayName: actor.displayName || ''
+    });
     results.push({
       batch, seq: row.seq, at: row.startAt, result: row.result, reason: row.reason,
       retries: row.retries, elapsed: row.elapsed, kind: tag,
+      brandId: who.brandId, brandName: who.brandName,
+      userId: actor.userId || '', username: actor.username || '',
       audit: row.result === '发布成功' ? '审核中' : '',
       reportRow: row.reportRow || 0   // 从「AI 内容报告」导入的行：回写时需要它在 Excel 里的行号
     });

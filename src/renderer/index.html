@@ -24,6 +24,9 @@
     <div class="tb-right">
       <div class="chips">
         <span class="chip chip-proj" id="chipProj">项目 —</span>
+        <!-- 当前品牌：文案生成 / 发布单 / 发布 都归属到它。放在标题栏是为了让人随时看得见，
+             不然「忘了选品牌」会变成一条查不到归属的发布记录 -->
+        <select class="chip chip-sel" id="brandSel" title="当前品牌：文案生成 / 发布单 / 发布都会归属到它"></select>
         <span class="chip" id="runChip">空闲</span>
         <span class="chip chip-user" id="chipUser" title="当前登录账号">未登录</span>
         <button class="tbbtn" id="btnLogout" title="退出登录">退出</button>
@@ -75,6 +78,13 @@
         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2.6M12 17.9v2.6M4.9 7.8l2.2 1.3M16.9 14.9l2.2 1.3M4.9 16.2l2.2-1.3M16.9 9.1l2.2-1.3"/></svg></span>
         <span>设置</span>
       </button>
+      <!-- 编号接在最后而不是插进「执行」组：插进去要把设置从 7 改成 8，
+           连带 Ctrl+1..7 快捷键、app.js 里跳设置页的写法、几处测试断言都要跟着动，
+           为一个新页签改号不划算 -->
+      <button class="nav" data-tab="8">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M3 21h18"/><rect x="5" y="12" width="3.4" height="6" rx="1"/><rect x="10.3" y="7" width="3.4" height="11" rx="1"/><rect x="15.6" y="14" width="3.4" height="4" rx="1"/></svg></span>
+        <span>品牌统计</span><span class="st" data-st="8">—</span>
+      </button>
     </nav>
 
     <div class="main">
@@ -95,8 +105,18 @@
 
 <div id="toast"></div>
 
+<!-- 品牌 / 文案提示词的弹窗。挂在 .app 外面：要盖住标题栏和日志条，
+     塞进 .body 里会被它的 overflow 裁掉，底部按钮就点不到了 -->
+<div class="modal" id="bmodal" hidden>
+  <div class="mbox" id="bmBox"></div>
+</div>
+
 <div class="gate" id="gate">
   <form class="gcard" id="loginForm" autocomplete="off">
+    <!-- 无边框小窗的关闭口：做在卡片内部右上角，不许浮到卡片边框外面去 -->
+    <button class="gx" id="gateClose" type="button" title="关闭" aria-label="关闭">
+      <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg>
+    </button>
     <div class="gbrand">
       <span class="glogo" aria-hidden="true">
         <svg viewBox="0 0 32 32" width="26" height="26">

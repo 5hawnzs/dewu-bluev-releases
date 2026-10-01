@@ -32,7 +32,8 @@ if (!app.requestSingleInstanceLock()) {
     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
     ipc.register();
 
-    const w = winmod.createWindow();
+    const st = auth.status();
+    const w = winmod.createWindow(st.requireLogin && !st.user);   // 未登录：直接以「登录小窗」开场
     winmod.attach();
 
     logbus.info(`工具就绪 · ${wp.isWin() ? 'Windows' : process.platform} · 图片引擎 ${imaging.engineName()}`);
@@ -41,7 +42,6 @@ if (!app.requestSingleInstanceLock()) {
     }
     logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
 
-    const st = auth.status();
     logbus.info(st.requireLogin
       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')
       : '登录校验已关闭（BLUEV_NO_LOGIN=1）');
@@ -50,7 +50,8 @@ if (!app.requestSingleInstanceLock()) {
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        const nw = winmod.createWindow();
+        const s = auth.status();
+        const nw = winmod.createWindow(s.requireLogin && !s.user);
         winmod.attach(nw);
       }
     });

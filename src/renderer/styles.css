@@ -218,14 +218,29 @@ body:not(.locked) .gate{display:none}
   position:fixed;inset:0;z-index:100;
   display:flex;align-items:center;justify-content:center;
   background:var(--bg);
+  /* 无边框小窗：整块遮罩就是拖拽区，卡片以外的空白也能拖着走 */
+  -webkit-app-region:drag;
 }
+/* 交互控件必须显式 no-drag，否则拖拽区会把点击吃掉（输入框点不进去） */
+.gate input,.gate button,.gate label,.gate a,.gate select,
+.gate .gerr,.gate .gtip{-webkit-app-region:no-drag}
 .gate .gcard{
+  position:relative;
   width:340px;background:var(--panel);
   border:1px solid var(--bd);border-radius:12px;
   padding:24px 26px 20px;
   box-shadow:0 18px 50px rgba(0,0,0,.16);
 }
-.gate .gbrand{display:flex;align-items:center;gap:11px;margin-bottom:18px}
+/* 关闭口：缩在卡片右上角内部，不再往卡片外挂标题带 */
+.gate .gcard .gx{
+  position:absolute;top:16px;right:16px;
+  width:24px;height:24px;border-radius:6px;padding:0;
+  display:flex;align-items:center;justify-content:center;
+  background:transparent;border:0;color:var(--tx3);cursor:pointer;
+}
+.gate .gcard .gx svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1;display:block}
+.gate .gcard .gx:hover{background:#e81123;color:#fff}
+.gate .gbrand{display:flex;align-items:center;gap:11px;margin-bottom:18px;padding-right:30px}
 .gate .glogo{display:flex}
 .gate .gname{font-size:14px;font-weight:600;letter-spacing:.02em}
 .gate .gsub{font-size:11.5px;color:var(--tx3);margin-top:2px}
@@ -233,7 +248,7 @@ body:not(.locked) .gate{display:none}
 .gate .gfld span{display:block;font-size:11.5px;color:var(--tx3);margin-bottom:4px}
 .gate .gfld .inp{width:100%;min-width:0}
 .gate .grem{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx3);margin:2px 0 12px;cursor:pointer}
-.gate .gerr{min-height:17px;font-size:11.5px;color:var(--red);margin-bottom:6px}
+.gate .gerr{min-height:0;font-size:11.5px;color:var(--red);margin-bottom:6px}
 .gate .ggo{width:100%;padding:9px 10px;font-size:13px;letter-spacing:.08em}
 .gate .gtip{font-size:11px;color:var(--tx3);margin:10px 0 0;line-height:1.7}
 .gate .gtip b{color:var(--amber);font-family:var(--mono)}
@@ -241,6 +256,88 @@ body:not(.locked) .gate{display:none}
 /* ---------- 设置：账号管理表 ---------- */
 .acct-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
 .acct-toolbar .inp{flex:0 0 auto;min-width:120px}
+
+/* ---------- 标题栏：当前品牌 ---------- */
+/* 用原生 select，但抹平系统外观做成 chip 的样子（右边那个小箭头是用渐变压出来的） */
+.chip-sel{
+  font:inherit;font-size:11.5px;padding:3px 24px 3px 10px;border-radius:99px;max-width:200px;
+  background:var(--panel);border:1px solid var(--bd);color:var(--tx2);
+  white-space:nowrap;text-overflow:ellipsis;cursor:pointer;appearance:none;-webkit-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 13px) 54%,calc(100% - 9px) 54%;
+  background-size:4px 4px,4px 4px;background-repeat:no-repeat;
+}
+.chip-sel:hover{border-color:var(--tx3)}
+.chip-sel:focus{outline:2px solid var(--teal);outline-offset:1px}
+/* 没有可用品牌 / 还没选：用告警色，别让它看着像正常状态 */
+.chip-sel.warn{background-color:var(--amber-bg);color:var(--amber);border-color:transparent;font-weight:600}
+
+/* ---------- 品牌统计 ---------- */
+/* 频次柱：一眼看出「哪个品牌最近没在发」。没有数据的那天画成细灰线，避免看起来像漏了 */
+.spark{display:flex;align-items:flex-end;gap:2px;height:22px;min-width:40px}
+.spark i{display:block;width:5px;background:var(--teal);border-radius:1px;min-height:2px;opacity:.85}
+.spark i.zero{background:var(--bd);opacity:1}
+.brandrow-flag td{background:var(--amber-bg)}
+.brandrow-dead td{background:var(--gray-bg)}
+.tagline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+
+/* ---------- 品牌权限 ---------- */
+.brandcell{max-width:260px}
+.brandcell .chip{margin:1px 3px 1px 0;display:inline-block}
+.perm-list{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:1 1 100%}
+.perm-list .perm{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--tx2);cursor:pointer;
+  padding:3px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--panel2);white-space:nowrap}
+.perm-list .perm:hover{border-color:var(--tx3)}
+
+/* ---------- 弹窗：品牌 / 文案提示词 ---------- */
+/* 挂在 .app 外面，要盖过标题栏和日志条；层级放在登录门（100）之下 */
+.modal{
+  position:fixed;inset:0;z-index:90;padding:26px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.42);-webkit-app-region:no-drag;
+}
+.modal[hidden]{display:none}
+.mbox{
+  width:min(780px,100%);max-height:100%;
+  display:flex;flex-direction:column;overflow:hidden;
+  background:var(--panel);border:1px solid var(--bd2);border-radius:10px;
+  box-shadow:0 20px 52px rgba(0,0,0,.3);
+}
+.mh{display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--bd);background:var(--panel2)}
+.mh h3{margin:0;font-size:13.5px;font-weight:600}
+.mh .grow{flex:1}
+.mb{padding:14px 16px;overflow:auto;user-select:text}
+.mf{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid var(--bd);background:var(--panel2)}
+.mf .grow{flex:1}
+
+/* 品牌列表：一行一个品牌，点进去编辑 */
+.blist{display:flex;flex-direction:column;gap:7px}
+.brow{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;
+  border:1px solid var(--bd);border-radius:8px;background:var(--panel2);
+}
+.brow:hover{border-color:var(--teal);background:var(--teal-bg)}
+.brow .bn{font-weight:600;min-width:110px}
+.brow .grow{flex:1;min-width:0}
+.brow .snip{color:var(--tx3);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brow.dead{opacity:.55}
+
+/* 弹窗里的表单 */
+.mfld{display:block;margin-bottom:12px}
+.mfld>span{display:block;font-size:11.5px;color:var(--tx3);margin-bottom:5px}
+.mta{
+  width:100%;min-height:100px;resize:vertical;
+  font:12px/1.65 var(--mono);
+  background:var(--panel2);color:var(--tx);
+  border:1px solid var(--bd);border-radius:7px;padding:9px 10px;
+}
+.mta:focus{outline:none;border-color:var(--teal)}
+.mta[readonly]{opacity:.62}
+.mchk{display:flex;align-items:center;gap:7px;margin:0 0 9px;font-size:12.5px;color:var(--tx2);cursor:pointer}
+.mchk input{cursor:pointer}
+.mchk[data-off="1"]{cursor:not-allowed;opacity:.55}
+.mnote{font-size:11.5px;color:var(--tx3);margin:6px 0 0}
+.mnote.warn{color:var(--amber)}
 
 @media (max-width:900px){
   .body{flex-direction:column}

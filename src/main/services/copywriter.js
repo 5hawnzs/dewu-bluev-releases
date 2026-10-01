@@ -116,17 +116,31 @@ function extractJson(text) {
   return JSON.parse(s);
 }
 
-async function callLLM(item, plan) {
+/** 没有品牌层时（免登录 / 测试直调）的兜底角色设定 */
+const ROLE_FALLBACK = '你是得物蓝V账号的文案写手。';
+
+/**
+ * 拼 system：品牌自己的模板在前（角色 / 调性 / 写什么），代码固定的输出约束在后。
+ * 分开是有意的 —— 写模板的人只管内容；JSON 字段名、字数上限这些**解析器依赖的硬约束由代码兜住**，
+ * 漏写一句就会让整批 JSON.parse 失败，而失败原因看起来像「模型不听话」。
+ */
+function buildSystem(brandPrompt, f, plan) {
+  const head = String(brandPrompt || '').trim() || ROLE_FALLBACK;
+  return `${head}
+---
+输出要求（程序追加，别删）：
+只输出 JSON，字段：title、body。
+标题必须采用「${f.name}」写法（${f.hint}），20 字以内，不出现“最”“第一”等极限词；
+正文 60-120 字，叙事视角为「${plan.angle}」，口语化，不堆砌形容词。不要输出 markdown 代码块。`;
+}
+
+async function callLLM(item, plan, brandPrompt) {
   const c = store.get('copy.llm') || {};
   if (!c.endpoint) throw new Error('未配置接口地址');
   const url = /\/chat\/completions$/.test(c.endpoint) ? c.endpoint : c.endpoint.replace(/\/+$/, '') + '/chat/completions';
   const f = FORMATS.find(x => x.code === plan.format) || FORMATS[0];
   const messages = [
-    {
-      role: 'system',
-      content: `你是得物蓝V账号的文案写手。只输出 JSON，字段：title、body。
-要求：标题必须采用「${f.name}」写法（${f.hint}），20 字以内，不出现“最”“第一”等极限词；正文 60-120 字，叙事视角为「${plan.angle}」，口语化，不堆砌形容词。不要输出 markdown 代码块。`
-    },
+    { role: 'system', content: buildSystem(brandPrompt, f, plan) },
     { role: 'user', content: JSON.stringify({ 货号: item.sku, 颜色: item.color, 已选话题: plan.topics }) }
   ];
   const res = await fetch(url, {
@@ -153,6 +167,17 @@ async function generate(items, ctx = {}) {
   const plan = buildPlan(items);
   if (plan.warning) log(plan.warning, 'warn');
 
+  // 品牌自己的文案提示词。jobs.run 已经前置拦过一次，这里是第二道 ——
+  // 有人直接 require 本模块调 generate 时也必须拦住，否则「没配也能出文案」这条后门一直开着
+  const brand = (ctx && ctx.brandFull) || null;
+  const brandPrompt = brand ? String(brand.promptWrite || '').trim() : '';
+  if (brand && !brandPrompt) {
+    throw new Error(`品牌「${brand.name}」还没配「文案生成提示词」——到「文案生成 → 提示词配置」里补上再跑`);
+  }
+  if (llmOn) {
+    log(brand ? `文案模板：品牌「${brand.name}」自己的提示词` : '文案模板：内置默认（本次没有品牌归属）', 'info');
+  }
+
   const lanes = Array.from({ length: concurrency }, () => []);
   plan.rows.forEach((r, i) => lanes[i % lanes.length].push(r));
   log(`并发 ${concurrency} 路 · 每路 ${Math.ceil(plan.rows.length / concurrency)} 篇（按路数均分，不留尾批）`, 'info');
@@ -166,7 +191,7 @@ async function generate(items, ctx = {}) {
     let text = null, err = null;
     for (let attempt = 0; attempt < 3 && !text; attempt++) {
       try {
-        text = llmOn ? await callLLM(item, row) : localFill(item, row);
+        text = llmOn ? await callLLM(item, row, brandPrompt) : localFill(item, row);
       } catch (e) {
         err = e;
         if (!llmOn) break;
@@ -194,4 +219,4 @@ async function generate(items, ctx = {}) {
   return { rows, warning: plan.warning, llm: llmOn };
 }
 
-module.exports = { FORMATS, ANGLES, buildPlan, topicCombos, generate };
+module.exports = { FORMATS, ANGLES, buildPlan, topicCombos, generate, buildSystem };

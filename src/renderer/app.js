@@ -15,7 +15,16 @@ const state = {
   publishRowTick: 0,
   auth: null,         // {requireLogin, user, isAdmin, defaultHint}
   users: null,        // 管理员可见的账号列表
-  myId: null
+  myId: null,
+  brandsMeta: null,   // { isAdmin, brands:[{id,name,enabled}], mine:[id], defaultBrandId }
+  brandId: '',        // 标题栏那个「当前品牌」的值；产出类任务都带上它，主进程还会再校验一次权限
+  stats: null,        // 品牌统计查询结果
+  statsOpts: { days: 30, brandId: '', userId: '' },
+  statsBusy: false,
+  brandEdit: null,    // 正在改名的品牌 { id, name }
+  permUserId: null,   // 「品牌权限」面板里当前选中的账号
+  // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
+  brandModal: null
 };
 
 /* ---------------- 工具 ---------------- */
@@ -87,10 +96,17 @@ function pushLogEntry(e) {
 }
 
 /* ---------------- 任务（实例化：同一时间可以有多个批次在跑） ---------------- */
+/** 产出可发布内容的任务：必须带品牌归属。名单要和主进程 jobs.js 的 BRAND_SCOPED 保持一致 */
+const BRAND_SCOPED_TYPES = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
+
 async function runJob(type, args) {
   let res;
+  const a = Object.assign({}, args || {});
+  // 自动带上标题栏选中的品牌。没选中就不带 —— 让主进程把「为什么不行」讲清楚，
+  // 而不是在前端塞一个顶上：归属记错了比报错难查得多
+  if (BRAND_SCOPED_TYPES.has(type) && !a.brandId && state.brandId) a.brandId = state.brandId;
   try {
-    res = await appApi.run(type, args);
+    res = await appApi.run(type, a);
   } catch (e) {
     // IPC 层抛出来也要给人一句话，不能只在控制台里报错
     res = { ok: false, error: (e && e.message) || '任务调用失败' };
@@ -262,6 +278,9 @@ function sideStatus() {
   const rows = (p.publish && p.publish.rows) || [];
   const ok = rows.filter(r => r.result === '发布成功').length;
   set(6, rows.length ? `${ok}/${rows.length}` : '—', rows.length ? (ok === rows.length ? 'ok' : '') : '');
+  // 8 品牌统计：显示「能用几个品牌」。一个都没有是黄灯 —— 那样什么产出任务都起不来，得先说清
+  const mine = state.brandsMeta ? state.brandsMeta.mine : null;
+  set(8, mine ? `${mine.length} 个` : '—', mine ? (mine.length ? 'ok' : 'warn') : '');
 }
 
 /* ---------------- 各页渲染 ---------------- */
@@ -562,9 +581,14 @@ TABS[7] = {
       </div>
       <div class="box">
         <h3>内容与校验（对齐真机）</h3>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">品牌</span><input class="inp" value="${esc(c.copy.brand || '')}" data-cfg="copy.brand" placeholder="如 TW男装 / skechers"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">筛选排序提示词</span><input class="inp" value="${esc(c.copy.promptFilter || '')}" data-cfg="copy.promptFilter"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">文案生成提示词</span><input class="inp" value="${esc(c.copy.promptWrite || '')}" data-cfg="copy.promptWrite"></div>
+        <p class="hint">品牌不在这里填了 —— 见下方「<b>品牌管理</b>」：可以建多个品牌，并按账号分配权限（「账号管理」表里新增了「品牌权限」列）。产出的文案 / 发布单 / 发布记录都会带上所属品牌，管理员在「品牌统计」页按品牌查频次、数量和执行日志。</p>
+        <div class="row">
+          <span class="lbl">文案提示词</span>
+          <span class="chip">按品牌各配一份</span>
+          <button class="btn sm primary" data-act="copy:prompt">打开「文案提示词」…</button>
+        </div>
+        <p class="hint">点上面的按钮在弹窗里配：<b>品牌名 / 文案 / 是否启用 / 本次选用</b>。没配提示词的品牌，<b>文案生成会直接拦下</b> —— 不会拿别的品牌的口吻顶替。</p>
+        <p class="hint">原先这里是两个全局输入框（「筛选排序提示词」「文案生成提示词」），它们<b>从来没被代码读过</b>，填了不生效 —— 已经去掉。现在弹窗里改的那份才是真正进模型的。</p>
         <div class="row" style="margin-bottom:9px"><span class="lbl">货号颜色</span>
           <select class="inp" data-cfg="verify.mode">
             <option value="local" ${c.verify.mode === 'local' ? 'selected' : ''}>本地商品池（导入 CSV）</option>
@@ -594,7 +618,174 @@ TABS[7] = {
         </table></div>
         <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>
       </div>
+      ${brandsHtml()}
       ${accountHtml()}`;
+  }
+};
+
+/* ---------------- ⑧ 品牌统计 ---------------- */
+function daysLabel(d) { return Number(d) > 0 ? `最近 ${d} 天` : '全部时间'; }
+
+function fmtTs(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+async function loadStats() {
+  if (state.statsBusy) return;
+  state.statsBusy = true;
+  state.statsTried = true;
+  try {
+    const r = await appApi.statsQuery(state.statsOpts);
+    state.stats = r && r.ok ? r : { error: (r && r.error) || '查询失败' };
+  } catch (e) {
+    state.stats = { error: (e && e.message) || '查询失败' };
+  }
+  state.statsBusy = false;
+  renderAll();
+}
+
+/** 频次柱：一天一根，高度按最大值归一。0 的那天画成细灰线（表示「这天真的没有」，不是漏画） */
+function sparkHtml(byDay, max) {
+  const days = byDay || [];
+  if (!days.length) return '<span style="opacity:.5">—</span>';
+  const m = max || Math.max(1, ...days.map(d => d.rows));
+  return `<span class="spark" title="${esc(days.map(d => `${d.date} ${d.rows} 条`).join('\n'))}">${days.map(d => {
+    const h = d.rows ? Math.max(3, Math.round(d.rows / m * 22)) : 2;
+    return `<i class="${d.rows ? '' : 'zero'}" style="height:${h}px"></i>`;
+  }).join('')}</span>`;
+}
+
+TABS[8] = {
+  title: '品牌统计',
+  desc: '按品牌看发布频次、数量与执行日志 · 未标品牌的历史记录单独列出，不并入任何品牌',
+  actions: () => [
+    { act: 'stats:refresh', label: '查询', primary: true },
+    { act: 'stats:export', label: '导出 xlsx', disabled: !(state.stats && !state.stats.error) }
+  ],
+  render() {
+    const s = state.stats;
+    const m = state.brandsMeta || { brands: [], mine: [], isAdmin: false };
+    const usable = (m.brands || []).filter(b => (m.mine || []).includes(b.id));
+    const head = `
+      <div class="box">
+        <div class="acct-toolbar" style="margin-top:0">
+          <span class="lbl">时间范围</span>
+          <select class="inp" id="stDays">${[[7, '最近 7 天'], [30, '最近 30 天'], [90, '最近 90 天'], [0, '全部时间']].map(([v, t]) => `<option value="${v}" ${Number(state.statsOpts.days) === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+          <span class="lbl">品牌</span>
+          <select class="inp" id="stBrand">
+            <option value="">全部品牌</option>
+            ${usable.map(b => `<option value="${b.id}" ${state.statsOpts.brandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
+            ${m.isAdmin ? '<option value="__none__" ' + (state.statsOpts.brandId === '__none__' ? 'selected' : '') + '>未标品牌</option>' : ''}
+          </select>
+          ${m.isAdmin ? `<span class="lbl">执行人</span>
+          <select class="inp" id="stUser"><option value="">全部执行人</option>${((s && s.users) || []).map(u => `<option value="${esc(u.userId)}" ${state.statsOpts.userId === u.userId ? 'selected' : ''}>${esc(u.displayName || u.username || '未记录')}（${u.rows}）</option>`).join('')}</select>` : ''}
+          <button class="btn sm primary" data-act="stats:refresh">查询</button>
+          <span class="chip ${m.isAdmin ? 'chip-user' : ''}">${m.isAdmin ? '管理员：全部品牌' : `你名下 ${usable.length} 个品牌`}</span>
+        </div>
+      </div>`;
+    if (!s) return head + '<div class="empty">正在读取发布日志…（若一直停在这里，说明输出目录不可读）</div>';
+    if (s.error) return head + `<div class="empty">查询失败：${esc(s.error)}</div>`;
+
+    const t = s.totals;
+    const notes = (s.notes || []).length
+      ? `<div class="box" style="border-color:var(--amber)"><h3>口径说明</h3>${s.notes.map(x => `<p class="hint" style="margin:4px 0">· ${esc(x)}</p>`).join('')}</div>`
+      : '';
+
+    const maxRows = Math.max(1, ...[...s.brands, s.untagged, ...s.orphans].map(b => b.rows));
+    const rowOf = (b, cls, label) => `<tr class="${cls || ''}">
+      <td>${label || `<b>${esc(b.name)}</b>`}</td>
+      <td>${b.orphan ? badge('品牌已删除', 'bad') : (b.enabled === false ? badge('已停用', 'wait') : badge('启用', 'ok'))}</td>
+      <td class="num">${b.rows}</td>
+      <td class="num">${b.ok}</td>
+      <td class="num">${b.fail}</td>
+      <td class="num">${b.batches}</td>
+      <td class="mono">${esc(b.lastDay || '—')}</td>
+      <td>${sparkHtml(b.byDay, maxRows)}</td>
+      <td class="cut">${b.users.length ? esc(b.users.map(u => `${u.displayName || u.username || '（未记录执行人）'} ${u.rows}`).join(' / ')) : '<span style="opacity:.6">（无记录）</span>'}</td>
+    </tr>`;
+
+    const summary = `<div class="tw"><table>
+      <thead><tr><th>品牌</th><th>状态</th><th>条数</th><th>成功</th><th>失败</th><th>批次</th><th>最近发布</th><th>频次</th><th>执行人（条数）</th></tr></thead>
+      <tbody>
+        ${s.brands.map(b => rowOf(b)).join('')}
+        ${rowOf(s.untagged, 'brandrow-flag', `<b>${esc(s.untagged.name)}</b><div style="font-size:11px;opacity:.75">历史记录 / 发布时没选品牌</div>`)}
+        ${s.orphans.map(o => rowOf(o, 'brandrow-dead')).join('')}
+      </tbody></table></div>
+      <p class="hint">「频次」是按天画的柱：柱高 = 当天条数，细灰线 = 当天 0 条（是「真的没有」，不是没画）。
+      条数按 <code>publish-log.jsonl</code> 逐条统计；「执行日志」按 <code>run-log.jsonl</code> 的<b>任务级</b>记录。</p>`;
+
+    // 按天明细：只列「有数据的那些天」。时间范围=全部时没有密集序列，就从各品牌的 byDay 合并出来
+    const dayMap = new Map();
+    if (s.daily && s.daily.length) {
+      for (const d of s.daily) dayMap.set(d.date, d);
+    } else {
+      for (const b of [...s.brands, s.untagged, ...s.orphans]) {
+        for (const d of b.byDay) {
+          const cur = dayMap.get(d.date) || { date: d.date, rows: 0, ok: 0, fail: 0, other: 0 };
+          cur.rows += d.rows; cur.ok += d.ok; cur.fail += d.fail; cur.other += d.other;
+          dayMap.set(d.date, cur);
+        }
+      }
+    }
+    const daysWith = [...dayMap.values()].filter(d => d.rows > 0).sort((a, b) => a.date < b.date ? 1 : -1);
+    const dailyBox = `<div class="box">
+      <h3>按天频次（${esc(s.range.label)}${state.statsOpts.brandId ? ' · 已按品牌筛选' : ''}）</h3>
+      ${s.daily && s.daily.length ? `<div class="spark" style="height:64px;gap:3px">${(() => {
+        const mx = Math.max(1, ...s.daily.map(d => d.rows));
+        return s.daily.map(d => `<i class="${d.rows ? '' : 'zero'}" style="width:auto;flex:1;height:${d.rows ? Math.max(4, Math.round(d.rows / mx * 64)) : 2}px" title="${esc(d.date)}：${d.rows} 条"></i>`).join('');
+      })()}</div>
+      <p class="hint">${esc(s.daily[0] ? s.daily[0].date : '')} → ${esc(s.daily[s.daily.length - 1] ? s.daily[s.daily.length - 1].date : '')}</p>` : ''}
+      ${daysWith.length ? `<div class="tw" style="margin-top:10px"><table>
+        <thead><tr><th>日期</th><th>条数</th><th>成功</th><th>失败</th><th>其他</th></tr></thead>
+        <tbody>${daysWith.slice(0, 60).map(d => `<tr><td class="mono">${esc(d.date)}</td><td class="num">${d.rows}</td><td class="num">${d.ok}</td><td class="num">${d.fail}</td><td class="num">${d.other}</td></tr>`).join('')}</tbody>
+      </table></div>${daysWith.length > 60 ? `<p class="hint">只显示最近 60 天，完整数据请「导出 xlsx」。</p>` : ''}` : '<p class="hint">这个范围里还没有发布记录。</p>'}
+    </div>`;
+
+    const LOG_LEVEL = { ok: ['完成', 'ok'], error: ['失败', 'bad'], warn: ['告警', 'warn'], run: ['开始', 'run'], info: ['', 'wait'] };
+    const logBadge = lv => {
+      const [t, k] = LOG_LEVEL[lv] || LOG_LEVEL.info;
+      return t ? badge(t, k) : '<span style="opacity:.4">·</span>';
+    };
+    const logs = (s.logs || []).length ? `<div class="tw"><table>
+      <thead><tr><th>时间</th><th>品牌</th><th>执行人</th><th>任务</th><th>批次</th><th>级别</th><th>说明</th></tr></thead>
+      <tbody>${s.logs.map(e => `<tr class="${e.level === 'error' ? 'flag' : (e.level === 'warn' ? 'warnrow' : '')}">
+        <td class="mono">${esc(fmtTs(e.ts))}</td>
+        <td>${esc(e.brandName || '未标品牌')}</td>
+        <td>${esc(e.displayName || e.username || '—')}</td>
+        <td class="cut">${esc(e.label || e.type || '')}</td>
+        <td class="mono cut">${esc(e.batch || '')}</td>
+        <td>${logBadge(e.level)}</td>
+        <td class="cut">${esc(e.msg || '')}</td>
+      </tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">这个范围里没有任务执行日志。</div>';
+
+    return head + `
+      <div class="stats">
+        <div class="stat good"><b>${t.rows}</b><span>发布条数</span></div>
+        <div class="stat good"><b>${t.ok}</b><span>成功</span></div>
+        <div class="stat bad"><b>${t.fail}</b><span>失败</span></div>
+        <div class="stat"><b>${t.batches}</b><span>批次数</span></div>
+        <div class="stat"><b>${t.runs}</b><span>任务次数</span></div>
+        <div class="stat ${t.runFails ? 'bad' : ''}"><b>${t.runFails}</b><span>任务失败</span></div>
+        <div class="stat"><b>${s.brands.length}</b><span>品牌数</span></div>
+      </div>
+      <div class="box">
+        <div class="tagline">
+          <span class="chip">范围：${esc(s.range.label)}（${esc(s.range.from)} → ${esc(s.range.to)}）</span>
+          <span class="chip">发布日志 ${t.totalInLog} 条 / 命中 ${t.consideredInRange}</span>
+          <span class="chip">运行日志 ${s.sources.runLog.entries} 条 · ${kb(s.sources.runLog.size)}</span>
+          ${t.filtered ? '<span class="chip warn">已按条件筛选</span>' : ''}
+        </div>
+        <p class="hint" style="margin-top:8px">数据文件：<code>${esc((s.sources.publishLog.file || '').replace(/^\\\\\?\\/, ''))}</code> ·
+          <code>${esc((s.sources.runLog.file || '').replace(/^\\\\\?\\/, ''))}</code> —— 只追加、不自动裁剪，要清理由你自己决定。</p>
+      </div>
+      ${notes}
+      <div class="box"><h3>按品牌汇总（${esc(daysLabel(state.statsOpts.days))}）</h3>${summary}</div>
+      ${dailyBox}
+      <div class="box"><h3>执行日志（最近 ${(s.logs || []).length} 条）</h3>${logs}</div>`;
   }
 };
 
@@ -671,6 +862,11 @@ function renderAll() {
   const lo = $('#btnLogout');
   if (lo) lo.style.display = me ? '' : 'none';
   if (state.tab === 7) bindSettings();
+  if (state.tab === 8) {
+    bindStats();
+    // 第一次进这个页签自动读一次；statsTried 防止查询失败时无限重试（那只会在 render→load→render 里打转）
+    if (!state.stats && !state.statsBusy && !state.statsTried) loadStats();
+  }
 }
 
 /* ---------------- 登录门 ---------------- */
@@ -681,6 +877,16 @@ function fmtDate(ts) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** 量出登录卡片的实际高度，让主进程把窗口收紧到「刚好装下卡片」 */
+function fitGateWindow() {
+  if (!appApi.fitGate) return;
+  requestAnimationFrame(() => {
+    const card = document.querySelector('.gate .gcard');
+    if (!card) return;
+    appApi.fitGate(Math.ceil(card.getBoundingClientRect().height));
+  });
+}
+
 function showGate(msg) {
   document.body.classList.add('locked');
   $('#lgErr').textContent = msg || '';
@@ -688,7 +894,11 @@ function showGate(msg) {
   if (!f.dataset.bound) {
     f.dataset.bound = '1';
     f.onsubmit = e => { e.preventDefault(); doLogin(); };
-    $('#lgUser').oninput = $('#lgPwd').oninput = () => { $('#lgErr').textContent = ''; };
+    $('#lgUser').oninput = $('#lgPwd').oninput = () => {
+      if ($('#lgErr').textContent) { $('#lgErr').textContent = ''; fitGateWindow(); }
+    };
+    const gx = $('#gateClose');
+    if (gx) gx.onclick = () => appApi.close();    // 无边框小窗必须自带一个关闭口
   }
   const hint = state.auth && state.auth.defaultHint;
   const tip = $('#lgTip');
@@ -699,6 +909,7 @@ function showGate(msg) {
   } else {
     tip.hidden = true;
   }
+  fitGateWindow();                                // 提示行显隐会影响卡片高度，量完再收紧窗口
   setTimeout(() => {
     const u = $('#lgUser');
     if (u.value) $('#lgPwd').focus(); else u.focus();
@@ -716,6 +927,7 @@ async function doLogin() {
   btn.disabled = false; btn.textContent = '登 录';
   if (!r.ok) {
     $('#lgErr').textContent = r.error || '登录失败';
+    fitGateWindow();                     // 报错行会让卡片变高，窗口跟着收紧一次
     $('#lgPwd').select();
     return;
   }
@@ -732,6 +944,7 @@ async function enterApp() {
   // 启动时对齐一次「运行中的批次」（job:busy 不传类型就是清单），免得刷新后看不见正在跑的任务
   const live = await appApi.busy();
   if (Array.isArray(live)) state.jobs = live.map(j => Object.assign({ progress: null, startedAt: j.startedAt || Date.now() }, j));
+  await refreshBrands();
   await refreshUsers();
   bindOnce();
   renderAll();
@@ -746,6 +959,16 @@ async function doLogout() {
   state.users = null;
   state.jobs = [];
   state.batchDetail = null;
+  // 品牌与统计是「这个账号看得见的东西」，退出必须清掉 ——
+  // 不清的话换个人登录会先看到上一个人的品牌和统计，直到下一次刷新才纠正
+  state.brandsMeta = null;
+  state.brandId = '';
+  state.stats = null;
+  state.statsTried = false;
+  state.permUserId = null;
+  state.brandEdit = null;
+  // 弹窗里是上一个账号看得见的品牌和模板，登录门一出来必须一起收掉
+  closeBrandModal();
   showGate('已退出登录');
 }
 
@@ -757,6 +980,227 @@ async function refreshUsers() {
   } else {
     state.users = null;
   }
+}
+
+/* ---------------- 品牌与权限 ---------------- */
+/**
+ * 拉一次「我能用哪些品牌」，顺带把标题栏下拉填上。
+ * 这里只是把选项列出来方便操作，**说了算的是主进程** —— 前端改个值骗不了它
+ * （jobs.js 起任务时会再按账号权限校验一遍）。
+ */
+async function refreshBrands() {
+  let r = null;
+  try { r = await appApi.brandList(); } catch (e) { r = null; }
+  state.brandsMeta = (r && r.ok)
+    ? r
+    : { isAdmin: false, brands: [], mine: [], defaultBrandId: '', error: (r && r.error) || '读不到品牌列表' };
+  paintBrandSelect();
+}
+
+function brandNameOf(id) {
+  const m = state.brandsMeta;
+  if (!m) return id || '';
+  const b = (m.brands || []).find(x => x.id === id);
+  if (b) return b.name;
+  return id ? '已删除的品牌' : '未标品牌';
+}
+
+/** 标题栏下拉：只列「我有权限的」；一个都没有就显示一行提示并转黄 */
+function paintBrandSelect() {
+  const sel = $('#brandSel');
+  if (!sel) return;
+  const m = state.brandsMeta || { brands: [], mine: [], isAdmin: false };
+  const mine = Array.isArray(m.mine) ? m.mine : [];
+  const usable = (m.brands || []).filter(b => mine.includes(b.id) && b.enabled !== false);
+  const prev = state.brandId;
+  sel.innerHTML = usable.length
+    ? usable.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')
+    : '<option value="">（没有可用品牌）</option>';
+  const keep = [prev, m.defaultBrandId].find(x => x && usable.some(b => b.id === x)) || (usable[0] ? usable[0].id : '');
+  sel.value = keep;
+  state.brandId = keep;
+  sel.classList.toggle('warn', !usable.length);
+  sel.title = usable.length
+    ? `当前品牌：${brandNameOf(keep)} —— 文案生成 / 发布单 / 发布都会归属到它`
+    : (m.isAdmin ? '还没有品牌：到「设置 → 品牌管理」添加' : '你还没有被分配品牌：请管理员到「设置 → 账号管理」里分配');
+}
+
+/* ---------------- 文案提示词弹窗 ---------------- */
+/*
+ * 为什么不挂进 renderAll：弹窗里有几千字的 textarea，而 renderAll 会被后台任务的进度事件频繁触发，
+ * 整块重画会把正在打字的模板重置回旧值 —— 用户看到的是「打了半天突然变回去」，还会以为存上了。
+ * 所以只在开 / 关 / 切视图时构建一次 DOM，值在保存时直接从 DOM 读。
+ */
+function renderBrandModal() {
+  const mask = $('#bmodal'), box = $('#bmBox');
+  if (!mask || !box) return;
+  const m = state.brandModal;
+  if (!m) { mask.hidden = true; box.innerHTML = ''; return; }
+  mask.hidden = false;
+  box.innerHTML = m.view === 'edit' ? bmEditHtml(m.id || '') : bmListHtml();
+}
+
+function openBrandModal(view, id) {
+  state.brandModal = { view: view || 'list', id: id || '' };
+  renderBrandModal();
+}
+function closeBrandModal() {
+  state.brandModal = null;
+  renderBrandModal();
+}
+
+/** 这个人能编辑哪些品牌：管理员=全部；成员=名下的（含已停用的，否则停用一个他连看都看不到） */
+function myBrands() {
+  const m = state.brandsMeta || {};
+  const isAdmin = !!(state.auth && state.auth.isAdmin);
+  const mine = m.mine || [];
+  return (m.brands || []).filter(b => isAdmin || mine.includes(b.id));
+}
+
+function bmListHtml() {
+  const isAdmin = !!(state.auth && state.auth.isAdmin);
+  const list = myBrands();
+  const rows = list.length ? list.map(b => {
+    const ok = !!String(b.promptWrite || '').trim();
+    return `<div class="brow${b.enabled === false ? ' dead' : ''}">
+      <span class="bn">${esc(b.name)}</span>
+      ${b.enabled === false ? badge('已停用', 'wait') : badge('启用', 'ok')}
+      ${ok ? '<span class="chip">已配文案</span>' : '<span class="chip warn">未配文案</span>'}
+      <span class="grow snip">${esc(String(b.promptWrite || '').replace(/\s+/g, ' ').slice(0, 46) || '—')}</span>
+      <button class="btn sm" data-act="bm:open" data-id="${b.id}">配置</button>
+    </div>`;
+  }).join('') : `<div class="empty">${isAdmin
+    ? '还没有品牌。点左下角「新增品牌」建一个，再给它写文案提示词。'
+    : '你名下还没有品牌 —— 请联系管理员在「设置 → 账号管理」里分配。'}</div>`;
+  return `
+    <div class="mh"><h3>文案提示词</h3><span class="grow"></span>
+      <button class="btn sm" data-act="bm:close">关闭</button></div>
+    <div class="mb">
+      <p class="mnote" style="margin:0 0 11px">每个品牌一份自己的文案提示词 —— <b>点一行进去改</b>。
+        没配的品牌<b>不允许生成</b>：会直接拦下并提示来这儿补，不会悄悄拿别的品牌的口吻顶替。</p>
+      <div class="blist">${rows}</div>
+    </div>
+    <div class="mf">
+      ${isAdmin ? '<button class="btn sm primary" data-act="bm:new">新增品牌</button>' : '<span class="mnote">品牌由管理员新建</span>'}
+      <span class="grow"></span>
+      <span class="mnote">共 ${list.length} 个</span>
+    </div>`;
+}
+
+function bmEditHtml(id) {
+  const isAdmin = !!(state.auth && state.auth.isAdmin);
+  const isNew = !id;
+  const m = state.brandsMeta || {};
+  const b = isNew
+    ? { id: '', name: '', enabled: true, promptWrite: '', promptFilter: '' }
+    : (m.brands || []).find(x => x.id === id);
+  if (!b) {
+    return `<div class="mh"><h3>品牌不见了</h3><span class="grow"></span>
+        <button class="btn sm" data-act="bm:list">返回列表</button></div>
+      <div class="mb"><div class="empty">这个品牌刚被删掉了（可能是在另一个窗口干的）。回列表看看。</div></div>`;
+  }
+  const picked = (m.defaultBrandId || '') === b.id;
+  const meta = isAdmin;   // 改名 / 启停 / 选用只归管理员；提示词谁有权限谁都能改
+  return `
+    <div class="mh">
+      <h3>${isNew ? '新增品牌' : '文案提示词 · ' + esc(b.name)}</h3>
+      <span class="grow"></span>
+      <button class="btn sm" data-act="bm:list">返回列表</button>
+    </div>
+    <div class="mb">
+      <label class="mfld"><span>品牌名</span>
+        <input class="inp" id="bmName" value="${esc(b.name)}" ${meta ? '' : 'readonly'}
+          placeholder="如 skechers / TW男装 / 卡宾" style="width:100%">
+      </label>
+
+      <label class="mfld"><span>文案生成提示词</span>
+        <textarea class="mta" id="bmWrite" placeholder="写清这个品牌的口吻、面向谁、要写什么、别写什么……">${esc(b.promptWrite)}</textarea>
+      </label>
+      <p class="mnote">这段是「文案生成」发给模型的角色设定。<b>输出格式</b>（JSON 字段名、标题字数上限）由程序另外追加，不用写在这儿。</p>
+
+      <label class="mfld" style="margin-top:13px"><span>筛选排序提示词</span>
+        <textarea class="mta" id="bmFilter" placeholder="留空即可">${esc(b.promptFilter)}</textarea>
+      </label>
+      <p class="mnote warn">「筛选排序提示词」这个版本<b>还没接进任何流程</b>（工具里没有素材筛选/排序这一步），先存着 —— 接上后按品牌生效。它现在不产生任何作用，别以为配了就有效果。</p>
+
+      <label class="mchk" style="margin-top:13px" ${meta ? '' : 'data-off="1"'}>
+        <input type="checkbox" id="bmEnabled" ${b.enabled === false ? '' : 'checked'} ${meta ? '' : 'disabled'}> 启用该品牌
+      </label>
+      <label class="mchk" ${meta ? '' : 'data-off="1"'}>
+        <input type="checkbox" id="bmPick" ${picked ? 'checked' : ''} ${meta ? '' : 'disabled'}> 本次选用（生成 / 发布默认归属它）
+      </label>
+      <p class="mnote">「本次选用」同时只会有一个品牌 —— 勾上它，标题栏的「当前品牌」也跟着切过去。</p>
+      ${meta ? '' : '<p class="mnote">品牌名 / 启用 / 选用由管理员维护，你能改的是上面两段提示词。</p>'}
+    </div>
+    <div class="mf">
+      ${(isAdmin && !isNew) ? `<button class="btn sm" data-act="bm:del" data-id="${b.id}">删除品牌</button>` : ''}
+      <span class="grow"></span>
+      <button class="btn sm" data-act="bm:close">取消</button>
+      <button class="btn sm primary" data-act="bm:save" data-id="${b.id}">保存</button>
+    </div>`;
+}
+
+/* ---------------- 设置页：品牌管理 ---------------- */
+function brandsHtml() {
+  const m = state.brandsMeta;
+  const me = state.auth || {};
+  if (!me.isAdmin) {
+    // 普通成员：只看得见自己被分配的品牌，不给增删改
+    const mine = m ? (m.brands || []).filter(b => (m.mine || []).includes(b.id)) : [];
+    return `<div class="box">
+      <h3>我的品牌权限</h3>
+      ${mine.length
+        ? `<div class="row">${mine.map(b => `<span class="chip${b.enabled === false ? ' warn' : ''}">${esc(b.name)}${b.enabled === false ? '（已停用）' : ''}</span>`).join('')}</div>`
+        : '<p class="hint">你还没有被分配任何品牌 —— 请联系管理员到「设置 → 账号管理」里分配。没有品牌时，<b>文案生成 / 发布单 / 发布</b>这类任务会直接报错停下（不会悄悄发出去）。</p>'}
+      <p class="hint">品牌清单、以及谁能用哪些品牌，都由管理员维护。</p>
+    </div>`;
+  }
+  const all = (m && m.brands) || [];
+  const rows = all.length ? `<div class="tw"><table>
+    <thead><tr><th>品牌</th><th>状态</th><th>文案提示词</th><th>备注</th><th>有权限的账号</th><th>操作</th></tr></thead>
+    <tbody>${all.map(b => {
+    const us = (state.users || []).filter(u => (u.brands || []).includes(b.id));
+    const editing = state.brandEdit && state.brandEdit.id === b.id;
+    const hasP = !!String(b.promptWrite || '').trim();
+    return `<tr class="${b.enabled === false ? 'warnrow' : ''}">
+        <td>${editing
+        ? `<input class="inp" id="brdName" value="${esc(b.name)}" style="min-width:130px">`
+        : `<b>${esc(b.name)}</b>`}</td>
+        <td>${badge(b.enabled === false ? '已停用' : '启用', b.enabled === false ? 'wait' : 'ok')}</td>
+        <td>${hasP ? badge('已配', 'ok') : badge('未配', 'warn')}</td>
+        <td class="cut">${esc(b.note || '—')}</td>
+        <td class="cut">${us.length ? esc(us.map(u => u.displayName || u.username).join('、')) : '<span style="opacity:.6">（没有账号分配）</span>'}</td>
+        <td>${editing
+        ? `<button class="btn sm primary" data-act="brand:save" data-id="${b.id}">保存</button>
+             <button class="btn sm" data-act="brand:cancel">取消</button>`
+        : `<button class="btn sm" data-act="bm:open" data-id="${b.id}">文案</button>
+             <button class="btn sm" data-act="brand:edit" data-id="${b.id}">改名</button>
+             <button class="btn sm" data-act="brand:toggle" data-id="${b.id}" data-next="${b.enabled === false ? '1' : '0'}">${b.enabled === false ? '启用' : '停用'}</button>
+             <button class="btn sm" data-act="brand:del" data-id="${b.id}" data-name="${esc(b.name)}">删除</button>`}</td>
+      </tr>`;
+  }).join('')}</tbody></table></div>`
+    : '<div class="empty">还没有品牌。添加一个之后，才能给账号分配权限，发布记录也才有归属可查。</div>';
+  return `
+    <div class="box">
+      <h3>品牌管理（管理员）</h3>
+      ${rows}
+      <div class="acct-toolbar">
+        <input class="inp" id="nbName" placeholder="品牌名，如 TW男装 / skechers" style="min-width:180px">
+        <input class="inp" id="nbNote" placeholder="备注（可不填）" style="min-width:140px">
+        <button class="btn sm primary" data-act="brand:add">新增品牌</button>
+      </div>
+      <div class="acct-toolbar">
+        <span class="lbl">默认品牌</span>
+        <select class="inp" id="brandDefault">
+          <option value="">（不预选）</option>
+          ${all.filter(b => b.enabled !== false).map(b => `<option value="${b.id}" ${m.defaultBrandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
+        </select>
+        <button class="btn sm" data-act="brand:default">设为默认</button>
+        <span class="chip">标题栏的「当前品牌」只列当前账号<b>有权限</b>的品牌</span>
+      </div>
+      <p class="hint">权限记的是品牌 <b>id</b>，所以<b>改名不会丢掉任何人的权限</b>（存名字就会丢）。删掉的品牌，历史发布记录仍按原样保留，
+        在「品牌统计」里单列为「已删除的品牌」，不会被并进别的品牌里。</p>
+    </div>`;
 }
 
 /* ---------------- 设置页：账号与安全 ---------------- */
@@ -791,11 +1235,25 @@ function accountHtml() {
 function adminUsersHtml() {
   const us = state.users || [];
   const myId = (state.auth && state.auth.user) ? state.auth.user.id : null;
+  const all = (state.brandsMeta && state.brandsMeta.brands) || [];
+  const brandTag = u => {
+    if (u.role === 'admin') return '<span class="chip chip-user">全部品牌</span>';
+    const ids = Array.isArray(u.brands) ? u.brands : [];
+    if (!ids.length) return '<span class="chip warn">未分配</span>';
+    return ids.map(id => {
+      const b = all.find(x => x.id === id);
+      // 品牌已被删除但授权还挂着（手改过 auth.json 才会出现）：明确标出来，别显示成正常品牌
+      return b
+        ? `<span class="chip${b.enabled === false ? ' warn' : ''}">${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</span>`
+        : '<span class="chip warn">已删除的品牌</span>';
+    }).join(' ');
+  };
   const rows = us.map(u => `<tr>
       <td>${esc(u.displayName)}</td>
       <td class="mono">${esc(u.username)}</td>
       <td>${badge(u.role === 'admin' ? '管理员' : '成员', u.role === 'admin' ? 'ok' : 'wait')}</td>
       <td>${badge(u.disabled ? '已停用' : '启用', u.disabled ? 'bad' : 'ok')}</td>
+      <td class="brandcell">${brandTag(u)}</td>
       <td class="mono">${esc(u.lastLoginAt ? fmtDate(u.lastLoginAt) : '—')}</td>
       <td>${u.id === myId ? '<span class="chip">本人</span>' : `
         <button class="btn sm" data-act="auth:toggle" data-id="${u.id}" data-next="${u.disabled ? '0' : '1'}">${u.disabled ? '启用' : '停用'}</button>
@@ -803,11 +1261,24 @@ function adminUsersHtml() {
         <button class="btn sm" data-act="auth:del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>`}</td>
     </tr>`).join('');
   const others = us.filter(u => u.id !== myId);
+  const target = others.find(u => u.id === state.permUserId) || others[0] || null;
+  const isSelfAdminTarget = target && target.role === 'admin';
+  const permPanel = !others.length ? '' : `
+      <div class="acct-toolbar">
+        <span class="lbl">品牌权限</span>
+        <select class="inp" id="pbUser">${others.map(u => `<option value="${u.id}" ${target && target.id === u.id ? 'selected' : ''}>${esc(u.displayName)}（${esc(u.username)}）</option>`).join('')}</select>
+        ${isSelfAdminTarget
+      ? '<span class="chip chip-user">管理员 = 全部品牌，不必逐个分配</span>'
+      : `<span class="perm-list">${all.length
+        ? all.map(b => `<label class="perm"><input type="checkbox" data-brand="${b.id}" ${target && (target.brands || []).includes(b.id) ? 'checked' : ''}> ${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</label>`).join('')
+        : '<span class="hint">还没有品牌，先到上面的「品牌管理」添加一个</span>'}</span>
+         <button class="btn sm primary" data-act="auth:brands" data-id="${target ? target.id : ''}">保存品牌权限</button>`}
+      </div>`;
   return `
     <div class="box">
       <h3>账号管理（管理员）</h3>
       <div class="tw"><table>
-        <thead><tr><th>姓名</th><th>账号</th><th>角色</th><th>状态</th><th>上次登录</th><th>操作</th></tr></thead>
+        <thead><tr><th>姓名</th><th>账号</th><th>角色</th><th>状态</th><th>品牌权限</th><th>上次登录</th><th>操作</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
       <div class="acct-toolbar">
@@ -817,6 +1288,7 @@ function adminUsersHtml() {
         <input class="inp mono" id="nuPwd" type="password" placeholder="初始密码 ≥6 位" style="min-width:150px">
         <button class="btn sm primary" data-act="auth:create">新建账号</button>
       </div>
+      ${permPanel}
       <div class="acct-toolbar">
         <select class="inp" id="rsUser">${others.map(u => `<option value="${u.id}">重置：${esc(u.username)}</option>`).join('') || '<option value="">（没有其他账号）</option>'}</select>
         <input class="inp mono" id="rsPwd" type="password" placeholder="新密码 ≥6 位" style="min-width:150px">
@@ -824,6 +1296,8 @@ function adminUsersHtml() {
       </div>
       <p class="hint">账号存在本机 <code>auth.json</code>（与 config.json 分开），口令只存 scrypt 哈希，不存明文。
         停用/删除账号<b>不影响</b>已产出的素材、发布单与商品池。连续输错 6 次会锁定 5 分钟。</p>
+      <p class="hint"><b>关于这个权限的边界</b>：它是<b>本机离线</b>的，用来防误操作、让产出可归属，<b>不是安全隔离</b> ——
+        能碰到这台机器的人可以直接改 <code>auth.json</code> / <code>config.json</code>。别把它当权限系统用。</p>
     </div>`;
 }
 
@@ -868,7 +1342,84 @@ const ACTS = {
     const batchId = `${name}_${batchStamp()}`;
     await runJob('copy.generate', { sourceDir: d, batchId, label: batchId });
   },
-  'copy:prompt': () => { state.tab = 7; renderAll(); toast('已跳到「设置 → 文案模型」'); },
+  // 「提示词配置」= 直接开弹窗，不再跳到设置页那两个没人看得懂的输入框
+  'copy:prompt': () => {
+    if (!state.brandsMeta) { toast('品牌列表还没加载好，稍等一下再点', 'err'); return; }
+    openBrandModal('list');
+  },
+
+  // ---- 文案提示词弹窗 ----
+  'bm:list': () => openBrandModal('list'),
+  'bm:open': (el) => openBrandModal('edit', el.dataset.id),
+  'bm:new': () => openBrandModal('edit', ''),
+  'bm:close': () => closeBrandModal(),
+  'bm:save': async (el) => {
+    const id = el.dataset.id || '';
+    const isAdmin = !!(state.auth && state.auth.isAdmin);
+    const val = sel => { const e = $(sel); return e ? e.value : ''; };
+    const name = val('#bmName').trim();
+    const promptWrite = val('#bmWrite');
+    const promptFilter = val('#bmFilter');
+    const enEl = $('#bmEnabled'), pkEl = $('#bmPick');
+
+    if (!id) {
+      // 新增：按钮本来就只给管理员看，主进程还会再校验一次
+      if (!name) { toast('先给品牌起个名字', 'err'); return; }
+      const r = await appApi.brandAdd({ name, promptWrite, promptFilter, enabled: enEl ? enEl.checked : true });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      if (pkEl && pkEl.checked) await appApi.configSet({ copy: { defaultBrandId: r.brand.id } });
+      state.config = await appApi.configGet();
+      await refreshBrands();
+      toast(`已新增品牌「${r.brand.name}」${promptWrite.trim() ? '' : '（还没配文案提示词，生成会被拦下）'}`, 'ok');
+      openBrandModal('list');
+      renderAll();
+      return;
+    }
+
+    // 提示词：有权限的人都能改（主进程会再校验一次归属，只认这两个字段）
+    const r1 = await appApi.brandPrompts(id, { promptWrite, promptFilter });
+    if (!r1.ok) { toast(r1.error, 'err'); return; }
+
+    // 品牌名 / 启停 / 选用：只归管理员
+    if (isAdmin) {
+      const cur = (state.brandsMeta.brands || []).find(x => x.id === id) || {};
+      const patch = {};
+      if (name && name !== cur.name) patch.name = name;
+      if (enEl && enEl.checked !== (cur.enabled !== false)) patch.enabled = enEl.checked;
+      if (Object.keys(patch).length) {
+        const r2 = await appApi.brandUpdate(id, patch);
+        if (!r2.ok) { toast(r2.error, 'err'); return; }
+      }
+      const wasPicked = (state.brandsMeta.defaultBrandId || '') === id;
+      const wantPicked = !!(pkEl && pkEl.checked);
+      if (wantPicked && !wasPicked) await appApi.configSet({ copy: { defaultBrandId: id } });
+      else if (!wantPicked && wasPicked) await appApi.configSet({ copy: { defaultBrandId: '' } });
+    }
+
+    state.config = await appApi.configGet();
+    await refreshBrands();
+    closeBrandModal();
+    renderAll();
+    toast('已保存', 'ok');
+  },
+  'bm:del': async (el) => {
+    const id = el.dataset.id;
+    const b = (state.brandsMeta.brands || []).find(x => x.id === id) || {};
+    const okDel = window.confirm(
+      `确定删除品牌「${b.name || id}」？\n\n` +
+      '· 已经发出去的历史记录会保留，在「品牌统计」里单列为「已删除的品牌」\n' +
+      '· 各账号上这个品牌的权限会被一并清掉\n' +
+      '· 该品牌下的批次归属会变成「未标品牌」'
+    );
+    if (!okDel) return;
+    const r = await appApi.brandRemove(id);
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    state.config = await appApi.configGet();
+    await refreshBrands(); await refreshUsers();
+    toast(`已删除品牌「${b.name || id}」${r.usersCleaned ? `，同时清了 ${r.usersCleaned} 个账号的授权` : ''}`, 'ok');
+    openBrandModal('list');
+    renderAll();
+  },
 
   'batch:cancel': async (el) => {
     const nGone = await appApi.cancel(el.dataset.id);
@@ -1076,8 +1627,91 @@ const ACTS = {
     renderAll();
   },
 
-  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },
-  'cfg:path': async (el) => {
+  // ---- 品牌权限（管理员）----
+  'auth:brands': async (el) => {
+    const id = el.dataset.id;
+    if (!id) { toast('先选一个账号', 'err'); return; }
+    const boxes = [...document.querySelectorAll('#pane [data-brand]')];
+    if (!boxes.length) { toast('还没有品牌：先到上面的「品牌管理」添加一个', 'err'); return; }
+    const ids = boxes.filter(b => b.checked).map(b => b.dataset.brand);
+    const r = await appApi.authUpdateUser(id, { brands: ids });
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    await refreshUsers();
+    toast(ids.length ? `已保存品牌权限：${ids.length} 个品牌` : '已清空品牌权限（该账号将无法起产出任务）', 'ok');
+    renderAll();
+  },
+
+  // ---- 品牌管理（管理员）----
+  'brand:add': async () => {
+    const name = ($('#nbName') || {}).value || '';
+    const note = ($('#nbNote') || {}).value || '';
+    if (!name.trim()) { toast('先填品牌名', 'err'); return; }
+    const r = await appApi.brandAdd({ name: name.trim(), note: note.trim() });
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    $('#nbName').value = ''; $('#nbNote').value = '';
+    await refreshBrands(); await refreshUsers();
+    toast(`已新增品牌 ${r.brand.name}`, 'ok');
+    renderAll();
+  },
+  'brand:edit': (el) => { state.brandEdit = { id: el.dataset.id }; renderAll(); },
+  'brand:cancel': () => { state.brandEdit = null; renderAll(); },
+  'brand:save': async (el) => {
+    const box = document.getElementById('brdName');
+    if (!box) return;
+    const r = await appApi.brandUpdate(el.dataset.id, { name: box.value });
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    state.brandEdit = null;
+    await refreshBrands();
+    toast('品牌已改名（已分配的权限不受影响，因为记的是 id）', 'ok');
+    renderAll();
+  },
+  'brand:toggle': async (el) => {
+    const on = el.dataset.next === '1';
+    const r = await appApi.brandUpdate(el.dataset.id, { enabled: on });
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    await refreshBrands();
+    toast(on ? '品牌已启用' : '品牌已停用：只拿到这个品牌的账号将无法再起产出任务', on ? 'ok' : '');
+    renderAll();
+  },
+  'brand:del': async (el) => {
+    const name = el.dataset.name;
+    const okDel = window.confirm(
+      `确定删除品牌「${name}」？\n\n` +
+      '· 已经发出去的历史记录会保留，在「品牌统计」里单列为「已删除的品牌」\n' +
+      '· 各账号上这个品牌的权限会被一并清掉\n' +
+      '· 该品牌下的批次归属会变成「未标品牌」'
+    );
+    if (!okDel) return;
+    const r = await appApi.brandRemove(el.dataset.id);
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    await refreshBrands(); await refreshUsers();
+    toast(`已删除品牌「${name}」${r.usersCleaned ? `，同时清了 ${r.usersCleaned} 个账号的授权` : ''}`, 'ok');
+    renderAll();
+  },
+  'brand:default': async () => {
+    const sel = $('#brandDefault');
+    const id = sel ? sel.value : '';
+    await appApi.configSet({ copy: { defaultBrandId: id } });
+    state.config = await appApi.configGet();
+    await refreshBrands();
+    toast(id ? `默认品牌已设为 ${brandNameOf(id)}` : '已取消默认品牌', 'ok');
+    renderAll();
+  },
+
+  // ---- 品牌统计 ----
+  'stats:refresh': async () => {
+    state.stats = null;
+    state.statsTried = false;
+    await loadStats();
+  },
+  'stats:export': async () => {
+    const r = await appApi.statsExport(state.statsOpts);
+    if (!r.ok) { toast(r.error || '导出失败', 'err'); return; }
+    toast(`已导出：${(r.file || '').split(/[\\/]/).pop()}（${r.brandCount} 个品牌 · ${r.totals.rows} 条记录）`, 'ok');
+    if (r.file) await appApi.reveal(r.file);
+  },
+
+  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },  'cfg:path': async (el) => {
     const key = el.dataset.key;
     const d = await appApi.pickDir({ title: '选择目录', defaultPath: state.config.paths.source });
     if (!d) return;
@@ -1114,6 +1748,27 @@ function bindSettings() {
   document.querySelectorAll('#pane [data-cfg]').forEach(el => {
     el.onchange = () => { saveCfgFromDom(); };
   });
+  // 「品牌权限」面板里选账号就重画，勾选框要跟着换成这个人的当前分配
+  const pb = $('#pbUser');
+  if (pb) pb.onchange = () => { state.permUserId = pb.value; renderAll(); };
+}
+
+/** 品牌统计页：三个下拉改了就记进 state.statsOpts，点「查询」才真去读日志（避免每动一下就全量读盘） */
+function bindStats() {
+  const wire = (id, key) => {
+    const el = $(id);
+    if (!el) return;
+    el.onchange = () => { state.statsOpts[key] = el.value; };
+  };
+  wire('#stDays', 'days');
+  wire('#stBrand', 'brandId');
+  // 换了筛选条件，执行人下拉的候选也会变，所以清掉防止选到一个当前范围内不存在的人
+  const ub = $('#stUser');
+  if (ub) {
+    ub.onchange = () => { state.statsOpts.userId = ub.value; };
+  } else {
+    state.statsOpts.userId = '';
+  }
 }
 
 function bindOnce() {
@@ -1125,12 +1780,27 @@ function bindOnce() {
 function bind() {
   $('#btnLogout').onclick = () => doLogout();
 
+  // 标题栏的「当前品牌」：改了就记住（下次进来还是它）。
+  // 只是省事，不是权限 —— 主进程每次起任务都会再校验一遍
+  const bsel = $('#brandSel');
+  if (bsel) bsel.onchange = async () => {
+    state.brandId = bsel.value;
+    await appApi.configSet({ copy: { defaultBrandId: bsel.value } });
+    state.config = await appApi.configGet();
+    await refreshBrands();
+    renderAll();
+  };
+
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-act]');
     if (!el || el.disabled) return;
     const fn = ACTS[el.dataset.act];
     if (fn) fn(el);
   });
+
+  // 点遮罩关弹窗；点弹窗本体不关（否则选字拖一下鼠标就没了）
+  const bmask = $('#bmodal');
+  if (bmask) bmask.addEventListener('click', e => { if (e.target === bmask) closeBrandModal(); });
 
   document.querySelectorAll('.nav').forEach(b => {
     b.onclick = () => { state.tab = Number(b.dataset.tab); renderAll(); };
@@ -1143,9 +1813,10 @@ function bind() {
   $('#logClear').onclick = () => { state.logs = []; $('#log').innerHTML = ''; };
 
   document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
-      if (k >= 1 && k <= 7) { state.tab = k; renderAll(); e.preventDefault(); }
+      if (k >= 1 && k <= 8) { state.tab = k; renderAll(); e.preventDefault(); }
     }
   });
 

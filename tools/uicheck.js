@@ -1,6 +1,6 @@
-/* 界面自检：用隐藏窗口加载真实渲染层，把 7 个页签切一遍，确认
+/* 界面自检：用隐藏窗口加载真实渲染层，把 8 个页签切一遍，确认
      · 免登录（BLUEV_NO_LOGIN=1）能进主界面
-     · 7 个页签都能渲染、标题对得上
+     · 8 个页签都能渲染、标题对得上
      · 渲染层零控制台报错（含未捕获异常 / 未处理的 Promise）
    用法：npx electron tools/uicheck.js       （tools/run-all.sh 里就是这么调的）
 
@@ -17,7 +17,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-uicheck-'));
 app.setPath('userData', TMP);
 app.commandLine.appendSwitch('disable-gpu');
 
-const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置'];
+const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置', '品牌统计'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -63,7 +63,9 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
-  ok('左侧导航是 7 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 7);
+  ok('左侧导航是 8 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 8);
+  ok('标题栏有「当前品牌」下拉（归属全靠它，必须一眼看得见）',
+    await win.webContents.executeJavaScript('!!document.getElementById("brandSel")'));
 
   const locked = await win.webContents.executeJavaScript('document.body.classList.contains("locked")');
   ok('BLUEV_NO_LOGIN=1 免登录直接进主界面', locked === false, locked ? '仍停在登录页' : '');
@@ -82,7 +84,7 @@ app.whenReady().then(async () => {
     })()
   `);
 
-  for (let i = 1; i <= 7; i++) {
+  for (let i = 1; i <= 8; i++) {
     await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('.nav[data-tab="${i}"]'); if (b) b.click(); return true; })()`);
     await new Promise(r => setTimeout(r, 150));
     const info = await win.webContents.executeJavaScript(`(() => {
@@ -104,6 +106,41 @@ app.whenReady().then(async () => {
   ok('页签 5 有「导入 AI 内容报告」', await onTab(5, 'sheet:importReport'));
   ok('页签 6 有「重导出日志」', await onTab(6, 'pub:exportLog'));
   ok('页签 6 有「失败恢复动作」', await onTab(6, 'pub:recoverEdit'));
+  ok('页签 8 有「查询」（品牌统计）', await onTab(8, 'stats:refresh'));
+  ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
+
+  // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
+  // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动
+  const modal = await win.webContents.executeJavaScript(`
+    (async () => {
+      const mask = document.getElementById('bmodal');
+      const before = !!mask && mask.hidden;
+      document.querySelector('.nav[data-tab="3"]').click();
+      await new Promise(r => setTimeout(r, 120));
+      const btn = document.querySelector('[data-act="copy:prompt"]');
+      const hasBtn = !!btn;
+      if (btn) btn.click();
+      await new Promise(r => setTimeout(r, 150));
+      const open = !!mask && !mask.hidden;
+      const text = mask ? mask.textContent : '';
+      if (mask) mask.click();                      // 点遮罩关
+      await new Promise(r => setTimeout(r, 120));
+      const closed = !!mask && mask.hidden;
+      return { before, hasBtn, open, closed, hasTitle: /文案提示词/.test(text), len: text.length };
+    })()
+  `);
+  ok('文案生成页有「提示词配置」按钮', modal.hasBtn);
+  ok('点「提示词配置」直接弹出弹窗（不再跳去设置页那两个没人看得懂的输入框）',
+    modal.before && modal.open && modal.hasTitle, JSON.stringify(modal));
+  ok('点遮罩能关掉弹窗', modal.closed);
+  ok('设置页把那两个裸输入框换成了「打开文案提示词」入口',
+    await win.webContents.executeJavaScript(`(() => {
+      document.querySelector('.nav[data-tab="7"]').click();
+      const pane = document.querySelector('#pane');
+      return !pane.querySelector('[data-cfg="copy.promptWrite"]')
+        && !pane.querySelector('[data-cfg="copy.promptFilter"]')
+        && !!pane.querySelector('[data-act="copy:prompt"]');
+    })()`));
 
   // ---- 失败恢复动作：界面能编辑、能存进配置（走真实 IPC，不直连模块） ----
   const rec = await win.webContents.executeJavaScript(`

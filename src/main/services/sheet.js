@@ -130,16 +130,22 @@ async function exportPublishLog(opts = {}) {
   }
 
   const when = d => `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  // 老日志（2026-10-01 之前）没有品牌与执行人字段 —— 显示成「未标品牌 / 未记录执行人」，
+  // 不留空、也不拿别的值顶替（留空会让人以为这列没做，顶替会让台账对不上）
+  const brandOf = e => e.brandName || (e.brandId ? `已删除的品牌（${e.brandId}）` : '未标品牌');
+  const userOf = e => e.displayName || e.username || '未记录执行人';
   const lines = [`# 得物蓝V 发布日志 · 导出时间 ${fmt(new Date())}`];
-  const head = ['批次', '序号', '素材目录', '执行结果', '实际执行时间', '耗时(秒)', '重试', '失败原因', '通道', '记录时间'];
+  const head = ['批次', '品牌', '执行人', '序号', '素材目录', '执行结果', '实际执行时间', '耗时(秒)', '重试', '失败原因', '通道', '记录时间'];
   const csv = [head];
 
   for (const [name, es] of groups) {
     const okN = es.filter(e => e.result === '发布成功').length;
     const failN = es.filter(e => e.result === '失败').length;
     const totalSec = +es.reduce((a, e) => a + (Number(e.elapsed) || 0), 0).toFixed(1);
+    const brandTags = [...new Set(es.map(brandOf))];
+    const userTags = [...new Set(es.map(userOf))];
     lines.push('');
-    lines.push(`=== 批次 ${name} · 共 ${es.length} 条 / ${failN} 失败 / ${es.length - okN - failN} 其他 · 总耗时 ${totalSec}s ===`);
+    lines.push(`=== 批次 ${name} · 品牌 ${brandTags.join('、')} · 执行人 ${userTags.join('、')} · 共 ${es.length} 条 / ${failN} 失败 / ${es.length - okN - failN} 其他 · 总耗时 ${totalSec}s ===`);
     for (const e of es) {
       const mark = e.result === '发布成功' ? 'V' : (e.result === '失败' ? 'X' : '-');
       const time = e.at ? `，已回填时间 ${e.at}` : '';
@@ -149,7 +155,7 @@ async function exportPublishLog(opts = {}) {
         ? `[${mark}] 行 ${e.seq} [${kindTag}] 发布完成${time}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`
         : `[${mark}] 行 ${e.seq} [${kindTag}] ${e.result}${e.reason ? '：' + e.reason : ''}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`;
       lines.push(detail + (e.retries ? `（重试 ${e.retries} 次）` : ''));
-      csv.push([name, e.seq, e.dir || '', e.result || '', e.at || '', e.elapsed == null ? '' : e.elapsed, e.retries || 0, e.reason || '', e.mode || '', e.ts ? when(new Date(e.ts)) : '']);
+      csv.push([name, brandOf(e), userOf(e), e.seq, e.dir || '', e.result || '', e.at || '', e.elapsed == null ? '' : e.elapsed, e.retries || 0, e.reason || '', e.mode || '', e.ts ? when(new Date(e.ts)) : '']);
     }
     lines.push(`（${okN} 成功 / ${failN} 失败）`);
   }

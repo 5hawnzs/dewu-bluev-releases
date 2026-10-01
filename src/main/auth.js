@@ -16,6 +16,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { app } = require('electron');
 const wp = require('./util/winpath');
+const brands = require('./brands');
 
 const DEFAULT_USER = 'admin';
 const DEFAULT_PASS = 'BlueV@2026';
@@ -46,6 +47,10 @@ function makeUser(username, password, role, displayName) {
     username: String(username).trim(),
     displayName: String(displayName || username).trim(),
     role: role === 'admin' ? 'admin' : 'user',
+    // 品牌权限：存的是品牌 id（config.json → brands[].id），不是品牌名 —— 改名不该把权限弄丢。
+    // 管理员不看这个字段（恒等于「全部品牌」）；把管理员降级成普通成员时它是空的 = 默认无权限，
+    // 这是故意的：降权后应当由管理员显式分配，而不是继承他当管理员时的「全部」。
+    brands: [],
     salt,
     hash: hashPassword(password, salt),
     mustChange: false,
@@ -95,6 +100,11 @@ function load() {
     save();
   }
   if (db.remember && typeof db.remember !== 'object') db.remember = null;
+  // 老 auth.json 里的账号没有 brands 字段 → 补成空数组（= 无品牌权限）并落盘。
+  // 补一次就写回去，免得每次启动都算一遍、也免得下游到处再判一次 undefined
+  let migrated = false;
+  for (const u of db.users) if (!Array.isArray(u.brands)) { u.brands = []; migrated = true; }
+  if (migrated) save();
   restoreSession();
   return db;
 }
@@ -119,9 +129,28 @@ function findUserById(id) { return db.users.find(u => u.id === id) || null; }
 function publicUser(u) {
   return {
     id: u.id, username: u.username, displayName: u.displayName, role: u.role,
+    brands: (Array.isArray(u.brands) ? u.brands : []).map(String),
     mustChange: !!u.mustChange, disabled: !!u.disabled,
     createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null
   };
+}
+
+/**
+ * 校验要写入的品牌权限。
+ * 认不出来的 id **直接报错，不静默丢弃** —— 静默丢弃意味着「我勾了 3 个品牌，界面也说保存成功，
+ * 实际只生效 2 个」，这种账不平最难查。已停用但还存在的品牌是允许分配的（管理员可能只是临时停用）。
+ */
+function brandsError(ids) {
+  if (ids == null) return null;
+  if (!Array.isArray(ids)) return '品牌权限要给一个数组';
+  const all = brands.list();
+  const known = new Set(all.map(b => b.id));
+  const bad = ids.map(String).filter(x => x && !known.has(x));
+  if (bad.length) return `这些品牌不存在（可能已被删除）：${bad.join('、')}；当前可用品牌：${all.map(b => b.name).join('、') || '（一个都没有）'}`;
+  return null;
+}
+function cleanBrands(ids) {
+  return [...new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean))];
 }
 
 /* ---------------- 会话 ---------------- */
@@ -251,7 +280,10 @@ function createUser(input) {
   const pe = passError(input && input.password);
   if (pe) return { ok: false, error: pe };
   if (findUser(input.username)) return { ok: false, error: '这个账号已经存在' };
+  const whole = brandsError(input && input.brands);
+  if (whole) return { ok: false, error: whole };
   const u = makeUser(input.username, input.password, input.role, input.displayName || input.username);
+  u.brands = cleanBrands(input && input.brands);
   db.users.push(u);
   save();
   return { ok: true, user: publicUser(u) };
@@ -265,6 +297,13 @@ function updateUser(id, patch) {
   if (!u) return { ok: false, error: '账号不存在' };
   const p = patch || {};
   if (p.displayName != null) u.displayName = String(p.displayName).trim() || u.username;
+  if (p.brands != null) {
+    const be = brandsError(p.brands);
+    if (be) return { ok: false, error: be };
+    // 存着不清：管理员改回普通成员时原来的分配还在，不用重配一遍。
+    // 管理员的**实际**范围永远是「全部品牌」（brands.allowed 里判的），这里的值只是留档
+    u.brands = cleanBrands(p.brands);
+  }
   if (p.role != null) {
     if (u.id === g.user.id) return { ok: false, error: '不能改自己的角色' };
     u.role = p.role === 'admin' ? 'admin' : 'user';
@@ -311,8 +350,32 @@ function removeUser(id) {
   return { ok: true };
 }
 
+/**
+ * 品牌从注册表删除后，把账号上指向它的授权清掉。
+ * 不清也能跑（`brands.allowed` 会滤掉不存在的 id），但会越攒越多悬空引用，
+ * 界面上一堆「已删除的品牌」也干扰判断。删一个品牌顺手清一次最省事。
+ * 返回清理了几个账号，好让界面说清影响面。
+ */
+function purgeBrand(brandId) {
+  const g = guardAdmin();
+  if (g.error) return { ok: false, error: g.error };
+  load();
+  const id = String(brandId || '');
+  if (!id) return { ok: false, error: '缺少品牌 id' };
+  let n = 0;
+  for (const u of db.users) {
+    if (Array.isArray(u.brands) && u.brands.includes(id)) {
+      u.brands = u.brands.filter(x => x !== id);
+      n++;
+    }
+  }
+  if (n) save();
+  return { ok: true, users: n };
+}
+
 module.exports = {
   load, status, login, logout, enabled, current,
   changePassword, listUsers, createUser, updateUser, resetPassword, removeUser,
+  purgeBrand,
   DEFAULT_USER, DEFAULT_PASS
 };

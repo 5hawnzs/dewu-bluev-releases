@@ -11,10 +11,12 @@
  *   compliancetest 合规边界 + 导出报告
  *   batchtest      多批次并行 / 取消 / 按批次重导出日志
  *   reporttest     「AI 内容报告」导入 → 发布 → 回写
- *   uicheck        隐藏窗口加载真实渲染层（7 个页签 + 零控制台报错）
+ *   brandtest      品牌权限 + 按品牌统计（未标品牌单列 / 已删除品牌保留）
+ *   uicheck        隐藏窗口加载真实渲染层（8 个页签 + 零控制台报错）
  *   logintest      登录门（未登录拦截 / 口令 / 权限 / 防爆破）
+ *   gatetest       登录门窗口尺寸（未登录收缩成小窗 / 登录后还原 / 退出再收缩）
  *
- * 两个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
+ * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -42,7 +44,7 @@ const ELECTRON = electronBin();
 const CHILD_ENV = { ...process.env };
 delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
 
-// uicheck / logintest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
+// uicheck / logintest / gatetest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
 // （远程/CI/沙箱）GPU 进程会反复退出并 FATAL 掉整个 Electron，所以固定关掉 GPU、改进程内渲染。
 const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
 
@@ -53,8 +55,10 @@ const SUITES = [
   ['compliancetest', 'node', ['tools/compliancetest.js']],
   ['batchtest', 'node', ['tools/batchtest.js']],
   ['reporttest', 'node', ['tools/reporttest.js']],
+  ['brandtest', 'node', ['tools/brandtest.js']],
   ['uicheck', 'electron', ['tools/uicheck.js']],
-  ['logintest', 'electron', ['tools/logintest.js']]
+  ['logintest', 'electron', ['tools/logintest.js']],
+  ['gatetest', 'electron', ['tools/gatetest.js']]
 ];
 
 /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */

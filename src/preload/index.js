@@ -20,6 +20,14 @@ contextBridge.exposeInMainWorld('api', {
   authResetPwd: (id, newP) => ipcRenderer.invoke('auth:reset-password', id, newP),
   authRemoveUser: id => ipcRenderer.invoke('auth:remove-user', id),
 
+  brandList: () => ipcRenderer.invoke('brand:list'),
+  brandAdd: input => ipcRenderer.invoke('brand:add', input),
+  brandUpdate: (id, patch) => ipcRenderer.invoke('brand:update', id, patch),
+  brandPrompts: (id, patch) => ipcRenderer.invoke('brand:prompts', id, patch),
+  brandRemove: id => ipcRenderer.invoke('brand:remove', id),
+  statsQuery: opts => ipcRenderer.invoke('stats:query', opts),
+  statsExport: opts => ipcRenderer.invoke('stats:export', opts),
+
   configGet: key => ipcRenderer.invoke('config:get', key),
   configSet: patch => ipcRenderer.invoke('config:set', patch),
   projectGet: () => ipcRenderer.invoke('project:get'),
@@ -42,6 +50,7 @@ contextBridge.exposeInMainWorld('api', {
   close: () => ipcRenderer.send('win:close'),
   isMax: () => ipcRenderer.invoke('win:is-max'),
   flash: () => ipcRenderer.send('win:flash'),
+  fitGate: h => ipcRenderer.send('win:fit-gate', h),
 
   onJobStart: cb => on('job:started', cb),
   onJobProgress: cb => on('job:progress', cb),

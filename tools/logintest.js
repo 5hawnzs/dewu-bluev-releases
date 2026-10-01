@@ -126,14 +126,14 @@ app.whenReady().then(async () => {
   ok('登录后业务通道放行（能读到配置）', allowed === true);
   const tabs = await js(`(async () => {
     const titles = [];
-    for (let i = 1; i <= 7; i++) {
+    for (let i = 1; i <= 8; i++) {
       document.querySelector('.nav[data-tab="' + i + '"]').click();
       await new Promise(r => setTimeout(r, 90));
       titles.push(__t.title());
     }
     return titles;
   })()`);
-  ok('登录后 7 个页签都能渲染', tabs.length === 7 && tabs.every(t => t && t.length > 1), tabs.join(' / '));
+  ok('登录后 8 个页签都能渲染', tabs.length === 8 && tabs.every(t => t && t.length > 1), tabs.join(' / '));
 
   // ---- ⑤ 口令存储与「记住登录」落盘 ----
   const authFile = path.join(TMP, 'auth.json');
@@ -173,6 +173,19 @@ app.whenReady().then(async () => {
   const selfPwd = await js(`window.api.authChangePwd(${JSON.stringify(MEMBER_PASS)}, 'Member@456')`);
   ok('普通成员能改自己的密码', selfPwd.ok === true, selfPwd.error || '');
 
+  // ---- ⑦b 品牌是管理员专属：普通成员连注册表都改不了 ----
+  const memberBrandAdd = await js(`window.api.brandAdd({ name: '成员偷加的品牌' })`);
+  ok('普通成员不能新增品牌（主进程侧拦下，不是前端藏起来）',
+    memberBrandAdd.ok === false && /只有管理员/.test(memberBrandAdd.error), memberBrandAdd.error);
+  const memberBrands = await js(`window.api.brandList()`);
+  ok('普通成员的品牌下拉是空的（还没被分配）',
+    memberBrands.ok === true && memberBrands.isAdmin === false && memberBrands.mine.length === 0,
+    JSON.stringify(memberBrands.mine));
+  const memberStats = await js(`window.api.statsQuery({ days: 0 })`);
+  ok('普通成员看统计时范围被限死（一个品牌都没有 → 看不到任何品牌的账）',
+    memberStats.ok === true && (memberStats.brands || []).length === 0 && memberStats.totals.rows === 0,
+    `brands=${(memberStats.brands || []).length} rows=${memberStats.totals && memberStats.totals.rows}`);
+
   const backAdmin = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
   const memberId = (await js(`window.api.authUsers()`)).users.find(u => u.username === MEMBER).id;
   const disabled = await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { disabled: true })`);
@@ -188,6 +201,122 @@ app.whenReady().then(async () => {
   ok('不能停用自己', selfDisable.ok === false && /不能停用自己/.test(selfDisable.error), selfDisable.error);
   const selfRemove = await js(`window.api.authRemoveUser(${JSON.stringify(selfId)})`);
   ok('不能删掉自己（否则没人能管账号）', selfRemove.ok === false && /不能删自己/.test(selfRemove.error), selfRemove.error);
+
+  // ---- ⑦c 品牌注册表 ----
+  const bAdd = await js(`window.api.brandAdd({ name: '卡宾' })`);
+  ok('管理员能新增品牌', bAdd.ok === true && /^brd_/.test(bAdd.brand.id), bAdd.error || `${bAdd.brand.name} ${bAdd.brand.id}`);
+  const bDup = await js(`window.api.brandAdd({ name: '卡宾' })`);
+  ok('重名品牌被拒（同名会让统计合并）', bDup.ok === false && /已经存在/.test(bDup.error), bDup.error);
+  const bReserved = await js(`window.api.brandAdd({ name: '未标品牌' })`);
+  ok('统计保留名不能当品牌名（否则和「未标品牌」分不开）',
+    bReserved.ok === false && /保留名/.test(bReserved.error), bReserved.error);
+
+  const brandId = bAdd.brand.id;
+  const bList = await js(`window.api.brandList()`);
+  ok('管理员的品牌下拉 = 全部品牌', bList.ok === true && bList.isAdmin === true && bList.mine.length === bList.brands.length && bList.mine.length >= 2,
+    `${bList.mine.length}/${bList.brands.length}`);
+
+  // 产出类任务必须有品牌归属：有多个品牌时没选就报错，不替他挑（挑错了归属就是错的）
+  const noBrand = await js(`window.api.run('copy.generate', {})`);
+  ok('多品牌下不选品牌起产出任务 → 被拦下并列出可选', noBrand.ok === false && /请先选择品牌/.test(noBrand.error), noBrand.error);
+  const ghostBrand = await js(`window.api.run('copy.generate', { brandId: 'brd_nope' })`);
+  ok('指定一个不存在的品牌 → 明确报「品牌不存在」', ghostBrand.ok === false && /品牌不存在/.test(ghostBrand.error), ghostBrand.error);
+
+  // ---- ⑦d 品牌权限的分配 / 改名不丢 / 删除要清干净 ----
+  const assign = await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { brands: [${JSON.stringify(brandId)}] })`);
+  ok('管理员能给成员分配品牌', assign.ok === true && assign.user.brands.length === 1, assign.error || JSON.stringify(assign.user.brands));
+  const badAssign = await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { brands: ['brd_不存在'] })`);
+  ok('分配一个不存在的品牌会被拒（不静默丢弃）', badAssign.ok === false && /不存在/.test(badAssign.error), badAssign.error);
+
+  const renamed = await js(`window.api.brandUpdate(${JSON.stringify(brandId)}, { name: '卡宾 2026' })`);
+  const afterRename = await js(`window.api.authUsers()`);
+  ok('品牌改名后已分配的权限还在（权限记的是 id，不是名字）',
+    renamed.ok === true && renamed.brand.name === '卡宾 2026'
+    && afterRename.users.find(u => u.username === MEMBER).brands.includes(brandId),
+    `新名=${renamed.brand && renamed.brand.name}`);
+
+  // ---- ⑦e 文案提示词：成员能改自己品牌的，改不了别人的；品牌名 / 启停仍归管理员 ----
+  // 提示词是「写文案的人」天天要调的东西，全锁给管理员不现实；
+  // 但松开的必须**只有那两个字段**，否则等于把整个注册表开放了
+  // 这个品牌**故意也配一段提示词**：否则「成员看不到别人的提示词」这条断言
+  // 会因为两边都是空串而假通过（空 == 空）
+  const bOther = await js(`window.api.brandAdd({ name: '别人的品牌', promptWrite: '别人家的模板，成员不该看到' })`);
+  const otherId = bOther.brand.id;
+
+  // ⑦b 里成员被停用过，这里先启用（不然他连登录都进不来）
+  await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { disabled: false, brands: [${JSON.stringify(brandId)}] })`);
+  const memberIn = await js(`__t.login(${JSON.stringify(MEMBER)}, 'Member@456', false)`);
+  ok('⑦e 成员重新启用后能登录（下面用成员会话测提示词权限）', memberIn.locked === false, memberIn.err || '');
+
+  const mList = await js(`window.api.brandList()`);
+  const mineRow = (mList.brands || []).find(b => b.id === brandId);
+  const otherRow = (mList.brands || []).find(b => b.id === otherId);
+  ok('⑦e 成员只在「自己名下的品牌」上拿到提示词，别人的那份是空的',
+    mList.ok === true && mList.isAdmin === false && !!mineRow && !!otherRow && !(otherRow.promptWrite || ''),
+    JSON.stringify({ 自己: !!mineRow, 别人的: (otherRow || {}).promptWrite }));
+
+  const mSave = await js(`window.api.brandPrompts(${JSON.stringify(brandId)}, { promptWrite: '成员自己写的模板' })`);
+  ok('⑦e 成员能改自己品牌的提示词（写文案的是运营，不该每次都去找管理员）', mSave.ok === true, mSave.error || '');
+
+  const mSteal = await js(`window.api.brandPrompts(${JSON.stringify(otherId)}, { promptWrite: '我要改别人的' })`);
+  ok('⑦e 成员改不了别人品牌的提示词', mSteal.ok === false && /没有/.test(mSteal.error), mSteal.error);
+
+  const mRename = await js(`window.api.brandUpdate(${JSON.stringify(brandId)}, { name: '成员偷改的名' })`);
+  ok('⑦e 成员不能借提示词的口子改名（brand:update 仍是管理员专属）',
+    mRename.ok === false && /只有管理员/.test(mRename.error), mRename.error);
+
+  // 弹窗：点「提示词配置」→ 列出品牌 → 点进去是「品牌名 + 两段文案 + 两个勾选」
+  const modal = await js(`(async () => {
+    document.querySelector('.nav[data-tab="7"]').click();
+    await new Promise(r => setTimeout(r, 120));
+    const btn = document.querySelector('[data-act="copy:prompt"]');
+    if (btn) btn.click();
+    await new Promise(r => setTimeout(r, 160));
+    const mask = document.getElementById('bmodal');
+    const opened = !!mask && !mask.hidden;
+    const rows = document.querySelectorAll('#bmBox .brow').length;
+    const first = document.querySelector('#bmBox .brow [data-act="bm:open"]');
+    if (first) first.click();
+    await new Promise(r => setTimeout(r, 160));
+    const nm = document.getElementById('bmName');
+    return {
+      opened, rows,
+      name: !!nm, write: !!document.getElementById('bmWrite'), filter: !!document.getElementById('bmFilter'),
+      enabled: !!document.getElementById('bmEnabled'), pick: !!document.getElementById('bmPick'),
+      nameReadOnly: !!nm && nm.readOnly,
+      text: (document.getElementById('bmBox') || {}).textContent ? document.getElementById('bmBox').textContent.slice(0, 26) : ''
+    };
+  })()`);
+  ok('⑦e 弹窗打开后每个品牌一行', modal.opened && modal.rows >= 1, JSON.stringify(modal));
+  ok('⑦e 点品牌进编辑视图：品牌名 + 两段提示词 + 两个勾选都在',
+    modal.name && modal.write && modal.filter && modal.enabled && modal.pick, JSON.stringify(modal));
+  ok('⑦e 成员看到的品牌名是只读的（改名归管理员）', modal.nameReadOnly === true, JSON.stringify(modal));
+  await js(`(async () => {
+    const m = document.getElementById('bmodal');
+    if (m && !m.hidden) { const c = document.querySelector('[data-act="bm:close"]'); if (c) c.click(); }
+    return true;
+  })()`);
+
+  // 切回管理员续跑后面的用例
+  const backAdmin2 = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
+  ok('⑦e 切回管理员（后面几条要管理员会话）', backAdmin2.locked === false, backAdmin2.err || '');
+  const adminSee = (await js(`window.api.brandList()`)).brands.find(b => b.id === brandId);
+  ok('⑦e 成员写的那段模板真的落到注册表上了（不是只在返回值里改了一下）',
+    !!adminSee && adminSee.promptWrite === '成员自己写的模板', JSON.stringify(adminSee && adminSee.promptWrite));
+
+  const bDel = await js(`window.api.brandRemove(${JSON.stringify(brandId)})`);
+  ok('删品牌会连带清掉账号上的授权（不留悬空引用）', bDel.ok === true && bDel.usersCleaned === 1, JSON.stringify(bDel));
+  const afterDel = await js(`window.api.authUsers()`);
+  ok('删除后成员名下确实空了', afterDel.users.find(u => u.username === MEMBER).brands.length === 0,
+    JSON.stringify(afterDel.users.find(u => u.username === MEMBER).brands));
+
+  // 历史记录里没有品牌的那些，统计必须单列成「未标品牌」而不是并进某个品牌
+  const st = await js(`window.api.statsQuery({ days: 0 })`);
+  ok('统计里「未标品牌」是独立的一桶（不是某个品牌的 0）',
+    st.ok === true && !!st.untagged && st.untagged.id === '' && st.untagged.rows === 0,
+    `untagged=${st.untagged && st.untagged.rows} 品牌数=${(st.brands || []).length}`);
+  ok('统计里「只看未标品牌」筛选可用',
+    (await js(`window.api.statsQuery({ days: 0, brandId: '__none__' })`)).brands.length === 0);
 
   // ---- ⑧ 退出登录 → 回到登录门，业务通道再次被拦 ----
   const out = await js(`__t.logout()`);
