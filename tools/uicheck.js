@@ -17,7 +17,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-uicheck-'));
 app.setPath('userData', TMP);
 app.commandLine.appendSwitch('disable-gpu');
 
-const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置', '品牌统计'];
+const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置', '品牌统计', '品牌与权限'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -37,6 +37,12 @@ app.whenReady().then(async () => {
   project.load();
   auth.load();
   ipc.register();
+
+  // 播两个品牌：「提示词配置」里那组「选择 / 默认选择」的断言要有行可点。
+  // 自检跑在临时 userData 上，碰不到本机的 config.json / auth.json
+  const brands = require(path.join(ROOT, 'src/main/brands.js'));
+  brands.add({ name: '自检品牌A', promptWrite: 'A 的口吻' });
+  brands.add({ name: '自检品牌B', promptWrite: 'B 的口吻' });
 
   // 照 src/main/index.js 的样子把更新模块也初始化一次。
   // 不初始化的话 update:status 回的是「谁都没动过」的默认值（message 空），
@@ -70,7 +76,22 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
-  ok('左侧导航是 8 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 8);
+  ok('左侧导航是 9 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 9);
+  // 品牌和权限必须自成一块：设置页里不能再出现品牌管理 / 账号管理（2026-10-01 用户要求）
+  const moved = await win.webContents.executeJavaScript(`(async () => {
+    const pane = () => document.querySelector('#pane').textContent;
+    document.querySelector('.nav[data-tab="7"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const inSettings = { brand: /品牌管理/.test(pane()), acct: /账号与安全/.test(pane()) };
+    document.querySelector('.nav[data-tab="9"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const t9 = pane();
+    return { inSettings, t9brand: /品牌管理|我的品牌权限/.test(t9), t9acct: /账号与安全/.test(t9) };
+  })()`);
+  ok('设置页里不再有「品牌管理 / 账号与安全」（已挪走）',
+    !moved.inSettings.brand && !moved.inSettings.acct, JSON.stringify(moved.inSettings));
+  ok('页签 9「品牌与权限」里装的是品牌管理 + 账号与安全',
+    moved.t9brand && moved.t9acct, JSON.stringify({ brand: moved.t9brand, acct: moved.t9acct }));
   ok('标题栏有「当前品牌」下拉（归属全靠它，必须一眼看得见）',
     await win.webContents.executeJavaScript('!!document.getElementById("brandSel")'));
 
@@ -202,6 +223,98 @@ app.whenReady().then(async () => {
   ok('点「提示词配置」直接弹出弹窗（不再跳去设置页那两个没人看得懂的输入框）',
     modal.before && modal.open && modal.hasTitle, JSON.stringify(modal));
   ok('点遮罩能关掉弹窗', modal.closed);
+
+  // ---- 「提示词配置」列表每行三个按钮：配置 / 选择 / 默认选择 ----
+  // 重点是**两个按钮的行为必须不一样**：「选择」只动本次（不落盘），「默认选择」才写进配置。
+  // 只断言「按钮在」证明不了它们没被做成同一个东西 —— 所以要去点，然后读配置对。
+  const picks = await win.webContents.executeJavaScript(`
+    (async () => {
+      document.querySelector('.nav[data-tab="3"]').click();
+      await new Promise(r => setTimeout(r, 120));
+      document.querySelector('[data-act="copy:prompt"]').click();
+      await new Promise(r => setTimeout(r, 220));
+      const box = () => document.getElementById('bmBox');
+      const rowsEl = () => [...box().querySelectorAll('.brow')];
+      const navOf = r => r ? [...r.querySelectorAll('button')].map(e => e.dataset.act) : [];
+      const rowById = id => rowsEl().find(r => {
+        const b = r.querySelector('[data-act="bm:pick"]');
+        return b && b.dataset.id === id;
+      });
+      const first = rowsEl()[0] || null;
+      const ids = rowsEl().map(r => r.querySelector('[data-act="bm:pick"]').dataset.id);
+      const target = ids[1] || ids[0] || '';
+      const cfg0 = await window.api.configGet();
+      const before = ((cfg0.copy || {}).defaultBrandId) || '';
+      let afterPick = null;
+      if (target) {
+        rowById(target).querySelector('[data-act="bm:pick"]').click();
+        await new Promise(r => setTimeout(r, 320));
+        const c1 = await window.api.configGet();
+        afterPick = {
+          defaultUnchanged: (((c1.copy || {}).defaultBrandId) || '') === before,
+          headerSel: (document.getElementById('brandSel') || {}).value || '',
+          marked: /本次/.test(box().textContent)
+        };
+        const again = rowById(target);
+        if (again) again.querySelector('[data-act="bm:default"]').click();
+        await new Promise(r => setTimeout(r, 480));
+      }
+      const c2 = await window.api.configGet();
+      const out = {
+        rows: ids.length,
+        nav: navOf(first),
+        labelPick: first ? first.querySelector('[data-act="bm:pick"]').textContent.trim() : '',
+        labelDefault: first ? first.querySelector('[data-act="bm:default"]').textContent.trim() : '',
+        target, afterPick,
+        defaultAfter: (((c2.copy || {}).defaultBrandId) || '')
+      };
+      const closeBtn = box() && box().querySelector('[data-act="bm:close"]');
+      if (closeBtn) closeBtn.click();
+      return out;
+    })()
+  `);
+  ok('提示词列表每行都是「配置 / 选择 / 默认选择」三个按钮（顺序也对）',
+    picks.rows >= 2 && picks.nav.join(',') === 'bm:open,bm:pick,bm:default',
+    `${picks.rows} 行 · ${picks.nav.join(' / ')} · ${picks.labelPick}/${picks.labelDefault}`);
+  ok('★「选择」= 只影响这一次：不写进配置，但标题栏的当前品牌跟着变',
+    !!picks.afterPick && picks.afterPick.defaultUnchanged && picks.afterPick.headerSel === picks.target,
+    JSON.stringify(picks.afterPick) + ' · target=' + picks.target);
+  ok('★「默认选择」= 写进配置（重启后还是它）',
+    !!picks.target && picks.defaultAfter === picks.target, `默认品牌 → ${picks.defaultAfter}`);
+
+  // ---- 设置项要在**每一页**都能存 ----
+  // 「文案生成」和「模拟器发布」两页里也有设置项（轮换策略 / 发布间隔 / adb 路径），
+  // 以前只有「设置」页绑了保存 —— 那两页改了其实从没存过，而且界面上一点提示都没有，看着像生效了。
+  const cfgSaved = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="3"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const sel = document.querySelector('[data-cfg="copy.rotateStrategy"]');
+    const before = ((await window.api.configGet()).copy || {}).rotateStrategy;
+    sel.value = before === '随机' ? 'F01-F10 轮换' : '随机';
+    sel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 400));
+    const after = ((await window.api.configGet()).copy || {}).rotateStrategy;
+    return { before, picked: sel.value, after };
+  })()`);
+  ok('★ 文案生成页的批次设置改了就存（以前只绑了设置页，这页改了没保存）',
+    cfgSaved.after === cfgSaved.picked && cfgSaved.after !== cfgSaved.before, JSON.stringify(cfgSaved));
+
+  const adbSaved = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="6"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const el = document.querySelector('[data-cfg="publish.adbPath"]');
+    if (!el) return { found: false };
+    el.value = 'D:/fake/adb.exe';
+    el.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 400));
+    const cfg = await window.api.configGet();
+    return { found: true, saved: ((cfg.publish || {}).adbPath) || '' };
+  })()`);
+  ok('模拟器发布页能填 adb 完整路径（自检那句提示承诺过这个入口）',
+    adbSaved.found && adbSaved.saved === 'D:/fake/adb.exe', JSON.stringify(adbSaved));
+  const adbMod = require(path.join(ROOT, 'src/main/services/adb.js'));
+  ok('★ 填完立刻生效、不用重启（自检第一行会回显用的是哪个 adb）',
+    adbMod.getAdbPath() === 'D:/fake/adb.exe', adbMod.getAdbPath());
   ok('设置页把那两个裸输入框换成了「打开文案提示词」入口',
     await win.webContents.executeJavaScript(`(() => {
       document.querySelector('.nav[data-tab="7"]').click();

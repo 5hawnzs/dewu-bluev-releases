@@ -218,6 +218,27 @@ function setChannel(next) {
 }
 
 /**
+ * 权限复核：**非管理员不许留在测试版通道**。
+ *
+ * 为什么不能只靠 IPC 那道门（update:set-channel 已收进 guardAdmin）：
+ * 通道是**落盘**的（store.update.channel）。管理员切到测试版之后，换一个普通成员登录，
+ * 他会一直收测试版更新包 —— 而他连那个按钮都看不见，没有任何自救的办法。
+ * 所以「登录」和「应用启动」都要复核一遍：不是管理员就按回正式版。
+ *
+ * 注意这**不是安全边界**（auth.json / config.json 谁都能改，本机权限只是防误操作），
+ * 它保证的是「界面不给的东西，后台也不会偷偷生效」。
+ *
+ * @param {boolean} isAdmin
+ * @returns {{ok:boolean, changed:boolean, from?:string, label?:string}}
+ */
+function enforceChannelPermission(isAdmin) {
+  if (isAdmin || channel === DEFAULT_CHANNEL) return { ok: true, changed: false };
+  const from = channel;
+  const r = setChannel(DEFAULT_CHANNEL);
+  return { ok: true, changed: !!(r && r.ok && !r.unchanged), from, label: CHANNEL_LABEL[DEFAULT_CHANNEL] };
+}
+
+/**
  * @param {object} opts
  * @param {(ch:string, payload:any)=>void} opts.send  事件广播（主进程里 = 发给所有窗口）
  * @param {boolean} opts.packaged                     app.isPackaged
@@ -344,6 +365,7 @@ function _reset() {
 
 module.exports = {
   init, scheduleStartupCheck, check, download, install, status, setChannel, applyChannel,
+  enforceChannelPermission,
   portableExe, AUTO_DOWNLOAD, STARTUP_DELAY_MS, CHANNELS, CHANNEL_LABEL, DEFAULT_CHANNEL,
   _setUpdater, _reset
 };

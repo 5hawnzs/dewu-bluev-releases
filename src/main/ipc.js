@@ -10,6 +10,7 @@ const brands = require('./brands');
 const imaging = require('./services/imaging');
 const pool = require('./services/pool');
 const stats = require('./services/stats');
+const adb = require('./services/adb');
 const updater = require('./updater');
 const wp = require('./util/winpath');
 const winmod = require('./window');
@@ -51,13 +52,35 @@ function scopeOf() {
   return a.all ? null : a.ids;
 }
 
+/**
+ * 通道权限复核：非管理员不许留在测试版通道（登录后 / 应用启动时各跑一次）。
+ * 渲染层「看不见按钮」只是不给人添乱，真正拦住的是这里 + update:set-channel 的 guardAdmin。
+ * 为什么还要这次复核：通道是落盘的，管理员切过去之后换个人登录，那个人会一直收测试版更新，
+ * 而他连那个按钮都看不到，没法自己切回来。
+ * @returns {{changed:boolean, from?:string}}
+ */
+function syncChannelPermission() {
+  const u = auth.current();
+  // 与 guardAdmin 同一口径：登录校验关着（免登录 / 开发模式）时视为有权限，否则开发时自己就点不动了
+  const isAdmin = !auth.enabled() || !!(u && u.role === 'admin');
+  const r = updater.enforceChannelPermission(isAdmin) || { changed: false };
+  if (r.changed) {
+    store.set({ update: { channel: updater.DEFAULT_CHANNEL } });
+    logbus.warn(`更新通道已按权限收回：${r.from || 'beta'} → ${updater.DEFAULT_CHANNEL}（${(u && (u.displayName || u.username)) || '当前账号'}不是管理员）`);
+  }
+  return r;
+}
+
 function register() {
   // ---- 账号与登录：登录页本身要用，不设门禁 ----
   ipcMain.handle('auth:status', () => auth.status());
   // 登录成功 → 窗口从「登录小窗」还原成正常尺寸；退出登录 → 重新收回小窗
   ipcMain.handle('auth:login', (_e, u, p, remember) => {
     const r = auth.login(u, p, remember);
-    if (r && r.ok) winmod.setLoginMode(false);
+    if (r && r.ok) {
+      winmod.setLoginMode(false);
+      syncChannelPermission();   // 普通成员登录时，把管理员留下的测试版通道收回来
+    }
     return r;
   });
   ipcMain.handle('auth:logout', () => {
@@ -153,7 +176,10 @@ function register() {
   ipcMain.handle('update:download', guard(() => updater.download()));
   // 切通道（正式版 ↔ 测试版）。★ 这**不是**改源地址：源地址编译在包里，这里只换
   // 「读哪个 yml」（latest.yml / beta.yml）。换完立刻落盘，重启后还是这条通道。
-  ipcMain.handle('update:set-channel', guard((_e, next) => {
+  // ★★ 只给管理员：测试版是「没经过正式验收的包」，不该让所有人都能把自己切过去。
+  //    界面上那个按钮已经藏起来了，这里再拦一道 —— 前端改一行不算数（本机权限不是安全边界，
+  //    但「界面不给的东西，后台也不会偷偷生效」这条要守住）。
+  ipcMain.handle('update:set-channel', guardAdmin((_e, next) => {
     const r = updater.setChannel(next);
     if (r && r.ok && !r.unchanged) {
       store.set({ update: { channel: r.channel } });
@@ -189,7 +215,14 @@ function register() {
   }));
 
   ipcMain.handle('config:get', guard((_e, key) => store.get(key)));
-  ipcMain.handle('config:set', guard((_e, patch) => { store.set(patch); return store.get(); }));
+  ipcMain.handle('config:set', guard((_e, patch) => {
+    store.set(patch);
+    // adb 路径改完要**立刻**生效：用户填完就想点「驱动自检」看第一行对不对，不该等重启
+    if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'adbPath')) {
+      adb.setAdbPath(store.get('publish.adbPath'));
+    }
+    return store.get();
+  }));
 
   ipcMain.handle('project:get', guard(() => project.get()));
   ipcMain.handle('log:history', guard(() => logbus.history()));
@@ -241,4 +274,4 @@ function register() {
   ipcMain.on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
 }
 
-module.exports = { register };
+module.exports = { register, syncChannelPermission };

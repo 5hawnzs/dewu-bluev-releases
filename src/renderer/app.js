@@ -548,7 +548,7 @@ TABS[6] = {
 
 TABS[7] = {
   title: '设置',
-  desc: '路径、依赖、外部数据源',
+  desc: '路径、文案模型、内容校验、外观、应用更新、外部依赖（品牌与权限已单独成页）',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
@@ -582,7 +582,7 @@ TABS[7] = {
       </div>
       <div class="box">
         <h3>内容与校验（对齐真机）</h3>
-        <p class="hint">品牌不在这里填了 —— 见下方「<b>品牌管理</b>」：可以建多个品牌，并按账号分配权限（「账号管理」表里新增了「品牌权限」列）。产出的文案 / 发布单 / 发布记录都会带上所属品牌，管理员在「品牌统计」页按品牌查频次、数量和执行日志。</p>
+        <p class="hint">品牌不在这里填 —— 见左侧「<b>品牌与权限</b>」页：能建多个品牌，并按账号分配权限。产出的文案 / 发布单 / 发布记录都会带上所属品牌，管理员在「品牌统计」页按品牌查频次、数量和执行日志。</p>
         <div class="row">
           <span class="lbl">文案提示词</span>
           <span class="chip">按品牌各配一份</span>
@@ -620,8 +620,7 @@ TABS[7] = {
         </table></div>
         <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>
       </div>
-      ${brandsHtml()}
-      ${accountHtml()}`;
+      <p class="hint">品牌、账号、以及「谁能用哪些品牌」原先挤在这一页最下面 —— 已经挪到左侧的「<b>品牌与权限</b>」页。</p>`;
   }
 };
 
@@ -652,7 +651,12 @@ function updateHtml() {
   const dl = u.status === 'downloading';
   const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
   const newer = u.latest && u.latest !== u.current;
-  const isBeta = u.channel === 'beta';   // 老快照没有 channel 字段 ⇒ 当作正式版
+  // 「谁能切测试版」跟主进程 guardAdmin 一个口径：登录校验关着（免登录 / 开发模式）也算有权限。
+  // ★ 没权限的人不只是禁用按钮 —— 连「测试版」这三个字都不许出现在界面上。
+  // 所以 isBeta 也跟着 canBeta 走：万一配置里还留着 beta（比如管理员切过之后换了账号），
+  // 普通成员这一页也只会看到「正式版」，不会因为一个残留值露出通道字样。
+  const canBeta = canAdmin();
+  const isBeta = canBeta && u.channel === 'beta';   // 老快照没有 channel 字段 ⇒ 当作正式版
 
   return `<div class="box" id="updBox">
     <h3>应用更新</h3>
@@ -661,12 +665,12 @@ function updateHtml() {
       ${newer ? `<span class="lbl">新版本</span><span class="chip mono">${esc(u.latest)}</span>` : ''}
       ${badge(label, kind)}
     </div>
-    <div class="row" style="margin-bottom:9px">
+    ${canBeta ? `<div class="row" style="margin-bottom:9px">
       <span class="lbl">更新通道</span>
       <button class="btn sm${isBeta ? '' : ' primary'}" data-act="upd:chan:stable" ${dl ? 'disabled' : ''}>正式版</button>
       <button class="btn sm${isBeta ? ' primary' : ''}" data-act="upd:chan:beta" ${dl ? 'disabled' : ''}>测试版</button>
       ${badge(u.channelLabel || (isBeta ? '测试版' : '正式版'), isBeta ? 'warn' : 'ok')}
-    </div>
+    </div>` : ''}
     ${dl ? `<div class="progwrap"><div class="bar" id="updBar"><i style="width:${pct}%"></i></div>
       <span class="chip" id="updTxt">${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}</span></div>` : ''}
     <div class="row" style="margin-top:9px">
@@ -677,9 +681,9 @@ function updateHtml() {
     ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
     <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
     「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
-    <p class="hint">${isBeta
+    ${canBeta ? `<p class="hint">${isBeta
       ? '<b>当前在测试版通道</b>：比正式版早拿到新功能，但没经过正式验收。随时可以切回正式版 —— 切回去时允许降级，不用重装。'
-      : '测试版比正式版早拿到新功能，但<b>没经过正式验收</b>。切通道只是换个清单文件，不用重装、也不会失联。'}</p>
+      : '测试版比正式版早拿到新功能，但<b>没经过正式验收</b>。切通道只是换个清单文件，不用重装、也不会失联。'}</p>` : ''}
   </div>`;
 }
 
@@ -882,6 +886,23 @@ TABS[8] = {
   }
 };
 
+/* ---------------- ⑨ 品牌与权限 ---------------- */
+/*
+ * 为什么从「设置」里拆出来单独成页：
+ * 设置页那些（路径 / 模型 / 外观 / 更新 / 依赖）讲的是「这台机器怎么跑」，
+ * 而品牌和账号讲的是「谁能做什么」。混在一页里，找账号权限要滚过半屏，还容易误以为
+ * 改路径会动到权限。拆开之后编辑号接在最后（9），不动已有页签的编号 ——
+ * 插号要把设置从 7 改成 8，连快捷键和几处断言都要跟着动，不划算。
+ */
+TABS[9] = {
+  title: '品牌与权限',
+  desc: '品牌清单 · 账号与密码 · 按账号分配品牌权限 · 默认品牌（新建品牌、分配权限只有管理员能做）',
+  actions: () => [],
+  render() {
+    return `${brandsHtml()}${accountHtml()}`;
+  }
+};
+
 /** 设备矩阵：真机里「一个设备 = 一个账号」（雷电模拟器多台并行） */
 function devicesHtml() {
   const list = (state.config.publish && state.config.publish.devices) || [];
@@ -903,7 +924,15 @@ function devicesHtml() {
       <button class="btn sm" data-act="pub:addDev">添加设备</button>
       <button class="btn sm" data-act="pub:devStatus">检测在线</button>
       <span class="chip ${(state.project.publish || {}).connected ? 'run' : ''}">${(state.project.publish || {}).connected ? '已连接' : '未连接'}</span>
-    </div></div>`;
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span class="lbl">adb 路径</span>
+      <input class="inp mono" value="${esc((state.config.publish || {}).adbPath || '')}" data-cfg="publish.adbPath"
+        placeholder="留空 = 用系统 PATH 里的 adb；找不到就填完整路径，如 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe">
+    </div>
+    <p class="hint">自检第一行查的就是它 —— <b>PATH 里没有 adb，整张自检表都会报错</b>，看起来像设备坏了，其实只是没找到 adb。
+      填了完整路径就不必再动系统环境变量；改完点「驱动自检」，第一行会回显当前用的是哪一个。</p>
+    </div>`;
 }
 
 /** 驱动自检结果：说清楚「现在到底能不能真发」 */
@@ -954,7 +983,10 @@ function renderAll() {
   }
   const lo = $('#btnLogout');
   if (lo) lo.style.display = me ? '' : 'none';
-  if (state.tab === 7) bindSettings();
+  // 页内的设置项：任何页签都要能存（文案生成 / 模拟器发布页里也有）
+  bindCfgInputs();
+  // 设置页与「品牌与权限」页共用一套绑定：都按 id 找元素，找不到就跳过
+  if (state.tab === 7 || state.tab === 9) bindSettings();
   if (state.tab === 8) {
     bindStats();
     // 第一次进这个页签自动读一次；statsTried 防止查询失败时无限重试（那只会在 render→load→render 里打转）
@@ -998,7 +1030,7 @@ function showGate(msg) {
   if (hint) {
     tip.hidden = false;
     tip.innerHTML = `初始账号 <b>${esc(hint.username)}</b> / <b>${esc(hint.password)}</b>` +
-      ` —— 进去后到「设置 → 账号与安全」改掉。`;
+      ` —— 进去后到「品牌与权限 → 账号与安全」改掉。`;
   } else {
     tip.hidden = true;
   }
@@ -1045,7 +1077,7 @@ async function enterApp() {
   renderAll();
   renderLogs();
   const me = state.auth && state.auth.user;
-  if (me && me.mustChange) toast('当前还是出厂口令，建议到「设置 → 账号与安全」改掉', 'err');
+  if (me && me.mustChange) toast('当前还是出厂口令，建议到「品牌与权限 → 账号与安全」改掉', 'err');
 }
 
 async function doLogout() {
@@ -1117,7 +1149,7 @@ function paintBrandSelect() {
   sel.classList.toggle('warn', !usable.length);
   sel.title = usable.length
     ? `当前品牌：${brandNameOf(keep)} —— 文案生成 / 发布单 / 发布都会归属到它`
-    : (m.isAdmin ? '还没有品牌：到「设置 → 品牌管理」添加' : '你还没有被分配品牌：请管理员到「设置 → 账号管理」里分配');
+    : (m.isAdmin ? '还没有品牌：到「品牌与权限」页添加' : '你还没有被分配品牌：请管理员到「品牌与权限 → 账号管理」里分配');
 }
 
 /* ---------------- 文案提示词弹窗 ---------------- */
@@ -1144,35 +1176,57 @@ function closeBrandModal() {
   renderBrandModal();
 }
 
+/**
+ * 「这个人能不能做管理员操作」——与主进程 ipc.js 的 guardAdmin **同一个口径**：
+ * 登录校验关着（免登录 / 开发模式）算有权限，否则看 role。
+ * ★ 界面上藏按钮只是不给人添乱，真正拦住的是主进程那道 guardAdmin —— 前端改一行不算数。
+ */
+function canAdmin() {
+  const a = state.auth || {};
+  return !a.requireLogin || !!a.isAdmin;
+}
+
 /** 这个人能编辑哪些品牌：管理员=全部；成员=名下的（含已停用的，否则停用一个他连看都看不到） */
 function myBrands() {
   const m = state.brandsMeta || {};
-  const isAdmin = !!(state.auth && state.auth.isAdmin);
   const mine = m.mine || [];
-  return (m.brands || []).filter(b => isAdmin || mine.includes(b.id));
+  return (m.brands || []).filter(b => canAdmin() || mine.includes(b.id));
 }
 
 function bmListHtml() {
-  const isAdmin = !!(state.auth && state.auth.isAdmin);
+  const isAdmin = canAdmin();
   const list = myBrands();
+  const def = (state.brandsMeta && state.brandsMeta.defaultBrandId) || '';
   const rows = list.length ? list.map(b => {
     const ok = !!String(b.promptWrite || '').trim();
-    return `<div class="brow${b.enabled === false ? ' dead' : ''}">
+    const dead = b.enabled === false;
+    // 「本次」= 内存里正在用的那个（state.brandId），点了立即生效、不落盘，重启回到默认
+    // 「默认」= 落盘的 copy.defaultBrandId，重启后还是它
+    const isPick = !!b.id && state.brandId === b.id;
+    const isDefault = !!b.id && def === b.id;
+    return `<div class="brow${dead ? ' dead' : ''}">
       <span class="bn">${esc(b.name)}</span>
-      ${b.enabled === false ? badge('已停用', 'wait') : badge('启用', 'ok')}
+      ${dead ? badge('已停用', 'wait') : badge('启用', 'ok')}
       ${ok ? '<span class="chip">已配文案</span>' : '<span class="chip warn">未配文案</span>'}
+      ${isPick ? '<span class="chip run">本次</span>' : ''}
+      ${isDefault ? '<span class="chip chip-user">默认</span>' : ''}
       <span class="grow snip">${esc(String(b.promptWrite || '').replace(/\s+/g, ' ').slice(0, 46) || '—')}</span>
       <button class="btn sm" data-act="bm:open" data-id="${b.id}">配置</button>
+      <button class="btn sm${isPick ? ' primary' : ''}" data-act="bm:pick" data-id="${b.id}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>选择</button>
+      <button class="btn sm${isDefault ? ' primary' : ''}" data-act="bm:default" data-id="${b.id}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>默认选择</button>
     </div>`;
   }).join('') : `<div class="empty">${isAdmin
     ? '还没有品牌。点左下角「新增品牌」建一个，再给它写文案提示词。'
-    : '你名下还没有品牌 —— 请联系管理员在「设置 → 账号管理」里分配。'}</div>`;
+    : '你名下还没有品牌 —— 请联系管理员在「品牌与权限 → 账号管理」里分配。'}</div>`;
   return `
     <div class="mh"><h3>文案提示词</h3><span class="grow"></span>
       <button class="btn sm" data-act="bm:close">关闭</button></div>
     <div class="mb">
-      <p class="mnote" style="margin:0 0 11px">每个品牌一份自己的文案提示词 —— <b>点一行进去改</b>。
+      <p class="mnote" style="margin:0 0 11px">每个品牌一份自己的文案提示词 —— <b>点「配置」进去改</b>。
         没配的品牌<b>不允许生成</b>：会直接拦下并提示来这儿补，不会悄悄拿别的品牌的口吻顶替。</p>
+      <p class="mnote" style="margin:0 0 11px">右边两个按钮别混：
+        <b>「选择」只影响这一次</b>（本次的文案 / 发布单 / 发布都归它，切页签还在，<b>重启就回到默认</b>）；
+        <b>「默认选择」会写进配置</b>，以后每次打开都是它。当前状态看行里的「本次」「默认」两个小标。</p>
       <div class="blist">${rows}</div>
     </div>
     <div class="mf">
@@ -1183,7 +1237,7 @@ function bmListHtml() {
 }
 
 function bmEditHtml(id) {
-  const isAdmin = !!(state.auth && state.auth.isAdmin);
+  const isAdmin = canAdmin();
   const isNew = !id;
   const m = state.brandsMeta || {};
   const b = isNew
@@ -1238,15 +1292,14 @@ function bmEditHtml(id) {
 /* ---------------- 设置页：品牌管理 ---------------- */
 function brandsHtml() {
   const m = state.brandsMeta;
-  const me = state.auth || {};
-  if (!me.isAdmin) {
+  if (!canAdmin()) {
     // 普通成员：只看得见自己被分配的品牌，不给增删改
     const mine = m ? (m.brands || []).filter(b => (m.mine || []).includes(b.id)) : [];
     return `<div class="box">
       <h3>我的品牌权限</h3>
       ${mine.length
         ? `<div class="row">${mine.map(b => `<span class="chip${b.enabled === false ? ' warn' : ''}">${esc(b.name)}${b.enabled === false ? '（已停用）' : ''}</span>`).join('')}</div>`
-        : '<p class="hint">你还没有被分配任何品牌 —— 请联系管理员到「设置 → 账号管理」里分配。没有品牌时，<b>文案生成 / 发布单 / 发布</b>这类任务会直接报错停下（不会悄悄发出去）。</p>'}
+        : '<p class="hint">你还没有被分配任何品牌 —— 请联系管理员到「品牌与权限 → 账号管理」里分配。没有品牌时，<b>文案生成 / 发布单 / 发布</b>这类任务会直接报错停下（不会悄悄发出去）。</p>'}
       <p class="hint">品牌清单、以及谁能用哪些品牌，都由管理员维护。</p>
     </div>`;
   }
@@ -1302,7 +1355,14 @@ function brandsHtml() {
 function accountHtml() {
   const a = state.auth || {};
   const me = a.user;
-  if (!me) return '';
+  // 免登录模式下没有「当前账号」，但**账号管理表**跟登不登录无关（那是管别人的账号），照样要显示。
+  // 原先这里直接 return ''，结果免登录时整块「账号与安全」都不见了 —— 看着像功能被砍了。
+  if (!me) {
+    return `<div class="box"><h3>账号与安全</h3>
+      <p class="hint">免登录模式下没有「当前账号」，改密码请先正常登录。</p>
+    </div>
+    ${canAdmin() ? adminUsersHtml() : ''}`;
+  }
   return `
     <div class="box">
       <h3>账号与安全</h3>
@@ -1324,7 +1384,7 @@ function accountHtml() {
       </div>
       ${me.mustChange ? '<p class="hint">当前仍是<b>出厂口令</b>，请尽快修改。</p>' : ''}
     </div>
-    ${a.isAdmin ? adminUsersHtml() : '<div class="box"><h3>账号管理</h3><p class="hint">只有管理员能新增/停用账号。</p></div>'}`;
+    ${canAdmin() ? adminUsersHtml() : '<div class="box"><h3>账号管理</h3><p class="hint">只有管理员能新增/停用账号。</p></div>'}`;
 }
 
 function adminUsersHtml() {
@@ -1466,11 +1526,33 @@ const ACTS = {
   // ---- 文案提示词弹窗 ----
   'bm:list': () => openBrandModal('list'),
   'bm:open': (el) => openBrandModal('edit', el.dataset.id),
+  // 「选择」= 本次用它。★ 只改内存里的 state.brandId，**不落盘** —— 这就是它和「默认选择」的全部区别。
+  // 后续任务在 runJob 里会把这个 id 随 args 带给主进程（主进程还会再校验一次权限）。
+  'bm:pick': (el) => {
+    state.brandId = el.dataset.id;
+    // 标题栏那个下拉要跟着变 —— 否则「本次」改了却看不见，用户会以为没生效
+    // （paintBrandSelect 原先只在刷新品牌列表时调，这条路径得自己叫一次）
+    paintBrandSelect();
+    toast(`本次使用「${el.dataset.name}」—— 重启后回到默认品牌`, 'ok');
+    renderBrandModal();
+    renderAll();
+  },
+  // 「默认选择」= 写进配置（copy.defaultBrandId），重启后还是它
+  'bm:default': async (el) => {
+    const id = el.dataset.id;
+    await appApi.configSet({ copy: { defaultBrandId: id } });
+    state.brandId = id;
+    state.config = await appApi.configGet();
+    await refreshBrands();
+    toast(`默认品牌已设为「${el.dataset.name}」`, 'ok');
+    renderBrandModal();
+    renderAll();
+  },
   'bm:new': () => openBrandModal('edit', ''),
   'bm:close': () => closeBrandModal(),
   'bm:save': async (el) => {
     const id = el.dataset.id || '';
-    const isAdmin = !!(state.auth && state.auth.isAdmin);
+    const isAdmin = canAdmin();
     const val = sel => { const e = $(sel); return e ? e.value : ''; };
     const name = val('#bmName').trim();
     const promptWrite = val('#bmWrite');
@@ -1855,14 +1937,27 @@ async function saveCfgFromDom() {
   state.config = await appApi.configGet();
 }
 
-function bindSettings() {
-  const sel = $('#themeSel');
-  if (!sel) return;
-  appApi.themeGet().then(t => { sel.value = t.themeSource || 'system'; });
-  sel.onchange = async () => { await appApi.themeSet(sel.value); };
+/**
+ * 页内所有 data-cfg 控件：一改就存。
+ * ★ 以前只在「设置」页绑这一段，可「文案生成」和「模拟器发布」页里也有设置项
+ *   （并发路数 / 轮换策略 / 必带话题 / 话题数 / 发布间隔 / 失败重试 / adb 路径）——
+ *   那两页改了其实**从来没保存过**，而且界面上一点提示都没有，看着像生效了。
+ *   所以改成每个页签渲染完都绑一次。
+ */
+function bindCfgInputs() {
   document.querySelectorAll('#pane [data-cfg]').forEach(el => {
     el.onchange = () => { saveCfgFromDom(); };
   });
+}
+
+/** 设置页 + 「品牌与权限」页的绑定。两页共用：按 id 找，找不到就跳过（原先有个 early return，会把另一页的绑定一起跳过） */
+function bindSettings() {
+  const sel = $('#themeSel');
+  if (sel) {
+    appApi.themeGet().then(t => { sel.value = t.themeSource || 'system'; });
+    sel.onchange = async () => { await appApi.themeSet(sel.value); };
+  }
+  // data-cfg 的绑定不在这里了 —— 改成每个页签都绑（见 bindCfgInputs）
   // 「品牌权限」面板里选账号就重画，勾选框要跟着换成这个人的当前分配
   const pb = $('#pbUser');
   if (pb) pb.onchange = () => { state.permUserId = pb.value; renderAll(); };
@@ -1931,7 +2026,7 @@ function bind() {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
-      if (k >= 1 && k <= 8) { state.tab = k; renderAll(); e.preventDefault(); }
+      if (k >= 1 && k <= 9) { state.tab = k; renderAll(); e.preventDefault(); }
     }
   });
 

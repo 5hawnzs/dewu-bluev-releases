@@ -48,6 +48,10 @@ function defaults() {
       api: { endpoint: '', apiKey: '' }
     },
     publish: {
+      // adb 可执行文件。空 = 直接叫 'adb'（走 PATH）；填了就用这个完整路径。
+      // 「模拟器发布」页可填，自检里会回显当前用的是哪一个 —— 免得 PATH 里没有 adb 时
+      // 整张自检表都报错，却不知道该去哪儿改。
+      adbPath: '',
       device: '',                      // 选中的设备 serial（多设备矩阵）
       devices: [],                     // [{id, name, serial}] 一个设备 = 一个账号
       intervalSec: 60,                 // 真机是固定 1 分钟间隔，带倒计时

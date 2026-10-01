@@ -10,6 +10,7 @@ const updater = require('./updater');
 const wp = require('./util/winpath');
 const imaging = require('./services/imaging');
 const pool = require('./services/pool');
+const adb = require('./services/adb');
 
 // Windows 通知/任务栏分组需要显式 AppUserModelID
 if (wp.isWin()) app.setAppUserModelId('com.bluev.publisher');
@@ -31,6 +32,8 @@ if (!app.requestSingleInstanceLock()) {
     store.load();
     project.load();
     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
+    // adb 路径：默认走 PATH，用户填了完整路径就用它（自检结果里会回显当前用的是哪一个）
+    adb.setAdbPath(store.get('publish.adbPath'));
     ipc.register();
 
     const st = auth.status();
@@ -56,6 +59,10 @@ if (!app.requestSingleInstanceLock()) {
       // 通道偏好从配置里读。非法值 updater 自己会忽略并落回 stable
       channel: store.get('update.channel')
     });
+    // 通道权限复核：勾了「记住我」时启动就已经登录了，这里要把上一次留下的测试版通道按权限收回
+    // （否则普通成员一开机就在测试版通道上收测试包，而他连那个按钮都看不见）
+    ipc.syncChannelPermission();
+
     const upSt = updater.status();
     if (upSt.supported) {
       updater.scheduleStartupCheck();

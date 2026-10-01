@@ -8,9 +8,22 @@
  */
 const { execFile } = require('child_process');
 
+/**
+ * adb 可执行文件。默认就写 'adb'（走 PATH）；用户可以在「模拟器发布」页填一个完整路径，
+ * 由主进程启动时通过 setAdbPath() 注进来 —— 放在这里而不是直接 require('store')，
+ * 是为了让这一层保持无依赖：测试里换假 adb 只动 child_process 那一层就够了。
+ */
+let adbBin = 'adb';
+function setAdbPath(p) {
+  const s = String(p == null ? '' : p).trim();
+  adbBin = s || 'adb';
+  return adbBin;
+}
+function getAdbPath() { return adbBin; }
+
 function execAdb(args, { timeout = 20000, binary = false } = {}) {
   return new Promise(resolve => {
-    execFile('adb', args, {
+    execFile(adbBin, args, {
       timeout, windowsHide: true, maxBuffer: 64 * 1024 * 1024,
       encoding: binary ? 'buffer' : 'utf8'
     }, (err, stdout, stderr) => resolve({
@@ -220,16 +233,28 @@ async function packages(serial, filter) {
 
 /** 驱动自检：把「能不能真的发」拆成可验证的几条 */
 async function probe(serial) {
-  const out = { serial, adb: null, device: null, resolution: null, appPackage: null, adbKeyboard: false, tools: {}, notes: [] };
+  const out = { serial, adbPath: adbBin, adb: null, device: null, resolution: null, appPackage: null, adbKeyboard: false, tools: {}, notes: [] };
   out.adb = await version();
-  if (!out.adb) { out.notes.push('没检测到 adb —— 装 platform-tools 并加进 PATH，或在设置里填 adb 完整路径'); return out; }
+  if (!out.adb) {
+    // 这两条都是**真的能用的**办法。以前这里写着「或在设置里填 adb 完整路径」，
+    // 但 adbPath 这个配置项根本不存在 —— 指了一个不存在的地方，等于让人白找。
+    out.notes.push(`没检测到 adb（现在找的是「${adbBin}」）—— 两个办法任选：`
+      + '① 把 adb 所在目录加进系统 PATH（用模拟器自带的那个就行）；'
+      + '② 在「模拟器发布」页把 adb 的完整路径填上，例如 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe');
+    return out;
+  }
 
   out.device = await online(serial);
   if (!out.device) {
     const list = await devices();
+    // 这一条是「自检整表报错」最常见的原因：serial 填错。
+    // MuMu 的「网络桥接地址」（127.0.0.1:16385 这类）和 adb 侧真正认到的 serial
+    // （emulator-5554）经常不是同一个 —— 填错就每一项都失败，看起来像设备坏了，其实只是名字不对。
+    const usable = list.filter(d => d.state === 'device');
     out.notes.push(list.length
-      ? `设备 ${serial} 不在线，当前列表：${list.map(d => d.serial + '(' + d.state + ')').join('、')}`
-      : 'adb 在线但没有任何设备，先在模拟器里打开 ADB 调试');
+      ? `设备 ${serial} 不在线。adb 现在认到的是：${list.map(d => `${d.serial}(${d.state})`).join('、')}`
+        + (usable.length ? ` —— 上面「设备」那一栏请选「${usable[0].serial}」。模拟器重启后端口/名字可能变，别照抄上一次的。` : '')
+      : 'adb 在线但一个设备都没有：先把模拟器启动起来，并在模拟器设置里打开 ADB 调试');
     return out;
   }
 
@@ -261,5 +286,6 @@ async function probe(serial) {
 
 module.exports = {
   execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, screencap,
-  dump, dumpEx, lastDumpInfo, tap, keyevent, inputText, packages, probe
+  dump, dumpEx, lastDumpInfo, tap, keyevent, inputText, packages, probe,
+  setAdbPath, getAdbPath
 };

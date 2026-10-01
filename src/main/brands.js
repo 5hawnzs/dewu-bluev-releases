@@ -195,7 +195,13 @@ function isAdmin(user) { return !!(user && user.role === 'admin'); }
  */
 function allowed(user) {
   const all = enabledList();
-  if (isAdmin(user)) return { all: true, brands: all, ids: all.map(b => b.id), assigned: all.map(b => b.id) };
+  // ★ 没有当前账号 = 免登录开发模式（auth.enabled() 为 false，guard 放行全部）。
+  //   这里必须也按「全部」算，理由有两条：
+  //   ① 与 resolveFor 里那段 `if (!user)` 的特判同一口径 —— 否则同一个模式下
+  //      「任务能归属任意品牌、品牌列表却一个都不显示」，前后矛盾；
+  //   ② 与 ipc.scopeOf() 也同一口径 —— 那里是「没账号 = 不设范围」，不然统计能看全部品牌，
+  //      品牌下拉却是空的，用户只会以为是坏了。
+  if (!user || isAdmin(user)) return { all: true, brands: all, ids: all.map(b => b.id), assigned: all.map(b => b.id) };
   const assigned = (Array.isArray(user && user.brands) ? user.brands : []).map(String).filter(Boolean);
   const mine = all.filter(b => assigned.includes(b.id));
   return { all: false, brands: mine, ids: mine.map(b => b.id), assigned };
@@ -235,12 +241,12 @@ function resolveFor(user, wantedId, opts = {}) {
   if (!required) return { ok: true, brand: null };
 
   if (!a.brands.length) {
-    if (isAdmin(user)) return { ok: false, error: '还没有品牌可归属：先到「设置 → 品牌管理」里添加一个品牌' };
+    if (isAdmin(user)) return { ok: false, error: '还没有品牌可归属：先到「品牌与权限」页添加一个品牌' };
     return {
       ok: false,
       error: a.assigned.length
         ? '你名下的品牌都已停用或被删除，请联系管理员重新分配'
-        : '当前账号还没有分配品牌，请联系管理员在「设置 → 账号管理」里分配后再操作'
+        : '当前账号还没有分配品牌，请联系管理员在「品牌与权限 → 账号管理」里分配后再操作'
     };
   }
   if (a.brands.length === 1) return { ok: true, brand: a.brands[0], auto: true };
