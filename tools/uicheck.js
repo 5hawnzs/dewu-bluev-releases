@@ -32,10 +32,17 @@ app.whenReady().then(async () => {
   const logbus = require(path.join(ROOT, 'src/main/logbus.js'));
   const ipc = require(path.join(ROOT, 'src/main/ipc.js'));
   const auth = require(path.join(ROOT, 'src/main/auth.js'));
+  const updater = require(path.join(ROOT, 'src/main/updater.js'));
   store.load();
   project.load();
   auth.load();
   ipc.register();
+
+  // 照 src/main/index.js 的样子把更新模块也初始化一次。
+  // 不初始化的话 update:status 回的是「谁都没动过」的默认值（message 空），
+  // 界面上「为什么不可用」那句真实原因就传不到，这一栏等于没测。
+  // packaged=false（自检跑的是源码）⇒ 应当如实说「开发模式」。
+  updater.init({ send: () => {}, packaged: app.isPackaged, version: app.getVersion() });
 
   const win = new BrowserWindow({
     show: false,                       // 隐藏窗口：不打断正在用电脑的人
@@ -108,6 +115,22 @@ app.whenReady().then(async () => {
   ok('页签 6 有「失败恢复动作」', await onTab(6, 'pub:recoverEdit'));
   ok('页签 8 有「查询」（品牌统计）', await onTab(8, 'stats:refresh'));
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
+
+  // ---- 应用更新面板：这轮测的是「界面诚不诚实」，不是「按钮好不好看」----
+  // 自检跑的是没打包的源码 ⇒ app.isPackaged=false ⇒ 自动更新本来就不可用。
+  // 所以这一栏必须**如实说不可用**，而不是摆三个点了没反应的按钮出来。
+  const updPanel = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="7"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const box = document.querySelector('#updBox');
+    if (!box) return null;
+    return { text: box.textContent, acts: [...box.querySelectorAll('[data-act]')].map(e => e.dataset.act) };
+  })()`);
+  ok('页签 7 有「应用更新」面板，并写出当前版本号', !!updPanel && /当前版本/.test(updPanel.text),
+     (updPanel && updPanel.text || '').slice(0, 120));
+  ok('未打包时如实标「开发模式 / 不可用」，且不摆点了没用的按钮',
+     !!updPanel && /开发模式/.test(updPanel.text) && updPanel.acts.length === 0,
+     (updPanel && updPanel.text || '').slice(0, 120) + ' | 按钮 ' + JSON.stringify(updPanel && updPanel.acts));
 
   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
   // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动

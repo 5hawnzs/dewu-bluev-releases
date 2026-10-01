@@ -6,6 +6,7 @@ const logbus = require('./logbus');
 const winmod = require('./window');
 const ipc = require('./ipc');
 const auth = require('./auth');
+const updater = require('./updater');
 const wp = require('./util/winpath');
 const imaging = require('./services/imaging');
 const pool = require('./services/pool');
@@ -41,6 +42,25 @@ if (!app.requestSingleInstanceLock()) {
       logbus.warn('HEIC 解码不可用（缺少 sharp/libheif）：HEIC 会被标为需人工处理，不阻断其它环节');
     }
     logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
+
+    // 自动更新：这里只「初始化 + 排一次延迟自检」。
+    // 下载和安装都必须由用户在「设置 → 应用更新」里点 —— 见 updater.js 文件头的两条铁律
+    updater.init({
+      send: (ch, payload) => {
+        for (const bw of BrowserWindow.getAllWindows()) {
+          if (!bw.isDestroyed()) bw.webContents.send(ch, payload);
+        }
+      },
+      packaged: app.isPackaged,
+      version: app.getVersion()
+    });
+    const upSt = updater.status();
+    if (upSt.supported) {
+      updater.scheduleStartupCheck();
+      logbus.info(`自动更新已启用 · 当前 ${upSt.current} · 启动约 ${Math.round(updater.STARTUP_DELAY_MS / 1000)} 秒后自检一次（下载/安装都要手动点）`);
+    } else {
+      logbus.info(`自动更新不可用：${upSt.message}`);
+    }
 
     logbus.info(st.requireLogin
       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')

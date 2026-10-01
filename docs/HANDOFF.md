@@ -93,11 +93,17 @@
 3. **它的产物不要动**：`src/main/auth.js`、`index.js`、`ipc.js`、`preload/index.js`、`renderer/index.html`、`renderer/styles.css`
    （本机登录门：`auth:*` 通道，`guard()` 拦截未登录的 `job:run` 等调用）。   默认管理员 `admin / BlueV@2026`；
    手动跑 App 想免登录：`BLUEV_NO_LOGIN=1`（**只限手动跑**；跑回归不要设它，原因见 §2 第 3 条）。
-   登录门本身已有回归：`tools/logintest.js`（58 项，见 §6）—— 覆盖未登录拦截、口令只存哈希、记住登录、
+   登录门本身已有回归：`tools/logintest.js`（59 项，见 §6）—— 覆盖未登录拦截、口令只存哈希、记住登录、
    权限、防爆破、退出；**改这几块之前先跑它**。
 4. 回滚点（都在工程外，不打进安装包）：
    - `_snapshot-20260930-1510.tar.gz` —— **含 ①②③④ 的改动**（src + package.json + README + docs + tools）
    - `_snapshot-20260930-1447.tar.gz` —— 这批改动**之前**的状态（含另一个任务的登录门）
+5. **自动更新有两条「不许顺手加上」的红线**（`src/main/updater.js` 文件头也写着，改那儿之前先读）：
+   a. **绝不自动重启安装**。这工具随时可能在跑批量发布（一跑几十分钟），静默重启会把任务拦腰截断、而且**没有回滚**。
+      `autoInstallOnAppQuit` 也必须是 `false`（否则用户下次关窗口时会被装上）。
+      安装只能由用户点「立即安装」，而且**有任务在跑时必须拦住**（已经拦在 `ipc.js` 的 `update:install` 里）。
+   b. **不在运行时改更新源地址**（`setFeedURL`）。地址编译进 `resources/app-update.yml`；将来 beta / stable
+      两条通道是靠**两个不同的源地址**隔离的，运行时能改就等于把「测试版没验过的东西」直接送进正式版。
 
 ## 3. 环境与已知坑
 
@@ -192,6 +198,8 @@
     这套权限的真正作用是**防误操作 + 让统计能对账**，不是防内部的恶意越权；真要隔离得上服务端（当前没有服务端）。
   - 回归：新增 `tools/brandtest.js`（58 项）；`uicheck` 19→23、`logintest` 32→48；合计 **216 → 294** 项断言。
     随后加文案提示词，又补到 `brandtest` 69、`uicheck` 27、`logintest` 58，合计 **319** 项。
+  - 再往后加**自动更新**（2026-10-01，见 §2 第 5 条）：新增 `tools/updatertest.js`（29 项）与
+    `tools/releasetest.js`（28 项），`uicheck` 27→29、`logintest` 58→59 ⇒ 合计 **379** 项断言（实测）。
 
 ## 5. 待做（按优先级）
 
@@ -392,11 +400,13 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
 | `tools/reporttest.js` | 「AI 内容报告」导入 → 发布 → 回写：列名匹配（列顺序打乱）、行↔叶子配对与数量不等报错、标题文案空则生成、好物带全、**发图文还是发视频按「内容类型」列判定**（没标按目录推断；图+视频都有又没标 → 「校验未通过」）、报告被占用→暂存→补写 | 32 |
 | `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删除品牌**排空授权**且**不动历史记录**；按品牌统计（「未标品牌」与「已删除的品牌」各自成桶、绝不与真实品牌合并）；执行日志落盘且重启后仍在；xlsx 四个工作表；**按品牌文案提示词**（存 / 归一 `\r\n` / 超长截断、拼进 system 时品牌模板在前而输出约束在后、没配提示词的品牌**起任务前就被拦下且不留台账**、直接调 `copywriter.generate` 也拦得住） | 69 |
-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关** | 27 |
-| `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全、成员看到的品牌名是只读的） | 58 |
+| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因（未打包时不许摆点了没用的按钮）** | 29 |
+| `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全、成员看到的品牌名是只读的）；**自动更新四个通道同样被登录门拦** | 59 |
 | `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮四边都在卡片边框内、卡片外没有任何**可见**元素 | 17 |
+| `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用 | 29 |
+| `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」时默认**拦下**（不拦 ⇒ 用户永远收不到更新且查不出原因）、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 28 |
 
-合计 **319** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 27 + 58 + 17 = 319`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+合计 **379** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 29 + 59 + 17 + 29 + 28 = 379`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
 `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
 
 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
@@ -567,9 +577,13 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：十套测试，共 319 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十二套**测试，共 **379** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/upload-release.js` | 把 exe + `latest.yml` + `.blockmap` 传到对象存储的 `stable/`（或 `beta/`）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
+| `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable` / `channel: latest` / `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |
+| `dist/latest.yml` | electron-builder 生成的更新清单（388 B）：`path` 指向 **NSIS 安装版** exe（不是便携版），带 `sha512` 与 `size`。客户端按这里的 `path` 去下载，**对不上就是 404** |
+| `.env`（不进仓库，已在 `.gitignore`） | 发版凭据 `COS_BUCKET` / `COS_REGION` / `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_DOMAIN`；子账号 `dewu-bluev-cos-upload` |
 | `docs/WINDOWS-E2E.md` | Windows + 雷电模拟器的端到端测试手册（怎么跑、每步预期、坑、问题回传） |
-| `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好并生效 |
+| `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据 / `.env`」写好并生效 |
 
 复现本次拆解（万一要重看原始录屏）：
 

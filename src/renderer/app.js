@@ -24,7 +24,8 @@ const state = {
   brandEdit: null,    // 正在改名的品牌 { id, name }
   permUserId: null,   // 「品牌权限」面板里当前选中的账号
   // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
-  brandModal: null
+  brandModal: null,
+  upd: null           // 应用更新状态（来自主进程）null=还没读到
 };
 
 /* ---------------- 工具 ---------------- */
@@ -610,6 +611,7 @@ TABS[7] = {
           <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
         </div>
       </div>
+      ${updateHtml()}
       <div class="box">
         <h3>外部依赖</h3>
         <div class="tw"><table>
@@ -622,6 +624,70 @@ TABS[7] = {
       ${accountHtml()}`;
   }
 };
+
+/* ---------------- 应用更新（阶段 1：单通道 = 正式源） ---------------- */
+/** 状态 → [徽章样式, 文案]。键要和 src/main/updater.js 里的 status 一一对应 */
+const UPD_KIND = {
+  idle: ['wait', '未检查'], checking: ['run', '检查中'], available: ['warn', '有新版本'],
+  downloading: ['run', '下载中'], ready: ['ok', '可以安装'], uptodate: ['ok', '已是最新'],
+  error: ['bad', '出错']
+};
+
+function updateHtml() {
+  const u = state.upd;
+  if (!u) return `<div class="box" id="updBox"><h3>应用更新</h3><p class="hint">正在读取更新状态…</p></div>`;
+
+  // 开发模式 / 便携版：不摆一堆点了没用的按钮，只把原因写清楚
+  if (!u.supported) {
+    return `<div class="box" id="updBox">
+      <h3>应用更新</h3>
+      <div class="row"><span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>${badge('不可用', 'wait')}</div>
+      <!-- 主进程没给出原因时别编一个：说「原因没取到」比说「这个版本就是不支持」诚实 -->
+      <p class="hint">${esc(u.message || '取不到不可用的原因（更新模块可能没初始化）')}</p>
+    </div>`;
+  }
+
+  const [kind, label] = UPD_KIND[u.status] || ['wait', u.status || '—'];
+  const pct = Math.max(0, Math.min(100, Math.round(u.percent || 0)));
+  const dl = u.status === 'downloading';
+  const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
+  const newer = u.latest && u.latest !== u.current;
+
+  return `<div class="box" id="updBox">
+    <h3>应用更新</h3>
+    <div class="row" style="margin-bottom:9px">
+      <span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>
+      ${newer ? `<span class="lbl">新版本</span><span class="chip mono">${esc(u.latest)}</span>` : ''}
+      ${badge(label, kind)}
+    </div>
+    ${dl ? `<div class="progwrap"><div class="bar" id="updBar"><i style="width:${pct}%"></i></div>
+      <span class="chip" id="updTxt">${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}</span></div>` : ''}
+    <div class="row" style="margin-top:9px">
+      <button class="btn sm" data-act="upd:check" ${dl ? 'disabled' : ''}>检查更新</button>
+      <button class="btn sm${(u.status === 'available' || u.status === 'idle') ? ' primary' : ''}" data-act="upd:download" ${(dl || u.status === 'ready') ? 'disabled' : ''}>下载更新</button>
+      <button class="btn sm${u.status === 'ready' ? ' primary' : ''}" data-act="upd:install" ${u.status === 'ready' ? '' : 'disabled'}>立即安装并重启</button>
+    </div>
+    ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
+    <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
+    「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
+  </div>`;
+}
+
+async function refreshUpdate() {
+  try { state.upd = await appApi.updateStatus(); } catch (e) { /* 读不到就保持原样 */ }
+  renderAll();
+}
+
+/** 下载进度每秒好几条，只动进度条那两处，别整页重画（会把正在输入的框重置掉） */
+function updateUpdateBar(u) {
+  const bar = document.querySelector('#updBar i');
+  const txt = document.querySelector('#updTxt');
+  if (!bar || !txt) return;
+  const pct = Math.max(0, Math.min(100, Math.round(u.percent || 0)));
+  const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
+  bar.style.width = pct + '%';
+  txt.textContent = `${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}`;
+}
 
 /* ---------------- ⑧ 品牌统计 ---------------- */
 function daysLabel(d) { return Number(d) > 0 ? `最近 ${d} 天` : '全部时间'; }
@@ -946,6 +1012,8 @@ async function enterApp() {
   if (Array.isArray(live)) state.jobs = live.map(j => Object.assign({ progress: null, startedAt: j.startedAt || Date.now() }, j));
   await refreshBrands();
   await refreshUsers();
+  // 更新状态读一次就够，之后靠主进程推 update:changed（下载进度很密，见 onUpdate 的处理）
+  try { state.upd = await appApi.updateStatus(); } catch (e) { state.upd = null; }
   bindOnce();
   renderAll();
   renderLogs();
@@ -1303,6 +1371,23 @@ function adminUsersHtml() {
 
 /* ---------------- 交互 ---------------- */
 const ACTS = {
+  // ---- 应用更新：三个动作都要用户点，主进程不会自己下载、更不会自己重启 ----
+  'upd:check': async () => {
+    const r = await appApi.updateCheck();
+    toast(r.ok ? '正在检查更新…' : r.error, r.ok ? '' : 'err');
+    await refreshUpdate();
+  },
+  'upd:download': async () => {
+    const r = await appApi.updateDownload();
+    toast(r.ok ? '开始下载更新…' : r.error, r.ok ? '' : 'err');
+    await refreshUpdate();
+  },
+  'upd:install': async () => {
+    const r = await appApi.updateInstall();
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    toast('正在安装，应用马上重启…', 'ok');
+  },
+
   'flatten:pick': async () => {
     const d = await appApi.pickDir({ title: '选择素材根目录' });
     if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', { sourceDir: d }).then(r => r.ok ? r.result : null); renderAll(); }
@@ -1849,6 +1934,15 @@ function bind() {
     state.jobs = state.jobs.filter(x => x.id !== d.id);
     if (!d.ok) toast(d.error || '任务失败', d.cancelled || /已取消/.test(d.error || '') ? '' : 'err');
     renderAll();
+  });
+  appApi.onUpdate(u => {
+    const prev = state.upd;
+    // 只有「状态真的变了」才整页重画；下载进度每秒好几条，只动进度条那两处 ——
+    // 整页重画会把用户正在输入的框重置回旧值（品牌弹窗踩过同一个坑）
+    const big = !prev || prev.status !== u.status || prev.supported !== u.supported || prev.latest !== u.latest;
+    state.upd = u;
+    if (state.tab !== 7) return;
+    if (big) renderAll(); else updateUpdateBar(u);
   });
 }
 

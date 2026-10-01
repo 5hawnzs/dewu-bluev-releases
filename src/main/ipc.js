@@ -10,6 +10,7 @@ const brands = require('./brands');
 const imaging = require('./services/imaging');
 const pool = require('./services/pool');
 const stats = require('./services/stats');
+const updater = require('./updater');
 const wp = require('./util/winpath');
 const winmod = require('./window');
 
@@ -142,6 +143,26 @@ function register() {
     const r = await stats.exportXlsx(Object.assign(o, { scopeIds: scopeOf() }));
     logbus.ok(`品牌统计已导出：${path.basename(r.file)}（${r.brands.length} 个品牌 · ${r.totals.rows} 条记录）`);
     return { ok: true, file: r.file, totals: r.totals, brandCount: r.brands.length };
+  }));
+
+  // ---- 应用更新（阶段 1）----
+  // 检查 / 下载 / 安装**都只由用户点**：没有定时轮询、没有自动下载、没有自动重启。
+  // 原因见 src/main/updater.js 文件头 —— 静默重启会拦腰截断正在跑的批量发布。
+  ipcMain.handle('update:status', guard(() => Object.assign({ ok: true }, updater.status())));
+  ipcMain.handle('update:check', guard(() => updater.check({ manual: true })));
+  ipcMain.handle('update:download', guard(() => updater.download()));
+  ipcMain.handle('update:install', guard(() => {
+    // 唯一会重启应用的入口。哪怕用户点了，也要在「真有任务在跑」时拦住 ——
+    // 重启把发布跑一半掐掉，那批素材的下场没人说得清
+    const running = jobs.busy();
+    if (running && running.length) {
+      const first = running[0];
+      return {
+        ok: false,
+        error: `还有 ${running.length} 个任务在跑（${first.label}${first.batch ? ' · ' + first.batch : ''}），装完会重启、把任务掐断。等跑完再装。`
+      };
+    }
+    return updater.install();
   }));
 
   ipcMain.handle('app:info', () => ({

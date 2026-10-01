@@ -28,6 +28,12 @@ contextBridge.exposeInMainWorld('api', {
   statsQuery: opts => ipcRenderer.invoke('stats:query', opts),
   statsExport: opts => ipcRenderer.invoke('stats:export', opts),
 
+  updateStatus: () => ipcRenderer.invoke('update:status'),
+  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateInstall: () => ipcRenderer.invoke('update:install'),
+  onUpdate: cb => on('update:changed', cb),
+
   configGet: key => ipcRenderer.invoke('config:get', key),
   configSet: patch => ipcRenderer.invoke('config:set', patch),
   projectGet: () => ipcRenderer.invoke('project:get'),

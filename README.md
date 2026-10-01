@@ -134,7 +134,7 @@ npm run dist:win
 
 要临时免登录开发：`BLUEV_NO_LOGIN=1 npm start`。
 
-登录门有回归守护（改动这块之前先跑）：`./node_modules/.bin/electron tools/logintest.js` —— 58 项断言，
+登录门有回归守护（改动这块之前先跑）：`./node_modules/.bin/electron tools/logintest.js` —— 59 项断言，
 覆盖「未登录时业务通道在主进程侧就被拦」（不是前端藏起来）、口令只存 scrypt 哈希、记住登录重启免密、
 普通成员看不到账号列表、停用后不能登录、不能停用/删自己、连错 6 次锁定 5 分钟。
 
@@ -185,6 +185,82 @@ npm run dist:win
   只是先按品牌存着。弹窗里也这么标着 —— 别以为配了就有效果。
 - 单条提示词上限 **4000 字**（粘贴超长内容会截断而不是整条保存失败）；`\r\n` 会归一成 `\n`。
 
+## 应用更新（自动更新，2026-10-01 新增）
+
+装好的**安装版**（`…-x64-win.exe`）启动约 20 秒后会自己查一次更新源。发现新版本会告诉你，但
+**不会自己下载、更不会自己重启** —— 这两步都要你在「设置 → 应用更新」里点。
+
+| 项 | 说明 |
+| --- | --- |
+| 更新源 | 腾讯云 COS 的 `stable/` 目录（地址在 `package.json` 的 `build.publish`，**编译进包**） |
+| 通道 | 阶段 1 **只有一条正式通道**。测试版 / 正式版将来靠**两个不同的源地址**隔离，不是靠一个开关 |
+| 检查时机 | 启动后约 20 秒自检**一次**（不是定时轮询），以及手动点「检查更新」 |
+| 下载 | **手动**。包有 88 MB，不替用户决定占带宽 |
+| 安装 | **手动**；而且**有任务在跑时会拦住** —— 重启会把跑一半的发布掐断，且没有回滚 |
+| 不支持的情况 | **便携版不支持**（每次启动自解压到临时目录，没法就地替换）；**开发模式**（`npm start`）也不检查。这两种情况「应用更新」一栏会**如实写不可用**，不摆点了没反应的按钮 |
+| 换源地址的代价 | 地址编译进包 ⇒ 改了等于所有已装客户端全部失联，只能重发一次包 |
+
+### 发版流程（打包机上）
+
+```bash
+# 1) 先改 package.json 的 version
+#    不涨版本号会「同名覆盖」，而且 electron-updater 按版本号比较，客户端会直接判「没有新版本」
+# 2) 打包 + 上传，一条命令：
+npm run dist:release
+```
+
+`npm run dist:release` = 打包（`dist:win`）+ 上传（`release:stable`）。
+上传的东西是 electron-builder **不会代传**的那三样：安装包 exe、`latest.yml`、`.blockmap`
+（generic 提供者必须自己上传，漏了就是「包打了但客户端永远收不到」）。
+
+凭据**不进仓库**，放打包机上的 `.env`（已在 `.gitignore`；`node_modules/` 外、仓库根或 `tools/` 下都认）：
+
+```
+COS_SECRET_ID=…
+COS_SECRET_KEY=…
+COS_BUCKET=dewu-bluev-release-1499238579
+COS_REGION=ap-guangzhou
+# COS_DOMAIN 可选，不填就按 https://<bucket>.cos.<region>.myqcloud.com 拼
+```
+
+只看要传什么、不真传：`node tools/upload-release.js --channel stable --dry-run`。
+
+```
+通道      stable
+版本      1.0.0（package.json 1.0.0）
+目标      https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com
+要传的文件：
+  安装包    stable/得物蓝V素材发布工具-1.0.0-x64-win.exe   85.0 MB
+  版本清单  stable/latest.yml   388 B
+  增量块图  stable/得物蓝V素材发布工具-1.0.0-x64-win.exe.blockmap   91.4 KB
+```
+
+上传脚本会挡住两种「传了等于没传」：**dist 里的版本号和 package.json 对不上**（说明 dist 是旧包）、
+**源上已经是同一个版本号**（要覆盖得显式加 `--force`）。它**只传安装版**，便携版连列都不会列进去。
+
+### 怎么确认「源地址配对了」（实测过，不用猜）
+
+打完包去这两个地方看一眼，对上就是对的 —— 地址写错的话，应用只会一直说「已是最新」，
+**不会报错**，所以这一眼必须看：
+
+```bash
+cat dist/win-unpacked/resources/app-update.yml      # 编译进包、在 asar 外，electron-updater 只认它
+cat dist/latest.yml                                 # 客户端按这里的 path 去下载，对不上就是 404
+```
+
+`app-update.yml` 长这样（**2026-10-01 实测生成**）：
+
+```yaml
+provider: generic
+url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable
+channel: latest
+updaterCacheDirName: dewu-bluev-publisher-updater
+```
+
+> - ⚠️ **便携版收不到自动更新**：用它的人要手动换一次文件（改装安装版），之后才进自动更新通道。
+> - ℹ️ `release:beta` 脚本已经在了（`node tools/upload-release.js --channel beta`），但**阶段 1 还没有 beta 通道**
+>   —— 包里只配了 `stable` 源地址，现在跑它只会往 `beta/` 传一份**没人读**的文件。等阶段 2 接上 beta 通道再用。
+
 ## 依赖状态
 
 - 图片引擎：优先 `sharp`（支持 HEIC、libvips 多核）；原生模块加载失败时自动降级为纯 JS 引擎（`jpeg-js` + `pngjs`），降级状态显示在「设置 → 外部依赖」。sharp 是 N-API 预编译包，**不需要 electron-rebuild**。
@@ -194,10 +270,10 @@ npm run dist:win
 
 ## 开发期自检
 
-测试都在仓库里（`tools/`），一条命令跑完全部 **319** 项断言：
+测试都在仓库里（`tools/`），一条命令跑完全部 **379** 项断言：
 
 ```bash
-bash tools/run-all.sh          # 七套主进程测试 + 三个隐藏窗口套件（界面自检 / 登录门 / 窗口几何）
+bash tools/run-all.sh          # 九套纯 Node 测试 + 三套隐藏窗口套件（界面自检 / 登录门 / 窗口几何）
 ```
 
 > ⚠️ 跑回归**不要**设 `BLUEV_NO_LOGIN=1`：登录门那套断言的就是「这个变量没设」，设了会失败并挂住。
@@ -211,9 +287,11 @@ bash tools/run-all.sh          # 七套主进程测试 + 三个隐藏窗口套�
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、恢复动作保存与校验 | 22 |
 | `tools/reporttest.js` | 「AI 内容报告」导入：列名匹配（列顺序打乱）、行↔叶子一一对应与数量不等报错、标题/文案空则生成、好物 1~9 带全、**发图文还是发视频按「内容类型」列判定**（没标则按目录推断；图和视频都有又没标 → 标「校验未通过」不静默丢）、发布结果回写 B/C 列、被占用→暂存→补写 | 32 |
 | `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删品牌**排空授权**但**不动历史记录**；按品牌统计（「未标品牌」「已删除的品牌」各自成桶、绝不并进真实品牌）；执行日志落盘且重启后仍在；xlsx 四个工作表；**按品牌文案提示词**（`\r\n` 归一 / 超长截断、拼进 system 时品牌模板在前而输出约束在后、没配提示词的品牌**起任务前就被拦下且不留台账**、直接调 `copywriter.generate` 也拦得住） | 69 |
-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**（`userData` 指到临时目录，不动本机数据） | 27 |
-| `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员改不了品牌注册表、看统计的范围被限死、不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全） | 58 |
+| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因**（`userData` 指到临时目录，不动本机数据） | 29 |
+| `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员改不了品牌注册表、看统计的范围被限死、不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全）；**自动更新四个通道同样被拦**（未登录时 `update:status/check/download/install` 全部拒绝） | 59 |
 | `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮在卡片边框内、卡片外无可见元素 | 17 |
+| `tools/updatertest.js` | 自动更新的状态机与两条红线（纯 Node + 假 `autoUpdater`，不联网、不真下载）：未打包 / 便携版**都不可用且给出中文原因**；`autoDownload` 与 `autoInstallOnAppQuit` **必须都是 false**（不许自己下 88MB、不许退出时偷偷装）；`update-downloaded` 之后 **`quitAndInstall` 调用次数必须是 0**（绝不自动重启）；只有用户点「重启并安装」才调，且参数是 `(false, true)`；检查/下载/安装的状态流转与失败回退；重复点击不会并发起第二次检查；推给界面的 payload 是**快照**（不是活引用） | 29 |
+| `tools/releasetest.js` | 发版工具（`upload-release.js`）的纯逻辑——这条链上**失败是静默的**：`latest.yml` 的 `path` 读错就是全员 404；源上同版本号被覆盖 ⇒ 客户端永远判「没有新版本」；把「便携版」传上去 ⇒ portable 收不到更新。断言：真实 `latest.yml`（中文产物名）与 CRLF 变体都读得对、文件名带空格不被截断、多文件顺序不丢、空清单不抛异常也不编造 `path`；`pickInstaller` 永不含「便携版」；`versionGate` 在「版本号涨了」放行、「源上读不出」放行、「同版本号」默认拦下而 `--force` 放行；大小显示不再把 388 B 写成 `0.0 MB`；表格按中文 2 格对齐 | 28 |
 
 **没测到的**：真机上的得物 App 页面结构（发布页按钮文本 / resource-id 各版本不同，
 **视频发布页与图文不是一套界面，`videoSteps` 必须真机抓一次**）、Android 媒体扫描后相册刷新的真实耗时
@@ -228,6 +306,7 @@ src/main/window.js       无边框窗口 + 尺寸记忆
 src/main/ipc.js          IPC 白名单（业务通道统一做登录门禁）
 src/main/auth.js         本机账号：scrypt 口令哈希 / 登录会话 / 账号管理
 src/main/brands.js       品牌注册表 + 按账号的品牌权限判定（权限记 id，改名不丢）
+src/main/updater.js      自动更新状态机（下载/安装都等用户点，绝不自动重启）
 src/main/jobs.js         任务编排（任务实例化：进度/日志/取消/运行中批次/任务栏进度/通知）
 src/main/services/       flatten / compliance / copywriter / verify / sheet / report / publisher / pool / imaging
                          runlog（执行日志落盘）/ stats（按品牌统计 + 导出）
@@ -236,4 +315,5 @@ src/preload/index.js     contextBridge（contextIsolation，渲染层无 node �
 src/renderer/            Windows 风格 UI
 build/icon.ico           安装包与窗口图标
 tools/                   回归测试（run-all.sh 一键跑）+ 假 adb；不进安装包（build.files 只含 src/）
+tools/upload-release.js  发版上传（exe + latest.yml + blockmap → 对象存储的 stable/）
 ```

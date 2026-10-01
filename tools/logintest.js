@@ -112,6 +112,18 @@ app.whenReady().then(async () => {
   ok('未登录时读配置被拦下', /未登录|过期/.test(blocked.cfg || ''), blocked.cfg);
   ok('未登录时选目录被拦下', /未登录|过期/.test(blocked.dir || ''), blocked.dir);
 
+  // 新加的通道最容易漏掉 guard()，而 update:install 是会**重启整个应用**的那一个，
+  // 漏了就等于「没登录的人也能把别人正在跑的任务重开掉」。四个一起查。
+  const updBlocked = await js(`(async () => {
+    const st = await window.api.updateStatus();
+    const ck = await window.api.updateCheck();
+    const dl = await window.api.updateDownload();
+    const ins = await window.api.updateInstall();
+    return { st: st && st.error, ck: ck && ck.error, dl: dl && dl.error, ins: ins && ins.error };
+  })()`);
+  ok('未登录时更新通道全被拦下（含会重启应用的 update:install）',
+    ['st', 'ck', 'dl', 'ins'].every(k => /未登录|过期/.test(updBlocked[k] || '')), JSON.stringify(updBlocked));
+
   // ---- ③ 错口令 / 不存在的账号：明确报错、不放进去，且不泄露账号是否存在 ----
   const wrong = await js(`__t.login(${JSON.stringify(ADMIN)}, 'definitely-wrong', false)`);
   ok('口令错 → 明确报错且仍在登录页', wrong.locked && /账号或密码不正确/.test(wrong.err), wrong.err);
