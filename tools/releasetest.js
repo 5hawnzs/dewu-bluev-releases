@@ -14,7 +14,7 @@
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile } = require(path.join(ROOT, 'tools/upload-release.js'));
+const { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch } = require(path.join(ROOT, 'tools/upload-release.js'));
 
 let bad = 0;
 const ok = (label, cond, extra) => {
@@ -174,6 +174,55 @@ console.log('\nC4. channelFile —— 清单文件名必须和 electron-updater 
 ok('正式版 → latest.yml', channelFile('stable') === 'latest.yml', channelFile('stable'));
 ok('测试版 → beta.yml', channelFile('beta') === 'beta.yml', channelFile('beta'));
 ok('不认识的值按正式版处理（不自己编一个文件名出来）', channelFile('whatever') === 'latest.yml', channelFile('whatever'));
+
+console.log('\nC5. channelMismatch —— 版本后缀必须和通道对得上（「推错人」比「传不上去」严重得多）\n');
+
+ok('预发布版本发**正式通道** ⇒ 拦住，原因标成 pre-to-stable',
+  channelMismatch('stable', '1.0.1-beta.1').block === true &&
+  channelMismatch('stable', '1.0.1-beta.1').reason === 'pre-to-stable',
+  JSON.stringify(channelMismatch('stable', '1.0.1-beta.1')));
+
+ok('★ 最危险的一种：latest.yml 里写上测试版号 ⇒ 所有正式版用户都会看到「有新版本」',
+  channelMismatch('stable', '1.0.0-beta.10').block === true,
+  JSON.stringify(channelMismatch('stable', '1.0.0-beta.10')));
+
+ok('正式版本号发**测试通道** ⇒ 拦住，原因标成 release-to-beta',
+  channelMismatch('beta', '1.0.1').block === true &&
+  channelMismatch('beta', '1.0.1').reason === 'release-to-beta',
+  JSON.stringify(channelMismatch('beta', '1.0.1')));
+
+ok('★ 不误伤：预发布版本发**测试通道** ⇒ 放行（这正是日常要用的姿势）',
+  channelMismatch('beta', '1.0.1-beta.1').block === false,
+  JSON.stringify(channelMismatch('beta', '1.0.1-beta.1')));
+
+ok('★ 不误伤：正式版本号发**正式通道** ⇒ 放行',
+  channelMismatch('stable', '1.0.1').block === false,
+  JSON.stringify(channelMismatch('stable', '1.0.1')));
+
+ok('rc / alpha 这类预发布段照样算预发布',
+  channelMismatch('stable', '2.0.0-rc.1').block === true &&
+  channelMismatch('stable', '2.0.0-alpha').block === true,
+  JSON.stringify([channelMismatch('stable', '2.0.0-rc.1').block, channelMismatch('stable', '2.0.0-alpha').block]));
+
+ok('★ `+build` 是构建元数据、不是预发布段 ⇒ 按正式版算（只认 `-` 段）',
+  channelMismatch('stable', '1.0.1+build.5').block === false,
+  JSON.stringify(channelMismatch('stable', '1.0.1+build.5')));
+
+ok('前后空格不影响判断（手抄命令时容易带上）',
+  channelMismatch('stable', ' 1.0.1-beta.1 ').block === true &&
+  channelMismatch('beta', ' 1.0.1 ').block === true,
+  JSON.stringify([channelMismatch('stable', ' 1.0.1-beta.1 ').block, channelMismatch('beta', ' 1.0.1 ').block]));
+
+ok('版本号读不出时不拦（交给上游「版本号必须一致」那条去报，别重复报）',
+  channelMismatch('stable', '').block === false &&
+  channelMismatch('stable', null).block === false &&
+  channelMismatch('beta', undefined).block === false,
+  JSON.stringify([channelMismatch('stable', '').block, channelMismatch('stable', null).block, channelMismatch('beta', undefined).block]));
+
+ok('★ 与 versionGate 相互独立：源上还没清单（Beta 首次发布）时 versionGate 放行，通道闸门照样拦',
+  versionGate('', '1.0.1-beta.1', false).block === false &&
+  channelMismatch('stable', '1.0.1-beta.1').block === true,
+  JSON.stringify({ versionGate: versionGate('', '1.0.1-beta.1', false).block, channelMismatch: channelMismatch('stable', '1.0.1-beta.1').block }));
 
 console.log('\nD. humanSize —— 388 B 不能显示成 "0.0 MB"\n');
 

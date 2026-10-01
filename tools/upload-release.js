@@ -141,6 +141,28 @@ function channelFile(channel) {
   return channel === 'beta' ? 'beta.yml' : 'latest.yml';
 }
 
+/**
+ * 通道闸门：拦「版本后缀和通道对不上」。这是**最容易手滑、后果最大**的一种误传 ——
+ * 比 versionGate 拦的两种还危险，因为它不报错、也不只是收不到，而是**推错了人**：
+ *
+ *   ① 预发布版本（`1.0.1-beta.1`）发到**正式通道** ⇒ `latest.yml` 里写上测试版号，
+ *      所有正式版用户都会看到「有新版本 1.0.1-beta.1」。等于把**没验收过的包**推给所有人。
+ *   ② 正式版本号（`1.0.1`，没有 `-` 段）发到**测试通道** ⇒ 通常只是「忘了带后缀」，
+ *      会让测试版用户拿到和正式版同号的包，两条通道失去区分意义。
+ *
+ * 两种情况都可以用 `--force` 明确放行（比如确实要拿正式版本号先走测试通道试）。
+ * ★ 这条检查必须**独立于 versionGate**：versionGate 只在源上已有清单时才比较，
+ *   而这条在**任何**上传前都该成立（尤其 Beta 通道第一次发、源上还是空的时候）。
+ */
+function channelMismatch(channel, version) {
+  const v = String(version == null ? '' : version).trim();
+  if (!v) return { block: false };
+  const isPre = /^\d+\.\d+\.\d+-/.test(v);
+  if (channel === 'stable' && isPre) return { block: true, reason: 'pre-to-stable', version: v };
+  if (channel === 'beta' && !isPre) return { block: true, reason: 'release-to-beta', version: v };
+  return { block: false };
+}
+
 function main() {
   loadEnv();
 
@@ -201,6 +223,25 @@ function main() {
   console.log(`目标      ${DOMAIN || '(未配置 COS_BUCKET / COS_DOMAIN)'}`);
   console.log('要传的文件：');
   for (const j of jobs) console.log(`  ${padTo(j.what, 10)}${j.key}   ${humanSize(fs.statSync(j.local).size)}`);
+  // ★ 通道闸门：版本后缀和通道对不上（见 channelMismatch 注释）。故意放在 dry-run 之前 ——
+  //   手滑最常发生在「顺手复制了另一条通道的命令」的那一刻，那正是还没传任何东西的时候。
+  const mism = channelMismatch(channel, mani.version);
+  if (mism.block) {
+    console.error('');
+    if (mism.reason === 'pre-to-stable') {
+      console.error(`拦下了：${mism.version} 是**预发布版本**，却要发到**正式通道**。`);
+      console.error('这会把 latest.yml 写成这个测试版号 —— 所有正式版用户都会看到「有新版本」。');
+      console.error('要发测试版请用：npm run dist:release:beta');
+    } else {
+      console.error(`拦下了：${mism.version} 是**正式版本号**（没有 -beta 之类的预发布段），却要发到**测试通道**。`);
+      console.error('测试通道建议用带后缀的版本号（例如 1.0.1-beta.1），');
+      console.error('否则测试版用户拿到的包和正式版同号，两条通道就没有区分意义了。');
+    }
+    console.error('确认要这么传就加 --force。');
+    if (!dryRun) process.exit(1);
+    console.error('（--dry-run：只提示，不中止）');
+  }
+
   if (dryRun) { console.log('\n--dry-run：什么都没传。'); return; }
 
   if (!process.env.COS_SECRET_ID || !process.env.COS_SECRET_KEY || !process.env.COS_BUCKET || !process.env.COS_REGION) {
@@ -267,5 +308,5 @@ function main() {
   });
 }
 
-module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile };
+module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch };
 if (require.main === module) main();
