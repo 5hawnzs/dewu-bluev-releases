@@ -14,7 +14,7 @@
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const { parseManifest, humanSize, padTo, pickInstaller, versionGate } = require(path.join(ROOT, 'tools/upload-release.js'));
+const { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile } = require(path.join(ROOT, 'tools/upload-release.js'));
 
 let bad = 0;
 const ok = (label, cond, extra) => {
@@ -128,6 +128,52 @@ console.log('\nC. versionGate —— 不涨版本号就覆盖，用户永远收�
   const g = versionGate('1.0.0', '', false);
   ok('本地版本读不出时不拦（交给上游的「版本号必须一致」那条去报错）', g.block === false, JSON.stringify(g));
 }
+
+console.log('\nC2. compareVersion —— 「往回发」得先能被识别出来\n');
+
+ok('1.0.0 < 1.0.1', compareVersion('1.0.0', '1.0.1') === -1, compareVersion('1.0.0', '1.0.1'));
+ok('1.0.1 > 1.0.0', compareVersion('1.0.1', '1.0.0') === 1, compareVersion('1.0.1', '1.0.0'));
+ok('同一个版本号 = 0', compareVersion('1.0.0', '1.0.0') === 0, compareVersion('1.0.0', '1.0.0'));
+ok('1.0.0-beta.1 < 1.0.0（预发布版比正式版小）', compareVersion('1.0.0-beta.1', '1.0.0') === -1, compareVersion('1.0.0-beta.1', '1.0.0'));
+ok('1.0.0 > 1.0.0-beta.1', compareVersion('1.0.0', '1.0.0-beta.1') === 1, compareVersion('1.0.0', '1.0.0-beta.1'));
+ok('1.0.0-beta.2 > 1.0.0-beta.1', compareVersion('1.0.0-beta.2', '1.0.0-beta.1') === 1, compareVersion('1.0.0-beta.2', '1.0.0-beta.1'));
+ok('1.0.0-beta.10 > 1.0.0-beta.9（数字段按**数值**比，不是按字符串）',
+  compareVersion('1.0.0-beta.10', '1.0.0-beta.9') === 1, compareVersion('1.0.0-beta.10', '1.0.0-beta.9'));
+ok('1.10.0 > 1.9.0（同上，别按字符串比）', compareVersion('1.10.0', '1.9.0') === 1, compareVersion('1.10.0', '1.9.0'));
+ok('2.0.0 > 1.99.99', compareVersion('2.0.0', '1.99.99') === 1, compareVersion('2.0.0', '1.99.99'));
+ok('解析不出来时退化成字符串比较，且**不抛异常**',
+  compareVersion('x', 'x') === 0 && compareVersion('abc', 'abd') === -1, compareVersion('abc', 'abd'));
+ok('空值当空串处理，不抛异常', compareVersion(null, undefined) === 0, compareVersion(null, undefined));
+
+console.log('\nC3. versionGate 的第二条：往回发（比源上还低）\n');
+
+{
+  const g = versionGate('1.0.5', '1.0.0', false);
+  ok('要传的比源上**低** ⇒ 拦住，且原因标成 backwards', g.block === true && g.reason === 'backwards', JSON.stringify(g));
+}
+{
+  const g = versionGate('1.0.5', '1.0.0', true);
+  ok('往回发 + --force ⇒ 放行并标记 backwards（用户明确知道后果）',
+    g.block === false && g.forced === true && g.backwards === true, JSON.stringify(g));
+}
+{
+  const g = versionGate('1.0.0', '1.0.0', false);
+  ok('同版本 ⇒ 拦住且原因是 same（不能和 backwards 混为一谈）', g.block === true && g.reason === 'same', JSON.stringify(g));
+}
+{
+  const g = versionGate('1.0.1-beta.1', '1.0.1', false);
+  ok('把测试版换成正式版（beta → 正式，版本号更大）：算升级，放行', g.block === false, JSON.stringify(g));
+}
+{
+  const g = versionGate('1.0.1', '1.0.1-beta.1', false);
+  ok('正式版回退到测试版（版本号更小）：**拦住**，要走 --force', g.block === true && g.reason === 'backwards', JSON.stringify(g));
+}
+
+console.log('\nC4. channelFile —— 清单文件名必须和 electron-updater 的规则一致\n');
+
+ok('正式版 → latest.yml', channelFile('stable') === 'latest.yml', channelFile('stable'));
+ok('测试版 → beta.yml', channelFile('beta') === 'beta.yml', channelFile('beta'));
+ok('不认识的值按正式版处理（不自己编一个文件名出来）', channelFile('whatever') === 'latest.yml', channelFile('whatever'));
 
 console.log('\nD. humanSize —— 388 B 不能显示成 "0.0 MB"\n');
 

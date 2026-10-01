@@ -10,7 +10,12 @@
  * 用法：
  *   node tools/upload-release.js --channel stable
  *   node tools/upload-release.js --channel beta --dry-run
- *   node tools/upload-release.js --channel stable --force      # 允许覆盖同版本号
+ *   node tools/upload-release.js --channel stable --force      # 允许覆盖 / 回退同一条通道的版本
+ *
+ * ★ 两条通道的文件**放在同一个目录**（= 源地址那一层），只有清单文件名不同：
+ *   正式版 → `latest.yml`、测试版 → `beta.yml`。
+ *   客户端那边靠运行时改 channel 来选读哪个（见 src/main/updater.js 的 setChannel）——
+ *   所以**源地址永远不变**，不用出两个包、也不用重装。
  *
  * 凭据（**绝不进仓库**）：环境变量，或仓库根 / tools/ 下的 `.env`（已在 .gitignore）
  *   COS_SECRET_ID / COS_SECRET_KEY
@@ -81,15 +86,59 @@ function pickInstaller(names) {
 }
 
 /**
- * 版本闸门。源上已有同版本号时必须拦住 —— electron-builder 按版本号比较，
- * 不涨版本号就覆盖会同时踩两个坑：客户端判「没有新版本」+ 新旧文件同名（事后查不出来）。
- * 返回 { block } 决定要不要中止，{ forced } 表示用户明确要覆盖。
+ * 极简 semver 比较（带预发布段）：`1.0.0-beta.2` < `1.0.0`，`1.0.2` > `1.0.1`。
+ * 返回 -1 / 0 / 1；解析不出来时退化成字符串比较（不抛异常）。
+ * 为什么值得自己写：只要引一个 semver 依赖就多一棵树，而我们只需要这一个判断。
+ */
+function compareVersion(a, b) {
+  const parse = v => {
+    const m = /^\s*(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(String(v == null ? '' : v));
+    return m ? { n: [+m[1], +m[2], +m[3]], pre: m[4] ? m[4].split('.') : [] } : null;
+  };
+  const A = parse(a), B = parse(b);
+  if (!A || !B) {
+    const x = String(a == null ? '' : a), y = String(b == null ? '' : b);
+    return x === y ? 0 : (x < y ? -1 : 1);
+  }
+  for (let i = 0; i < 3; i++) if (A.n[i] !== B.n[i]) return A.n[i] < B.n[i] ? -1 : 1;
+  if (!A.pre.length && !B.pre.length) return 0;
+  if (!A.pre.length) return 1;    // 正式版 > 预发布版
+  if (!B.pre.length) return -1;
+  for (let i = 0; i < Math.max(A.pre.length, B.pre.length); i++) {
+    const x = A.pre[i], y = B.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+    if (nx && ny) { if (+x !== +y) return +x < +y ? -1 : 1; }
+    else if (nx !== ny) return nx ? -1 : 1;
+    else if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * 版本闸门。拦两种「传了等于出事」的情况：
+ *   ① 源上已是**同一个**版本号 —— electron-builder 按版本号比较，不涨版本号就覆盖
+ *      ⇒ 客户端判「没有新版本」；而且新旧文件同名，事后完全查不出来。
+ *   ② 传的版本号**比源上还低**（往回发）—— 已经升上去的客户端同样收不到；更要命的是
+ *      正式版通道允许降级（用户从测试版切回来时要用），会把用户**真的降下去**。
+ * 返回 { block, reason } 决定要不要中止，{ forced } 表示用户明确要覆盖/回退。
  */
 function versionGate(remoteVersion, localVersion, force) {
   if (!remoteVersion || !localVersion) return { block: false, remoteVersion, localVersion };
-  if (remoteVersion !== localVersion) return { block: false, remoteVersion, localVersion };
-  if (force) return { block: false, forced: true, remoteVersion, localVersion };
-  return { block: true, remoteVersion, localVersion };
+  const c = compareVersion(localVersion, remoteVersion);
+  if (c > 0) return { block: false, remoteVersion, localVersion };
+  if (c === 0) {
+    if (force) return { block: false, forced: true, remoteVersion, localVersion };
+    return { block: true, reason: 'same', remoteVersion, localVersion };
+  }
+  if (force) return { block: false, forced: true, backwards: true, remoteVersion, localVersion };
+  return { block: true, reason: 'backwards', remoteVersion, localVersion };
+}
+
+/** 通道 → 源上那个清单文件的名字。正式版 latest.yml、测试版 beta.yml（和 electron-updater 的规则一致） */
+function channelFile(channel) {
+  return channel === 'beta' ? 'beta.yml' : 'latest.yml';
 }
 
 function main() {
@@ -134,10 +183,14 @@ function main() {
   }
 
   const blk = exeName + '.blockmap';
-  const jobs = [{ local: path.join(DIST, exeName), key: channel + '/' + exeName, what: '安装包' }];
-  jobs.push({ local: ymlFile, key: channel + '/' + (channel === 'beta' ? 'beta.yml' : 'latest.yml'), what: '版本清单' });
+  // ★ 两条通道的文件**放在同一个目录**（就是源地址那一层），只有清单文件的名字不同：
+  //   正式版 latest.yml、测试版 beta.yml。这正是「一个安装包 + 运行时切通道」能成立的前提 ——
+  //   源地址永远不变，切换只是换个文件名去读。
+  const manKey = channelFile(channel);
+  const jobs = [{ local: path.join(DIST, exeName), key: exeName, what: '安装包' }];
+  jobs.push({ local: ymlFile, key: manKey, what: '版本清单' });
   if (fs.existsSync(path.join(DIST, blk))) {
-    jobs.push({ local: path.join(DIST, blk), key: channel + '/' + blk, what: '增量块图' });
+    jobs.push({ local: path.join(DIST, blk), key: blk, what: '增量块图' });
   }
 
   const DOMAIN = (process.env.COS_DOMAIN ||
@@ -167,23 +220,35 @@ function main() {
   }, (e, d) => e ? rej(e) : res(d)));
 
   (async () => {
-    // ★ 同版本号覆盖 = 客户端判「没有新版本」+ 新旧文件同名，事后完全查不出来。
-    //   所以先看源上是什么版本，一样就停下来，除非明确 --force
-    const manKey = channel + '/' + (channel === 'beta' ? 'beta.yml' : 'latest.yml');
+    // ★ 先看源上这条通道现在是什么版本。两种情况下必须停下（除非明确 --force）：
+    //   ① 一样的版本号 ⇒ 客户端判「没有新版本」+ 新旧文件同名，事后查不出来
+    //   ② 比源上还低（往回发）⇒ 已升级的客户端同样收不到，而且正式版通道允许降级，
+    //      会把用户真的降下去
     const remote = await head(manKey);
     if (remote) {
       const body = await new Promise((res, rej) => cos.getObject({ Bucket: B, Region: R, Key: manKey, DataType: 'text' },
         (e, d) => e ? rej(e) : res(d.Body)));
       const rv = parseManifest(String(body)).version;
-      console.log(`\n源上现有版本：${rv || '(读不出)'}`);
+      console.log(`\n源上现有版本（${manKey}）：${rv || '(读不出)'}`);
       const gate = versionGate(rv, mani.version, force);
       if (gate.block) {
-        console.error('源上已经是这个版本号了。electron-builder 按版本号比较，');
-        console.error('不涨版本号就覆盖 ⇒ 客户端会认为「没有新版本」。');
-        console.error('先改 package.json 的 version，或者确实要覆盖就加 --force。');
+        if (gate.reason === 'backwards') {
+          console.error(`要传的 ${mani.version} **比源上的 ${rv} 低**，这是「往回发」。`);
+          console.error('已经升上去的客户端收不到（electron-updater 按版本号比较）；');
+          console.error('更要命的是正式版通道允许降级（用户从测试版切回来时要用），会把人**降下去**。');
+          console.error('确认要回退就加 --force。');
+        } else {
+          console.error('源上已经是这个版本号了。electron-builder 按版本号比较，');
+          console.error('不涨版本号就覆盖 ⇒ 客户端会认为「没有新版本」。');
+          console.error('先改 package.json 的 version，或者确实要覆盖就加 --force。');
+        }
         process.exit(1);
       }
-      if (gate.forced) console.log('（--force：明确要覆盖同版本号，客户端将收不到这次更新）');
+      if (gate.forced) {
+        console.log(gate.backwards
+          ? '（--force：明确要往回发，客户端可能收不到这次更新）'
+          : '（--force：明确要覆盖同版本号，客户端将收不到这次更新）');
+      }
     }
 
     for (const j of jobs) {
@@ -202,5 +267,5 @@ function main() {
   });
 }
 
-module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate };
+module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile };
 if (require.main === module) main();

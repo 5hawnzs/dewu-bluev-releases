@@ -151,6 +151,16 @@ function register() {
   ipcMain.handle('update:status', guard(() => Object.assign({ ok: true }, updater.status())));
   ipcMain.handle('update:check', guard(() => updater.check({ manual: true })));
   ipcMain.handle('update:download', guard(() => updater.download()));
+  // 切通道（正式版 ↔ 测试版）。★ 这**不是**改源地址：源地址编译在包里，这里只换
+  // 「读哪个 yml」（latest.yml / beta.yml）。换完立刻落盘，重启后还是这条通道。
+  ipcMain.handle('update:set-channel', guard((_e, next) => {
+    const r = updater.setChannel(next);
+    if (r && r.ok && !r.unchanged) {
+      store.set({ update: { channel: r.channel } });
+      logbus.info(`更新通道已保存：${r.label}（源地址不变，只是下次检查读 ${r.channel === 'beta' ? 'beta.yml' : 'latest.yml'}）`);
+    }
+    return r;
+  }));
   ipcMain.handle('update:install', guard(() => {
     // 唯一会重启应用的入口。哪怕用户点了，也要在「真有任务在跑」时拦住 ——
     // 重启把发布跑一半掐掉，那批素材的下场没人说得清

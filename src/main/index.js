@@ -52,12 +52,14 @@ if (!app.requestSingleInstanceLock()) {
         }
       },
       packaged: app.isPackaged,
-      version: app.getVersion()
+      version: app.getVersion(),
+      // 通道偏好从配置里读。非法值 updater 自己会忽略并落回 stable
+      channel: store.get('update.channel')
     });
     const upSt = updater.status();
     if (upSt.supported) {
       updater.scheduleStartupCheck();
-      logbus.info(`自动更新已启用 · 当前 ${upSt.current} · 启动约 ${Math.round(updater.STARTUP_DELAY_MS / 1000)} 秒后自检一次（下载/安装都要手动点）`);
+      logbus.info(`自动更新已启用 · 当前 ${upSt.current} · 通道「${upSt.channelLabel}」· 启动约 ${Math.round(updater.STARTUP_DELAY_MS / 1000)} 秒后自检一次（下载/安装都要手动点）`);
     } else {
       logbus.info(`自动更新不可用：${upSt.message}`);
     }

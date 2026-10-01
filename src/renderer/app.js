@@ -625,7 +625,7 @@ TABS[7] = {
   }
 };
 
-/* ---------------- 应用更新（阶段 1：单通道 = 正式源） ---------------- */
+/* ---------------- 应用更新（阶段 2：正式版 / 测试版两条通道，同一个包） ---------------- */
 /** 状态 → [徽章样式, 文案]。键要和 src/main/updater.js 里的 status 一一对应 */
 const UPD_KIND = {
   idle: ['wait', '未检查'], checking: ['run', '检查中'], available: ['warn', '有新版本'],
@@ -652,6 +652,7 @@ function updateHtml() {
   const dl = u.status === 'downloading';
   const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
   const newer = u.latest && u.latest !== u.current;
+  const isBeta = u.channel === 'beta';   // 老快照没有 channel 字段 ⇒ 当作正式版
 
   return `<div class="box" id="updBox">
     <h3>应用更新</h3>
@@ -659,6 +660,12 @@ function updateHtml() {
       <span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>
       ${newer ? `<span class="lbl">新版本</span><span class="chip mono">${esc(u.latest)}</span>` : ''}
       ${badge(label, kind)}
+    </div>
+    <div class="row" style="margin-bottom:9px">
+      <span class="lbl">更新通道</span>
+      <button class="btn sm${isBeta ? '' : ' primary'}" data-act="upd:chan:stable" ${dl ? 'disabled' : ''}>正式版</button>
+      <button class="btn sm${isBeta ? ' primary' : ''}" data-act="upd:chan:beta" ${dl ? 'disabled' : ''}>测试版</button>
+      ${badge(u.channelLabel || (isBeta ? '测试版' : '正式版'), isBeta ? 'warn' : 'ok')}
     </div>
     ${dl ? `<div class="progwrap"><div class="bar" id="updBar"><i style="width:${pct}%"></i></div>
       <span class="chip" id="updTxt">${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}</span></div>` : ''}
@@ -670,12 +677,32 @@ function updateHtml() {
     ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
     <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
     「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
+    <p class="hint">${isBeta
+      ? '<b>当前在测试版通道</b>：比正式版早拿到新功能，但没经过正式验收。随时可以切回正式版 —— 切回去时允许降级，不用重装。'
+      : '测试版比正式版早拿到新功能，但<b>没经过正式验收</b>。切通道只是换个清单文件，不用重装、也不会失联。'}</p>
   </div>`;
 }
 
 async function refreshUpdate() {
   try { state.upd = await appApi.updateStatus(); } catch (e) { /* 读不到就保持原样 */ }
   renderAll();
+}
+
+/**
+ * 切更新通道（正式版 ↔ 测试版）。
+ * ★ 这里**不动源地址**（源地址编译在包里，改不了也不许改），只换「读源上哪个清单文件」：
+ *   正式版读 latest.yml、测试版读 beta.yml。所以切换不需要重装，也不会失联。
+ */
+async function switchUpdateChannel(next) {
+  let r = null;
+  try { r = await appApi.updateSetChannel(next); } catch (e) { r = null; }
+  if (!r || r.ok === false) {
+    toast((r && r.error) || '切换通道失败（取不到原因）', 'err');
+    renderAll();
+    return;
+  }
+  toast(r.unchanged ? `已经在${r.label}通道了` : `已切到${r.label}通道，点「检查更新」看看有没有新版本`, r.unchanged ? '' : 'ok');
+  await refreshUpdate();
 }
 
 /** 下载进度每秒好几条，只动进度条那两处，别整页重画（会把正在输入的框重置掉） */
@@ -1387,6 +1414,9 @@ const ACTS = {
     if (!r.ok) { toast(r.error, 'err'); return; }
     toast('正在安装，应用马上重启…', 'ok');
   },
+  // 切通道：只换「读源上哪个清单文件」，**不动源地址**。换完立刻刷新，别让界面显示旧通道
+  'upd:chan:stable': async () => { await switchUpdateChannel('stable'); },
+  'upd:chan:beta': async () => { await switchUpdateChannel('beta'); },
 
   'flatten:pick': async () => {
     const d = await appApi.pickDir({ title: '选择素材根目录' });

@@ -60,7 +60,11 @@ function defaults() {
       mockIntervalSec: 5
     },
     window: { bounds: null, maximized: false },
-    ui: { theme: 'system' }
+    ui: { theme: 'system' },
+    // 自动更新的**通道偏好**。★ 只存通道名，**源地址永远编译在包里**（不许运行时改，见
+    // src/main/updater.js 文件头铁律 2）；通道名只决定读源上哪个清单文件：正式版 latest.yml / 测试版 beta.yml。
+    // 存 stable|beta；非法值由 updater.init() 忽略并落回 stable。
+    update: { channel: 'stable' }
   };
 }
 

@@ -132,6 +132,52 @@ app.whenReady().then(async () => {
      !!updPanel && /开发模式/.test(updPanel.text) && updPanel.acts.length === 0,
      (updPanel && updPanel.text || '').slice(0, 120) + ' | 按钮 ' + JSON.stringify(updPanel && updPanel.acts));
 
+  // ---- 更新通道：主进程算对了 ≠ 用户在界面上看得到、点得到，所以这里必须再验一次 ----
+  // 造一个「自动更新可用 + 当前在测试版」的状态：假 autoUpdater + packaged=true，
+  // 再把 send 接到真窗口上，让 setChannel 的广播真的推到渲染层。
+  {
+    const { EventEmitter } = require('events');
+    const fake = new EventEmitter();
+    fake.autoDownload = true; fake.autoInstallOnAppQuit = true;
+    fake.checkForUpdates = () => Promise.resolve(null);
+    fake.downloadUpdate = () => Promise.resolve(null);
+    fake.quitAndInstall = () => {};
+    updater._reset();
+    updater._setUpdater(fake);
+    updater.init({
+      send: (ch, payload) => { if (!win.isDestroyed()) win.webContents.send(ch, payload); },
+      packaged: true, version: '9.9.9', channel: 'stable'
+    });
+    updater.setChannel('beta');   // 这一步会广播，渲染层据此重画
+  }
+  const chanPanel = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="7"]').click();
+    await new Promise(r => setTimeout(r, 250));
+    const box = document.querySelector('#updBox');
+    if (!box) return null;
+    const b = n => box.querySelector('[data-act="upd:chan:' + n + '"]');
+    const has = e => !!(e && String(e.className).includes('primary'));
+    return {
+      text: box.textContent, acts: [...box.querySelectorAll('[data-act]')].map(e => e.dataset.act),
+      hasRow: /更新通道/.test(box.textContent),
+      stable: !!b('stable'), beta: !!b('beta'),
+      stablePrimary: has(b('stable')), betaPrimary: has(b('beta'))
+    };
+  })()`);
+  ok('更新可用时：设置页有「更新通道」一行，正式版 / 测试版两个按钮都在',
+     !!chanPanel && chanPanel.hasRow && chanPanel.stable && chanPanel.beta,
+     JSON.stringify(chanPanel && { hasRow: chanPanel.hasRow, stable: chanPanel.stable, beta: chanPanel.beta }));
+  ok('★ 当前通道在界面上看得出来：测试版高亮、正式版不高亮',
+     !!chanPanel && chanPanel.betaPrimary && !chanPanel.stablePrimary,
+     JSON.stringify(chanPanel && { stablePrimary: chanPanel.stablePrimary, betaPrimary: chanPanel.betaPrimary }) + ' | ' + (chanPanel && chanPanel.text || '').slice(0, 100));
+  ok('更新可用时把「检查/下载/安装」三个按钮摆出来（和不可用时形成对照）',
+     !!chanPanel && ['upd:check', 'upd:download', 'upd:install'].every(a => chanPanel.acts.includes(a)),
+     JSON.stringify(chanPanel && chanPanel.acts));
+
+  // 把更新模块还原成「未打包」的初始状态，免得影响后面还在用同一进程的断言
+  updater._reset();
+  updater.init({ send: () => {}, packaged: app.isPackaged, version: app.getVersion() });
+
   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
   // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动
   const modal = await win.webContents.executeJavaScript(`

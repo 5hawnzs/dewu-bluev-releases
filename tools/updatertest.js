@@ -144,6 +144,65 @@ const initBase = extra => Object.assign({ send, packaged: true, version: '1.0.0'
   const p3 = await upd.check({ manual: true });
   ok('第一次检查结束后闸门复位，还能再查一次（不会卡死在「检查中」）', p3.ok === true, JSON.stringify(p3));
 
+  /* ---------- H. 通道：正式版 / 测试版（同一个包，运行时切） ---- */
+  f = fakeUpdater();
+  upd._reset();
+  upd._setUpdater(f);
+  st = upd.init(initBase());
+  ok('默认通道：正式版（stable）', st.channel === 'stable' && st.channelLabel === '正式版', JSON.stringify({ c: st.channel, l: st.channelLabel }));
+  ok('默认通道：落到 updater 上就是 latest（= 读源上 latest.yml）', f.channel === 'latest', f.channel);
+  ok('★★ 默认**不允许降级**：正式版用户不该因为源上放了个旧包就被悄悄降下去', f.allowDowngrade === false, f.allowDowngrade);
+
+  r = upd.setChannel('nightly');
+  ok('非法通道名被拒，并说清只能是哪两个', r.ok === false && /stable/.test(r.error) && /beta/.test(r.error), r.error);
+  ok('非法通道名被拒后，通道没被改坏', upd.status().channel === 'stable', upd.status().channel);
+
+  r = upd.setChannel('beta');
+  ok('切到测试版：返回 ok + 中文标签', r.ok === true && r.label === '测试版', JSON.stringify(r));
+  ok('切到测试版：落到 updater 上是 beta（= 改读 beta.yml）', f.channel === 'beta', f.channel);
+  ok('切到测试版：状态里也带出来（界面要显示当前在哪条通道）',
+     upd.status().channel === 'beta' && upd.status().channelLabel === '测试版', JSON.stringify(upd.status().channel));
+  ok('正式 → 测试：**不许**降级（测试版理应是更新的，源上比本机旧就更该停下来）', f.allowDowngrade === false, f.allowDowngrade);
+
+  // 切通道必须把「上一次的结果」作废：已经下好的那个包是另一条通道的，装上去等于没切
+  f.emit('update-downloaded', { version: '1.0.1' });
+  ok('（前置）先制造一个「可安装」状态', upd.status().status === 'ready', upd.status().status);
+  r = upd.setChannel('beta');
+  ok('重复切同一条通道：返回 unchanged，不当成一次真切换', r.ok === true && r.unchanged === true, JSON.stringify(r));
+  r = upd.setChannel('stable');
+  st = upd.status();
+  ok('★ 切通道作废上一次的检查/下载结果：ready → idle，新版本号清空', st.status === 'idle' && st.latest === '', JSON.stringify({ s: st.status, l: st.latest }));
+  ok('★ 作废之后「立即安装」按钮对应的调用会被拒（不许把另一条通道的包装上）', (await upd.install()).ok === false);
+  ok('测试 → 正式：**允许**降级（不然切了也回不去，因为正式版版本号更小）', f.allowDowngrade === true, f.allowDowngrade);
+
+  // 一次成功的检查之后要把放行收回去，否则等于长时间开着降级
+  f.checkForUpdates = () => { f.calls.check++; return Promise.resolve(null); };
+  await upd.check({ manual: true });
+  ok('★★ 检查成功后收回降级放行（不能一直开着，否则正式版用户随时可能被降级）', f.allowDowngrade === false, f.allowDowngrade);
+
+  // 失败时保留：网络抖一下就把机会用掉的话，用户再也没法等回正式版
+  upd.setChannel('beta');
+  upd.setChannel('stable');
+  f.checkForUpdates = () => { f.calls.check++; return Promise.reject(new Error('ENOTFOUND')); };
+  await upd.check({ manual: true });
+  ok('★ 检查失败时**保留**降级放行（网络抖一下不该把回正式版的机会用掉）', f.allowDowngrade === true, f.allowDowngrade);
+
+  // 切通道只换「读哪个清单」，绝不能碰源地址
+  const urlish = Object.keys(f).filter(k => /url|feed/i.test(k));
+  ok('★★ 切通道**不碰源地址**：updater 上没有任何 url / feed 字段被写', urlish.length === 0, urlish.join(',') || '(无)');
+
+  // 持久化：重启后按配置里的通道走；非法值落回 stable
+  f = fakeUpdater();
+  upd._reset();
+  upd._setUpdater(f);
+  st = upd.init(initBase({ channel: 'beta' }));
+  ok('持久化：重启后按配置里的 beta 通道走', st.channel === 'beta' && st.channelLabel === '测试版', st.channel);
+  f = fakeUpdater();
+  upd._reset();
+  upd._setUpdater(f);
+  st = upd.init(initBase({ channel: '乱填的' }));
+  ok('持久化：配置里是非法值时忽略，落回正式版（不崩、不照抄）', st.channel === 'stable', st.channel);
+
   console.log('\n以上断言全部通过时，说明「下载完不自动重启」这条底线是活的。');
   console.log(bad ? ('有 ' + bad + ' 项未通过') : '全部通过');
   process.exit(bad ? 1 : 0);

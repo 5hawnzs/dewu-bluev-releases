@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 应用自动更新（阶段 1：单通道 = 正式源 stable）
+ * 应用自动更新（阶段 2：正式版 + 测试版两条通道，**同一个安装包**、运行时切）
  *
  * ★★ 两条「不许顺手加上」的铁律，改这个文件前先读一遍：
  *
@@ -9,10 +9,20 @@
  *      「下载好 → 界面上点『立即安装』才真的重启」。electron-updater 的
  *      `autoInstallOnAppQuit` 也保持关闭 —— 否则用户下次关窗口时也会被装上。
  *
- *   2. **不在运行时改更新源地址**。源地址在打包时写进 `resources/app-update.yml`
+ *   2. **不在运行时改「源地址」**。源地址在打包时写进 `resources/app-update.yml`
  *      （在 asar 外面，编译进包）。electron-updater 官方明确不要 `setFeedURL`；
- *      而且测试版 / 正式版是靠**两个不同的源地址**隔离的，运行时能改就等于把
- *      两条通道混成一条，「测试版没验过的东西跑到正式版」就拦不住了。
+ *      换了就等于把所有已装客户端指到别处甚至直接失联，只能重发包。
+ *
+ *      ★ 但「**通道名**」是可以在运行时改的，而且是官方 API（见下面 `setChannel`）：
+ *        同一个源地址下，通道名只决定读哪个清单文件 —— 正式版读 `latest.yml`、
+ *        测试版读 `beta.yml`。源码依据（node_modules/electron-updater/out/）：
+ *          · GenericProvider.get channel → `this.updater.channel || this.configuration.channel`
+ *          · getChannelFilename(channel) → `${channel}.yml`，再拼到 `configuration.url` 后面
+ *          · AppUpdater 有公开的 `set channel()`，注释原话：「Overrides `channel` in the
+ *            update configuration.」
+ *        ⇒ 所以「一个安装包 + 界面上勾选测试版」是成立的，不用出两个包、也不用重装。
+ *        ★ 隔离性没有被破坏：正式版用户读的一直是 `latest.yml`，
+ *          测试版没验过的东西不会自己跑到正式版去 —— 测试版是**显式 opt-in**。
  *
  * 设计上刻意做成「可注入」：`init()` 收依赖、`_setUpdater()` 收假实现。
  * 这样 tools/updatertest.js 能在纯 Node 里把整个状态机跑一遍，
@@ -25,6 +35,14 @@ const AUTO_DOWNLOAD = false;
 
 /** 启动后延迟自检：先让窗口起来、把该干的活干上，别和启动抢 IO */
 const STARTUP_DELAY_MS = 20 * 1000;
+
+/**
+ * 界面上的通道名 → electron-updater 的 channel（也就是源上那个 yml 的文件名）。
+ * ★ 源地址不在这个表里，也永远不进这个表 —— 源地址编译在包里（文件头铁律 2）。
+ */
+const CHANNELS = { stable: 'latest', beta: 'beta' };
+const CHANNEL_LABEL = { stable: '正式版', beta: '测试版' };
+const DEFAULT_CHANNEL = 'stable';
 
 /** 便携版的判据：electron-builder 的 portable target 会设这两个环境变量 */
 function portableExe() {
@@ -42,7 +60,9 @@ const state = {
   bytesPerSecond: 0,
   message: '',
   at: 0,
-  manual: false       // 这次是用户点的，还是启动自检
+  manual: false,      // 这次是用户点的，还是启动自检
+  channel: DEFAULT_CHANNEL,               // stable | beta（用户选的通道）
+  channelLabel: CHANNEL_LABEL[DEFAULT_CHANNEL]
 };
 
 let send = () => {};
@@ -51,6 +71,12 @@ let loadErr = '';
 let timer = null;
 let started = false;
 let checking = false;
+let channel = DEFAULT_CHANNEL;
+/**
+ * 「用户刚改过通道」的一次性放行。只在这一次检查里允许降级 —— 见 applyChannel。
+ * 检查跑完（没抛异常）就复位。失败时保留，否则网络抖一下用户就再也没法等回正式版。
+ */
+let justSwitched = false;
 
 function snapshot() {
   return Object.assign({}, state);
@@ -139,10 +165,64 @@ function wire(up) {
 }
 
 /**
+ * 把「通道」落到实处。
+ * ★ 这里改的是 **channel（= 读哪个 yml）**，**不是源地址** —— 源地址永远是包里
+ *   `app-update.yml` 那个，运行时改不了也不许改（文件头铁律 2）。
+ */
+function applyChannel(up) {
+  if (!up) return up;
+  up.channel = CHANNELS[channel] || CHANNELS[DEFAULT_CHANNEL];
+  // ★ 上面这句会踩到一个副作用：electron-updater 的 channel setter 会**顺手把
+  //   allowDowngrade 设成 true**（源码注释原话：「allowDowngrade will be automatically
+  //   set to true. If this behavior is not suitable for you, simple set allowDowngrade
+  //   explicitly after.」）。放任它的后果是：正式版用户只要被人往源上放一个旧包，
+  //   就会被**悄悄降级**。所以这里显式压回来，只给「用户刚切完通道」的那一次检查放行
+  //   （从测试版回正式版必须允许降级，否则切了也回不去）。
+  up.allowDowngrade = !!justSwitched;
+  return up;
+}
+
+/**
+ * 切换更新通道（正式版 / 测试版）。
+ * ★ 只是换一个 yml 文件名：**源地址不变**，所以不会失联、也不用重发包、更不用重装。
+ * 持久化由调用方负责（ipc.js 写 store），这里只保证内存状态和 updater 对象一致。
+ */
+function setChannel(next) {
+  if (!CHANNELS[next]) {
+    return { ok: false, error: `通道只能是 stable（正式版）或 beta（测试版），收到：${next}` };
+  }
+  if (next === channel) return { ok: true, channel, label: CHANNEL_LABEL[next], unchanged: true };
+
+  const from = channel;
+  channel = next;
+  // ★ 只有「测试版 → 正式版」这一次需要允许降级 —— 正式版的版本号本来就比测试版小，
+  //   不放行的话用户切了也回不去。反过来（正式 → 测试）**不许**降级：测试版理应是更新的，
+  //   要是源上那份比本机还旧，那更该停下来让人看一眼，而不是默默把应用降下去。
+  justSwitched = (from === 'beta' && next === 'stable');
+
+  const up = loadUpdater();
+  if (up) applyChannel(up);
+
+  // ★ 切了通道，上一次的检查/下载结果就**不作数**了：
+  //   已经下好的那个包是「另一条通道」的版本，装上去等于没切。
+  const was = state.status;
+  patch({
+    status: (was === 'ready' || was === 'available' || was === 'downloading') ? 'idle' : was,
+    channel,
+    channelLabel: CHANNEL_LABEL[next],
+    latest: '', percent: 0, transferred: 0, total: 0, bytesPerSecond: 0,
+    message: `已切到${CHANNEL_LABEL[next]}通道，下次检查按这条通道走`
+  }, `更新通道：${CHANNEL_LABEL[from]} → ${CHANNEL_LABEL[next]}`);
+
+  return { ok: true, channel, from, label: CHANNEL_LABEL[next] };
+}
+
+/**
  * @param {object} opts
  * @param {(ch:string, payload:any)=>void} opts.send  事件广播（主进程里 = 发给所有窗口）
  * @param {boolean} opts.packaged                     app.isPackaged
  * @param {string}  opts.version                      app.getVersion()
+ * @param {string}  [opts.channel]                    持久化的通道偏好（stable|beta），非法值忽略
  * @param {(ms:number, fn:Function)=>{}} [opts.setTimer] 便于测试注入
  */
 function init(opts) {
@@ -150,6 +230,15 @@ function init(opts) {
   if (o.send) send = o.send;
   if (o.version) state.current = o.version;
   if (o.setTimer) timer = o.setTimer;
+
+  // 通道偏好先落地：不支持自动更新的情况下界面也要能显示「当前在哪条通道」
+  if (o.channel && CHANNELS[o.channel]) channel = o.channel;
+  state.channel = channel;
+  state.channelLabel = CHANNEL_LABEL[channel];
+  // updater 已经加载过的话（测试注入 / 热重入）顺手同步一次，别让它停在旧通道上。
+  // ★ 这里**不主动 loadUpdater()**：init 阶段不该去碰 electron-updater（开发模式下它可能直接抛），
+  //   真正的第一次使用是 check()，那次会重新落一遍。
+  if (autoUpdater) applyChannel(autoUpdater);
 
   const dev = o.packaged === false;
   const port = portableExe();
@@ -192,6 +281,7 @@ async function check(opts) {
   const up = loadUpdater();
   if (!up) return { ok: false, error: `更新模块不可用：${loadErr}` };
 
+  applyChannel(up);   // ★ 每次检查前都按「当前通道」重新落到 updater 上，别指望它记着
   checking = true;
   patch({ manual });
   try {
@@ -200,8 +290,12 @@ async function check(opts) {
     const msg = (e && e.message) || String(e);
     patch({ status: 'error', message: msg }, () => `检查更新失败：${msg}`);
     checking = false;
+    // ★ 失败时**保留** justSwitched：网络抖一下就把「允许降级」用掉的话，
+    //   从测试版切回正式版的用户会永远等不到降级
     return { ok: false, error: msg };
   }
+  justSwitched = false;   // 这一次检查已经按「允许降级」跑过了
+  applyChannel(up);       // ★ 立刻收回放行，别让 updater 长时间停在 allowDowngrade=true
   checking = false;
   return { ok: true };
 }
@@ -240,14 +334,16 @@ const status = () => snapshot();
 function _setUpdater(fake) { autoUpdater = normalize(fake); loadErr = ''; wire(autoUpdater); return autoUpdater; }
 function _reset() {
   autoUpdater = null; loadErr = ''; timer = null; started = false; checking = false;
+  channel = DEFAULT_CHANNEL; justSwitched = false;
   Object.assign(state, {
     supported: false, status: 'idle', current: '', latest: '', percent: 0,
-    transferred: 0, total: 0, bytesPerSecond: 0, message: '', at: 0, manual: false
+    transferred: 0, total: 0, bytesPerSecond: 0, message: '', at: 0, manual: false,
+    channel: DEFAULT_CHANNEL, channelLabel: CHANNEL_LABEL[DEFAULT_CHANNEL]
   });
 }
 
 module.exports = {
-  init, scheduleStartupCheck, check, download, install, status,
-  portableExe, AUTO_DOWNLOAD, STARTUP_DELAY_MS,
+  init, scheduleStartupCheck, check, download, install, status, setChannel, applyChannel,
+  portableExe, AUTO_DOWNLOAD, STARTUP_DELAY_MS, CHANNELS, CHANNEL_LABEL, DEFAULT_CHANNEL,
   _setUpdater, _reset
 };

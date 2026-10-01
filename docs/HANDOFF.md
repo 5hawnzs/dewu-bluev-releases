@@ -102,8 +102,19 @@
    a. **绝不自动重启安装**。这工具随时可能在跑批量发布（一跑几十分钟），静默重启会把任务拦腰截断、而且**没有回滚**。
       `autoInstallOnAppQuit` 也必须是 `false`（否则用户下次关窗口时会被装上）。
       安装只能由用户点「立即安装」，而且**有任务在跑时必须拦住**（已经拦在 `ipc.js` 的 `update:install` 里）。
-   b. **不在运行时改更新源地址**（`setFeedURL`）。地址编译进 `resources/app-update.yml`；将来 beta / stable
-      两条通道是靠**两个不同的源地址**隔离的，运行时能改就等于把「测试版没验过的东西」直接送进正式版。
+   b. **不在运行时改「源地址」**（`setFeedURL`）。地址编译进 `resources/app-update.yml`，改了等于把已装的
+      客户端指到别处甚至直接失联，只能重发包。
+      ★★ **但「通道名」是可以在运行时改的，而且是官方 API** —— 2026-10-01 起正式版 / 测试版就是**同一个包**
+      靠运行时切 channel 实现的（`updater.js#setChannel`），**不是**靠两个源地址：
+      · 源码依据（`node_modules/electron-updater/out/`）：`GenericProvider.get channel` 取
+        `updater.channel || configuration.channel`；文件名 = `${channel}.yml`，拼到 `configuration.url` 后面；
+        `AppUpdater` 有公开的 `set channel()`，注释原话「Overrides `channel` in the update configuration.」。
+      · ⇒ 同一个桶根目录下，正式版读 `latest.yml`、测试版读 `beta.yml`。**源地址永远不变**，
+        所以切换不用重装、也不会失联；隔离性也没被破坏（正式版用户读的一直是 `latest.yml`，测试版是显式 opt-in）。
+      · ⇒ 于是 `tools/upload-release.js --channel beta` 传的是**桶根的 `beta.yml`**（不是 `beta/` 子目录）。
+      · ★ **降级**：`set channel` 的 setter 会顺手把 `allowDowngrade` 设成 true，代码里显式压回来了 ——
+        只有「测试版 → 正式版」那一次放行（不放行就切不回去），其余时候**禁止降级**，
+        免得源上被人放个旧包就把正式版用户悄悄降下去。`upload-release.js` 另有一道「不许往回发版本」的闸门兜底。
 
 ## 3. 环境与已知坑
 
@@ -198,8 +209,10 @@
     这套权限的真正作用是**防误操作 + 让统计能对账**，不是防内部的恶意越权；真要隔离得上服务端（当前没有服务端）。
   - 回归：新增 `tools/brandtest.js`（58 项）；`uicheck` 19→23、`logintest` 32→48；合计 **216 → 294** 项断言。
     随后加文案提示词，又补到 `brandtest` 69、`uicheck` 27、`logintest` 58，合计 **319** 项。
-  - 再往后加**自动更新**（2026-10-01，见 §2 第 5 条）：新增 `tools/updatertest.js`（29 项）与
-    `tools/releasetest.js`（28 项），`uicheck` 27→29、`logintest` 58→59 ⇒ 合计 **379** 项断言（实测）。
+  - 再往后加**自动更新**（2026-10-01，见 §2 第 5 条）：新增 `tools/updatertest.js` 与
+    `tools/releasetest.js`，`uicheck` 27→29、`logintest` 58→59 ⇒ 合计 **379** 项断言（实测）。
+  - 随后接上**测试版通道**（同一个包、运行时切 channel，见 §2 第 5 条 b）：
+    `updatertest` 29→48、`releasetest` 28→47、`uicheck` 29→32 ⇒ 合计 **420** 项断言（实测）。
 
 ## 5. 待做（按优先级）
 
@@ -400,13 +413,13 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
 | `tools/reporttest.js` | 「AI 内容报告」导入 → 发布 → 回写：列名匹配（列顺序打乱）、行↔叶子配对与数量不等报错、标题文案空则生成、好物带全、**发图文还是发视频按「内容类型」列判定**（没标按目录推断；图+视频都有又没标 → 「校验未通过」）、报告被占用→暂存→补写 | 32 |
 | `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删除品牌**排空授权**且**不动历史记录**；按品牌统计（「未标品牌」与「已删除的品牌」各自成桶、绝不与真实品牌合并）；执行日志落盘且重启后仍在；xlsx 四个工作表；**按品牌文案提示词**（存 / 归一 `\r\n` / 超长截断、拼进 system 时品牌模板在前而输出约束在后、没配提示词的品牌**起任务前就被拦下且不留台账**、直接调 `copywriter.generate` 也拦得住） | 69 |
-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因（未打包时不许摆点了没用的按钮）** | 29 |
+| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因（未打包时不许摆点了没用的按钮）**、**更新可用时「更新通道」一行 + 两个按钮都在、当前通道高亮正确** | 32 |
 | `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全、成员看到的品牌名是只读的）；**自动更新四个通道同样被登录门拦** | 59 |
 | `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮四边都在卡片边框内、卡片外没有任何**可见**元素 | 17 |
-| `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用 | 29 |
-| `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」时默认**拦下**（不拦 ⇒ 用户永远收不到更新且查不出原因）、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 28 |
+| `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用；**通道**（默认正式版且落到 updater 上就是 `latest`；非法通道名被拒且不改坏状态；切测试版改读 `beta.yml`；**切通道作废上一次下载结果**、装不上另一条通道的包；**正式→测试不许降级、测试→正式才允许**；成功检查后收回降级放行、失败时保留；切通道不碰任何 url/feed 字段；重启后按配置里的通道走、非法值落回正式版） | 48 |
+| `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」与「**往回发**（比源上低）」两种情况分别拦下且原因可区分、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`compareVersion`（`1.0.0-beta.2` / `1.0.0-beta.10` / `1.10.0` 这些按**数值**比的用例）；`channelFile`（正式版→`latest.yml`、测试版→`beta.yml`）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 47 |
 
-合计 **379** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 29 + 59 + 17 + 29 + 28 = 379`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+合计 **420** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 32 + 59 + 17 + 48 + 47 = 420`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
 `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
 
 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
@@ -577,10 +590,10 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十二套**测试，共 **379** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
-| `tools/upload-release.js` | 把 exe + `latest.yml` + `.blockmap` 传到对象存储的 `stable/`（或 `beta/`）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
-| `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable` / `channel: latest` / `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |
-| `dist/latest.yml` | electron-builder 生成的更新清单（388 B）：`path` 指向 **NSIS 安装版** exe（不是便携版），带 `sha512` 与 `size`。客户端按这里的 `path` 去下载，**对不上就是 404** |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十二套**测试，共 **420** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/upload-release.js` | 把 exe + 清单文件 + `.blockmap` 传到对象存储的**桶根目录**。清单名按通道定：正式版 `latest.yml`、测试版 `beta.yml`（`channelFile()`）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
+| `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/`（**桶根，不带 `/stable`** —— 两条通道共用同一层，靠清单文件名区分）/ `channel: latest`（只是默认值，用户选测试版后运行时会被覆盖成 `beta`）/ `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |
+| `dist/latest.yml` | electron-builder 生成的更新清单（388 B）：`path` 指向 **NSIS 安装版** exe（不是便携版），带 `sha512` 与 `size`。客户端按这里的 `path` 去下载，**对不上就是 404**。★ 两条通道都由它派生：传正式版时它被当作 `latest.yml` 上传，传测试版时被改名成 `beta.yml` |
 | `.env`（不进仓库，已在 `.gitignore`） | 发版凭据 `COS_BUCKET` / `COS_REGION` / `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_DOMAIN`；子账号 `dewu-bluev-cos-upload` |
 | `docs/WINDOWS-E2E.md` | Windows + 雷电模拟器的端到端测试手册（怎么跑、每步预期、坑、问题回传） |
 | `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据 / `.env`」写好并生效 |

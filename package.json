@@ -14,7 +14,8 @@
     "dist:win-only": "electron-builder --win --x64 --publish never",
     "release:stable": "node tools/upload-release.js --channel stable",
     "release:beta": "node tools/upload-release.js --channel beta",
-    "dist:release": "npm run dist:win && npm run release:stable"
+    "dist:release": "npm run dist:win && npm run release:stable",
+    "dist:release:beta": "npm run dist:win && npm run release:beta"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
@@ -41,7 +42,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable",
+        "url": "https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/",
         "channel": "latest"
       }
     ],
