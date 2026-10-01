@@ -14,7 +14,7 @@
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch } = require(path.join(ROOT, 'tools/upload-release.js'));
+const { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch, argOf, hasOf } = require(path.join(ROOT, 'tools/upload-release.js'));
 
 let bad = 0;
 const ok = (label, cond, extra) => {
@@ -223,6 +223,32 @@ ok('★ 与 versionGate 相互独立：源上还没清单（Beta 首次发布）
   versionGate('', '1.0.1-beta.1', false).block === false &&
   channelMismatch('stable', '1.0.1-beta.1').block === true,
   JSON.stringify({ versionGate: versionGate('', '1.0.1-beta.1', false).block, channelMismatch: channelMismatch('stable', '1.0.1-beta.1').block }));
+
+console.log('\nF. argOf —— `--channel=beta` 必须和 `--channel beta` 一样动作\n');
+// ★ 这条抓的是「写法不同 ⇒ 静默用了默认值」：以前只认空格形式，
+//   `--channel=beta` 会被忽略、退回 stable ⇒ 把**测试版包推给所有正式用户**。
+//   ★ 这里绝不能让「解析不出来」悄悄落回默认，所以解析不出来时给的不是默认值。
+{
+  const A = argv => (n, d) => argOf(argv, n, d);
+  const a1 = A(['node', 'x.js', '--channel', 'beta']);
+  ok('空格形式 --channel beta ⇒ beta', a1('channel', 'stable') === 'beta', a1('channel', 'stable'));
+  const a2 = A(['node', 'x.js', '--channel=beta']);
+  ok('★ 等号形式 --channel=beta ⇒ beta（以前会被静默忽略、退回 stable）',
+    a2('channel', 'stable') === 'beta', String(a2('channel', 'stable')));
+  const a3 = A(['node', 'x.js', '--channel=stable', '--dry-run']);
+  ok('等号形式 + 其它开关混用互不影响', a3('channel', 'beta') === 'stable' && hasOf(['node', 'x.js', '--channel=stable', '--dry-run'], 'dry-run') === true,
+    JSON.stringify([a3('channel', 'beta'), hasOf(['--dry-run'], 'dry-run')]));
+  const a4 = A(['node', 'x.js', '--channel']);
+  ok('只给开关不给值 ⇒ true（上层据此报错，不许当默认值用）', a4('channel', 'stable') === true, JSON.stringify(a4('channel', 'stable')));
+  const a5 = A(['node', 'x.js', '--channel=']);
+  ok('★ --channel=（空值）⇒ 空串，**不落回默认值**（否则就是「静默发错通道」）',
+    a5('channel', 'stable') === '', JSON.stringify(a5('channel', 'stable')));
+  const a6 = A(['node', 'x.js']);
+  ok('完全没给 ⇒ 才用默认值', a6('channel', 'stable') === 'stable');
+  ok('--keep-more=0 也要能取到（清理脚本靠它）', argOf(['node', 'x.js', '--keep-more=0'], 'keep-more', '1') === '0');
+  ok('hasOf 认等号形式：--apply 与 --apply=true 都算给了',
+    hasOf(['--apply'], 'apply') === true && hasOf(['--apply=true'], 'apply') === true && hasOf([], 'apply') === false);
+}
 
 console.log('\nD. humanSize —— 388 B 不能显示成 "0.0 MB"\n');
 

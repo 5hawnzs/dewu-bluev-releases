@@ -203,7 +203,8 @@ app.whenReady().then(async () => {
     updater._setUpdater(fake);
     updater.init({
       send: (ch, payload) => { if (!win.isDestroyed()) win.webContents.send(ch, payload); },
-      packaged: true, version: '9.9.9', channel: 'stable'
+      packaged: true, version: '9.9.9', channel: 'stable',
+      logFile: path.join(TMP, 'logs', 'update.log')
     });
     updater.setChannel('beta');   // 这一步会广播，渲染层据此重画
   }
@@ -230,6 +231,75 @@ app.whenReady().then(async () => {
   ok('更新可用时把「检查/下载/安装」三个按钮摆出来（和不可用时形成对照）',
      !!chanPanel && ['upd:check', 'upd:download', 'upd:install'].every(a => chanPanel.acts.includes(a)),
      JSON.stringify(chanPanel && chanPanel.acts));
+
+  // ---- 更新日志开关：默认关，开了要真的落盘；而且必须把更新库自己的 logger 接管过来 ----
+  // 为什么值得在界面层再验一次：这个开关的价值全在「开完以后真的能拿到硬证据」。
+  // 只验主进程函数存在是不够的 —— 按钮没接线 / 状态没刷新，用户点了也是白点。
+  {
+    const logPath = path.join(TMP, 'logs', 'update.log');
+    store.set({ update: { log: false } });      // 清掉可能残留的偏好，从「关」开始
+    updater.setLogEnabled(false, logPath);
+
+    const readBox = () => win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.nav[data-tab="7"]').click();
+      await new Promise(r => setTimeout(r, 250));
+      const box = document.querySelector('#updBox');
+      return box ? { acts: [...box.querySelectorAll('[data-act]')].map(e => e.dataset.act), text: box.textContent } : null;
+    })()`);
+
+    const b0 = await readBox();
+    ok('更新可用时设置页有「更新日志」一行 + 开启 / 打开日志文件两个按钮（默认关）',
+       !!b0 && /更新日志/.test(b0.text) && b0.acts.includes('upd:log:on') && b0.acts.includes('upd:log:open'),
+       JSON.stringify(b0 && { has: /更新日志/.test(b0.text), acts: b0.acts }));
+    ok('★ 关着的时候也写明「默认关闭」+ 为什么值得开（差分退回全量只有这里看得见）',
+       !!b0 && /默认关闭/.test(b0.text) && /差分/.test(b0.text),
+       (b0 && b0.text || '').replace(/\s+/g, ' ').slice(0, 130));
+    ok('★ 关着时不许假装在记录：界面上不出现「记录中」，磁盘上也没有日志文件',
+       !!b0 && !/记录中/.test(b0.text) && !fs.existsSync(logPath));
+    ok('★ 界面上写明日志里只有版本号/字节数，不含素材品牌 SKU（不违「数据不出本机」）',
+       !!b0 && /不含/.test(b0.text) && /SKU/.test(b0.text), (b0 && b0.text || '').replace(/\s+/g, ' ').slice(-90));
+
+    // 点「开启」→ 走真 IPC（ipcMain.handle('update:set-log')）
+    await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-act="upd:log:on"]').click();
+      await new Promise(r => setTimeout(r, 500));
+    })()`);
+    const onBox = await readBox();
+    ok('★ 点「开启」后日志文件真的建出来了（不是只改了个界面状态）', fs.existsSync(logPath), logPath);
+    ok('★ 界面立刻变成「记录中」，按钮变成「关闭」（用户看得见自己开的开关生效了）',
+       !!onBox && /记录中/.test(onBox.text) && onBox.acts.includes('upd:log:off'),
+       JSON.stringify(onBox && { rec: /记录中/.test(onBox.text), acts: onBox.acts }));
+    ok('★ 开启后界面上能看到日志落到哪（update.log 的完整路径）', !!onBox && /update\.log/.test(onBox.text));
+    ok('★ 开关写进配置（重启后还记得，不用每次重开）', store.get('update.log') === true, String(store.get('update.log')));
+
+    // 点「关闭」→ 停写，但已写下的内容不许删
+    await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-act="upd:log:off"]').click();
+      await new Promise(r => setTimeout(r, 500));
+    })()`);
+    const offBox = await readBox();
+    ok('★ 点「关闭」后停写，且已经写下的内容不会被删',
+       fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').length > 0 && !updater.logStatus().enabled);
+    ok('关闭后界面回到「默认关闭」，而且仍然告诉你文件在哪（下次要翻还找得到）',
+       !!offBox && /默认关闭/.test(offBox.text) && !/记录中/.test(offBox.text) && /update\.log/.test(offBox.text),
+       (offBox && offBox.text || '').replace(/\s+/g, ' ').slice(0, 120));
+    ok('关闭也写进配置', store.get('update.log') === false, String(store.get('update.log')));
+  }
+
+  // 源码级锚点：日志关着时不挂 logger，开着时**必须**接管 ——
+  // 以后若有人图省事把它改回 `up.logger = null`，「差分退回全量」这条线索就又没了
+  {
+    const updSrc = fs.readFileSync(path.join(ROOT, 'src/main/updater.js'), 'utf8');
+    ok('★ updater.js 里 logger 是「按开关挂」的（开着才接管，关着不挂）',
+       /up\.logger\s*=\s*\(logFd !== null\)\s*\?\s*fileLogger\s*:\s*null/.test(updSrc),
+       (updSrc.match(/up\.logger\s*=[^\n]*/) || ['(找不到)'])[0].trim());
+    ok('★ 下载完成时会把「这次下了多少字节」记下来（判断差分有没有生效只认这个数）',
+       /logLine\('downloaded'[^\n]*state\.total/.test(updSrc),
+       (updSrc.match(/logLine\('downloaded'[^\n]*/) || ['(找不到)'])[0].trim().slice(0, 110));
+    ok('★ 日志文件有上限、不会无限长大', /const LOG_MAX_BYTES = \d+ \* 1024 \* 1024/.test(updSrc), (updSrc.match(/const LOG_MAX_BYTES[^\n]*/) || [''])[0]);
+    ok('★ 日志路径算在 userData 下（不在仓库里，仓库目录可能是只读的）',
+       /function defaultLogFile\(userDataDir\)[\s\S]{0,120}logs/.test(updSrc));
+  }
 
   // 把更新模块还原成「未打包」的初始状态，免得影响后面还在用同一进程的断言
   updater._reset();

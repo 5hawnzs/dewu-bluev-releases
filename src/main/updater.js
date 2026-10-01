@@ -28,6 +28,8 @@
  * 这样 tools/updatertest.js 能在纯 Node 里把整个状态机跑一遍，
  * 不需要真的打包、也不需要真的连网。
  */
+const fs = require('fs');
+const path = require('path');
 const logbus = require('./logbus');
 
 /** 发现新版本**不**自动开始下载：包有 88 MB，先让人知道再下，别偷偷占带宽 */
@@ -47,6 +49,132 @@ const DEFAULT_CHANNEL = 'stable';
 /** 便携版的判据：electron-builder 的 portable target 会设这两个环境变量 */
 function portableExe() {
   return process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR || '';
+}
+
+/* ============================================================================
+ * 可选的文件日志（**默认关**，由用户在「设置 → 应用更新」里开）
+ *
+ * 为什么要有它：更新这条链上最要命的失败是**静默**的。
+ *   · 「差分下载失败 → 悄悄退回全量下载」只由 electron-updater 自己的 logger 报出来，
+ *     而这里原来写着 `up.logger = null` —— 等于把唯一的线索一起吞了。
+ *     后果：界面进度条照样走完，用户只知道「慢」，查不出为什么慢。
+ *   · 天真的做法（直接把 up.logger 指向 console）在本应用里看不到：这是桌面应用，
+ *     没有终端，日志刷在没人看的地方。
+ * ⇒ 所以做成「写到文件 + 界面可开关」，并且**必须把 updater 的 logger 接过来**。
+ *
+ * 边界（和 logbus 的分工）：logbus 是内存里的 500 条环形缓存 + 推给界面；
+ * 这里落盘，为的是「事后能翻」。日志里**只记版本号与字节数** ——
+ * 不含素材、品牌、SKU、标题这类业务数据（那条「数据不出本机」的承诺不因它而破）。
+ * ==========================================================================*/
+
+/** 单个日志文件的上限，超过就轮转一次（只留 1 份 `.1` 备份，避免无限长大） */
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
+
+let logFd = null;    // null = 没开（用 fd 而不是流：开/关/写全是同步的，测试里可复算）
+let logFile = '';    // 目标路径。**即使没开也记着** —— 界面要显示「开了会写到哪」
+let logErr = '';     // 打不开时的原因，如实报给界面（不许假装开着）
+let lastProgAt = 0;
+let lastProgBucket = -1;
+
+/** 默认写在哪。纯函数，方便单独测；真正的 userData 目录由调用方（index.js）传进来 */
+function defaultLogFile(userDataDir) {
+  return path.join(String(userDataDir || ''), 'logs', 'update.log');
+}
+
+function logStatus() {
+  return { enabled: logFd !== null, path: logFile, error: logErr, maxBytes: LOG_MAX_BYTES };
+}
+
+/** 打不了/写不进都**吞掉**：日志坏了不能把更新流程一起弄崩 */
+function logLine(tag, msg) {
+  if (logFd === null) return;
+  try { fs.writeSync(logFd, `${new Date().toISOString()} [${tag}] ${msg}\n`); } catch (e) { /* 磁盘满 / 文件被锁 */ }
+}
+
+function fmtArg(x) {
+  if (typeof x === 'string') return x;
+  try { return JSON.stringify(x); } catch (e) { return String(x); }
+}
+
+/**
+ * 转给 electron-updater 的 logger。
+ * ★ `error` 这一档是重点：差分下载出问题时它从这里报错，然后自己 catch 掉退回全量。
+ */
+const fileLogger = {
+  info: (...a) => logLine('updater', a.map(fmtArg).join(' ')),
+  warn: (...a) => logLine('updater:warn', a.map(fmtArg).join(' ')),
+  error: (...a) => logLine('updater:error', a.map(fmtArg).join(' ')),
+  debug: (...a) => logLine('updater:debug', a.map(fmtArg).join(' '))
+};
+
+/** 超过上限就把当前文件挪成 `.1`（覆盖旧备份），再重新开始写 */
+function rotateIfBig() {
+  try {
+    if (!logFile || !fs.existsSync(logFile)) return;
+    if (fs.statSync(logFile).size < LOG_MAX_BYTES) return;
+    const bak = logFile + '.1';
+    try { if (fs.existsSync(bak)) fs.unlinkSync(bak); } catch (e) { /* 删不掉就让下面的 rename 去报 */ }
+    fs.renameSync(logFile, bak);
+  } catch (e) { /* 转不动就继续往原文件追加，总比不写强 */ }
+}
+
+/** 日志开关一变，**必须**重新落一遍到 updater 上（就是 logger 那一项） */
+function applyLogToUpdater() {
+  if (autoUpdater) normalize(autoUpdater);
+}
+
+function openLog(file) {
+  closeLog();
+  if (file) logFile = String(file);
+  logErr = '';
+  if (!logFile) { applyLogToUpdater(); return false; }
+  try {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    rotateIfBig();
+    logFd = fs.openSync(logFile, 'a');
+    logLine('open', `更新日志开启（上限 ${LOG_MAX_BYTES} 字节，超出轮转为 .1）`);
+  } catch (e) {
+    logErr = (e && e.message) || String(e);
+    logFd = null;
+  }
+  applyLogToUpdater();
+  return logFd !== null;
+}
+
+function closeLog() {
+  if (logFd !== null) {
+    logLine('close', '更新日志关闭');
+    try { fs.closeSync(logFd); } catch (e) { /* ignore */ }
+    logFd = null;
+  }
+  applyLogToUpdater();
+}
+
+/**
+ * 开/关日志。
+ * @param {boolean} on
+ * @param {string} [file] 想换路径时传（不传就沿用上次那个）
+ */
+function setLogEnabled(on, file) {
+  if (on) openLog(file);
+  else { if (file) logFile = String(file); logErr = ''; closeLog(); }
+  return logStatus();
+}
+
+/**
+ * 下载进度：每秒好几条，全记会把日志刷没 ⇒ 按「每跨 10% 或每 2 秒」抽稀；
+ * 100% 那一条一定记（那才是「到底下了多少」的落点）。
+ */
+function logProgress(p) {
+  if (logFd === null) return;
+  const pct = Number(p && p.percent) || 0;
+  const now = Date.now();
+  const bucket = Math.floor(pct / 10);
+  if (pct < 100 && bucket === lastProgBucket && now - lastProgAt < 2000) return;
+  lastProgAt = now;
+  lastProgBucket = bucket;
+  const bps = Number(p && p.bytesPerSecond) || 0;
+  logLine('progress', `${pct.toFixed(1)}%  ${p && p.transferred}/${p && p.total} 字节${bps ? `  ${Math.round(bps / 1024)} KB/s` : ''}`);
 }
 
 const state = {
@@ -93,7 +221,8 @@ function patch(p, log) {
   Object.assign(state, p);
   if (changed && log) {
     const line = typeof log === 'function' ? log(snapshot()) : log;
-    if (line) logbus.info(line);
+    // 同一行走两处：logbus 给界面看（内存 500 条），文件给事后翻（可选，默认关）
+    if (line) { logbus.info(line); logLine('state', line); }
   }
   broadcast();
   return snapshot();
@@ -106,7 +235,10 @@ function patch(p, log) {
 function normalize(up) {
   up.autoDownload = AUTO_DOWNLOAD;          // ★ 不许自己下 88MB
   up.autoInstallOnAppQuit = false;          // ★ 见文件头铁律 1
-  up.logger = null;                         // 它默认会往控制台刷一堆，没必要
+  // ★ 日志关着时压成 null（它默认会往控制台刷一堆，桌面应用没人看）。
+  //   但**开着时必须把它的 logger 接过来** —— 「差分下载失败、静默退回全量」
+  //   那条 error 级日志只从这里出来。原来写死 null 等于把唯一的线索一起吞了。
+  up.logger = (logFd !== null) ? fileLogger : null;
   return up;
 }
 
@@ -151,9 +283,15 @@ function wire(up) {
       bytesPerSecond: (p && p.bytesPerSecond) || 0,
       message: '正在下载更新…'
     });
+    logProgress(p);
   });
   up.on('update-downloaded', info => {
     const v = (info && info.version) || state.latest;
+    // ★ 这一行就是「这次到底下了多少」的硬证据，也是判断**差分有没有生效**的唯一依据：
+    //   走差分 ⇒ total 只是变化块（实测约 11 MB）；静默退回全量 ⇒ total ≈ 安装包满包（约 88 MB）。
+    //   对比基准写在 docs/HANDOFF.md「应用更新」一节，别凭感觉判断。
+    const sizeTxt = state.total ? `（${(state.total / 1048576).toFixed(1)} MB）` : '（total 取不到，没法判断这次是全量还是差分）';
+    logLine('downloaded', `新版本 ${v} 已下载完成：本次共 ${state.total} 字节${sizeTxt}；当前版本 ${state.current}`);
     // ★ 到这里**什么都不做**，只把状态改成「可安装」等用户点。见文件头铁律 1
     patch({ status: 'ready', latest: v, percent: 100, message: '已下载完成，可以安装' },
       s => `新版本 ${v} 已下载完成。点「立即安装」才会重启生效（不会自动重启）`);
@@ -252,6 +390,11 @@ function init(opts) {
   if (o.version) state.current = o.version;
   if (o.setTimer) timer = o.setTimer;
 
+  // 更新日志：**路径永远先落到状态里**（界面要显示「开了会写到哪」），开关按持久化的偏好来。
+  // 放在最前面，是因为下面 dev / 便携版两条分支会提前 return —— 那两种情况下界面也得能显示路径。
+  if (o.logFile) logFile = String(o.logFile);
+  if (o.logEnabled) openLog(logFile);
+
   // 通道偏好先落地：不支持自动更新的情况下界面也要能显示「当前在哪条通道」
   if (o.channel && CHANNELS[o.channel]) channel = o.channel;
   state.channel = channel;
@@ -305,6 +448,7 @@ async function check(opts) {
   applyChannel(up);   // ★ 每次检查前都按「当前通道」重新落到 updater 上，别指望它记着
   checking = true;
   patch({ manual });
+  logLine('check', `开始检查更新：本次=「${manual ? '用户点的' : '启动自检'}」 · 通道=${channel}(${up.channel}) · 当前=${state.current} · allowDowngrade=${!!up.allowDowngrade}`);
   try {
     await up.checkForUpdates();
   } catch (e) {
@@ -327,6 +471,9 @@ async function download() {
   // 允许「idle → 直接下」：用户可能刚启动就点，还没走完一次检查
   const up = loadUpdater();
   if (!up) return { ok: false, error: `更新模块不可用：${loadErr}` };
+  lastProgAt = 0;          // 进度抽稀的计数按「这一次下载」重来
+  lastProgBucket = -1;
+  logLine('download', `开始下载更新（本机 ${state.current} → ${state.latest || '?'}）`);
   try {
     await up.downloadUpdate();
   } catch (e) {
@@ -343,6 +490,7 @@ async function install() {
   const up = loadUpdater();
   if (!up) return { ok: false, error: `更新模块不可用：${loadErr}` };
   logbus.warn(`正在安装新版本 ${state.latest}，应用会立即重启`);
+  logLine('install', `用户点了「立即安装」：${state.current} → ${state.latest}，应用即将重启`);
   // 不 await：quitAndInstall 正常路径下会把进程带走，await 后面的代码不保证执行
   up.quitAndInstall(false, true);
   return { ok: true };
@@ -356,6 +504,8 @@ function _setUpdater(fake) { autoUpdater = normalize(fake); loadErr = ''; wire(a
 function _reset() {
   autoUpdater = null; loadErr = ''; timer = null; started = false; checking = false;
   channel = DEFAULT_CHANNEL; justSwitched = false;
+  closeLog();               // 免得上一组用例的日志流串到下一组
+  lastProgAt = 0; lastProgBucket = -1;
   Object.assign(state, {
     supported: false, status: 'idle', current: '', latest: '', percent: 0,
     transferred: 0, total: 0, bytesPerSecond: 0, message: '', at: 0, manual: false,
@@ -367,5 +517,7 @@ module.exports = {
   init, scheduleStartupCheck, check, download, install, status, setChannel, applyChannel,
   enforceChannelPermission,
   portableExe, AUTO_DOWNLOAD, STARTUP_DELAY_MS, CHANNELS, CHANNEL_LABEL, DEFAULT_CHANNEL,
+  // 可选的文件日志（默认关）
+  defaultLogFile, logStatus, setLogEnabled, LOG_MAX_BYTES,
   _setUpdater, _reset
 };

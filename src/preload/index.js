@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('api', {
   updateDownload: () => ipcRenderer.invoke('update:download'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
   updateSetChannel: next => ipcRenderer.invoke('update:set-channel', next),
+  updateSetLog: on => ipcRenderer.invoke('update:set-log', on),
   onUpdate: cb => on('update:changed', cb),
 
   configGet: key => ipcRenderer.invoke('config:get', key),

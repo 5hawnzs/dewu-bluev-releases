@@ -15,8 +15,9 @@
  *   uicheck        隐藏窗口加载真实渲染层（9 个页签 + 零控制台报错）
  *   logintest      登录门（未登录拦截 / 口令 / 权限 / 防爆破）
  *   gatetest       登录门窗口尺寸（未登录收缩成小窗 / 登录后还原 / 退出再收缩）
- *   updatertest    自动更新状态机（下载完绝不自动重启 / 便携版与开发模式如实说不可用）
+ *   updatertest    自动更新状态机（下载完绝不自动重启 / 便携版与开发模式如实说不可用 / 可选文件日志）
  *   releasetest    发版工具纯逻辑（latest.yml 读错就是 404 / 便携版永不上传 / 同版本号默认拦下）
+ *   prunetest      老包清理策略（唯一会删东西的工具：读错版本号就删错包 / 源上状态不明时一个字节都不删）
  *
  * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
  */
@@ -62,7 +63,8 @@ const SUITES = [
   ['logintest', 'electron', ['tools/logintest.js']],
   ['gatetest', 'electron', ['tools/gatetest.js']],
   ['updatertest', 'node', ['tools/updatertest.js']],
-  ['releasetest', 'node', ['tools/releasetest.js']]
+  ['releasetest', 'node', ['tools/releasetest.js']],
+  ['prunetest', 'node', ['tools/prunetest.js']]
 ];
 
 /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */

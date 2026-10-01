@@ -42,13 +42,29 @@ function loadEnv() {
   }
 }
 
-function arg(name, def) {
-  const i = process.argv.indexOf('--' + name);
-  if (i < 0) return def;
-  const nxt = process.argv[i + 1];
-  return (!nxt || nxt.startsWith('--')) ? true : nxt;
+/**
+ * 命令行取值。★ **必须同时支持 `--name value` 和 `--name=value`** ——
+ * 只认前者的话，`node tools/upload-release.js --channel=beta` 会**静默**退回默认值
+ * （`stable`），把测试版包推到正式通道、推给所有正式用户。这是最不该出错的一处。
+ * 抽成纯函数（`argOf(argv, …)`）是为了能单测，见 tools/releasetest.js。
+ */
+function argOf(argv, name, def) {
+  const flag = '--' + name;
+  const i = argv.indexOf(flag);
+  if (i >= 0) {
+    const nxt = argv[i + 1];
+    return (!nxt || nxt.startsWith('--')) ? true : nxt;
+  }
+  const eq = argv.find(a => a.startsWith(flag + '='));
+  if (eq !== undefined) return eq.slice(flag.length + 1);   // `--channel=` ⇒ 空串，交给上层报错，不落回默认
+  return def;
 }
-const has = name => process.argv.includes('--' + name);
+function hasOf(argv, name) {
+  const flag = '--' + name;
+  return argv.includes(flag) || argv.some(a => a.startsWith(flag + '='));
+}
+function arg(name, def) { return argOf(process.argv, name, def); }
+const has = name => hasOf(process.argv, name);
 
 /** latest.yml 是 electron-builder 生成的简单 YAML，只取我们需要的两个字段，不引 YAML 依赖 */
 function parseManifest(text) {
@@ -308,5 +324,5 @@ function main() {
   });
 }
 
-module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch };
+module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch, loadEnv, argOf, hasOf };
 if (require.main === module) main();

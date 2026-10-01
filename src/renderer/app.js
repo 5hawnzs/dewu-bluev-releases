@@ -637,6 +637,31 @@ const UPD_KIND = {
   error: ['bad', '出错']
 };
 
+/**
+ * 更新日志开关（默认关）。
+ * ★ 为什么值得单列一块：更新这条链上最坑的失败是**静默**的 —— 「差分下载失败、
+ *   悄悄退回全量下载」只有 electron-updater 自己的 logger 报出来（应用里原本把它设成 null，
+ *   等于把唯一的线索一起吞了）。开启后我们把它接过来写进文件，下次更新就能拿
+ *   「这次到底下了多少 MB」的硬数字说话，不用猜。
+ * 关着时也照样显示「开了会写到哪」—— 否则用户根本不知道开了有没有用。
+ */
+function updLogHtml(u) {
+  const lg = u.log || {};
+  const on = !!lg.enabled;
+  const mb = Math.round((lg.maxBytes || 0) / 1024 / 1024);
+  return `<div class="row" style="margin-top:9px">
+      <span class="lbl">更新日志</span>
+      <button class="btn sm${on ? '' : ' primary'}" data-act="${on ? 'upd:log:off' : 'upd:log:on'}">${on ? '关闭' : '开启'}</button>
+      <button class="btn sm" data-act="upd:log:open">打开日志文件</button>
+      ${badge(on ? '记录中' : '未开启', on ? 'ok' : 'wait')}
+    </div>
+    <p class="hint">${lg.error
+      ? `日志<b>打不开</b>：${esc(lg.error)}`
+      : (on
+        ? `正在写 <code>${esc(lg.path || '')}</code>（超过 ${mb} MB 自动轮转，只留 1 份 .1 备份）`
+        : `默认关闭。开启后会把更新库自己的日志一并收进来 —— <b>「差分下载退回全量」只有这里看得见</b>；写到这里：<code>${esc(lg.path || '取不到路径')}</code>。日志里只有版本号、通道名与字节数，<b>不含</b>素材/品牌/SKU。`)}</p>`;
+}
+
 function updateHtml() {
   const u = state.upd;
   if (!u) return `<div class="box" id="updBox"><h3>应用更新</h3><p class="hint">正在读取更新状态…</p></div>`;
@@ -684,6 +709,7 @@ function updateHtml() {
       <button class="btn sm${u.status === 'ready' ? ' primary' : ''}" data-act="upd:install" ${u.status === 'ready' ? '' : 'disabled'}>立即安装并重启</button>
     </div>
     ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
+    ${updLogHtml(u)}
     <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
     「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
     ${canBeta ? `<p class="hint">${isBeta
@@ -1519,6 +1545,23 @@ const ACTS = {
   // 切通道：只换「读源上哪个清单文件」，**不动源地址**。换完立刻刷新，别让界面显示旧通道
   'upd:chan:stable': async () => { await switchUpdateChannel('stable'); },
   'upd:chan:beta': async () => { await switchUpdateChannel('beta'); },
+  // 更新日志开关：默认关。开启后把更新库自己的日志也接进文件 —— 「差分退回全量」只有那里看得见
+  'upd:log:on': async () => {
+    const r = await appApi.updateSetLog(true);
+    if (r && r.enabled) toast('更新日志已开启：下次更新就能看到「到底下了多少」', 'ok');
+    else toast(`开启失败：${(r && r.error) || '取不到原因'}`, 'err');
+    await refreshUpdate();
+  },
+  'upd:log:off': async () => {
+    await appApi.updateSetLog(false);
+    toast('更新日志已关闭（已经写下的内容不会删）');
+    await refreshUpdate();
+  },
+  'upd:log:open': async () => {
+    const lg = (state.upd && state.upd.log) || {};
+    if (!lg.enabled) { toast('先点「开启」—— 开启之后才会建这个文件', 'err'); return; }
+    try { await appApi.reveal(lg.path); } catch (e) { toast(`打不开：${(e && e.message) || e}`, 'err'); }
+  },
 
   'flatten:pick': async () => {
     const d = await appApi.pickDir({ title: '选择素材根目录' });

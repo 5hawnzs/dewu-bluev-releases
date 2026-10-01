@@ -14,6 +14,8 @@
     "dist:win-only": "electron-builder --win --x64 --publish never",
     "release:stable": "node tools/upload-release.js --channel stable",
     "release:beta": "node tools/upload-release.js --channel beta",
+    "release:prune": "node tools/prune-release.js",
+    "release:prune:apply": "node tools/prune-release.js --apply",
     "dist:release": "npm run dist:win && npm run release:stable",
     "dist:release:beta": "npm run dist:win && npm run release:beta"
   },

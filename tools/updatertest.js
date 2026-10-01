@@ -14,6 +14,8 @@
  * 用法：node tools/updatertest.js
  */
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { EventEmitter } = require('events');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -202,6 +204,76 @@ const initBase = extra => Object.assign({ send, packaged: true, version: '1.0.0'
   upd._setUpdater(f);
   st = upd.init(initBase({ channel: '乱填的' }));
   ok('持久化：配置里是非法值时忽略，落回正式版（不崩、不照抄）', st.channel === 'stable', st.channel);
+
+  /* ---------- I. 可选的文件日志（默认关；开着时必须接管 updater 的 logger） ----
+   * 为什么这段必须存在：更新这条链上最坑的失败是**静默**的 —— 「差分下载失败、
+   * 悄悄退回全量下载」只由 electron-updater 自己的 logger 报出来。原来写死 `up.logger = null`，
+   * 等于把唯一的线索一起吞了（界面进度条照样走完，只显得「慢」，查不出为什么）。
+   */
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-updlog-'));
+  const logPath = path.join(tmpBase, 'update.log');
+
+  {
+    f = fakeUpdater();
+    upd._reset();
+    upd._setUpdater(f);
+    upd.init(initBase({ logFile: logPath }));
+    ok('更新日志默认关：logStatus.enabled = false', upd.logStatus().enabled === false, JSON.stringify(upd.logStatus()));
+    ok('★ 关着的时候不许挂 updater 的 logger（它默认会往控制台刷一堆，桌面应用没人看）', f.logger === null, String(f.logger));
+    ok('关着也记着路径 —— 界面要显示「开了会写到哪」', upd.logStatus().path === logPath, upd.logStatus().path);
+    ok('关着的时候不建文件（不去打扰磁盘）', !fs.existsSync(logPath));
+    ok('defaultLogFile 落在 userData 下的 logs/update.log（纯函数，不碰磁盘）',
+      upd.defaultLogFile('C:/u') === path.join('C:/u', 'logs', 'update.log'), upd.defaultLogFile('C:/u'));
+
+    const st1 = upd.setLogEnabled(true, logPath);
+    ok('开启：enabled=true 且文件真的建出来了', st1.enabled === true && fs.existsSync(logPath), JSON.stringify(st1));
+    ok('★★ 开启后**必须**接管 updater 的 logger —— 「差分退回全量」只有它报得出来',
+      !!f.logger && typeof f.logger.error === 'function' && typeof f.logger.info === 'function' && typeof f.logger.warn === 'function' && typeof f.logger.debug === 'function',
+      String(f.logger && Object.keys(f.logger)));
+    ok('开启后读回的状态里带路径、没有错误', upd.logStatus().path === logPath && upd.logStatus().error === '', JSON.stringify(upd.logStatus()));
+
+    f.emit('download-progress', { percent: 42, transferred: 1000, total: 2000, bytesPerSecond: 1024 });
+    f.emit('download-progress', { percent: 100, transferred: 11534336, total: 11534336, bytesPerSecond: 2048 });
+    f.emit('update-downloaded', { version: '1.0.1' });
+    f.logger.error('Cannot download differentially, fallback to full download', 'old file not found');
+    const txt = fs.readFileSync(logPath, 'utf8');
+    ok('进度被写进文件（而且抽稀，不是每条都写）', /\[progress\]/.test(txt), (txt.match(/\[progress\][^\n]*/) || [''])[0]);
+    ok('★ 「这次到底下了多少」落成硬数字（字节数 + MB）—— 判断差分有没有生效就看它',
+      /\[downloaded\][^\n]*11534336[^\n]*11\.0 MB/.test(txt), (txt.match(/\[downloaded\][^\n]*/) || [''])[0]);
+    ok('★ updater 自己的 error 透进来了（这正是不开日志时被吞掉的那条线索）',
+      /\[updater:error\][^\n]*fallback to full download/.test(txt), (txt.match(/\[updater:error\][^\n]*/) || [''])[0]);
+    ok('状态变化也落盘（不只是进度）', /\[state\][^\n]*已下载完成/.test(txt), (txt.match(/\[state\][^\n]*/) || [''])[0]);
+
+    const st2 = upd.setLogEnabled(false);
+    ok('关闭：enabled=false 且 logger 立刻摘掉（不许一直挂着）',
+      st2.enabled === false && f.logger === null, JSON.stringify({ e: st2.enabled, l: String(f.logger) }));
+    ok('关闭后已经写下的内容不会被删（关上不等于清空）', fs.readFileSync(logPath, 'utf8').length > 0);
+  }
+
+  {
+    // 轮转：超过上限就把旧内容挪成 .1，避免无限长大
+    const bigPath = path.join(tmpBase, 'big.log');
+    fs.writeFileSync(bigPath, 'x'.repeat(upd.LOG_MAX_BYTES + 10));
+    const st3 = upd.setLogEnabled(true, bigPath);
+    ok('★ 超过上限自动轮转：旧内容挪成 .1，日志不会无限长大',
+      st3.enabled === true && fs.existsSync(bigPath + '.1') && fs.statSync(bigPath + '.1').size > upd.LOG_MAX_BYTES,
+      JSON.stringify({ enabled: st3.enabled, has1: fs.existsSync(bigPath + '.1') }));
+    upd.setLogEnabled(false);
+  }
+
+  {
+    // 打不开时必须如实报，不许假装「记录中」
+    const blocker = path.join(tmpBase, 'blocker');
+    fs.writeFileSync(blocker, 'not a dir');
+    const st4 = upd.setLogEnabled(true, path.join(blocker, 'update.log'));
+    ok('★★ 路径打不开时 enabled=false 且带出原因（不许假装在记录）',
+      st4.enabled === false && !!st4.error, JSON.stringify(st4));
+    upd.setLogEnabled(false);
+    upd._reset();
+    ok('_reset 会把日志关掉（用例之间不串场）', upd.logStatus().enabled === false);
+  }
+
+  try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch (e) { /* 临时目录清不掉不影响结论 */ }
 
   console.log('\n以上断言全部通过时，说明「下载完不自动重启」这条底线是活的。');
   console.log(bad ? ('有 ' + bad + ' 项未通过') : '全部通过');

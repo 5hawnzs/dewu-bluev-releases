@@ -20,6 +20,9 @@ function win() {
   return w && !w.isDestroyed() ? w : null;
 }
 
+/** 更新日志落到哪。**算在 userData 里**（卸载时保留），不在仓库里 —— 仓库目录可能是只读的 */
+function updateLogFile() { return updater.defaultLogFile(app.getPath('userData')); }
+
 /** 业务通道一律要先登录；静态信息/外观/窗口控制类通道放行 */
 function guard(fn) {
   return async (e, ...args) => {
@@ -171,9 +174,21 @@ function register() {
   // ---- 应用更新（阶段 1）----
   // 检查 / 下载 / 安装**都只由用户点**：没有定时轮询、没有自动下载、没有自动重启。
   // 原因见 src/main/updater.js 文件头 —— 静默重启会拦腰截断正在跑的批量发布。
-  ipcMain.handle('update:status', guard(() => Object.assign({ ok: true }, updater.status())));
+  ipcMain.handle('update:status', guard(() => Object.assign({ ok: true }, updater.status(), { log: updater.logStatus() })));
   ipcMain.handle('update:check', guard(() => updater.check({ manual: true })));
   ipcMain.handle('update:download', guard(() => updater.download()));
+  // 更新日志开关（默认关，偏好落盘）。路径固定在 userData/logs/update.log。
+  // ★ 不设 guardAdmin：这是排障用的，普通成员也该能开（「发不出去/下得慢」他才是第一现场）；
+  //   日志里只有版本号、通道名与字节数，**不含**素材/品牌/SKU/标题 —— 不违「数据不出本机」。
+  ipcMain.handle('update:set-log', guard((_e, on) => {
+    const want = !!on;
+    const st = updater.setLogEnabled(want, updateLogFile());
+    store.set({ update: { log: want } });
+    logbus.info(st.enabled
+      ? `更新日志已开启：${st.path}（超过 ${Math.round(st.maxBytes / 1024 / 1024)} MB 自动轮转）—— 日志里只记版本号与字节数，不含素材/品牌/SKU`
+      : `更新日志已关闭`);
+    return Object.assign({ ok: true }, st);
+  }));
   // 切通道（正式版 ↔ 测试版）。★ 这**不是**改源地址：源地址编译在包里，这里只换
   // 「读哪个 yml」（latest.yml / beta.yml）。换完立刻落盘，重启后还是这条通道。
   // ★★ 只给管理员：测试版是「没经过正式验收的包」，不该让所有人都能把自己切过去。
@@ -276,4 +291,4 @@ function register() {
   ipcMain.on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
 }
 
-module.exports = { register, syncChannelPermission };
+module.exports = { register, syncChannelPermission, updateLogFile };
