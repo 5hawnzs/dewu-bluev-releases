@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('api', {
   brandRemove: id => ipcRenderer.invoke('brand:remove', id),
   statsQuery: opts => ipcRenderer.invoke('stats:query', opts),
   statsExport: opts => ipcRenderer.invoke('stats:export', opts),
+  statsExportLog: opts => ipcRenderer.invoke('stats:exportLog', opts),
+  statsCheckPath: () => ipcRenderer.invoke('stats:checkPath'),
 
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: () => ipcRenderer.invoke('update:check'),

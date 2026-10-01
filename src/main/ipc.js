@@ -171,6 +171,19 @@ function register() {
     logbus.ok(`品牌统计已导出：${path.basename(r.file)}（${r.brands.length} 个品牌 · ${r.totals.rows} 条记录）`);
     return { ok: true, file: r.file, totals: r.totals, brandCount: r.brands.length };
   }));
+  // 单独导出「执行日志」（run-log.jsonl，任务级）—— .log 给人看 + .csv 给 Excel，
+  // **不截断**（xlsx 那张执行日志表过去只导最近 100 条、界面上一句不提）。
+  // ★ 同样删掉前端传来的 scopeIds：可见范围只认主进程算出来的
+  ipcMain.handle('stats:exportLog', guard(async (_e, opts) => {
+    const o = Object.assign({}, opts || {});
+    delete o.scopeIds;
+    const r = await stats.exportRunLog(Object.assign(o, { scopeIds: scopeOf() }));
+    logbus.ok(`执行日志已导出：${path.basename(r.file)}（本次 ${r.entries} 条 · 日志文件里共 ${r.entriesInFile} 条）`);
+    return { ok: true, file: r.file, csvFile: r.csvFile, entries: r.entries, entriesInFile: r.entriesInFile };
+  }));
+  // 输出目录可写性自检：日志是「追加写、失败不报错」的，共享盘掉线时会**静默少数据**。
+  // ★ 只查配置里那个输出目录，不收前端传的路径；只读性质（建一个临时文件再删掉 + 追加方式打开）
+  ipcMain.handle('stats:checkPath', guard(() => stats.checkOutput()));
 
   // ---- 应用更新（阶段 1）----
   // 检查 / 下载 / 安装**都只由用户点**：没有定时轮询、没有自动下载、没有自动重启。

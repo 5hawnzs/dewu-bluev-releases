@@ -42,12 +42,53 @@ function topicPool() {
   return ['#TW男装', '#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配'];
 }
 
+/** 发布单只有「话题1~话题5」五列（见 sheet.COLUMNS）—— 多出来的话题到不了得物 */
+const MAX_TOPIC_COLS = 5;
+
+/** 一个话题的规范写法：得物的话题联想要靠 `#关键词` 触发，少了 # 直接点不出来 */
+function normTopic(t) {
+  const s = String(t == null ? '' : t).trim();
+  if (!s) return '';
+  return s.startsWith('#') ? s : '#' + s;
+}
+
+/**
+ * 「必带话题」输入框里可以写**多个**话题，分隔符认这几种（可混用、连续几个也只算一次）：
+ *   空格 / Tab / 换行 · 英文逗号 `,` · 中文逗号 `，` · 顿号 `、` · 分号 `;` `；` · 竖线 `|`
+ *
+ * 为什么非要有明确的分隔符：得物的话题字段是「一格一个话题」。
+ * 把 `#A #B` 整串写进一格，得物那边会当成**一个不存在的话题**，联想点选必然失败 ——
+ * 而失败现场看起来像是「话题选错」，查起来很绕。所以在这里就拆开。
+ * ★ 自动补 `#`（写 `TW男装, 男生穿搭` 也能用），并按拆分后的原文去重。
+ */
+function parseTopics(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return [];
+  const out = [];
+  const seen = new Set();
+  for (const piece of s.split(/[\s,，、;；|]+/)) {
+    const t = normTopic(piece);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
 /** 生成话题组合（去重由代码保证）；池子容量不够时明确告警 */
 function topicCombos(count) {
-  const pool = topicPool();
-  const required = store.get('copy.requiredTopic') || pool[0];
-  const extra = store.get('copy.extraTopics') || 4;
-  const rest = pool.filter(t => t !== required);
+  const pool = topicPool().map(normTopic).filter(Boolean);
+  const requiredAll = parseTopics(store.get('copy.requiredTopic'));
+  const required = requiredAll.length ? requiredAll : [pool[0]].filter(Boolean);
+  const wantExtra = Number(store.get('copy.extraTopics')) || 4;
+  // ★ 必带 + 额外 超过 5 列就**少给并说出来**。以前是静默把第 6 个丢掉 ——
+  //   界面上看着「带了 6 个话题」，发布单里只有 5 个，而且没有任何提示。
+  const extra = Math.max(0, Math.min(wantExtra, MAX_TOPIC_COLS - required.length));
+  const notes = [];
+  if (extra < wantExtra) {
+    notes.push(`发布单只有 ${MAX_TOPIC_COLS} 个话题列（话题1~话题${MAX_TOPIC_COLS}）：必带 ${required.length} 个 + 额外 ${wantExtra} 个放不下，每条只带前 ${MAX_TOPIC_COLS} 个话题`);
+  }
+  const rest = pool.filter(t => !required.includes(t));
   const combos = [];
   const seen = new Set();
   const pick = (arr, k, start) => {
@@ -56,22 +97,26 @@ function topicCombos(count) {
     return out;
   };
   for (let s = 0; s < rest.length; s++) {
-    const c = [required].concat(pick(rest, extra, s));
+    const c = required.concat(pick(rest, extra, s));
     const key = c.slice().sort().join('|');
     if (seen.has(key)) continue;
     seen.add(key);
     combos.push(c);
   }
+  // extra = 0（必带就把 5 列占满了）：每篇本来就只有必带那几个，重复是**应该**的，不算容量不足
+  if (!extra && !combos.length) combos.push(required.slice());
   if (combos.length < count) {
     // 容量不足：跨品类/滑动窗口补足，并允许重复但标记
     let s = 0;
     while (combos.length < count && s < 200) {
-      const c = [required].concat(pick(rest, extra, s++));
+      const c = required.concat(pick(rest, extra, s++));
       combos.push(c);
     }
-    return { combos, warning: `话题池容量不足：${rest.length} 个可选话题只能凑 ${combos.length} 种组合，${count} 篇会出现重复，建议扩充话题池` };
+    if (extra > 0) {
+      notes.push(`话题池容量不足：${rest.length} 个可选话题只能凑 ${combos.length} 种组合，${count} 篇会出现重复，建议扩充话题池`);
+    }
   }
-  return { combos, warning: null };
+  return { combos, warning: notes.length ? notes.join('；') : null };
 }
 
 /** 本地先定好每篇的「选择」，模型只填空 */
@@ -219,4 +264,4 @@ async function generate(items, ctx = {}) {
   return { rows, warning: plan.warning, llm: llmOn };
 }
 
-module.exports = { FORMATS, ANGLES, buildPlan, topicCombos, generate, buildSystem };
+module.exports = { FORMATS, ANGLES, buildPlan, topicCombos, parseTopics, normTopic, MAX_TOPIC_COLS, generate, buildSystem };

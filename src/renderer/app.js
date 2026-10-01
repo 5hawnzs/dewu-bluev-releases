@@ -480,10 +480,14 @@ TABS[3] = {
           <span class="lbl">轮换策略</span>
           <select class="inp" data-cfg="copy.rotateStrategy">${['F01-F10 轮换', '随机'].map(v => `<option ${cfg.rotateStrategy === v ? 'selected' : ''}>${v}</option>`).join('')}</select>
           <span class="lbl">必带话题</span>
-          <input class="inp" style="min-width:120px;flex:0 0 auto" value="${esc(cfg.requiredTopic)}" data-cfg="copy.requiredTopic">
-          <span class="lbl">话题数</span>
+          <input class="inp" style="min-width:210px;flex:0 0 auto" value="${esc(cfg.requiredTopic)}" data-cfg="copy.requiredTopic"
+            placeholder="如 #TW男装，#男生穿搭" title="要多个就用空格 / 逗号 / 顿号隔开，没写 # 会自动补上">
+          <span class="lbl">额外话题</span>
           <select class="inp" data-cfg="copy.extraTopics">${[3, 4, 5].map(v => `<option value="${v}" ${cfg.extraTopics === v ? 'selected' : ''}>${v} 个</option>`).join('')}</select>
         </div>
+        <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
+          <code>#TW男装, #男生穿搭</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
+          发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
         <p class="hint">按<b>并发路数均分</b>（不是「15 条/批」切批，尾批会把整体拖慢）：${total} 篇 → ${cfg.concurrency} 路 × ${Math.ceil(total / (cfg.concurrency || 6))} 篇。本地先定死标题格式 / 视角 / 话题组合（代码保证去重），模型只填空。</p>
       </div>
@@ -652,7 +656,9 @@ TABS[7] = {
         (info.vendor && info.vendor.exists) ? '程序内置（装完即用，不用自己找）' : '没内置：要自己指定 adb.exe 的路径',
         (info.vendor && info.vendor.exists) ? ['ok', '内置'] : ['warn', '需指定']],
       ['中文输入法 ADBKeyboard',
-        (info.vendor && info.vendor.apkExists) ? '程序内置（发布页可一键装到设备）' : '没内置：要自己给设备装',
+        (info.vendor && info.vendor.apkExists)
+          ? '程序内置（首次要在「模拟器发布」页点一次「一键装上中文输入法」把它装进模拟器并启用）'
+          : '没内置：要自己给设备装',
         (info.vendor && info.vendor.apkExists) ? ['ok', '内置'] : ['warn', '缺']],
       ['得物商品池', info.pool ? `${info.pool.size} 个货号 · ${info.pool.source}` : '—', info.pool && info.pool.size ? ['ok', '已导入'] : ['warn', '待同步']]
     ];
@@ -880,7 +886,13 @@ TABS[8] = {
   desc: '按品牌看发布频次、数量与执行日志 · 未标品牌的历史记录单独列出，不并入任何品牌',
   actions: () => [
     { act: 'stats:refresh', label: '查询', primary: true },
-    { act: 'stats:export', label: '导出 xlsx', disabled: !(state.stats && !state.stats.error) }
+    // 「导出 xlsx」是整套统计（4 张表）；「导出执行日志」只要这一份日志，且**条数完整**
+    // （xlsx 里那张执行日志表过去只导最近 100 条，界面上一句不提 → 对账会对不上）
+    { act: 'stats:export', label: '导出 xlsx', disabled: !(state.stats && !state.stats.error) },
+    { act: 'stats:exportLog', label: '导出执行日志', disabled: !(state.stats && !state.stats.error) },
+    // 日志是「追加写、失败不报错」的：输出目录指向共享盘时，盘掉线会**静默少数据**，
+    // 所以给一颗按钮让管理员当场问一句「这台机器现在写得进去吗」
+    { act: 'stats:checkPath', label: '检测输出目录' }
   ],
   render() {
     const s = state.stats;
@@ -978,6 +990,12 @@ TABS[8] = {
         <td class="cut">${esc(e.msg || '')}</td>
       </tr>`).join('')}</tbody></table></div>`
       : '<div class="empty">这个范围里没有任务执行日志。</div>';
+    // 「屏幕上列了几条」和「一共几条」分开说 —— 只写「最近 100 条」，会让人以为一共就 100 条
+    const shownLogs = (s.logs || []).length;
+    const totalLogs = Number(s.logsTotal == null ? shownLogs : s.logsTotal);
+    const logHint = totalLogs > shownLogs
+      ? `屏幕上只列最近 <b>${shownLogs}</b> 条（一屏放不下）；按当前筛选条件<b>一共 ${totalLogs} 条</b>。「导出执行日志」会把 <b>${totalLogs} 条全部</b>导出。`
+      : `「导出执行日志」会把符合当前筛选条件的这 <b>${totalLogs}</b> 条导成 <code>.log</code>（给人看）+ <code>.csv</code>（给 Excel），条数与筛选条件会写进文件头。`;
 
     return head + `
       <div class="stats">
@@ -998,11 +1016,20 @@ TABS[8] = {
         </div>
         <p class="hint" style="margin-top:8px">数据文件：<code>${esc((s.sources.publishLog.file || '').replace(/^\\\\\?\\/, ''))}</code> ·
           <code>${esc((s.sources.runLog.file || '').replace(/^\\\\\?\\/, ''))}</code> —— 只追加、不自动裁剪，要清理由你自己决定。</p>
+        <p class="hint" style="margin-top:4px">⚠️ 这一页统计的是<b>本机这个输出目录</b>里的记录：别的电脑各写各的目录，这里看不到。
+          要让管理员的统计收齐所有电脑，就得把各台的「输出目录」都指到<b>同一个共享位置</b>（局域网共享 / 映射盘）；
+          但日志是「写失败也不报错」的，共享盘一掉就会悄悄少数据 —— 所以改完先点<b>「检测输出目录」</b>确认写得进去。</p>
+        ${state.statsPath ? `<div class="tagline" style="margin-top:6px">
+          <span class="chip ${state.statsPath.ok ? '' : 'warn'}">输出目录自检：${state.statsPath.ok ? '正常' : '有问题'}</span>
+          ${(state.statsPath.checks || []).map(c => `<span class="chip ${c.ok ? '' : 'warn'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}</span>`).join('')}
+        </div>
+        ${state.statsPath.ok ? '' : `<p class="hint" style="color:var(--red)">${esc(state.statsPath.error || '自检未通过')}</p>`}
+        <p class="hint">目录：<code>${esc(state.statsPath.dir || '')}</code>${(state.statsPath.checks || []).map(c => ` · ${esc(c.name)}：${esc(c.detail || '')}`).join('')}</p>` : ''}
       </div>
       ${notes}
       <div class="box"><h3>按品牌汇总（${esc(daysLabel(state.statsOpts.days))}）</h3>${summary}</div>
       ${dailyBox}
-      <div class="box"><h3>执行日志（最近 ${(s.logs || []).length} 条）</h3>${logs}</div>`;
+      <div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>`;
   }
 };
 
@@ -1053,6 +1080,12 @@ function devicesHtml() {
     <p class="hint">这一行是<b>电脑跟模拟器之间的“对讲机”</b>。<b>留空就行</b> —— 程序自带一份，装完即用，
       不用你自己去模拟器安装目录里翻。填了就以你填的为准（程序<b>不会</b>偷偷拿内置的替掉你的配置）；
       填的路径不存在时会自动退回内置那份，并在检查结果里提醒你。填完<b>立刻生效、不用重启</b>。</p>
+    <p class="hint">★ 顺带说清一个容易误会的点：程序里“内置”的两样东西，<b>含义不一样</b> ——
+      <b>adb</b> 是电脑上的工具，装完本程序就能直接用；
+      <b>中文输入法（ADBKeyboard.apk）</b>是装到<b>模拟器</b>里的，安装包只是跟着程序一起发下来了，
+      <b>第一次还要往模拟器里装一次并启用</b>：到「模拟器发布」页点一次「检查能不能发布」，
+      结果里会出现一个「一键装上中文输入法」的按钮，点它即可（<b>只点一次</b>，之后一直有效）。
+      不装的话，得物的<b>中文</b>标题和正文打不进去（英文数字不受影响）。</p>
     </div>`;
 }
 
@@ -2202,6 +2235,21 @@ const ACTS = {
     toast(`已导出：${(r.file || '').split(/[\\/]/).pop()}（${r.brandCount} 个品牌 · ${r.totals.rows} 条记录）`, 'ok');
     if (r.file) await appApi.reveal(r.file);
   },
+  'stats:exportLog': async () => {
+    const r = await appApi.statsExportLog(state.statsOpts);
+    if (!r.ok) { toast(r.error || '导出失败', 'err'); return; }
+    // 两个条数都报：本次导了几条、日志文件里一共几条（差多少一眼看得出）
+    toast(`执行日志已导出：${r.entries} 条${r.entriesInFile !== r.entries ? `（日志文件里共 ${r.entriesInFile} 条，其余被当前筛选排除）` : ''}`, 'ok');
+    if (r.file) await appApi.reveal(r.file);
+  },
+  // 输出目录自检：只报事实（哪一项没通过、具体错在哪），不做任何自动"修复"
+  'stats:checkPath': async () => {
+    const r = await appApi.statsCheckPath();
+    state.statsPath = r && r.ok !== undefined ? r : { ok: false, checks: [], error: '自检没有返回结果', dir: '' };
+    toast(state.statsPath.ok ? '输出目录可写：日志能正常落盘' : `输出目录有问题：${state.statsPath.error || ''}`,
+      state.statsPath.ok ? 'ok' : 'err');
+    renderAll();
+  },
 
   'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },  'cfg:path': async (el) => {
     const key = el.dataset.key;
@@ -2235,7 +2283,7 @@ async function saveCfgFromDom() {
 /**
  * 页内所有 data-cfg 控件：一改就存。
  * ★ 以前只在「设置」页绑这一段，可「文案生成」和「模拟器发布」页里也有设置项
- *   （并发路数 / 轮换策略 / 必带话题 / 话题数 / 发布间隔 / 失败重试 / adb 路径）——
+ *   （并发路数 / 轮换策略 / 必带话题 / 额外话题 / 发布间隔 / 失败重试 / adb 路径）——
  *   那两页改了其实**从来没保存过**，而且界面上一点提示都没有，看着像生效了。
  *   所以改成每个页签渲染完都绑一次。
  */

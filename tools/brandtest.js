@@ -11,6 +11,8 @@
         0 条的品牌也要出现（「哪个品牌最近没在发」正是要看的东西）
      ⑤ 执行日志落盘（logbus 只有内存 500 条，重启即丢，管理员事后要能查）
      ⑥ 导出 xlsx：汇总 / 按天频次 / 品牌×执行人 / 执行日志
+     ⑩ 执行日志**单独导出**（.log + .csv，带 BOM）：条数必须完整 —— 过去固定只导 100 条且不说明
+     ⑪ 输出目录自检：共享盘掉线时能当场发现（日志是「写失败不报错」的），且自检不污染台账
 
    用法：node tools/brandtest.js
    注意：全部在临时目录里跑，不动你本机的 config.json / auth.json / publish-log.jsonl。
@@ -331,6 +333,79 @@ const day = n => Date.now() - n * 86400000;
   const letThrough = await jobs.run('copy.generate', { brandId: A.brand.id, batchId: '已配文案_批', sourceDir: TMP, label: '已配文案_批' });
   ok('⑨ 配了提示词的品牌**不会**被这条校验拦（它因为别的原因失败才对 —— 说明这道校验只认提示词）',
     !/还没配「文案生成提示词」/.test(letThrough.error || ''), letThrough.error || '(通过)');
+
+  // ---- ⑩ 执行日志导出：条数必须**完整** ----
+  // 老版本把执行日志只导出成 xlsx 的第 4 张表，且固定只导最近 100 条、界面上一句不提：
+  // 拿去做月度对账就会少一大截，而且没人看得出来。这一段就是钉住这件事。
+  const BIG = 160;
+  for (let i = 0; i < BIG; i++) {
+    runlog.append({
+      kind: 'log', type: 'publish.run', level: i === 0 ? 'error' : 'info',
+      // 第一条故意带逗号和引号：CSV 不转义的话一列会被撑成好几列，Excel 打开就错位
+      msg: i === 0 ? '失败, 原因："库存不足"' : `批量日志 ${i + 1}`,
+      username: 'zhang', displayName: '张三', brandId: A.brand.id
+    });
+  }
+  const q10 = stats.query({ days: 0 });
+  const q10all = stats.query({ days: 0, allLogs: true });
+  ok('⑩ 界面上仍只取最近 100 条（一屏放不下），但会一并给出「一共几条」',
+    q10.logs.length === 100 && q10.logsTotal > 100 && q10.logsTotal === q10all.logs.length,
+    `显示 ${q10.logs.length} / 共 ${q10.logsTotal}`);
+
+  const ex10 = await stats.exportRunLog({ days: 0 });
+  const csv10 = fs.readFileSync(ex10.csvFile, 'utf8');
+  const csvLines = csv10.replace(/^\uFEFF/, '').trim().split(/\r\n/);
+  ok('⑩ 单独导出执行日志：.log 与 .csv 同名基名、都真落在输出目录里',
+    fs.existsSync(ex10.file) && fs.existsSync(ex10.csvFile)
+    && path.basename(ex10.file, '.log') === path.basename(ex10.csvFile, '.csv'),
+    path.basename(ex10.file) + ' / ' + path.basename(ex10.csvFile));
+  ok('⑩ ★导出条数 = 按当前筛选的全部条数（不是 100）',
+    ex10.entries === q10all.logs.length && csvLines.length === q10all.logs.length + 1,
+    `entries=${ex10.entries} · csv ${csvLines.length} 行（含表头）· 界面共 ${q10all.logs.length}`);
+
+  const log10 = fs.readFileSync(ex10.file, 'utf8');
+  ok('⑩ 文件头同时写「本次导出 N 条」与「日志文件里共 M 条」（差多少一眼看得出）',
+    new RegExp(`^# 本次导出：${q10all.logs.length} 条$`, 'm').test(log10)
+    && new RegExp(`^# 日志文件里共：${ex10.entriesInFile} 条`, 'm').test(log10)
+    && ex10.entriesInFile === runlog.read().length,
+    (log10.match(/^# 本次导出：.*$/m) || [''])[0]);
+  ok('⑩ csv 带 BOM（Windows 上 Excel 双击不乱码）+ 中文表头',
+    csv10.charCodeAt(0) === 0xFEFF && csvLines[0] === '时间,品牌,执行人,账号,任务,批次,级别,说明',
+    csvLines[0]);
+  ok('⑩ 说明里有逗号/引号时按 CSV 规则转义（否则一列会被撑成两三列）',
+    csv10.includes('"失败, 原因：""库存不足"""'),
+    (csv10.split(/\r\n/).find(l => l.includes('库存不足')) || '').slice(0, 60));
+
+  const exp10 = await stats.exportXlsx({ days: 0 });
+  const wb10 = new ExcelJS.Workbook();
+  await wb10.xlsx.readFile(exp10.file);
+  const rows10 = wb10.getWorksheet('执行日志').rowCount - 1;
+  ok('⑩ xlsx 里那张「执行日志」表同样不截断（过去固定只导 100 行）',
+    rows10 === q10all.logs.length, `${rows10} 行 / 共 ${q10all.logs.length}`);
+
+  // ---- ⑪ 输出目录自检 ----
+  // 日志是「追加写、失败不报错」的（写日志失败不能把发布搞挂，这个取舍没错），
+  // 于是输出目录指向共享盘、盘一掉，统计就会**悄悄少数据而界面一切正常**。
+  // 所以要能当场问一句「这台机器现在写得进去吗」，并且自检本身**不许污染台账**。
+  const runBytesBefore = runlog.size();
+  const chkOk = stats.checkOutput();
+  ok('⑪ 输出目录正常时自检通过，三项全过（目录可建删 / 两个 jsonl 可追加打开）',
+    chkOk.ok === true && chkOk.checks.length === 3 && chkOk.checks.every(c => c.ok),
+    chkOk.checks.map(c => `${c.name}=${c.ok}`).join(' | '));
+  ok('⑪ ★自检不污染台账：run-log 一个字节都没变（追加方式打开，不写内容）',
+    runlog.size() === runBytesBefore, `${runBytesBefore} → ${runlog.size()}`);
+
+  const outBefore11 = store.get('paths.output');
+  try {
+    fs.writeFileSync(path.join(TMP, 'not-a-dir'), 'x', 'utf8');   // 拿一个**文件**当目录用
+    store.set({ paths: { output: path.join(TMP, 'not-a-dir', 'sub') } });
+    const chkBad = stats.checkOutput();
+    ok('⑪ 输出目录不可写时自检必须报错（共享盘掉线就是这个样子）',
+      chkBad.ok === false && (chkBad.checks || []).some(c => !c.ok) && !!chkBad.error,
+      (chkBad.error || '(没报错)').slice(0, 90));
+  } finally {
+    store.set({ paths: { output: outBefore11 } });
+  }
 
   console.log('');
   console.log(fail ? `有 ${fail} 项没过。` : '全部通过。');

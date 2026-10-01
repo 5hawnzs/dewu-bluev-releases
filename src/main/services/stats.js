@@ -76,13 +76,28 @@ function finish(acc) {
   };
 }
 
+/** run-log 的一条 → 屏幕与导出**共用**的形状（两条路各写一遍必然走偏） */
+function mapRunLog(e) {
+  const lvl = e.kind === 'end' ? (e.ok ? 'ok' : 'error') : (e.kind === 'start' ? 'run' : (e.level || 'info'));
+  const msg = e.kind === 'end'
+    ? `${e.label || e.type} ${e.ok ? '完成' : '失败'}${e.ok ? '' : '：' + (e.error || '')}（${e.elapsedSec == null ? '—' : e.elapsedSec + 's'}）`
+    : (e.kind === 'start' ? `${e.label || e.type} 开始` : e.msg);
+  return {
+    ts: e.ts, kind: e.kind, type: e.type, label: e.label, batch: e.batch,
+    brandId: e.brandId || '', brandName: e.brandName || brands.labelOf(e.brandId),
+    username: e.username || '', displayName: e.displayName || '',
+    level: lvl, msg
+  };
+}
+
 /**
  * @param {object} opts
  *   days      统计最近多少天；0 / 不传=全部。默认 30
  *   brandId   只看某个品牌
  *   userId    只看某个执行人
  *   scopeIds  数组时=非管理员，只统计这些品牌；null / 不传=管理员，全部
- *   logLimit  返回多少条最近执行日志（默认 100）
+ *   logLimit  返回多少条最近执行日志（默认 100，**界面用**）
+ *   allLogs   true = 执行日志**不截断**（导出用）。★ 导出只给 100 条却不说，就是假账
  */
 function query(opts = {}) {
   const days = opts.days == null ? 30 : (Number(opts.days) || 0);
@@ -91,7 +106,7 @@ function query(opts = {}) {
   const wantBrand = String(opts.brandId || '');
   const onlyUntagged = wantBrand === UNTAGGED_FILTER;
   const wantUser = String(opts.userId || '');
-  const logLimit = Number(opts.logLimit) > 0 ? Number(opts.logLimit) : 100;
+  const logLimit = opts.allLogs ? 0 : (Number(opts.logLimit) > 0 ? Number(opts.logLimit) : 100);
 
   const registry = brands.list();
   const known = new Map(registry.map(b => [b.id, b]));
@@ -170,21 +185,11 @@ function query(opts = {}) {
   const runRaw = runlog.read();
   const runRows = runlog.query({ days, brandId: wantBrand, userId: wantUser, scopeIds: scope, preloaded: runRaw });
   const ends = runRows.filter(e => e.kind === 'end');
-  const logs = runRows
+  // 界面与导出**共用这一套映射**（口径只写一遍，免得导出和屏幕上的说明对不上）
+  const logRows = runRows
     .filter(e => e.kind === 'log' || e.kind === 'start' || e.kind === 'end')
-    .slice(0, logLimit)
-    .map(e => {
-      const lvl = e.kind === 'end' ? (e.ok ? 'ok' : 'error') : (e.kind === 'start' ? 'run' : (e.level || 'info'));
-      const msg = e.kind === 'end'
-        ? `${e.label || e.type} ${e.ok ? '完成' : '失败'}${e.ok ? '' : '：' + (e.error || '')}（${e.elapsedSec == null ? '—' : e.elapsedSec + 's'}）`
-        : (e.kind === 'start' ? `${e.label || e.type} 开始` : e.msg);
-      return {
-        ts: e.ts, kind: e.kind, type: e.type, label: e.label, batch: e.batch,
-        brandId: e.brandId || '', brandName: e.brandName || brands.labelOf(e.brandId),
-        username: e.username || '', displayName: e.displayName || '',
-        level: lvl, msg
-      };
-    });
+    .map(mapRunLog);
+  const logs = logLimit > 0 ? logRows.slice(0, logLimit) : logRows;
 
   if (!raw.length) notes.push('还没有发布记录：跑一次发布后会写进 publish-log.jsonl。');
   // 只有「开始」没有「结束」= 任务被中断（程序关了 / 进程被杀）。不报出来就会看着像「那批没跑过」
@@ -220,6 +225,10 @@ function query(opts = {}) {
       consideredInRange: entries.length,
       totalInLog: raw.length
     },
+    // 「屏幕上显示了几条」与「按当前筛选一共几条」分开给 —— 界面据此写明「显示最近 100 条 / 共 M 条」，
+    // 否则 100 条会被当成「一共就这么多」
+    logsShown: logs.length,
+    logsTotal: logRows.length,
     brands: list, untagged, orphans, daily, users, logs, notes
   };
 }
@@ -234,11 +243,13 @@ function line(b) {
 }
 
 /**
- * 导出 xlsx：汇总 / 按天频次 / 明细 三个工作表。
+ * 导出 xlsx：品牌汇总 / 按天频次 / 品牌×执行人 / 执行日志 四个工作表。
  * 未标品牌与已删除品牌**单独成行并标注**，不和真实品牌混在一张表里对不上账。
+ * ★ 执行日志这张表 **不截断**（老版本只导最近 100 条、界面上一句不提：
+ *   拿去做月度对账就会少一大截，且没人看得出来）。
  */
 async function exportXlsx(opts = {}) {
-  const r = query(opts);
+  const r = query(Object.assign({}, opts, { allLogs: true }));
   const wb = new ExcelJS.Workbook();
   wb.creator = '得物蓝V 素材发布工具';
   wb.created = new Date();
@@ -340,4 +351,135 @@ async function exportXlsx(opts = {}) {
   return { file, ...r };
 }
 
-module.exports = { query, exportXlsx, line, dayOf, OK, FAIL };
+/** `20261002-025011`（带秒）。统计类导出会**反复导**（排障时导完再导一次），
+ *  只到分钟的话第二次会把上一份**悄悄覆盖**，要留的那份就没了 */
+function stampSec(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function fullTime(ts) {
+  const d = new Date(Number(ts) || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function csvCell(v) {
+  const s = String(v == null ? '' : v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function filterText(o, r) {
+  const parts = [`范围=${r.range.label}`];
+  if (o.brandId === UNTAGGED_FILTER) parts.push('品牌=（只看未标品牌）');
+  else if (o.brandId) parts.push(`品牌=${brands.labelOf(o.brandId)}（${o.brandId}）`);
+  else parts.push('品牌=（全部）');
+  if (o.userId) parts.push(`执行人=${o.userId}`);
+  if (Array.isArray(o.scopeIds)) parts.push(`可见范围=${o.scopeIds.length} 个品牌（非管理员）`);
+  return parts.join(' · ');
+}
+
+/**
+ * 单独导出「执行日志」（run-log.jsonl，任务级）→ `执行日志_<时间戳>.log` + `.csv`。
+ *
+ * 为什么不复用「导出 xlsx」：那个是一整套统计（汇总 / 频次 / 品牌×执行人 / 执行日志），
+ * 要的是「一张表看全」；而排障、对账、发给同事时只要**这一份日志**，
+ * 且必须**条数完整** —— 所以这里不截断，并把筛选条件与两个条数写进文件头。
+ */
+async function exportRunLog(opts = {}) {
+  const o = Object.assign({}, opts);
+  const r = query(Object.assign({}, o, { allLogs: true }));
+  const rows = r.logs || [];
+  const outDir = o.dir || store.get('paths.output');
+  if (!outDir) throw new Error('没有配置输出目录：先到「设置 → 路径」里选一个输出目录');
+  await wp.mkdirp(outDir);
+
+  const lvText = e => e.level === 'ok' ? '完成' : (e.level === 'error' ? '失败' : (e.level === 'warn' ? '告警' : (e.level === 'run' ? '开始' : '信息')));
+
+  // ★ 两个条数分开写：筛选后多少、日志文件里一共多少。只写前者的话，
+  //   「怎么只有 3 条」这种问题过几天就没人说得清了
+  const head = [
+    '# 得物蓝V 执行日志（任务级）· 导出时间 ' + fullTime(Date.now()),
+    '# 筛选条件：' + filterText(o, r),
+    `# 本次导出：${rows.length} 条`,
+    `# 日志文件里共：${r.sources.runLog.entries} 条（两者不一致 = 上面的筛选条件筛掉了一部分）`,
+    `# 日志文件：${wp.toDisplay(r.sources.runLog.file || '')}`,
+    '# ' + '-'.repeat(58)
+  ];
+  const body = rows.map(e =>
+    `${fullTime(e.ts)} [${lvText(e)}] ${e.brandName} · ${e.displayName || e.username || '未记录执行人'} · `
+    + `${e.label || e.type || ''}${e.batch ? ' · ' + e.batch : ''} · ${e.msg || ''}`);
+
+  const csv = [['时间', '品牌', '执行人', '账号', '任务', '批次', '级别', '说明']];
+  for (const e of rows) {
+    csv.push([
+      fullTime(e.ts), e.brandName, e.displayName || e.username || '（未记录执行人）', e.username || '',
+      e.label || e.type || '', e.batch || '', lvText(e), e.msg || ''
+    ]);
+  }
+
+  const base = `执行日志_${stampSec()}`;
+  const file = path.join(outDir, base + '.log');
+  const csvFile = path.join(outDir, base + '.csv');
+  await fs.promises.writeFile(wp.toLong(file), head.concat(body).join('\r\n') + '\r\n', 'utf8');
+  // csv 带 BOM：不带的话 Windows 下 Excel 双击打开中文会乱码（和「重导出日志」一个口径）
+  await fs.promises.writeFile(wp.toLong(csvFile), '\uFEFF' + csv.map(x => x.map(csvCell).join(',')).join('\r\n') + '\r\n', 'utf8');
+
+  return { file, csvFile, entries: rows.length, entriesInFile: r.sources.runLog.entries, range: r.range };
+}
+
+/**
+ * 输出目录可写性自检。
+ *
+ * 为什么非要有它：`publish-log.jsonl` / `run-log.jsonl` 都是**追加写、失败不报错**
+ * （写日志失败不能反过来把发布搞挂 —— 这个取舍本身是对的）。可一旦输出目录指向共享盘而
+ * 盘掉线 / 没权限 / 被安全软件拦，统计就会**悄悄少数据、界面却一切正常** ——
+ * 那正是「界面骗人」。所以给管理员一个按钮，当场问一句「这台机器现在写得进去吗」。
+ *
+ * 两件事分开测，因为它们会各自出问题：
+ *   ① 目录能不能**建/删文件**（共享盘掉线、无写权限 —— 在这里现形）
+ *   ② 两个 jsonl 能不能以**追加方式打开**（与真写日志同一条打开路径；
+ *      ★ 一个字节都不写，免得污染台账 —— 台账只该有真实发布记录）
+ */
+function checkOutput(opts = {}) {
+  // 目录只认配置里的那个，不收调用方传进来的路径（免得被当成任意路径探测器）
+  const dir = opts.dir || store.get('paths.output');
+  const res = { dir: wp.toDisplay(dir || ''), checks: [] };
+  if (!dir) {
+    res.ok = false;
+    res.error = '没有配置输出目录：先到「设置 → 路径」里选一个输出目录';
+    return res;
+  }
+
+  const tmp = path.join(dir, `._write-test-${Date.now()}.tmp`);
+  try {
+    fs.mkdirSync(wp.toLong(dir), { recursive: true });
+    fs.writeFileSync(wp.toLong(tmp), 'ok', 'utf8');
+    fs.unlinkSync(wp.toLong(tmp));
+    res.checks.push({ name: '输出目录可建可删文件', ok: true, detail: wp.toDisplay(dir) });
+  } catch (e) {
+    res.checks.push({ name: '输出目录可建可删文件', ok: false, detail: `${e.code || ''} ${e.message}`.trim() });
+  }
+
+  const logs = [['发布日志 publish-log.jsonl', sheet.logFile()], ['执行日志 run-log.jsonl', runlog.file()]];
+  for (const [name, f] of logs) {
+    let existed = false;
+    try { existed = fs.existsSync(wp.toLong(f)); } catch (e) { existed = false; }
+    let ok = true, detail = wp.toDisplay(f);
+    try {
+      const fd = fs.openSync(wp.toLong(f), 'a');   // 'a' = 追加（不存在则创建），与写日志同一个打开方式
+      fs.closeSync(fd);
+      if (!existed) detail += '（本来不存在，已就地创建 —— 第一次发布本来也会创建）';
+    } catch (e) {
+      ok = false;
+      detail = `${e.code || ''} ${e.message}`.trim();
+    }
+    res.checks.push({ name: name + ' 可追加打开', ok, detail });
+  }
+
+  res.ok = res.checks.every(c => c.ok);
+  if (!res.ok) res.error = res.checks.filter(c => !c.ok).map(c => `${c.name}：${c.detail}`).join('；');
+  return res;
+}
+
+module.exports = { query, exportXlsx, exportRunLog, checkOutput, line, dayOf, OK, FAIL };

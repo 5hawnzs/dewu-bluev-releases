@@ -202,6 +202,36 @@ const ok = (label, cond, extra) => {
     pool.save(poolBefore2);
   }
 
+  // ⑨ 必带话题写多个：分隔符 / 自动补 # / 超过 5 列要**告警**而不是静默丢
+  //   实测（改前）：输入「#A #B」会整串当成**一个**话题塞进「话题1」——
+  //   得物那边就是个不存在的话题，联想点选必然点不出来，而现场看起来像「话题选错了」。
+  const cfgBefore = { requiredTopic: store.get('copy.requiredTopic'), extraTopics: store.get('copy.extraTopics') };
+  try {
+    ok('⑨ 多话题分隔符：空格 / 中英文逗号 / 顿号 / 分号 / 竖线 都认',
+      ['#A #B', '#A，#B', '#A, #B', '#A、#B', '#A;#B', '#A|#B'].every(s => copywriter.parseTopics(s).join('|') === '#A|#B'),
+      copywriter.parseTopics('#A #B').join('|'));
+    ok('⑨ 漏写 # 自动补上；重复话题只留一个',
+      copywriter.parseTopics('TW男装, #男生穿搭, TW男装').join('|') === '#TW男装|#男生穿搭',
+      copywriter.parseTopics('TW男装, #男生穿搭, TW男装').join('|'));
+
+    store.set({ copy: { requiredTopic: '#TW男装, #男生穿搭', extraTopics: 4 } });
+    const plan9 = copywriter.buildPlan([{ id: 'x1', color: '黑' }]);
+    const t9 = plan9.rows[0].topics;
+    ok('⑨ 两个必带话题都进组合，且固定排在话题最前面',
+      t9[0] === '#TW男装' && t9[1] === '#男生穿搭', JSON.stringify(t9));
+    ok('⑨ 必带 2 + 额外 4 = 6 超过 5 列 ⇒ 只给 5 个并明确告警（旧版静默丢掉第 6 个）',
+      t9.length === 5 && /话题1~话题5/.test(plan9.warning || ''), `${t9.length} 个 · warning=${plan9.warning}`);
+
+    store.set({ copy: { requiredTopic: '#TW男装', extraTopics: 4 } });
+    const plan9b = copywriter.buildPlan(Array.from({ length: 5 }, (_, i) => ({ id: 'y' + i, color: '黑' })));
+    ok('⑨ 没超限就不该告警（否则天天「狼来了」）',
+      plan9b.warning === null && plan9b.rows.every(r => r.topics.length === 5), `warning=${plan9b.warning}`);
+    ok('⑨ 必带话题在每一篇里都在（不会被轮换挤掉）',
+      plan9b.rows.every(r => r.topics[0] === '#TW男装'), plan9b.rows.map(r => r.topics[0]).join(' '));
+  } finally {
+    store.set({ copy: cfgBefore });   // 还原配置，别影响后面的断言
+  }
+
   console.log('\n--- 日志样例 ---');
   logs.slice(0, 12).forEach(l => console.log('  ' + l));
   console.log('\nTMP: ' + TMP);
