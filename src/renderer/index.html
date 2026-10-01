@@ -73,6 +73,13 @@
         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10.5 8.8l5 3.2-5 3.2V8.8z"/></svg></span>
         <span>模拟器发布</span><span class="st" data-st="6">—</span>
       </button>
+      <!-- 运行日志：内容和最下面那条日志栏是**同一份**（app.js 里的 state.logs），
+           单独开一页只是为了能筛、能导。编号接在最后（10）而不是插成 7：
+           插进去要把设置/品牌统计/品牌与权限改成 8/9/10，连带 Ctrl+1..9、跳页写法与测试断言都得动 -->
+      <button class="nav" data-tab="10">
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v5h5M8 13h8M8 16.5h5"/></svg></span>
+        <span>运行日志</span><span class="st" data-st="10">—</span>
+      </button>
       <div class="grp">其他</div>
       <button class="nav" data-tab="7">
         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2.6M12 17.9v2.6M4.9 7.8l2.2 1.3M16.9 14.9l2.2 1.3M4.9 16.2l2.2-1.3M16.9 9.1l2.2-1.3"/></svg></span>

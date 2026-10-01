@@ -1,10 +1,12 @@
-/* 界面自检：用隐藏窗口加载真实渲染层，把 9 个页签切一遍，确认
+/* 界面自检：用隐藏窗口加载真实渲染层，把 10 个页签切一遍，确认
      · 免登录（BLUEV_NO_LOGIN=1）能进主界面
-     · 9 个页签都能渲染、标题对得上
+     · 10 个页签都能渲染、标题对得上
      · 渲染层零控制台报错（含未捕获异常 / 未处理的 Promise）
+     · 左侧「运行日志」页与底部日志栏**是同一份内容**，能筛、能真导出
    用法：npx electron tools/uicheck.js       （tools/run-all.sh 里就是这么调的）
 
    注意：userData 会被指到临时目录，不会动你本机的 config.json / auth.json / project.json。
+   同理，运行日志的导出目录也会被临时改掉 —— 默认输出目录是「我的文档\输出\得物」，自检不许往那里写。
 */
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
@@ -17,7 +19,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-uicheck-'));
 app.setPath('userData', TMP);
 app.commandLine.appendSwitch('disable-gpu');
 
-const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置', '品牌统计', '品牌与权限'];
+const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -112,7 +114,17 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
-  ok('左侧导航是 9 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 9);
+  ok('左侧导航是 10 个页签（新增「运行日志」，归在「执行」组里）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 10,
+    await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
+  ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
+    await win.webContents.executeJavaScript(`(() => {
+      const navs = [...document.querySelectorAll('.side > *')];
+      const iExec = navs.findIndex(e => e.className === 'grp' && e.textContent.trim() === '执行');
+      const iLog = navs.findIndex(e => e.dataset && e.dataset.tab === '10');
+      const iOther = navs.findIndex((e, i) => i > iExec && e.className === 'grp' && e.textContent.trim() === '其他');
+      // 在「执行」这一个分组标题之后、下一个分组标题（其他）之前
+      return iExec >= 0 && iLog > iExec && iOther > iLog;
+    })()`));
   // 品牌和权限必须自成一块：设置页里不能再出现品牌管理 / 账号管理（2026-10-01 用户要求）
   const moved = await win.webContents.executeJavaScript(`(async () => {
     const pane = () => document.querySelector('#pane').textContent;
@@ -148,7 +160,8 @@ app.whenReady().then(async () => {
     })()
   `);
 
-  for (let i = 1; i <= 8; i++) {
+  // 页签 9 前面单独测过（品牌与权限）；10 是新增的「运行日志」
+  for (const i of [1, 2, 3, 4, 5, 6, 7, 8, 10]) {
     await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('.nav[data-tab="${i}"]'); if (b) b.click(); return true; })()`);
     await new Promise(r => setTimeout(r, 150));
     const info = await win.webContents.executeJavaScript(`(() => {
@@ -172,6 +185,152 @@ app.whenReady().then(async () => {
   ok('页签 6 有「失败恢复动作」', await onTab(6, 'pub:recoverEdit'));
   ok('页签 8 有「查询」（品牌统计）', await onTab(8, 'stats:refresh'));
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
+
+  // ---- 左侧「运行日志」页：与底部日志栏**同一份内容**、能筛、能真导出 ----
+  // 用户原话是「同步 app 下端的日志」⇒ 必须验两处**内容逐行一致**。
+  // 只验「多了一个页签」证明不了同步 —— 那恰恰是最容易做成两套数据的地方。
+  // 日志由主进程 logbus 产生，这里直接往总线上灌几条（走的就是真的 log:entry 推送链路）。
+  {
+    // 先把导出目录挪到临时目录：默认是「我的文档\输出\得物」，自检不许往用户那儿写文件
+    store.set({ paths: { output: path.join(TMP, 'out') } });
+
+    logbus.info('ENG-INFO 自检：这段只用来验证「运行日志」页与底部日志栏同步');
+    logbus.error('ENG-ERR 自检：故意造一条错误日志（用来验级别筛选）');
+    await new Promise(r => setTimeout(r, 250));
+
+    const gotoLogPage = `document.querySelector('.nav[data-tab="10"]').click(); await new Promise(r => setTimeout(r, 200));`;
+    const ui0 = await win.webContents.executeJavaScript(`(async () => {
+      ${gotoLogPage}
+      const txt = els => els.map(e => e.textContent.replace(/\\s+/g, ' ').trim());
+      return {
+        bar: txt([...document.querySelectorAll('#log > div')]),
+        pane: txt([...document.querySelectorAll('#logPaneLines > div')]),
+        badge: (document.querySelector('[data-st="10"]') || {}).textContent || '',
+        count: (document.querySelector('#logPaneCount') || {}).textContent || '',
+        acts: [...document.querySelectorAll('#pane [data-act]')].map(e => e.dataset.act),
+        hasLv: !!document.querySelector('#logLv'), hasQ: !!document.querySelector('#logQ')
+      };
+    })()`);
+    ok('★ 左侧「运行日志」页与底部日志栏是同一份内容（逐行一致）',
+      ui0.bar.length > 0 && JSON.stringify(ui0.bar) === JSON.stringify(ui0.pane),
+      `日志栏 ${ui0.bar.length} 行 / 页内 ${ui0.pane.length} 行`);
+    ok('刚灌进去的那两条两处都看得到（说明走的是真推送链路，不是各自造的数据）',
+      ui0.pane.some(l => /ENG-INFO/.test(l)) && ui0.bar.some(l => /ENG-INFO/.test(l)),
+      ui0.pane.slice(-2).join(' | ').slice(0, 120));
+    ok('页上有「级别下拉 + 关键字 + 清空 + 导出」四件东西',
+      ui0.hasLv && ui0.hasQ && ui0.acts.includes('log:clear') && ui0.acts.includes('log:export'),
+      JSON.stringify(ui0.acts));
+
+    // 级别筛选：只该影响这一页；底部日志栏不许跟着变（它就是「刚才发生了什么」）
+    const ui1 = await win.webContents.executeJavaScript(`(async () => {
+      const sel = document.querySelector('#logLv');
+      sel.value = 'error'; sel.dispatchEvent(new Event('change'));
+      await new Promise(r => setTimeout(r, 200));
+      return {
+        pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent),
+        barCount: document.querySelectorAll('#log > div').length,
+        count: document.querySelector('#logPaneCount').textContent
+      };
+    })()`);
+    ok('★ 级别筛「错误」后页内只剩错误那条（info 那条被筛掉）',
+      ui1.pane.some(l => /ENG-ERR/.test(l)) && !ui1.pane.some(l => /ENG-INFO/.test(l)),
+      ui1.pane.join(' | ').slice(0, 100));
+    ok('★ 筛选时把「显示 N / 共 M 条」两个数都写出来（只写一个会被当成日志丢了）',
+      /显示 \d+ \/ 共 \d+ 条/.test(ui1.count), ui1.count);
+    ok('★ 筛选只作用于这一页：底部日志栏一行都没少',
+      ui1.barCount === ui0.bar.length, `筛选后 ${ui1.barCount} vs 筛选前 ${ui0.bar.length}`);
+
+    // 关键字筛选（级别调回「全部」，单独验关键字这一路）
+    const ui2 = await win.webContents.executeJavaScript(`(async () => {
+      const lv = document.querySelector('#logLv');
+      lv.value = ''; lv.dispatchEvent(new Event('change'));
+      const q = document.querySelector('#logQ');
+      q.value = 'ENG-ERR'; q.dispatchEvent(new Event('input'));
+      await new Promise(r => setTimeout(r, 200));
+      return { pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent), count: document.querySelector('#logPaneCount').textContent };
+    })()`);
+    ok('按关键字筛之后只剩命中的那条（且两个数都写出来）',
+      ui2.pane.length === 1 && /ENG-ERR/.test(ui2.pane[0]) && /显示 1 \/ 共 \d+ 条/.test(ui2.count),
+      `${JSON.stringify(ui2.count)} ${ui2.pane.join(' | ').slice(0, 60)}`);
+
+    // ★ 导出（**在筛选状态下点**）：这一条才是「导出的就是屏幕上这些」的硬证据，
+    //   只验「文件存在」是不够的 —— 那样把「永远导出全量」放过去也看不出来
+    await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-act="log:export"]').click();
+      await new Promise(r => setTimeout(r, 900));
+    })()`);
+    const outDir = path.join(TMP, 'out');
+    const files = fs.existsSync(outDir) ? fs.readdirSync(outDir) : [];
+    const logName = files.find(f => /^运行日志_\d{8}-\d{6}\.log$/.test(f)) || '';
+    const jsonName = files.find(f => /^运行日志_\d{8}-\d{6}\.jsonl$/.test(f)) || '';
+    ok('★ 点「导出日志」后输出目录里真的出现了 .log 与 .jsonl（文件名带时间戳到秒）',
+      !!logName && !!jsonName, files.join(' ') || '(目录是空的)');
+    const logTxt = logName ? fs.readFileSync(path.join(outDir, logName), 'utf8') : '';
+    ok('★ 导出的是**筛选后**的那些：关键字写进文件头，条数也对得上（1 条）',
+      /关键字=ENG-ERR/.test(logTxt) && /本次导出：1 条/.test(logTxt),
+      `${(logTxt.match(/筛选条件：[^\n]*/) || [''])[0]} | ${(logTxt.match(/本次导出：[^\n]*/) || [''])[0]}`);
+    ok('★ 文件头同时写出「内存缓冲区共 N 条」，且比导出的多（一眼看出这是筛过的）',
+      (() => { const m = /内存缓冲区：共 (\d+) 条/.exec(logTxt); return !!m && Number(m[1]) > 1; })(),
+      (logTxt.match(/内存缓冲区：[^\n]*/) || [''])[0]);
+    ok('导出的是给人看的那份：每行带完整日期时间 + 中文等级',
+      /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[错误\] ENG-ERR/.test(logTxt),
+      (logTxt.split('\n').filter(l => /ENG-ERR/.test(l))[0] || '').slice(0, 70));
+
+    const ui3 = await win.webContents.executeJavaScript(`(() => ({
+      acts: [...document.querySelectorAll('#pane [data-act]')].map(e => e.dataset.act),
+      text: document.querySelector('#pane').textContent
+    }))()`);
+    ok('导出后页面上多出「打开文件 / 打开所在文件夹」（导完要能找到它）',
+      ui3.acts.includes('log:openFile') && ui3.acts.includes('log:revealFile'), JSON.stringify(ui3.acts));
+    ok('页面上写的是「上次导出」的真实文件名（不是一句含糊的"导出成功"）',
+      !!logName && ui3.text.includes(logName), ui3.text.replace(/\s+/g, ' ').slice(-100));
+
+    // 清空：两处一起清（只清一边，「同步」当场破功）
+    const cleared = await win.webContents.executeJavaScript(`(async () => {
+      const lv = document.querySelector('#logLv'); lv.value = ''; lv.dispatchEvent(new Event('change'));
+      const q = document.querySelector('#logQ'); q.value = ''; q.dispatchEvent(new Event('input'));
+      await new Promise(r => setTimeout(r, 150));
+      document.querySelector('[data-act="log:clear"]').click();
+      await new Promise(r => setTimeout(r, 400));
+      return {
+        bar: document.querySelectorAll('#log > div').length,
+        pane: document.querySelectorAll('#logPaneLines > div').length,
+        badge: (document.querySelector('[data-st="10"]') || {}).textContent || '',
+        count: (document.querySelector('#logPaneCount') || {}).textContent || ''
+      };
+    })()`);
+    ok('★「清空」把底部日志栏与页内**一起**清掉（只清一边就不叫同步了）',
+      cleared.bar === 0 && cleared.pane === 0, JSON.stringify(cleared));
+    ok('清空后角标回到「—」、条数回到「共 0 条」（界面不许还留着旧数字）',
+      cleared.badge === '—' && /共 0 条/.test(cleared.count), `${cleared.badge} / ${cleared.count}`);
+
+    // 清空后再来一条：两处必须**同时**长出来（推送这个方向最容易漏）
+    // ★ 这一条才是「同步」的真正守门人：上面那条「逐行一致」是切页时比对的，
+    //   而切页会触发一次整体重绘 —— 就算 pushLog 忘了同步页内，切过去也看着是对的。
+    //   只有「页面开着的时候新来的日志」才会暴露出来。（定点破坏 L1 已证）
+    logbus.warn('ENG-WARN 自检：清空之后再来一条');
+    await new Promise(r => setTimeout(r, 250));
+    const afterClear = await win.webContents.executeJavaScript(`(() => ({
+      bar: [...document.querySelectorAll('#log > div')].map(e => e.textContent),
+      pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent)
+    }))()`);
+    ok('★ 清空之后新来的日志两处都长出来了（推送方向也是同步的）',
+      afterClear.bar.length === 1 && afterClear.pane.length === 1
+        && /ENG-WARN/.test(afterClear.bar[0]) && /ENG-WARN/.test(afterClear.pane[0]),
+      JSON.stringify(afterClear).slice(0, 150));
+
+    // 源码锚点：两处不许各写一套渲染逻辑（那正是「两份数据」的前兆）
+    const appSrcLog = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+    ok('★ 两边共用同一个数组与同一套渲染函数（没有第二份日志）',
+      /function pushLog\(e\)[\s\S]{0,400}appendToLogPane\(e\)/.test(appSrcLog)
+        && /function renderLogs\(\)[\s\S]{0,500}renderLogPaneLines\(\)/.test(appSrcLog)
+        && !/state\.logs2|state\.paneLogs/.test(appSrcLog),
+      `pushLog→页内=${/appendToLogPane\(e\)/.test(appSrcLog) ? '有' : '缺'} · renderLogs→页内=${/renderLogPaneLines\(\)/.test(appSrcLog) ? '有' : '缺'}`);
+    ok('★ 导出走 IPC（渲染层没有 fs），且主进程会把失败如实报回来（不吞）',
+      /appApi\.logExport\(/.test(appSrcLog)
+        && /ipcRenderer\.invoke\('log:export', payload\)/.test(fs.readFileSync(path.join(ROOT, 'src/preload/index.js'), 'utf8'))
+        && /导出运行日志失败/.test(fs.readFileSync(path.join(ROOT, 'src/main/ipc.js'), 'utf8')));
+  }
 
   // ---- 应用更新面板：这轮测的是「界面诚不诚实」，不是「按钮好不好看」----
   // 自检跑的是没打包的源码 ⇒ app.isPackaged=false ⇒ 自动更新本来就不可用。

@@ -4,6 +4,7 @@ const path = require('path');
 const store = require('./store');
 const project = require('./project');
 const logbus = require('./logbus');
+const logexport = require('./logexport');
 const jobs = require('./jobs');
 const auth = require('./auth');
 const brands = require('./brands');
@@ -243,6 +244,33 @@ function register() {
 
   ipcMain.handle('project:get', guard(() => project.get()));
   ipcMain.handle('log:history', guard(() => logbus.history()));
+  // 运行日志导出：写成一个 .log（给人看）+ 一个 .jsonl（给脚本看），落到输出目录。
+  // ★ 筛选在渲染层做完再传上来（就是界面右侧那一页显示的那些），主进程不重新筛 ——
+  //   但「筛选条件」与「内存缓冲区一共多少条」要一并写进文件头，
+  //   否则事后没人说得清「怎么只有 3 条」（见 logexport.js 的口径 2）。
+  // ★ 不设 guardAdmin：这是本机的运行情况，谁跑的谁该能导出来对账。
+  ipcMain.handle('log:export', guard((_e, payload) => {
+    const p = payload || {};
+    const filter = p.filter || {};
+    try {
+      const r = logexport.writeFiles({
+        outputDir: store.get('paths.output'),
+        entries: Array.isArray(p.entries) ? p.entries : [],
+        meta: {
+          exportedAt: Date.now(),
+          appVersion: app.getVersion(),
+          filter,
+          bufferTotal: Number(p.bufferTotal) || 0
+        }
+      });
+      const byFilter = !!(filter.level || filter.q);
+      logbus.ok(`运行日志已导出：${path.basename(r.text)}（${r.count} 条${byFilter ? '，已按当前筛选' : ''}）`);
+      return { ok: true, file: r.text, jsonFile: r.json, count: r.count };
+    } catch (e) {
+      // ★ 绝不吞：导出失败就说失败。说一句「已导出」然后磁盘上没文件，是最坏的那种假成功
+      return { ok: false, error: `导出运行日志失败：${e.code ? e.code + ' ' : ''}${e.message}` };
+    }
+  }));
 
   ipcMain.handle('theme:get', () => ({ shouldUseDarkColors: nativeTheme.shouldUseDarkColors, themeSource: nativeTheme.themeSource }));
   ipcMain.handle('theme:set', (_e, source) => { nativeTheme.themeSource = source || 'system'; return nativeTheme.shouldUseDarkColors; });

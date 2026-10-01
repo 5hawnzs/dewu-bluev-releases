@@ -21,11 +21,16 @@ const state = {
   stats: null,        // 品牌统计查询结果
   statsOpts: { days: 30, brandId: '', userId: '' },
   statsBusy: false,
+  statsPath: null,    // 输出目录可写性自检结果（{ ok, dir, checks[], error }）
   brandEdit: null,    // 正在改名的品牌 { id, name }
   permUserId: null,   // 「品牌权限」面板里当前选中的账号
   // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
   brandModal: null,
-  upd: null           // 应用更新状态（来自主进程）null=还没读到
+  upd: null,          // 应用更新状态（来自主进程）null=还没读到
+  logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
+  logFilter: { level: '', q: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
+  logExport: null,    // 上一次导出结果 { file, jsonFile, count }，用来给「打开 / 定位」按钮指路
+  logExportErr: ''    // 上一次导出的失败原因（失败要说出来，不能只在 toast 里一闪而过）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -70,30 +75,114 @@ function applyTheme(t) {
   document.documentElement.classList.toggle('dark', !!(t && t.shouldUseDarkColors));
 }
 
-/* ---------------- 日志 ---------------- */
+/* ---------------- 日志 ----------------
+ * 日志**只有一份数据**（state.logs），两处显示：最下面的日志栏 + 左侧「运行日志」页。
+ * ★ 这两处必须永远一致（用户要求「同步」）⇒ 推送 / 重绘 / 清空 三件事都只走下面这几个函数。
+ *   别在别处直接碰 #log 或 #logPaneLines —— 那样迟早变成「一边更新、一边不更新」。
+ * ★ 筛选只作用于「运行日志」页，底部日志栏永远是全量（它就是「刚才发生了什么」）。
+ */
+const LOG_KEEP = 500;      // 内存里留多少条：与主进程 logbus 的环形缓冲 MAX 对齐
+const LOG_BAR_MAX = 300;   // 底部日志栏最多渲染多少行（DOM 行数多了会拖慢整页重排）
+const LOG_LEVEL_CLS = { ok: 'ok', error: 'er', warn: 'wn', info: 'inf' };
+const LOG_LEVEL_TEXT = { info: '信息', ok: '成功', warn: '警告', error: '错误' };
+
+function logCls(level) { return LOG_LEVEL_CLS[level] || 'inf'; }
+function logLineHtml(e) {
+  return `<span class="t">${hhmm(e.t)}</span><span class="${logCls(e.level)}">${esc(e.msg)}</span>`;
+}
+function logFilterOn() {
+  const f = state.logFilter || {};
+  return !!(f.level || String(f.q || '').trim());
+}
+/** 当前筛选下该出现在「运行日志」页里的那些（无筛选 = 全部） */
+function filteredLogs() {
+  const f = state.logFilter || { level: '', q: '' };
+  const q = String(f.q || '').trim().toLowerCase();
+  return (state.logs || []).filter(e => {
+    if (f.level && e.level !== f.level) return false;
+    if (q && !String(e.msg || '').toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+/** 命中条数文案。★ 筛选时两个数都要写出来 —— 只写「3 条」会让人以为日志丢了 */
+function logCountText() {
+  const hit = filteredLogs().length;
+  const total = (state.logs || []).length;
+  return logFilterOn() ? `显示 ${hit} / 共 ${total} 条` : `共 ${total} 条`;
+}
+/** 一条日志追加到「运行日志」页（只在该页开着时才动 DOM，且要过一遍当前筛选） */
+function appendToLogPane(e) {
+  const box = $('#logPaneLines');
+  if (!box) return;
+  const f = state.logFilter || { level: '', q: '' };
+  const q = String(f.q || '').trim().toLowerCase();
+  if (f.level && e.level !== f.level) return;
+  if (q && !String(e.msg || '').toLowerCase().includes(q)) return;
+  const div = document.createElement('div');
+  div.innerHTML = logLineHtml(e);
+  box.appendChild(div);
+  while (box.children.length > LOG_KEEP) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+  const cnt = $('#logPaneCount');
+  if (cnt) cnt.textContent = logCountText();
+}
 function pushLog(e) {
   state.logs.push(e);
-  if (state.logs.length > 300) state.logs.shift();
+  if (state.logs.length > LOG_KEEP) state.logs.shift();
   const box = $('#log');
-  if (!box) return;
-  const cls = { ok: 'ok', error: 'er', warn: 'wn', info: 'inf' }[e.level] || 'inf';
-  const div = document.createElement('div');
-  div.innerHTML = `<span class="t">${hhmm(e.t)}</span><span class="${cls}">${esc(e.msg)}</span>`;
-  box.appendChild(div);
-  while (box.children.length > 300) box.removeChild(box.firstChild);
-  box.scrollTop = box.scrollHeight;
+  if (box) {
+    const div = document.createElement('div');
+    div.innerHTML = logLineHtml(e);
+    box.appendChild(div);
+    while (box.children.length > LOG_BAR_MAX) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+  appendToLogPane(e);
+  updateLogBadge();
 }
 function renderLogs() {
   const box = $('#log');
-  box.innerHTML = '';
-  state.logs.slice(-200).forEach(pushLogEntry);
+  if (box) {
+    box.innerHTML = '';
+    state.logs.slice(-LOG_BAR_MAX).forEach(e => {
+      const div = document.createElement('div');
+      div.innerHTML = logLineHtml(e);
+      box.appendChild(div);
+    });
+    box.scrollTop = box.scrollHeight;
+  }
+  renderLogPaneLines();
+  updateLogBadge();
 }
-function pushLogEntry(e) {
-  const box = $('#log');
-  const cls = { ok: 'ok', error: 'er', warn: 'wn', info: 'inf' }[e.level] || 'inf';
-  const div = document.createElement('div');
-  div.innerHTML = `<span class="t">${hhmm(e.t)}</span><span class="${cls}">${esc(e.msg)}</span>`;
-  box.appendChild(div);
+/** 「运行日志」页只重画行本身：整页重排会把筛选框里正在输入的光标顶掉 */
+function renderLogPaneLines() {
+  const box = $('#logPaneLines');
+  if (!box) return;
+  box.innerHTML = filteredLogs().map(e => `<div>${logLineHtml(e)}</div>`).join('');
+  box.scrollTop = box.scrollHeight;
+  const cnt = $('#logPaneCount');
+  if (cnt) cnt.textContent = logCountText();
+}
+/** 清空：底部与页面一起清（只清一边 = 「同步」当场破功） */
+function clearLogs() {
+  state.logs = [];
+  const bar = $('#log');
+  if (bar) bar.innerHTML = '';
+  renderLogPaneLines();
+  updateLogBadge();
+}
+/** 侧栏「运行日志」的角标：有错误先报错误数（那才是要去看的信号），否则给总条数 */
+function updateLogBadge() {
+  const el = document.querySelector('[data-st="10"]');
+  if (!el) return;
+  const total = (state.logs || []).length;
+  const errs = (state.logs || []).filter(e => e.level === 'error').length;
+  el.textContent = total ? (errs ? `${errs} 错` : `${total} 条`) : '—';
+  el.className = 'st' + (total ? (errs ? ' warn' : ' ok') : '');
+}
+/** 需要导出给主进程的那些：**当前筛选下来的**，外加上下文（筛选条件 + 缓冲区总数） */
+function logExportPayload() {
+  return { entries: filteredLogs(), filter: { level: state.logFilter.level, q: state.logFilter.q }, bufferTotal: (state.logs || []).length };
 }
 
 /* ---------------- 任务（实例化：同一时间可以有多个批次在跑） ---------------- */
@@ -1027,6 +1116,78 @@ function probeHtml() {
     </div>`;
 }
 
+/* ---------------- 页签 10：运行日志 ----------------
+ * 内容与最下面那条日志栏是**同一份**（state.logs）—— 用户明确要求「同步」。
+ * 单独开一页只为了两件日志栏做不了的事：**按级别/关键字筛**、**导出**。
+ * ★ 筛选框输入时不重画整页（renderAll 会把光标顶掉），只重画行那一块 —— 见 renderLogPaneLines()。
+ * ★ 行列表复用底部日志栏的 .logbar/.lines 样式（等宽字体 + 分级配色只有那套里有），只改边框与高度。
+ */
+function logPaneHtml() {
+  const f = state.logFilter || { level: '', q: '' };
+  const opts = [['', '全部级别'], ['info', '信息'], ['ok', '成功'], ['warn', '警告'], ['error', '错误']]
+    .map(([v, t]) => `<option value="${v}"${f.level === v ? ' selected' : ''}>${t}</option>`).join('');
+  const errs = (state.logs || []).filter(e => e.level === 'error').length;
+  const warns = (state.logs || []).filter(e => e.level === 'warn').length;
+  const ex = state.logExport;
+  return `
+  <div class="box">
+    <h3>运行日志</h3>
+    <div class="row">
+      <span class="chip" id="logPaneCount">${logCountText()}</span>
+      ${errs ? `<span class="chip warn">${errs} 条错误</span>` : ''}
+      ${warns ? `<span class="chip">${warns} 条警告</span>` : ''}
+      <span class="hint" style="margin:0">与最下面的日志栏是同一份内容；这里筛完了再导出，导出的就是屏幕上这些。</span>
+    </div>
+    <div class="row" style="margin-top:9px">
+      <select class="inp" id="logLv">${opts}</select>
+      <input class="inp" id="logQ" style="flex:1;min-width:180px" placeholder="按关键字筛（标题 / 批次 / 文件路径…）" value="${esc(f.q)}" spellcheck="false">
+      <button class="btn sm" data-act="log:clear"${(state.logs || []).length ? '' : ' disabled'}>清空日志</button>
+      <button class="btn sm primary" data-act="log:export"${(state.logs || []).length ? '' : ' disabled'}>导出日志</button>
+    </div>
+  </div>
+  <div class="box">
+    <div class="logbar" style="border-top:0;max-height:420px">
+      <div class="lines" id="logPaneLines"></div>
+    </div>
+    ${logFilterOn() ? `<p class="hint">当前只显示筛选结果中的 <b>${filteredLogs().length}</b> 条。要点回全部日志，把级别选回「全部级别」、清空关键字即可。</p>` : ''}
+  </div>
+  <div class="box">
+    <h3>导出</h3>
+    <div class="row">
+      <button class="btn sm" data-act="log:export">导出到输出目录</button>
+      ${ex ? `<button class="btn sm" data-act="log:openFile">打开文件</button>
+        <button class="btn sm" data-act="log:revealFile">打开所在文件夹</button>` : ''}
+    </div>
+    <p class="hint">导出会一次生成两个文件，落在<b>输出目录</b>（和合规报告、品牌统计同一个地方）：
+      <code>运行日志_时间戳.log</code>（给人看的，每行带完整日期时间与等级）
+      与 <code>运行日志_时间戳.jsonl</code>（一行一条 JSON，给脚本或同事再分析）。
+      文件头会写清<b>本次导出了多少条</b>与<b>缓冲区一共多少条</b> —— 筛过之后这两个数不一样，免得事后误会成"日志丢了"。</p>
+    ${ex ? `<p class="hint" style="margin-top:6px">上次导出：<b>${esc(String(ex.file || '').split(/[\\/]/).pop())}</b>（${n(ex.count)} 条）</p>` : ''}
+    ${state.logExportErr ? `<p class="hint" style="margin-top:6px;color:var(--red)">上次导出失败：${esc(state.logExportErr)}</p>` : ''}
+  </div>`;
+}
+
+TABS[10] = {
+  title: '运行日志',
+  desc: '与底部日志栏同一份内容 · 可按级别/关键字筛 · 可导出成 .log 与 .jsonl',
+  actions: () => [
+    { act: 'log:clear', label: '清空', disabled: !(state.logs || []).length },
+    { act: 'log:export', label: '导出日志', primary: true, disabled: !(state.logs || []).length }
+  ],
+  render() {
+    return logPaneHtml();
+  }
+};
+
+/** 进「运行日志」页时把行铺开（renderAll 里 render() 只产出空容器，行交给这里画） */
+function bindLogPane() {
+  const lv = $('#logLv');
+  const q = $('#logQ');
+  if (lv) lv.onchange = () => { state.logFilter.level = lv.value; renderLogPaneLines(); };
+  if (q) q.oninput = () => { state.logFilter.q = q.value; renderLogPaneLines(); };
+  renderLogPaneLines();
+}
+
 /* ---------------- 渲染入口 ---------------- */
 function renderAll() {
   const t = TABS[state.tab];
@@ -1055,6 +1216,8 @@ function renderAll() {
   bindCfgInputs();
   // 设置页与「品牌与权限」页共用一套绑定：都按 id 找元素，找不到就跳过
   if (state.tab === 7 || state.tab === 9) bindSettings();
+  // 运行日志页：行是渲染后单独铺的（而且要保住筛选框的光标，不能整页重画）
+  if (state.tab === 10) bindLogPane();
   if (state.tab === 8) {
     bindStats();
     // 第一次进这个页签自动读一次；statsTried 防止查询失败时无限重试（那只会在 render→load→render 里打转）
@@ -1719,6 +1882,34 @@ const ACTS = {
   'batch:detail': (el) => { state.batchDetail = el.dataset.batch; renderAll(); },
   'batch:detailClose': () => { state.batchDetail = null; renderAll(); },
 
+  // ---- 运行日志（左侧「执行」组那一页）----
+  // ★ 清空走统一的 clearLogs()：底部日志栏与页面必须一起清。
+  //   说清「清的是什么」—— 主进程那份还在，重新登录会再拉回来；不写清就会被当成"清了个假的"。
+  'log:clear': () => {
+    const before = (state.logs || []).length;
+    clearLogs();
+    toast(before
+      ? `已清空 ${before} 条运行日志（清的是界面这份缓存；主进程还留着最近 500 条，重新登录会再拉回来）`
+      : '本来就没有日志', '');
+    renderAll();
+  },
+  'log:export': async () => {
+    const r = await appApi.logExport(logExportPayload());
+    if (!r || !r.ok) {
+      // ★ 失败必须说出来，而且留在页面上（toast 三秒就没了，用户回头看不到）
+      state.logExportErr = (r && r.error) || '导出失败';
+      toast(state.logExportErr, 'err');
+      renderAll();
+      return;
+    }
+    state.logExportErr = '';
+    state.logExport = { file: r.file, jsonFile: r.jsonFile, count: r.count };
+    toast(`已导出 ${r.count} 条运行日志 → ${String(r.file || '').split(/[\\/]/).pop()}`, 'ok');
+    renderAll();
+  },
+  'log:openFile': async () => { const f = (state.logExport || {}).file; if (f) await appApi.openPath(f); },
+  'log:revealFile': async () => { const f = (state.logExport || {}).file; if (f) await appApi.reveal(f); },
+
   'verify:run': async () => { await runJob('verify.check'); },
   'verify:pool': async () => {
     const f = await appApi.pickFile({ title: '导入商品池（CSV/TSV/JSON：货号 + 颜色）' });
@@ -2124,7 +2315,8 @@ function bind() {
   $('#capMax').onclick = () => appApi.toggleMax();
   $('#capClose').onclick = () => appApi.close();
   $('.titlebar').ondblclick = e => { if (!e.target.closest('.cap')) appApi.toggleMax(); };
-  $('#logClear').onclick = () => { state.logs = []; $('#log').innerHTML = ''; };
+  // 清空必须走 clearLogs()：底部日志栏与「运行日志」页要一起清（只清一边就不是「同步」了）
+  $('#logClear').onclick = () => { clearLogs(); if (state.tab === 10) renderAll(); };
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }

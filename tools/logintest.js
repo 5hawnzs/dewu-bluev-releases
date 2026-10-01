@@ -149,10 +149,12 @@ app.whenReady().then(async () => {
     }
     return titles;
   })()`);
-  ok('登录后 9 个页签都能渲染（页签数是数出来的，不是写死的）',
-    tabs.length === 9 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+  ok('登录后 10 个页签都能渲染（页签数是数出来的，不是写死的）',
+    tabs.length === 10 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
   ok('第 9 个页签是「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
     tabs[8] === '品牌与权限', tabs[8] || '(没有)');
+  ok('第 10 个页签是「运行日志」（归在左侧「执行」组里；内容和底部日志栏同一份）',
+    tabs[9] === '运行日志', tabs[9] || '(没有)');
 
   // ---- ⑤ 口令存储与「记住登录」落盘 ----
   const authFile = path.join(TMP, 'auth.json');

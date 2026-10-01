@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('api', {
   configSet: patch => ipcRenderer.invoke('config:set', patch),
   projectGet: () => ipcRenderer.invoke('project:get'),
   logHistory: () => ipcRenderer.invoke('log:history'),
+  logExport: payload => ipcRenderer.invoke('log:export', payload),
 
   run: (type, args) => ipcRenderer.invoke('job:run', type, args),
   cancel: type => ipcRenderer.invoke('job:cancel', type),
