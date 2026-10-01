@@ -1,6 +1,6 @@
-/* 界面自检：用隐藏窗口加载真实渲染层，把 8 个页签切一遍，确认
+/* 界面自检：用隐藏窗口加载真实渲染层，把 9 个页签切一遍，确认
      · 免登录（BLUEV_NO_LOGIN=1）能进主界面
-     · 8 个页签都能渲染、标题对得上
+     · 9 个页签都能渲染、标题对得上
      · 渲染层零控制台报错（含未捕获异常 / 未处理的 Promise）
    用法：npx electron tools/uicheck.js       （tools/run-all.sh 里就是这么调的）
 
@@ -381,6 +381,54 @@ app.whenReady().then(async () => {
       ? `批次 ${batchRun.count} 篇${batchRun.sawBox ? '' : '（面板没出现）'}`
       : batchRun.error);
   ok('批次跑完后从面板消失', batchRun.afterEmpty);
+
+  // 品牌标记：界面上是**两处**内联 SVG（标题栏 17、登录卡 26），加上打包图标 build/icon.ico，
+  // 一共**三份来源**。换 logo 最容易「只改一处」，所以这里把它们绑住 ——
+  // 光断言「有 path」不够：旧的「方底 + 白 V」也有 path。
+  const brand = await win.webContents.executeJavaScript(`
+    (() => {
+      const pick = (sel) => {
+        const svg = document.querySelector(sel + ' svg');
+        if (!svg) return null;
+        return {
+          ds: [...svg.querySelectorAll('path')].map(p => p.getAttribute('d')),
+          rects: svg.querySelectorAll('rect').length,
+          viewBox: svg.getAttribute('viewBox')
+        };
+      };
+      // 注意选择器：登录卡那个 span 只有 class="glogo"，没有 id（别写成 #glogo —— 会静默查不到，
+      // 于是「两处 logo 一致」这条断言会因为「只找到一处」而变红，看着像 logo 有问题）
+      return { title: pick('#logo'), gate: pick('.glogo') };
+    })()
+  `);
+  const sameD = !!(brand.title && brand.gate &&
+    JSON.stringify(brand.title.ds) === JSON.stringify(brand.gate.ds));
+  ok('标题栏与登录卡的 logo 是同一份矢量（两处 path 逐字相同）', sameD,
+    sameD ? `viewBox ${brand.title.viewBox}` :
+      `标题栏 ${JSON.stringify(brand.title)} / 登录卡 ${JSON.stringify(brand.gate)}`);
+  ok('logo 是新字母标（两笔 V、无方底），不是旧的「方底 + 白 V」',
+    sameD && brand.title.rects === 0 && brand.title.ds.length === 2 &&
+    brand.title.ds.includes('M300 308L512 728L724 308'),
+    `rects=${brand.title ? brand.title.rects : '?'} paths=${brand.title ? brand.title.ds.length : '?'}`);
+
+  const ico = (() => {
+    try {
+      const b = fs.readFileSync(path.join(ROOT, 'build', 'icon.ico'));
+      const n = b.readUInt16LE(4);
+      let fine = b.readUInt16LE(2) === 1 && n >= 6;
+      for (let i = 0; i < n && fine; i++) {
+        const off = 6 + i * 16;
+        const len = b.readUInt32LE(off + 8);
+        const pos = b.readUInt32LE(off + 12);
+        // 越界、或该条不是内嵌 PNG（Vista 起 ICO 允许直接放 PNG）—— 都算坏
+        if (pos + len > b.length) fine = false;
+        else if (!(b[pos] === 0x89 && b.toString('ascii', pos + 1, pos + 4) === 'PNG')) fine = false;
+      }
+      return { fine, n, size: b.length };
+    } catch (e) { return { fine: false, n: 0, size: 0, err: e.message }; }
+  })();
+  ok('打包图标 build/icon.ico 在内且结构可解（每个尺寸都是内嵌 PNG）', ico.fine,
+    ico.fine ? `${ico.n} 个尺寸 / ${ico.size} B` : (ico.err || '结构损坏'));
 
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));

@@ -136,6 +136,23 @@
         `logintest` ⑥⑦f 组直接用**读 `config.json`** 来核对「真落盘了」，不只看返回值。
       · ⚠️ 与 §4 那条一样，**这不是安全边界**：`config.json` 就在本机 `%APPDATA%` 下，能进这台机器的人直接改就行。
         它的作用是「别让人误收到没验收的包」+「让『我这边是正式版』这句话对得上账」。
+   e. **为什么测试版和正式版是同一个安装包 —— 不要拆成两个 appId**（2026-10-01 定案，有人问过「分开安装
+      会不会更好」）。结论是**不拆**，四条实测依据：
+      · ① `package.json` 里 `appId` / `productName` / `win.target(nsis)` **各只有一个**，加上 `index.js:20`
+        的 `requestSingleInstanceLock()` ⇒ **拆不拆都开不了两个窗口**；不拆的代价是「装测试版会覆盖正式版程序」
+        （数据不丢，见 §2 第 5 条）。
+      · ② 数据**共用一个 `userData`**：`config.json` / `auth.json` / `project.json` / `pool.json` / 台账，
+        全仓没有 `setPath('userData')` ⇒ 两条通道读的是同一份品牌、账号、提示词、台账。
+      · ③ ★ **回退不会被数据挡住**：`store.js#mergeDeep` 遍历的是 **patch** 的 key（不是 defaults 的），所以
+        测试版**新增**的配置字段在切回正式版后**原样保留、不丢也不坏**（正式版只是不显示它）；台账是
+        **JSONL + 单行解析失败就跳过**，多出来的字段旧版自然忽略 ⇒ schema 天然向后兼容。
+      · ④ ★ **「切回正式版」这条路是通的**：`updater.js:201` 只在 `beta → stable` 这一次置 `justSwitched=true`
+        ⇒ `applyChannel` 里 `allowDowngrade = true`（`updater.js:181`），不然「切了也回不去」。反向
+        （stable → beta）**不许**降级 —— 源上那份比本机旧就该停下来让人看一眼。
+      ⇒ 剩下唯一的真风险是「测试版去**改已有字段的语义**或做破坏性迁移」（**加字段不算**），而那是**发版纪律**
+        问题、不是安装方式问题：**测试版只加字段、不改已有字段语义**；非改不可就先备份
+        `config.json` + `auth.json`，并写兼容读取。
+      ⇒ 真该拆的两个前提（目前都不成立）：**多个人长期同时用测试版干活**（不是验收），或要做**破坏性数据改造**。
 
 ## 3. 环境与已知坑
 
@@ -257,6 +274,11 @@
     见 §2 第 5 条 d）+ 品牌与权限拆成第 9 个页签 + 提示词行加「选择 / 默认选择」+
     修掉「有些页的设置项改了不保存」：`uicheck` 32→**40**、`logintest` 59→**65**
     ⇒ 合计 **444** 项断言（实测：`23+46+9+16+22+32+69+40+65+17+48+57`）。
+  - 换上**字母标 L2「深锚」**（源 `logo/letter/L2-深锚.svg`）：界面两处内联 logo 换成同一份矢量，
+    `build/icon.ico` 改由 `tools/make-icon.js` 从源 SVG 生成（7 个尺寸，每个内嵌 PNG）。
+    ★ 这次改动把「品牌标记」变成**三份来源**（标题栏 SVG / 登录卡 SVG / 打包图标），所以加了一条
+    `uicheck` 断言把它们绑住 —— 换 logo 最容易只改一处：`uicheck` 40→**43**
+    ⇒ 合计 **447** 项断言（实测：`23+46+9+16+22+32+69+43+65+17+48+57`）。
 
 ## 5. 待做（按优先级）
 
@@ -468,13 +490,13 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
 | `tools/reporttest.js` | 「AI 内容报告」导入 → 发布 → 回写：列名匹配（列顺序打乱）、行↔叶子配对与数量不等报错、标题文案空则生成、好物带全、**发图文还是发视频按「内容类型」列判定**（没标按目录推断；图+视频都有又没标 → 「校验未通过」）、报告被占用→暂存→补写 | 32 |
 | `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删除品牌**排空授权**且**不动历史记录**；按品牌统计（「未标品牌」与「已删除的品牌」各自成桶、绝不与真实品牌合并）；执行日志落盘且重启后仍在；xlsx 四个工作表；**按品牌文案提示词**（存 / 归一 `\r\n` / 超长截断、拼进 system 时品牌模板在前而输出约束在后、没配提示词的品牌**起任务前就被拦下且不留台账**、直接调 `copywriter.generate` 也拦得住） | 69 |
-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、**9 个页签**（数出来的，不写死 8）、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因（未打包时不许摆点了没用的按钮）**、**更新可用时「更新通道」一行 + 两个按钮都在、当前通道高亮正确**；**品牌与权限拆页**（设置页里不再有品牌管理 / 账号与安全，第 9 个页签装的就是它们）；**品牌列表三个按钮**（顺序 `配置 → 选择 → 默认选择`）；★ **「选择」只改本次、不写配置**（点完配置必须没变，而标题栏下拉要跟着变）；★ **「默认选择」才写进 `copy.defaultBrandId`**；★ **非管理员看不到「测试版」三个字**；**「模拟器发布」页填的 adb 路径立刻生效**（`adb.getAdbPath()` 当场变） | 40 |
+| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、**9 个页签**（数出来的，不写死 8）、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因（未打包时不许摆点了没用的按钮）**、**更新可用时「更新通道」一行 + 两个按钮都在、当前通道高亮正确**；**品牌与权限拆页**（设置页里不再有品牌管理 / 账号与安全，第 9 个页签装的就是它们）；**品牌列表三个按钮**（顺序 `配置 → 选择 → 默认选择`）；★ **「选择」只改本次、不写配置**（点完配置必须没变，而标题栏下拉要跟着变）；★ **「默认选择」才写进 `copy.defaultBrandId`**；★ **非管理员看不到「测试版」三个字**；**「模拟器发布」页填的 adb 路径立刻生效**（`adb.getAdbPath()` 当场变）；**品牌标记的三份来源被绑在一起**（标题栏与登录卡的 SVG `path` 逐字相同、是新字母标而不是旧的「方底 + 白 V」、`build/icon.ico` 每个尺寸都是内嵌 PNG） | 43 |
 | `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全、成员看到的品牌名是只读的）；**自动更新四个通道同样被登录门拦**；**测试版通道只给管理员**（管理员能切成 beta；普通成员登录后通道被**自动收回并且落盘** —— 直接读 `config.json` 核对；普通成员自己去切会被主进程 `guardAdmin` 拦下） | 65 |
 | `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮四边都在卡片边框内、卡片外没有任何**可见**元素 | 17 |
 | `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用；**通道**（默认正式版且落到 updater 上就是 `latest`；非法通道名被拒且不改坏状态；切测试版改读 `beta.yml`；**切通道作废上一次下载结果**、装不上另一条通道的包；**正式→测试不许降级、测试→正式才允许**；成功检查后收回降级放行、失败时保留；切通道不碰任何 url/feed 字段；重启后按配置里的通道走、非法值落回正式版） | 48 |
 | `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」与「**往回发**（比源上低）」两种情况分别拦下且原因可区分、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`compareVersion`（`1.0.0-beta.2` / `1.0.0-beta.10` / `1.10.0` 这些按**数值**比的用例）；`channelFile`（正式版→`latest.yml`、测试版→`beta.yml`）；`channelMismatch` **通道闸门**（`1.0.1-beta.1` 发正式通道 ⇒ 拦住，那会把测试版号写进 `latest.yml`、让所有正式版用户都看到；反向也拦；两种正确姿势必须放行；只认 `-` 段，`+build` 不算预发布；前后空格不影响；★ 与 `versionGate` 相互独立 —— Beta 首发时源上没清单，前者放行而它照样拦）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 57 |
 
-合计 **444** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 40 + 65 + 17 + 48 + 57 = 444`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+合计 **447** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 43 + 65 + 17 + 48 + 57 = 447`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
 `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
 
 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
@@ -645,7 +667,8 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十二套**测试，共 **444** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十二套**测试，共 **447** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/make-icon.js` | 从源 SVG 生成 `build/icon.ico`（7 个尺寸，每个内嵌 PNG）+ `build/icon.png`；换 logo 只改脚本里的源路径 |
 | `tools/upload-release.js` | 把 exe + 清单文件 + `.blockmap` 传到对象存储的**桶根目录**。清单名按通道定：正式版 `latest.yml`、测试版 `beta.yml`（`channelFile()`）。上传前有**四道闸门**：版本号与 `package.json` 对不上（dist 是旧包）、`dist` 里不是恰好 1 个安装版 exe、`versionGate`（同版本号 / 往回发）、`channelMismatch`（**版本后缀与通道对得上**，见 §2 第 5 条 c）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
 | `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/`（**桶根，不带 `/stable`** —— 两条通道共用同一层，靠清单文件名区分）/ `channel: latest`（只是默认值，用户选测试版后运行时会被覆盖成 `beta`）/ `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |
 | `dist/latest.yml` | electron-builder 生成的更新清单（388 B）：`path` 指向 **NSIS 安装版** exe（不是便携版），带 `sha512` 与 `size`。客户端按这里的 `path` 去下载，**对不上就是 404**。★ 两条通道都由它派生：传正式版时它被当作 `latest.yml` 上传，传测试版时被改名成 `beta.yml` |
