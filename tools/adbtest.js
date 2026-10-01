@@ -31,6 +31,10 @@ const FAKE_WINDOW = path.join(FDB, 'window.xml');
 const CALLS = path.join(FDB, 'calls.log');
 const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
 const clearCalls = () => fs.writeFileSync(CALLS, '');
+// 假 adb 还会单独记「实际被执行的可执行文件」——用来证明内置 adb 真的被拿去执行了
+const FILES = path.join(FDB, 'files.log');
+const filesLog = () => { try { return fs.readFileSync(FILES, 'utf8'); } catch (e) { return ''; } };
+const clearFiles = () => fs.writeFileSync(FILES, '');
 
 // ★ 必须在 require 被测模块之前替换：src/main/services/adb.js 在加载时就解构了 execFile
 require('child_process').execFile = require(path.join(__dirname, 'fakeadb', 'adb.js')).makeFakeAdb(FDB);
@@ -267,6 +271,90 @@ const state = {
   const iDump = seq.findIndex(l => /uiautomator dump/.test(l));
   ok('⑫ 抓取前先删远端文件（顺序：rm → dump）',
     iRm >= 0 && iDump >= 0 && iRm < iDump, `rm@${iRm} dump@${iDump}`);
+
+  // ============ 13) adb 三段解析：手填 > 程序内置 > 系统 PATH ============
+  // ★ 纯函数，不碰文件系统也不起进程 —— 直接喂「谁存在」进去验判断，快且可复现。
+  const adbMod = require(path.join(base, 'src/main/services/adb.js'));
+  const B = 'R:/app/resources/adb/adb.exe';
+  const always = () => true, never = () => false;
+  const only = p => (q => q === p);
+  const r13a = adbMod.resolveAdbChoice({ configured: 'D:/mine/adb.exe', bundled: B, exists: always });
+  ok('⑬ 手填了、文件也在 ⇒ 用手填的（内置的不许悄悄替掉你的配置）',
+    r13a.source === 'configured' && r13a.path === 'D:/mine/adb.exe', JSON.stringify(r13a));
+  const r13b = adbMod.resolveAdbChoice({ configured: 'D:/mine/adb.exe', bundled: B, exists: only(B) });
+  ok('⑬ 手填的不存在、有内置 ⇒ 退回内置，并标记「你填的那个不存在」（界面会说出来）',
+    r13b.source === 'bundled' && r13b.path === B && r13b.configuredMissing === true, JSON.stringify(r13b));
+  const r13c = adbMod.resolveAdbChoice({ configured: 'D:/mine/adb.exe', bundled: B, exists: never });
+  ok('⑬ 三个来源全不可用 ⇒ 明确标 configured-missing（不假装有备胎）',
+    r13c.source === 'configured-missing', JSON.stringify(r13c));
+  const r13d = adbMod.resolveAdbChoice({ configured: '', bundled: B, exists: only(B) });
+  ok('⑬ 留空 + 有内置 ⇒ 用内置（这就是"新同事装上就能用"）', r13d.source === 'bundled', JSON.stringify(r13d));
+  const r13e = adbMod.resolveAdbChoice({ configured: '', bundled: '', exists: always });
+  ok('⑬ 留空 + 没内置 ⇒ 走系统 PATH 的 adb（老用户既有的装法不被断掉）',
+    r13e.source === 'path' && r13e.path === 'adb', JSON.stringify(r13e));
+
+  // 同一套判断要真的反映到设备检查的结果里（界面「来源」那一列读的就是这几个字段）
+  const APK = path.join(TMP, 'ADBKeyboard.apk');
+  fs.writeFileSync(APK, 'PK\u0003\u0004fake-apk-bytes');
+  adbMod.setBundledApkPath(APK);            // 包里「有」中文输入法 apk，才会给一键装按钮
+  adbMod.setAdbPath('D:/nope/adb.exe');     // 手填一个不存在的
+  adbMod.setBundledAdbDir('');              // 也没有内置
+  const pb1 = await adbMod.probe('127.0.0.1:5555');
+  ok('⑬ 手填的不存在 + 没内置 ⇒ 检查结果标 configured-missing，并引导「没找到 adb」',
+    pb1.adbSource === 'configured-missing' && pb1.fix.some(f => /没找到 adb/.test(f.title)),
+    JSON.stringify({ src: pb1.adbSource, titles: pb1.fix.map(f => f.title) }));
+
+  const BDIR = path.join(TMP, 'vendor-adb');
+  fs.mkdirSync(BDIR, { recursive: true });
+  fs.writeFileSync(path.join(BDIR, 'adb.exe'), 'fake-adb-placeholder');
+  adbMod.setBundledAdbDir(BDIR);            // 有内置
+  const pb2 = await adbMod.probe('127.0.0.1:5555');
+  ok('⑬ 手填的不存在但有内置 ⇒ 退回内置，并且**在界面上说出来**（不静默替你换）',
+    pb2.adbSource === 'bundled' && pb2.fix.some(f => /你填的 adb 路径不存在/.test(f.title)),
+    JSON.stringify({ src: pb2.adbSource, titles: pb2.fix.map(f => f.title) }));
+  ok('⑬ ★ 装了 ADBKeyboard 但没设成当前输入法 ⇒ 提示「装了没启用」，并挂上「一键装上」按钮',
+    pb2.fix.some(f => f.act && f.act.act === 'pub:installIme' && /没启用/.test(f.title)),
+    JSON.stringify(pb2.fix.filter(f => f.act)));
+  adbMod.setAdbPath('');
+
+  // ============ 14) 一键装中文输入法：三条命令缺一不可 ============
+  clearCalls();
+  const ik = await adbMod.installKeyboard('127.0.0.1:5555');
+  ok('⑭ 装完返回成功，且 ADBKeyboard 变成了设备当前的输入法',
+    ik.ok === true && /adbkeyboard/i.test(ik.defaultIme || ''),
+    JSON.stringify({ ok: ik.ok, step: ik.step, def: ik.defaultIme }));
+  const ikb = calls();
+  ok('⑭ 三步齐全：install -r <apk> → ime enable → ime set',
+    /install -r .*ADBKeyboard\.apk/.test(ikb)
+    && /ime enable com\.android\.adbkeyboard\/\.AdbIME/.test(ikb)
+    && /ime set com\.android\.adbkeyboard\/\.AdbIME/.test(ikb),
+    (ikb.match(/install -r .*|ime enable .*|ime set .*/g) || []).join(' | '));
+  ok('⑭ 顺序正确：先装、再启用、最后设成默认（顺序错了中文照样打不进去）',
+    (() => { const a = ikb.indexOf('install -r'), b = ikb.indexOf('ime enable'), c = ikb.indexOf('ime set'); return a >= 0 && a < b && b < c; })(),
+    `install@${ikb.indexOf('install -r')} enable@${ikb.indexOf('ime enable')} set@${ikb.indexOf('ime set')}`);
+
+  // 装失败时必须说清卡在哪一步，绝不能假装成功
+  fs.writeFileSync(path.join(FDB, 'IME_INSTALL_FAIL'), '1');
+  const ikFail = await adbMod.installKeyboard('127.0.0.1:5555');
+  ok('⑭ install 失败 ⇒ 明确报「卡在 install 这步」+ 原始报错（不假装成功）',
+    ikFail.ok === false && ikFail.step === 'install' && /INSTALL_FAILED/.test(ikFail.error),
+    JSON.stringify({ ok: ikFail.ok, step: ikFail.step, err: ikFail.error }));
+  fs.unlinkSync(path.join(FDB, 'IME_INSTALL_FAIL'));
+  adbMod.setBundledApkPath('');
+  const ikNoApk = await adbMod.installKeyboard('127.0.0.1:5555');
+  ok('⑭ 包里没有内置 apk 时，明确说「这个安装包里没有内置中文输入法」',
+    ikNoApk.ok === false && ikNoApk.step === 'apk', JSON.stringify(ikNoApk));
+  adbMod.setBundledApkPath(APK);
+
+  // ============ 15) 内置 adb 真的会被拿去执行（不只是界面上显示个路径） ============
+  clearFiles();
+  const v15 = await adbMod.version();
+  ok('⑮ 留空 adb 路径 ⇒ 真的执行了内置那份 adb', !!v15, String(v15));
+  ok('⑮ 执行的就是内置目录下的 adb.exe（假 adb 记下了实际被执行的程序）',
+    filesLog().trim().split(/\r?\n/).includes(path.join(BDIR, 'adb.exe')),
+    filesLog().trim().replace(/\n/g, ' | ') || '（没记到）');
+  adbMod.setBundledAdbDir('');
+  adbMod.setAdbPath('adb');
 
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));

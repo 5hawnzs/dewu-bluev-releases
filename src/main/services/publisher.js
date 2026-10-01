@@ -461,5 +461,8 @@ async function run(state, ctx = {}) {
 module.exports = {
   connect, run, estimate, saveShot, recover,
   probes: adb.probe, probe: adb.probe, dump: adb.dump, dumpEx: adb.dumpEx,
+  // 一键装上内置的中文输入法（装 + 启用 + 设为当前输入法）—— 实现与「为什么必须三步」见 adb.js
+  installIme: adb.installKeyboard,
+  imeComponent: adb.adbKeyboardIme,
   devices, listDevices, addDevice, removeDevice
 };

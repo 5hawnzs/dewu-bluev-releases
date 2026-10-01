@@ -194,6 +194,30 @@
 - **2026-10-01 真机实测修掉两个静默隐患**：`adb.dump()` 抓不到结构时会拿**上一个页面**的 XML 冒充本页
   （后果是按旧坐标连点 + 报「发布成功」）；得物发布页长期不 idle 导致抓不到。
   两条防线 + 关动画兜底（并还原）见 §5「本次顺手修掉的隐患」。
+- **2026-10-01 把两样外部依赖内置进安装包（`vendor/`）——「新同事零配置」**：以前 adb 要用户自己去模拟器
+  安装目录里翻出 `adb.exe` 填进设置，这是第一道墙（本机实测：系统 PATH 里没有 adb、也没装 Android SDK）。
+  现在：
+  - `vendor/adb/` = 官方 platform-tools 的 `adb.exe` + `AdbWinApi.dll` + `AdbWinUsbApi.dll`
+    （`Android Debug Bridge 1.0.41 / Version 37.0.1-15733141`，**Apache 2.0**），
+    连 `LICENSE.txt`（许可全文）与 `NOTICE.txt`（上游署名）一起发 → 打包后落在 `resources/adb/`；
+  - `vendor/adbkeyboard/ADBKeyboard.apk`（17 KB）→ `resources/adbkeyboard/`。自检发现「没装」或「装了但没设成
+    当前输入法」时，引导块上给一个**「一键装上中文输入法」按钮**，一次做完
+    `install -r` + `ime enable` + `ime set`（★ 缺任何一步中文都打不进去）。破坏性副作用：设成当前输入法后
+    **在模拟器里手动点输入框不会弹键盘**（ADBKeyboard 本来如此）⇒ 这一步**只由用户点按钮触发，绝不自动做**。
+  - **adb 路径改成三段解析**：`手填（存在就用，绝不悄悄替掉）> 程序内置 > 系统 PATH`；结果里带 `source`，
+    界面「技术详情」照实显示「用的是哪一个、从哪来」。手填的路径不存在时会退回内置并**在结果里明说**。
+  - ★ **实测（2026-10-01，本机 MuMu 12）**：内置的官方 adb（37.0.1）与机器上已在跑的 MuMu 自带 adb（36.0.0）
+    一起用时**没有重启 adb 服务**，`adb devices` 直接复用同一个 daemon、`emulator-5554` 照常在线。
+    这条当初被我标成「必须实测才能下结论」，现在有结论了。
+  - 出处、版本、md5、许可、以及「怎么换 adb 版本」都写在 `vendor/README.md`；
+    `uicheck` 会核对**每个内置文件的 md5 与 README 里写的一致**（二进制和来源说明不许各说各话）。
+  - ⚠️ 这些二进制**故意提交进 git**（约 9.6 MB）：每次打包都必须有，走「构建时下载」会让没网的机器打不出包。
+- **★ 顺手核实掉一条容易记错的认知：本程序从不转码视频。** 全仓没有 ffmpeg / 转码相关调用
+  （「设置 → 外部依赖」里那行 `ffmpeg（预留）· 待接入` 只是占位，从没接上）。合规检查对**视频**只做两件事：
+  读扩展名、读时长（纯 JS 解析 `moov → mvhd`）。非 `.mp4` ⇒ 标「需手动转 MP4」且 `status: 'manual'`；
+  而 `compliance.fix()` 只处理 `todo` / `isolate` 两种状态，**`manual` 一律不碰**
+  ⇒ 视频**不会被自动转码**，是留给人工转的。**图片相反**（非 JPG → 转 JPG、超边长 → 等比缩放、超体积 → 压缩，
+  都是真的动手做）。⇒ 所以「不是 mp4 的在前面的步骤已经转好了」这个说法**不成立**。
 - **2026-10-01 登录页去留白（界面改动）**：未登录时不再开一个 1280×820 的空壳窗，而是
   **收缩成刚好装下登录卡片的小窗**（`window.js` 的 `setLoginMode()` / `fitGate()`：渲染层量出卡片实际高度后回调收紧，
   提示行显隐导致的高度变化也跟得上）。登录成功自动还原成登录前的尺寸/位置（含最大化状态），退出登录再收回；
@@ -500,7 +524,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | 测试 | 覆盖 | 断言数 |
 | --- | --- | --- |
 | `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults` | 23 |
-| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值）；**视频条**（推视频 → 查媒体库 → 走 `videoSteps`；没配 `videoSteps` 必失败；媒体库一直看不到也必失败）；**页面不 idle**（关动画兜底并**还原**、兜不住就明确失败、★ 抓不到时**绝不返回上一页的残留结构**） | 46 |
+| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值）；**视频条**（推视频 → 查媒体库 → 走 `videoSteps`；没配 `videoSteps` 必失败；媒体库一直看不到也必失败）；**页面不 idle**（关动画兜底并**还原**、兜不住就明确失败、★ 抓不到时**绝不返回上一页的残留结构**）；★ **内置 adb 三段解析**（留空⇒用内置、手填不被替掉、手填不存在时有内置就退回并**说出来**、全不可用标 `configured-missing`）、★ **内置 adb 真被执行**（假 adb 记下实际被执行的程序路径）、★ **一键装中文输入法**（`install -r`→`ime enable`→`ime set` 三步且顺序正确、失败明确报卡在哪步、没 apk 如实说） | 61 |
 | `tools/pendingtest.js` | 把发布单 `chmod 0444` 模拟「Excel 被占用」→ 断言整批暂存 → 恢复可写后下次补写；设备增删去重 | 9 |
 | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 绝不把它搬进 `_rejected`；「导出报告」xlsx（汇总+明细）+ csv（带 BOM） | 16 |
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
@@ -512,7 +536,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用；**通道**（默认正式版且落到 updater 上就是 `latest`；非法通道名被拒且不改坏状态；切测试版改读 `beta.yml`；**切通道作废上一次下载结果**、装不上另一条通道的包；**正式→测试不许降级、测试→正式才允许**；成功检查后收回降级放行、失败时保留；切通道不碰任何 url/feed 字段；重启后按配置里的通道走、非法值落回正式版） | 48 |
 | `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」与「**往回发**（比源上低）」两种情况分别拦下且原因可区分、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`compareVersion`（`1.0.0-beta.2` / `1.0.0-beta.10` / `1.10.0` 这些按**数值**比的用例）；`channelFile`（正式版→`latest.yml`、测试版→`beta.yml`）；`channelMismatch` **通道闸门**（`1.0.1-beta.1` 发正式通道 ⇒ 拦住，那会把测试版号写进 `latest.yml`、让所有正式版用户都看到；反向也拦；两种正确姿势必须放行；只认 `-` 段，`+build` 不算预发布；前后空格不影响；★ 与 `versionGate` 相互独立 —— Beta 首发时源上没清单，前者放行而它照样拦）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 57 |
 
-合计 **447** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 43 + 65 + 17 + 48 + 57 = 447`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+合计 **478** 项断言（每次改动后实测，不要照抄这一行：`23 + 61 + 9 + 16 + 22 + 32 + 69 + 59 + 65 + 17 + 48 + 57 = 478`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
 `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
 
 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；

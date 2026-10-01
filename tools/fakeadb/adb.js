@@ -17,6 +17,10 @@
  *                     文件内容含 'always' → 关动画也救不了（只能失败）；
  *                     否则 → 只在系统动画开着（animator_duration_scale != 0）时失败，
  *                     关掉动画就能成功 —— 对齐真机实测到的行为。
+ *   IME_INSTALL_FAIL —— `adb install` 报 Failure（测「装中文输入法失败」时要说清卡在哪一步）
+ *
+ * 另外它接受**绝对路径**的可执行名（只要 basename 是 adb / adb.exe）——
+ * 因为内置 adb 走的是 `resources/adb/adb.exe` 这种绝对路径，替身不能只认字符串 'adb'。
  */
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +28,9 @@ const path = require('path');
 /** @param {string} dir 现场目录（至少要含 window.xml 与 shot.png 两个夹具） */
 function makeFakeAdb(dir) {
   const CALLS = path.join(dir, 'calls.log');
+  // 实际被执行的「可执行文件」逐个记下来（calls.log 只记 argv）。
+  // 用来证明「留空 adb 路径时，真的去执行了内置的那份 resources/adb/adb.exe」。
+  const FILES = path.join(dir, 'files.log');
   const WINDOW_XML = path.join(dir, 'window.xml');
   const SHOT_PNG = path.join(dir, 'shot.png');
   const NOT_IDLE_FLAG = path.join(dir, 'DUMP_NOT_IDLE');
@@ -41,6 +48,9 @@ function makeFakeAdb(dir) {
 
   // 系统动画开关的初值（真机默认都是 1）
   const anim = { window_animation_scale: '1', transition_animation_scale: '1', animator_duration_scale: '1' };
+
+  // 设备上的输入法状态：全新模拟器**没有**启用 ADBKeyboard —— 用来测「装了没启用」这条分支
+  const ime = { default: 'com.android.internal/.Default', enabled: [] };
 
   const okOut = out => ({ out: out == null ? '' : out, code: 0 });
   const fail = msg => ({ out: msg + '\n', code: 1 });
@@ -72,6 +82,29 @@ function makeFakeAdb(dir) {
       if (!devFiles.has(target)) return fail(`cat: ${target}: No such file or directory`);
       return okOut(devFiles.get(target));
     }
+    if (/^ime list( |$)/.test(cmd)) return okOut(ime.enabled.map(c => c + '\n').join(''));
+    if (/^ime enable /.test(cmd)) {
+      const c = cmd.split(/\s+/).pop();
+      if (!ime.enabled.includes(c)) ime.enabled.push(c);
+      return okOut(`Input method ${c} enabled for user: 0\n`);
+    }
+    if (/^ime set /.test(cmd)) {
+      const c = cmd.split(/\s+/).pop();
+      if (!ime.enabled.includes(c)) ime.enabled.push(c);
+      ime.default = c;
+      return okOut(`Input method ${c} selected\n`);
+    }
+    if (/^settings (get|put|delete) secure /.test(cmd)) {
+      const m = cmd.match(/^settings (get|put|delete) secure (\S+)(?:\s+(\S+))?$/);
+      if (!m) return fail('settings: bad args');
+      const [, verb, key, val] = m;
+      if (key === 'default_input_method') {
+        if (verb === 'get') return okOut(ime.default + '\n');
+        ime.default = verb === 'put' ? val : '';
+        return okOut('');
+      }
+      return okOut(verb === 'get' ? 'null\n' : '');
+    }
     if (/^settings (get|put|delete) global /.test(cmd)) {
       const m = cmd.match(/^settings (get|put|delete) global (\S+)(?:\s+(\S+))?$/);
       if (!m) return fail('settings: bad args');
@@ -100,6 +133,10 @@ function makeFakeAdb(dir) {
     if (args[0] === '-s') args.splice(0, 2);
 
     if (args[0] === 'exec-out') return okOut(read(SHOT_PNG, Buffer.alloc(0)));   // screencap -p，二进制
+    if (args[0] === 'install') {
+      if (fs.existsSync(path.join(dir, 'IME_INSTALL_FAIL'))) return fail('Failure [INSTALL_FAILED_INVALID_APK]');
+      return okOut('Success\n');
+    }
     if (args[0] === 'push') {
       const remote = args[args.length - 1];
       if (remote && !pushed.includes(remote)) pushed.push(remote);
@@ -128,11 +165,24 @@ function makeFakeAdb(dir) {
     const opts = options || {};
     // 现场留痕（先写日志再回包，顺序与原 bash 假 adb 一致）
     try { fs.appendFileSync(CALLS, argv.join(' ') + '\n'); } catch (e) { /* 日志写不进去不该影响被测逻辑 */ }
+    try { fs.appendFileSync(FILES, String(file) + '\n'); } catch (e) { /* 同上 */ }
     if (file !== 'adb') {
       // 真被调到了别的可执行文件：明确报错，不要假装成功
-      const err = new Error(`假 adb 只替身 'adb'，却被要求执行 '${file}'`);
-      err.code = 'ENOENT';
-      return process.nextTick(() => callback && callback(err, '', ''));
+      // （内置 adb 是绝对路径，basename 得是 adb / adb.exe —— 见文件头说明）
+      const base = path.basename(String(file || '')).toLowerCase();
+      if (base !== 'adb' && base !== 'adb.exe') {
+        const err = new Error(`假 adb 只替身 'adb'，却被要求执行 '${file}'`);
+        err.code = 'ENOENT';
+        return process.nextTick(() => callback && callback(err, '', ''));
+      }
+      // ★ 真 execFile 对「路径不存在」会直接 ENOENT。这里也要一样 ——
+      //   否则测「手填了一个不存在的 adb 路径」时会假绿（假 adb 什么都肯执行）。
+      const isPath = /^[A-Za-z]:[\\/]/.test(String(file)) || path.isAbsolute(String(file));
+      if (isPath && !fs.existsSync(String(file))) {
+        const err = new Error(`spawn ${file} ENOENT`);
+        err.code = 'ENOENT';
+        return process.nextTick(() => callback && callback(err, '', ''));
+      }
     }
     const res = respond(argv);
     const code = res.code || 0;

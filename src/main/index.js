@@ -1,5 +1,6 @@
 'use strict';
 const { app, BrowserWindow } = require('electron');
+const path = require('path');
 const store = require('./store');
 const project = require('./project');
 const logbus = require('./logbus');
@@ -17,6 +18,16 @@ if (wp.isWin()) app.setAppUserModelId('com.bluev.publisher');
 
 const DEV = process.argv.includes('--dev');
 
+/**
+ * 随包分发的第三方文件放哪：打包后在 `resources/<name>`，开发运行时在仓库 `vendor/<name>`。
+ * （`extraResources` 把 `vendor/adb`、`vendor/adbkeyboard` 原样搬到 resources 下，不经 asar。）
+ */
+function vendorDir(name) {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, name)
+    : path.join(app.getAppPath(), 'vendor', name);
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -32,8 +43,12 @@ if (!app.requestSingleInstanceLock()) {
     store.load();
     project.load();
     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
-    // adb 路径：默认走 PATH，用户填了完整路径就用它（自检结果里会回显当前用的是哪一个）
+    // adb：手填路径 > 程序内置（vendor/adb → 打包后 resources/adb）> 系统 PATH。
+    // 内置那份是为了「新同事装上就能用，不用自己去模拟器安装目录里翻 adb.exe」。
+    // 中文输入法 apk 也内置，探测页给「一键装上」按钮。
     adb.setAdbPath(store.get('publish.adbPath'));
+    adb.setBundledAdbDir(vendorDir('adb'));
+    adb.setBundledApkPath(path.join(vendorDir('adbkeyboard'), 'ADBKeyboard.apk'));
     ipc.register();
 
     const st = auth.status();

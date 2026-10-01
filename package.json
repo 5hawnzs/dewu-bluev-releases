@@ -62,6 +62,26 @@
       "**/sharp/**/*",
       "**/@img/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "vendor/adb",
+        "to": "adb",
+        "filter": [
+          "adb.exe",
+          "AdbWinApi.dll",
+          "AdbWinUsbApi.dll",
+          "LICENSE.txt",
+          "NOTICE.txt"
+        ]
+      },
+      {
+        "from": "vendor/adbkeyboard",
+        "to": "adbkeyboard",
+        "filter": [
+          "ADBKeyboard.apk"
+        ]
+      }
+    ],
     "win": {
       "target": [
         {

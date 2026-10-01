@@ -559,7 +559,12 @@ TABS[7] = {
       ['发布单读写', 'exceljs', ['ok', '内置']],
       ['视频时长读取', '纯 JS MP4/MOV 解析（moov → mvhd）', ['ok', '内置']],
       ['视频转码', 'ffmpeg（预留）', ['warn', '待接入']],
-      ['模拟器驱动', 'adb / uiautomator2', ['warn', '待接入']],
+      ['模拟器驱动 adb',
+        (info.vendor && info.vendor.exists) ? '程序内置（装完即用，不用自己找）' : '没内置：要自己指定 adb.exe 的路径',
+        (info.vendor && info.vendor.exists) ? ['ok', '内置'] : ['warn', '需指定']],
+      ['中文输入法 ADBKeyboard',
+        (info.vendor && info.vendor.apkExists) ? '程序内置（发布页可一键装到设备）' : '没内置：要自己给设备装',
+        (info.vendor && info.vendor.apkExists) ? ['ok', '内置'] : ['warn', '缺']],
       ['得物商品池', info.pool ? `${info.pool.size} 个货号 · ${info.pool.source}` : '—', info.pool && info.pool.size ? ['ok', '已导入'] : ['warn', '待同步']]
     ];
     return `
@@ -928,14 +933,21 @@ function devicesHtml() {
     <div class="row" style="margin-top:10px">
       <span class="lbl">adb 路径</span>
       <input class="inp mono" value="${esc((state.config.publish || {}).adbPath || '')}" data-cfg="publish.adbPath"
-        placeholder="留空 = 用系统 PATH 里的 adb；找不到就填完整路径，如 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe">
+        placeholder="留空 = 自动（优先用程序内置的，再退系统里的）；只有想强制用某一个时才填完整路径">
     </div>
-    <p class="hint">这一行是<b>电脑跟模拟器之间的“对讲机”</b>。留空就用系统里装好的那个；
-      如果「检查能不能发布」第一项报「没找到 adb」，把模拟器自带的 adb.exe 完整路径填在这里
-      （MuMu 默认在 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe）。填完<b>立刻生效、不用重启</b>，
-      再点一次「检查能不能发布」就能看到结果。</p>
+    <p class="hint">这一行是<b>电脑跟模拟器之间的“对讲机”</b>。<b>留空就行</b> —— 程序自带一份，装完即用，
+      不用你自己去模拟器安装目录里翻。填了就以你填的为准（程序<b>不会</b>偷偷拿内置的替掉你的配置）；
+      填的路径不存在时会自动退回内置那份，并在检查结果里提醒你。填完<b>立刻生效、不用重启</b>。</p>
     </div>`;
 }
+
+/** adb 从哪来 —— 与技术详情里那一列配套；unknown 的取值一律显示原文，不美化 */
+const ADB_SRC_TXT = {
+  configured: '你手填的',
+  bundled: '程序内置',
+  path: '系统 PATH 里找到的',
+  'configured-missing': '你填的那个不存在'
+};
 
 /**
  * 设备检查结果。
@@ -966,19 +978,22 @@ function probeHtml() {
         <div style="border-left:3px solid ${accent[f.level]};background:var(--panel);border-radius:6px;padding:9px 12px;margin-top:9px">
           <div style="font-size:12.5px;font-weight:600;color:${accent[f.level]}">${esc(f.title)}</div>
           <div style="font-size:12px;color:var(--tx2);line-height:1.75;margin-top:3px">${esc(f.how)}</div>
+          ${f.act ? `<button class="btn sm primary" style="margin-top:8px" data-act="${esc(f.act.act)}">${esc(f.act.label)}</button>` : ''}
         </div>`).join('') || '<p class="hint">7 项检查全部通过 —— 按上面的「开始发布」就是真机发布了。</p>'}
       <details style="margin-top:11px">
         <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">技术详情（一般不用看，出问题给开发看）</summary>
         <div class="tw" style="margin-top:8px"><table>
           <thead><tr><th>检查项</th><th>结果</th><th>状态</th></tr></thead>
           <tbody>
-            ${line('adb 路径', p.adbPath === 'adb' ? '（用系统 PATH 里的 adb）' : p.adbPath, !!p.adb)}
+            ${line('adb 路径', `${p.adbPath || '—'}${ADB_SRC_TXT[p.adbSource] ? '（' + ADB_SRC_TXT[p.adbSource] + '）' : ''}`, !!p.adb)}
             ${line('设备在线', p.device ? p.device.serial + '（' + p.device.state + '）' : '不在线', !!p.device)}
             ${line('分辨率', p.resolution, !!p.resolution)}
             ${line('得物包名', p.appPackage, !!p.appPackage)}
             ${line('界面抓取 uiautomator', (p.tools && p.tools.uiautomator) ? '可用' : '不可用', !!(p.tools && p.tools.uiautomator))}
             ${line('失败截图 screencap', (p.tools && p.tools.screencap) ? '可用' : '不可用', !!(p.tools && p.tools.screencap))}
-            ${line('中文输入 ADBKeyboard', p.adbKeyboard ? '已安装' : '未安装', !!p.adbKeyboard)}
+            ${line('中文输入 ADBKeyboard',
+              p.adbKeyboard ? (p.adbKeyboardActive ? '已装，且是当前输入法' : '已装，但没设成当前输入法（中文打不进去）') : '未安装',
+              !!(p.adbKeyboard && p.adbKeyboardActive))}
           </tbody>
         </table></div>
         ${(p.notes && p.notes.length) ? `<p class="hint">${p.notes.map(n => '⚠ ' + esc(n)).join('<br>')}</p>` : ''}
@@ -1716,6 +1731,16 @@ const ACTS = {
           : '一切就绪，可以真机发布',
       bad ? 'err' : warn ? '' : 'ok');
     }
+    renderAll();
+  },
+  // 一键把内置的中文输入法装到设备上（装 apk + 启用 + 设为当前输入法）。
+  // 装完自动重跑一次检查，省得用户再点一次 —— 结果面板会直接变成「已装，且是当前输入法」。
+  'pub:installIme': async () => {
+    const r = await appApi.run('publish.installIme', {});
+    if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
+    toast('中文输入法已装好、并设成了当前输入法。★ 副作用：模拟器里手动打字不会弹键盘了（ADBKeyboard 本来就是这样）', 'ok');
+    const again = await appApi.run('publish.probe', {});
+    if (again.ok) state.probe = again.result;
     renderAll();
   },
   'pub:dump': async () => {

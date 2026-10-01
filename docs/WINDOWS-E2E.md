@@ -92,10 +92,16 @@ git@gitee.com:abulaitifans/dewu-bluev-publisher.git
 | Node 18+（推荐 20） | https://nodejs.org/ 装 LTS | `node -v` |
 | 依赖 | 在仓库目录 `npm install`（慢就先 `set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`） | `npm start` 能开窗口 |
 | 雷电模拟器 | 开一个实例 | `adb devices` 能看到 `emulator-5554` |
-| adb | 雷电自带的 `C:\LDPlayer\LDPlayer9\adb.exe`，或 platform-tools，加进 PATH | `adb version` |
-| **ADBKeyboard**（中文输入必装） | https://github.com/senzhk/ADBKeyBoard 下载 APK → `adb install ADBKeyboard.apk` | 发布页「检查能不能发布」的「技术详情」里 ADBKeyboard 显示已安装 |
+| adb | ✅ **不用装**（2026-10-01 起随包内置，`resources\adb\adb.exe`） | 发布页「检查能不能发布」的「技术详情」里 `adb 路径` 显示**程序内置** |
+| **ADBKeyboard**（中文输入） | ✅ **不用手动装**（2026-10-01 起 apk 内置）→ 在「检查能不能发布」里点**「一键装上中文输入法」** | 技术详情里 ADBKeyboard 显示「**已装，且是当前输入法**」 |
 | 得物 App | 模拟器里装好并登录好发布账号 | 自检能识别 `com.shizhuang.duapp` |
 | WPS / Excel（可选） | 用来验「被占用 → 暂存 → 下次补写」 | — |
+
+> ★ **adb / ADBKeyboard 这两行以前都要手工弄**（自己去模拟器安装目录翻 `adb.exe`、自己下 apk 再 `adb install`），
+> 是实测中「新同事第一步就卡住」的地方。现在安装包里带着（见仓库 `vendor/README.md`）：
+> **「adb 路径」留空就行**；ADBKeyboard 点一下按钮即可（装 + 启用 + 设为当前输入法一次做完）。
+> ★ 点了这个按钮之后，**在模拟器里手动点输入框不会弹键盘**了 —— 这是 ADBKeyboard 的正常表现（它就是给脚本用的），
+> 想手动打字就 `adb shell ime set <原来那个输入法>` 换回去。
 
 ---
 
@@ -183,8 +189,14 @@ set BLUEV_NO_LOGIN=1 && npm start
 1. **设备管理**：添加设备（序列号 `emulator-5554` + 账号名）→「检测在线」→「选用」。
 2. **点「检查能不能发布」**（旧名叫「驱动自检」）：先看结论那一行 ——
    **绿色「一切就绪」**才可以真发；红色会**直接写出下一步该点哪里**（不是一堆术语）。
-   术语明细收在「技术详情」折叠里：adb 路径 / 设备在线 / 分辨率 / 得物包名 / uiautomator / screencap / ADBKeyboard；
+   术语明细收在「技术详情」折叠里：adb 路径（**含「是哪来的」**：你手填的 / 程序内置 / 系统 PATH）/
+   设备在线 / 分辨率 / 得物包名 / uiautomator / screencap / ADBKeyboard（已装并启用 / 装了没启用 / 未安装）；
    任何一项红 → 系统会退回「模拟通道」（只演练节奏，不真发）。
+   - **中文输入法没装或没启用**时，这条引导下面会直接出现**「一键装上中文输入法」按钮** —— 点它即可，
+     它会自动重跑一次检查，结果行会变成「已装，且是当前输入法」。
+   - 「adb 路径」那一格**留空**就是「自动」：优先用程序内置的那份（装完即用），找不到再退系统 PATH。
+     只有想强制用某一个 adb（比如模拟器自带的）时才填完整路径；**填了就以你填的为准**，
+     程序不会拿内置的偷偷替掉它。填了一个不存在的路径时会自动退回内置，并在检查结果里**明说**。
 3. **抓取页面结构**：在模拟器里把得物 App 打开到发布页 → 点「抓取页面结构」→ 输出目录 `dumps\` 出现
    `ui-dump-<时间>.xml` 和 `uiMap-<时间>.json`（后者的 steps 是**按关键词猜的候选**）。
 4. **改对定位表**（必然要手改的一步）：打开 `uiMap-<时间>.json`，把每步的 `value` 改成你 App 版本里真实的
@@ -315,7 +327,7 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就�
 | 环境变量设不上 | PowerShell 用 `$env:BLUEV_NO_LOGIN=1; npm start`；cmd 用 `set BLUEV_NO_LOGIN=1 && npm start` |
 | 自检「得物包名」红 | 模拟器里没装或没启动得物 App（`com.shizhuang.duapp`） |
 | 中文标题/文案输入失败 | 没装 ADBKeyboard（自检会明确提示，**不会静默发空文案**） |
-| `adb devices` 列表为空 | PATH 里的 adb 和雷电自带的版本打架：`adb kill-server`，改用雷电目录下的 `adb.exe` |
+| `adb devices` 列表为空 | ① 先确认模拟器设置里开了 ADB 调试、模拟器已启动；② 若真提示「版本不一致」，`adb kill-server` 再重试。★ 2026-10-01 实测：**内置的官方 adb `37.0.1` 与 MuMu 自带的 `36.0.0` 同用时并不会互相重启服务**，所以这条一般用不上 —— 现在也**不用**再把 adb 加进 PATH |
 | 发布中途失败 | 看 `failures\` 截图 + 日志「找不到「xx」；当前可见文本：…」→ 页面结构变了，回去改 `uiMap` |
 | 路径过长报错 | 已自动加 `\\?\` 前缀；同时也把素材根目录改短（如 `D:\卡宾`） |
 | 报告/发布单写不进去 | WPS/Excel 开着 → 这是**设计内**行为，会暂存，关掉后重跑自动补写 |
@@ -509,4 +521,37 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就�
 
 **仍未做**：`videoSteps` 真实坐标（含「提交发布」那一步）、真机成功链路、让媒体库收录视频的可行办法。
 都需要你点头再往下走。
+
+### 追加（2026-10-01 晚）：adb 与中文输入法随包内置（「新同事零配置」）+ 回归 478
+
+**改了什么**：把两样一直要用户自己折腾的东西打进安装包（源码在 `vendor/`，落位与出处见 `vendor/README.md`）。
+
+| | 以前 | 现在 | 实测数字 |
+| --- | --- | --- | --- |
+| adb | 自己去模拟器安装目录翻 `adb.exe` 填进设置（本机实测：系统 PATH 里没有 adb、也没装 Android SDK） | 随包内置官方 platform-tools（`1.0.41 / 37.0.1-15733141`，Apache 2.0） | `adb.exe` 8,273,560 B + 两个 DLL 共 **8.45 MB**（未压缩） |
+| 中文输入法 | 自己去 GitHub 下 apk 再 `adb install`，还要手动启用 | 随包内置 `ADBKeyboard.apk`，自检里点一下**「一键装上中文输入法」**（装 + `ime enable` + `ime set`） | apk **17,374 B** |
+
+**adb 路径改成三段解析**：`手填（存在就用）> 程序内置 > 系统 PATH`；技术详情里会写清「用的是哪一个、哪来的」。
+
+★ **实测（这次专门验的、当初标为"必须实测才能下结论"的那条）**：内置的官方 adb 与机器上已在跑的
+MuMu 自带 adb（`36.0.0`）**不会互相重启 adb 服务** ——
+先用 MuMu 的 adb 起 daemon（`emulator-5554`），再用内置的官方 adb 执行 `adb devices`，
+**没有出现 `killing server` 之类的重启提示**，直接复用同一个 daemon 并正常列出设备。
+
+**新增断言（12 套 / 合计 478，全部实测重取）**：
+`23 + 61 + 9 + 16 + 22 + 32 + 69 + 59 + 65 + 17 + 48 + 57 = 478`。
+
+- `adbtest` **46 → 61**：三段解析 5 条（纯函数：手填/退回内置/全不可用/留空用内置/留空走 PATH）、
+  检查结果里的来源字段与「你填的不存在」提示、装了没启用的提示带「一键装上」按钮、
+  一键装的三步齐全 + 顺序正确、install 失败要说清卡在哪步、没内置 apk 如实说、
+  **内置 adb 真的被执行**（假 adb 单独记下实际被执行的程序路径）。
+- `uicheck` **48 → 59**：内置文件都在、**md5 与 `vendor/README.md` 对得上**、
+  `LICENSE.txt`/`NOTICE.txt` 跟着进包、`extraResources` 会搬、**不进 asar `files`**、
+  `index.js` 确实注入了路径、留空⇒用内置 / 手填⇒用你填的、来源写在结果里、
+  一键按钮的整条链路（界面按钮 → 主进程动作）、设置页「外部依赖」如实显示。
+
+**⚠️ 打包时注意**：`vendor/` 是**故意提交进 git** 的（约 9.6 MB）—— 每次打包都必须有，
+走「构建时下载」会让没网的机器打不出包。它在 `build.extraResources` 里原样搬到 `resources/`，
+**不进 asar**（asar 是压缩归档，里面的 `.exe` 不能执行）。真机验收时请顺手确认：
+`<安装目录>\resources\adb\adb.exe` 与 `resources\adbkeyboard\ADBKeyboard.apk` 都在。
 

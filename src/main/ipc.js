@@ -211,6 +211,8 @@ function register() {
     engine: imaging.engineName(),
     hasHeif: imaging.hasHeif(),
     pool: { size: pool.size(), source: pool.get().source, updatedAt: pool.get().updatedAt },
+    // 随包内置的外部依赖（adb / 中文输入法 apk）在不在、现在实际用的是哪一个 —— 设置页照实显示
+    vendor: adb.bundledStatus(),
     userData: app.getPath('userData')
   }));
 

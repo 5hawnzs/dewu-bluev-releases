@@ -38,6 +38,42 @@ app.whenReady().then(async () => {
   auth.load();
   ipc.register();
 
+  // ---- 随包内置的外部依赖（adb / 中文输入法 apk）：文件在不在、和来源说明对不对得上 ----
+  // 这两样是「新同事装上就能用」的前提，所以放在最前面验，后面的界面断言都建在它之上。
+  const adbMod = require(path.join(ROOT, 'src/main/services/adb.js'));
+  const VENDOR_ADB = path.join(ROOT, 'vendor', 'adb');
+  const VENDOR_KBD = path.join(ROOT, 'vendor', 'adbkeyboard');
+  const md5 = p => require('crypto').createHash('md5').update(fs.readFileSync(p)).digest('hex');
+  const prov = ['adb/adb.exe', 'adb/AdbWinApi.dll', 'adb/AdbWinUsbApi.dll', 'adbkeyboard/ADBKeyboard.apk'].map(rel => {
+    const p = path.join(ROOT, 'vendor', rel);
+    if (!fs.existsSync(p)) return { rel, ok: false, md5: '' };
+    const hex = md5(p);
+    return { rel, ok: true, md5: hex, from: p };
+  });
+  ok('★ 内置 adb 与中文输入法 apk 都在仓库里（这样才谈得上"装上就能用"）',
+    prov.every(x => x.ok), prov.map(x => x.rel + (x.ok ? '✓' : '✗')).join(' '));
+  const readmeTxt = fs.readFileSync(path.join(ROOT, 'vendor', 'README.md'), 'utf8');
+  ok('★ 每个内置文件的 md5 都能在 vendor/README.md 里对上（二进制与来源说明不许各说各话）',
+    prov.every(x => x.ok && readmeTxt.includes(x.md5)),
+    prov.map(x => `${x.rel}=${x.md5.slice(0, 8)}…`).join(' '));
+  ok('★ adb 的 Apache 2.0 许可与署名跟着一起进包（许可要求：附全文 + 保留 NOTICE）',
+    fs.existsSync(path.join(VENDOR_ADB, 'LICENSE.txt')) && fs.existsSync(path.join(VENDOR_ADB, 'NOTICE.txt')),
+    fs.readdirSync(VENDOR_ADB).join(' '));
+  const pkgJson = require(path.join(ROOT, 'package.json'));
+  const erTxt = JSON.stringify((pkgJson.build && pkgJson.build.extraResources) || []);
+  ok('★ 打包配置会把 vendor/adb 与 vendor/adbkeyboard 搬进 resources/（否则内置了也进不了安装包）',
+    erTxt.includes('vendor/adb') && erTxt.includes('vendor/adbkeyboard'), erTxt);
+  ok('★ 内置文件不进 asar 的 files 列表（asar 是压缩归档，里面的 exe 不能执行）',
+    !((pkgJson.build && pkgJson.build.files) || []).some(f => String(f).includes('vendor')),
+    JSON.stringify((pkgJson.build && pkgJson.build.files) || []));
+  // 照 index.js 的样子把路径接一次（uicheck 不走 index.js，不接的话界面 vendor 状态永远是空的）
+  adbMod.setBundledAdbDir(VENDOR_ADB);
+  adbMod.setBundledApkPath(path.join(VENDOR_KBD, 'ADBKeyboard.apk'));
+  const idxSrc = fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8');
+  ok('★ 主进程启动时确实把这两条路径注了进去（漏接 = 白内置）',
+    /setBundledAdbDir\(/.test(idxSrc) && /setBundledApkPath\(/.test(idxSrc),
+    `setBundledAdbDir=${/setBundledAdbDir\(/.test(idxSrc) ? '有' : '缺'} · setBundledApkPath=${/setBundledApkPath\(/.test(idxSrc) ? '有' : '缺'}`);
+
   // 播两个品牌：「提示词配置」里那组「选择 / 默认选择」的断言要有行可点。
   // 自检跑在临时 userData 上，碰不到本机的 config.json / auth.json
   const brands = require(path.join(ROOT, 'src/main/brands.js'));
@@ -312,13 +348,25 @@ app.whenReady().then(async () => {
   })()`);
   ok('模拟器发布页能填 adb 完整路径（自检那句提示承诺过这个入口）',
     adbSaved.found && adbSaved.saved === 'D:/fake/adb.exe', JSON.stringify(adbSaved));
-  const adbMod = require(path.join(ROOT, 'src/main/services/adb.js'));
   ok('★ 填完立刻生效、不用重启（自检第一行会回显用的是哪个 adb）',
     adbMod.getAdbPath() === 'D:/fake/adb.exe', adbMod.getAdbPath());
 
+  // ---- 三段解析：手填 > 内置 > 系统 PATH（纯状态读取，不起真 adb 进程） ----
+  adbMod.setAdbPath('');
+  const autoPick = adbMod.getActiveAdb();
+  ok('★ adb 路径留空 ⇒ 自动用「程序内置」那份（新同事装上就能用，不用自己翻模拟器目录）',
+    autoPick.source === 'bundled' && /adb\.exe$/.test(autoPick.path), JSON.stringify(autoPick));
+  adbMod.setAdbPath(path.join(VENDOR_ADB, 'adb.exe'));
+  const minePick = adbMod.getActiveAdb();
+  ok('★ 手填了就用你填的 —— 内置的不许悄悄替掉你的配置',
+    minePick.source === 'configured', JSON.stringify(minePick));
+  adbMod.setAdbPath('D:/fake/adb.exe');   // 还原：下面「设备检查」那几条断言指望它
+
   // ★ 设备检查：给「不懂 adb 的人」看的那套说法 —— 一句结论 + 下一步动作，术语收进折叠区。
   //   这一组守的是「界面不许拿术语糊用户」这个意图，和具体检查项无关（换检查项也不用改）。
-  //   跑之前 adbPath 已经是 D:/fake/adb.exe（不存在）⇒ 必然走到「没找到 adb」那条引导。
+  //   跑之前 adbPath 已经是 D:/fake/adb.exe（不存在）；这里再把「内置目录」临时指到一个不存在的
+  //   地方 ⇒ 必然落到「连 adb 都找不到」那条引导上，本机有没有模拟器都不影响结果。测完立刻还原。
+  adbMod.setBundledAdbDir(path.join(TMP, 'no-such-vendor'));
   const probeUi = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="6"]').click();
     await new Promise(r => setTimeout(r, 120));
@@ -339,9 +387,12 @@ app.whenReady().then(async () => {
       hasDetails: !!det,
       open: det ? det.hasAttribute('open') : null,
       summary: det ? det.querySelector('summary').textContent.trim() : '',
-      guidances: box.querySelectorAll('div[style*="border-left"]').length
+      guidances: box.querySelectorAll('div[style*="border-left"]').length,
+      body: box.textContent
     };
   })()`);
+  adbMod.setBundledAdbDir(VENDOR_ADB);
+  adbMod.setBundledApkPath(path.join(VENDOR_KBD, 'ADBKeyboard.apk'));
   ok('检查按钮的名字是给用户看的（不再是术语「驱动自检」）',
     probeUi.btnLabel === '检查能不能发布', probeUi.btnLabel || probeUi.err || '?');
   ok('★ 结果先用一句人话回答「能不能发」',
@@ -352,6 +403,27 @@ app.whenReady().then(async () => {
   ok('技术详情默认收起、并写明「一般不用看」',
     probeUi.hasDetails && probeUi.open === false && /一般不用看/.test(probeUi.summary || ''),
     `折叠「${probeUi.summary}」 open=${probeUi.open}`);
+  ok('★ 设备检查里会写清「这个 adb 是哪来的」（手填 / 内置 / 系统 PATH），不让人猜',
+    /你填的那个不存在/.test(probeUi.body || ''),
+    /你填的那个不存在/.test(probeUi.body || '') ? '结果里写出了 adb 的来源' : '结果面板里没有出现来源字样');
+
+  // 「一键装上中文输入法」这条链路：界面有按钮 → 主进程有动作 → 真正干活的三步在 adbtest 里验
+  const appSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+  const jobsSrc = fs.readFileSync(path.join(ROOT, 'src/main/jobs.js'), 'utf8');
+  ok('★ 检查结果的引导块支持挂「一键处理」按钮，并且中文输入法真的接上了',
+    /f\.act \?/.test(appSrc) && appSrc.includes("'pub:installIme'")
+      && jobsSrc.includes("'publish.installIme'") && /publisher\.installIme\(/.test(jobsSrc),
+    `界面按钮=${appSrc.includes("'pub:installIme'") ? '有' : '缺'} · 主进程动作=${jobsSrc.includes("'publish.installIme'") ? '有' : '缺'}`);
+
+  // 设置页「外部依赖」：内置的不许还写着「待接入」
+  const depUi = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="7"]').click();
+    await new Promise(r => setTimeout(r, 200));
+    const t = document.querySelector('#pane').textContent;
+    return { adbRow: /模拟器驱动 adb/.test(t), imeRow: /中文输入法 ADBKeyboard/.test(t), builtin: /程序内置/.test(t) };
+  })()`);
+  ok('设置页「外部依赖」如实说 adb 与中文输入法都是内置的（不再是「待接入」）',
+    depUi.adbRow && depUi.imeRow && depUi.builtin, JSON.stringify(depUi));
   ok('设置页把那两个裸输入框换成了「打开文案提示词」入口',
     await win.webContents.executeJavaScript(`(() => {
       document.querySelector('.nav[data-tab="7"]').click();
