@@ -51,9 +51,15 @@ function importFile(file_) {
   } else {
     const lines = raw.split(/\r?\n/).filter(l => l.trim());
     const sep = (lines[0].match(/\t/) ? '\t' : (lines[0].split(',').length > lines[0].split('\t').length ? ',' : ';'));
-    for (const line of lines) {
-      const cells = line.split(sep).map(s => s.trim().replace(/^"|"$/g, ''));
+    // ★ 表头要跳过。原实现把第一行「货号,颜色」当成一条真数据导进去
+    //  ⇒ 池子里永远多一条假货号「货号 → [颜色]」（实测本机 pool.json 就是这样：
+    //    界面显示「2 个货号」，其实只有 1 条真数据，另一条是表头）。
+    //  判据只用「第一行 + 第一格是这几个词」这一种，宁可漏跳也不误杀真货号。
+    const HEADER = /^(货号|款号|商品编码|商品编号|sku|spu|sku[\s_-]?id|spu[\s_-]?id|货号\s*\/\s*sku)$/i;
+    for (let li = 0; li < lines.length; li++) {
+      const cells = lines[li].split(sep).map(s => s.trim().replace(/^"|"$/g, ''));
       if (cells.length < 2) continue;
+      if (li === 0 && HEADER.test(cells[0])) continue;   // 表头行，不是数据
       pairs.push([cells[0], cells.slice(1).join('、').split(/[、,，/]/).map(s => s.trim()).filter(Boolean)]);
     }
   }

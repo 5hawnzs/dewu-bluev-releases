@@ -212,7 +212,7 @@ async function dispatch(type, args, ctx) {
       }
 
       // 含视频 / 没有图片的行：走现有「校验未通过」机制跳过，界面标红并写明原因（不静默丢）
-      const verifyRows = built.blocked.map(b => ({ id: b.id, pass: false, conclusion: '校验未通过', note: b.note, level: 'bad' }));
+      const verifyRows = built.blocked.map(b => ({ id: b.id, pass: false, block: true, conclusion: '校验未通过', note: b.note, level: 'bad' }));
       project.patch({
         items: built.items,
         copyRows: built.copyRows,

@@ -126,6 +126,82 @@ const ok = (label, cond, extra) => {
   const merged = await sheet.mergeResults(sh.file, pr.results);
   ok('⑥ 合并回写 Excel', merged.updated === 5, `更新 ${merged.updated} 行`);
 
+  // ⑦ 货号颜色校验的「阻断」口径：**查不到 ≠ 有错**
+  // 真实事故面：商品池只导了一部分时，池里没有的货号全被判 warn，而发布侧原来拿
+  // `pass === false` 一把抓 ⇒ **整批一条都发不出去**，界面只显示「校验未通过」，
+  // 与本文件与真机口径「接口查不到的货号仅告警不阻断」自相矛盾。
+  const pool = require(path.join(base, 'src/main/services/pool.js'));
+  const poolBefore = pool.get();
+  try {
+    // 故意造一份「不全 + 有一条对不上」的商品池：
+    //   26FW-YB160(×2) 匹配 · UF46FWT75EH1HF6 匹配 · CK-Y208 颜色不匹配 · abc 查不到
+    pool.save({
+      source: '测试用（故意不全）', updatedAt: Date.now(),
+      skus: { '26FW-YB160': ['冠军白'], 'UF46FWT75EH1HF6': ['领袖蓝'], 'CK-Y208': ['燕麦色'] }
+    });
+    const v2 = await verify.check(fl.items, ctx());
+    const miss = v2.rows.filter(r => /未查到颜色信息/.test(r.conclusion));
+    const mism = v2.rows.filter(r => r.conclusion === '颜色不匹配');
+    ok('⑦ 查不到货号 = 只告警（level warn 且 block 不为真）',
+      miss.length > 0 && miss.every(r => r.level === 'warn' && r.block === false),
+      miss.map(r => `${r.sku}:${r.level}/block=${r.block}`).join(' '));
+    ok('⑦ 颜色对不上 = 阻断（block 为真）',
+      mism.length > 0 && mism.every(r => r.block === true),
+      mism.map(r => `${r.sku}:block=${r.block}`).join(' '));
+    ok('⑦ 统计里把「需人工」和「会被拦下」分开算', v2.stats.manual > v2.stats.blocked,
+      JSON.stringify(v2.stats));
+    // 升级前存在 project.json 里的旧数据没有 block 字段：必须按结论原文回推，
+    // 否则「升级了但旧口径还拦着」，用户会以为没修
+    ok('⑦ 旧数据（无 block 字段）按结论回推，不退回旧口径',
+      verify.isBlocked({ pass: false, conclusion: '货号 1 未查到颜色信息，请核对' }) === false
+      && verify.isBlocked({ pass: false, conclusion: '颜色不匹配' }) === true
+      && verify.isBlocked({ pass: false, block: true, conclusion: '未查到颜色信息，请核对' }) === true,
+      '未查到→放行 / 不匹配→拦 / 显式 block 优先');
+
+    const sh2 = await sheet.exportSheet({ items: fl.items, copyRows: cp.rows, verify: v2 }, { intervalSec: 60 });
+    const pubRows2 = sh2.rows.map((r, i) => ({
+      seq: i + 1, id: fl.items[i].id, dir: r[1], goods: 1, images: 4, startAt: '', status: '排队',
+      result: r[20] === '校验未通过' ? '校验未通过' : '', retries: 0, reason: r[21] || ''
+    }));
+    const st2 = sh2.rows.map((r, i) => ({ id: fl.items[i].id, col: r[20], note: r[21] }));
+    const missIds = new Set(miss.map(r => r.id));
+    const mismIds = new Set(mism.map(r => r.id));
+    ok('⑦ 发布单：查不到的行是「待发布」（结论仍写清原因），对不上的行才是「校验未通过」',
+      st2.filter(x => missIds.has(x.id)).every(x => x.col === '待发布' && /未查到颜色信息/.test(x.note || ''))
+      && st2.filter(x => mismIds.has(x.id)).every(x => x.col === '校验未通过'),
+      st2.map(x => `${x.id}:${x.col}`).join(' | '));
+
+    const pr2 = await publisher.run(
+      { items: fl.items, copyRows: cp.rows, verify: v2, publish: { rows: pubRows2 } }, ctx());
+    const byId = new Map((pr2.rows || []).map(r => [String(r.id), r]));
+    ok('⑦ 查不到的货号照常发布（旧版这里会整批静默不发）',
+      [...missIds].every(id => (byId.get(String(id)) || {}).result === '发布成功'),
+      [...missIds].map(id => `${id}:${(byId.get(String(id)) || {}).result}`).join(' '));
+    ok('⑦ 对不上的货号被拦下、且理由是人话',
+      [...mismIds].every(id => (byId.get(String(id)) || {}).result === '校验未通过'),
+      [...mismIds].map(id => `${id}:${(byId.get(String(id)) || {}).result}/${(byId.get(String(id)) || {}).reason}`).join(' '));
+  } finally {
+    pool.save(poolBefore);   // 还原商品池，别把这份「故意不全」的池留给后面的断言/别的套件
+  }
+
+  // ⑧ 商品池导入：表头行不能被当成一条真货号
+  //   实测本机 pool.json 里就躺着一条假货号「货号 → [颜色]」（导 CSV 时把表头一起吃了），
+  //   界面于是显示「2 个货号」而实际只有 1 条。
+  const csvFile = path.join(TMP, 'pool-test.csv');
+  fs.writeFileSync(csvFile, '\uFEFF货号,颜色\n26FW-YB160,冠军白/冠军黑\nUF46FWT75EH1HF6,领袖蓝\n', 'utf8');
+  const poolBefore2 = pool.get();
+  try {
+    const imp = pool.importFile(csvFile);
+    const keys = Object.keys(imp.skus);
+    ok('⑧ 导入 CSV 跳过表头（不把「货号」当数据）', !imp.skus['货号'] && keys.length === 2,
+      `${keys.length} 个货号：${keys.join(' / ')}`);
+    ok('⑧ 一个货号多颜色按 / 拆开',
+      (imp.skus['26FW-YB160'] || []).join('|') === '冠军白|冠军黑',
+      JSON.stringify(imp.skus['26FW-YB160']));
+  } finally {
+    pool.save(poolBefore2);
+  }
+
   console.log('\n--- 日志样例 ---');
   logs.slice(0, 12).forEach(l => console.log('  ' + l));
   console.log('\nTMP: ' + TMP);

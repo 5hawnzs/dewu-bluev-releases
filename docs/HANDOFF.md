@@ -437,6 +437,31 @@
   `fix()` 照着做会把**好图搬进 `_rejected`**。已删掉那条，并加 `tools/compliancetest.js` 守住这个边界。
 - `jobs.run` 起不来时改成回 `{ok:false, error}`（原来直接抛异常，渲染层不 catch 会变成未捕获的 Promise 报错 → 控制台飘红、还不给提示）。
 - 取消任务时不再让各步骤自己的报错冒充失败原因（原来会显示「这个目录里没有找到素材叶子目录」），统一报「任务已取消」并带批次 meta。
+- ★★ **「货号查不到颜色」被当成「有错」拦住了发布**（2026-10-02 修，真机上现在就能复现）：
+  `verify.js` 原来只用**一个 `level` 字段**表达两件事 —— 「查不到货号」（**没有数据**：商品池没导全 / 接口超时）
+  和「颜色不匹配 / 主色不符」（**确实有错**）都是 `warn`，而 `pass = (level === 'ok')`
+  ⇒ 发布侧那句 `if (blocked.pass === false)` **一把抓** ⇒ **无数据的条目也被拦下不发**。
+  后果：商品池只导了一部分时，池里没有的货号全被判 warn ⇒ **整批一条都发不出去**，
+  界面只显示「校验未通过」。而 `store.js` / `verify.js` / 设置页三处都白纸黑字写着
+  「接口查不到的货号**仅告警不阻断**」——**行为和自己的说明直接打架**。
+  - **改法**：新增显式字段 `block`（要不要拦），与 `level`（界面染色）**拆开**。
+    `block=true` 只有三种：多色货号没填色 · 颜色不匹配 · 主色不符需人工确认。
+    `货号查不到` ⇒ `level:'warn'` 但 `block:false`（照发，只在结论列提醒）。
+  - **判据只有一处**：`verify.isBlocked(row)`，`publisher.run` 与 `sheet.buildRows` 都调它
+    （原来两处各写一遍 `pass === false`，改一处漏一处）。
+  - **旧数据兼容**：升级前存在 `project.json` 里的 `verify.rows` 没有 `block` 字段 ⇒
+    按**结论原文**回推（含「未查到颜色信息」→ 放行），**不退回旧口径** ——
+    否则会出现「升级了却还是被旧口径拦住」，用户会以为没修。重跑一次校验即写上新字段。
+  - 统计里多了 `blocked`（真正会被拦下的条数），日志一并打出来；`manual` 与它**不是一个数**。
+  - 回归：`tools/smoke.js` 23 → **32**（⑦ 组 7 条 + ⑧ 组 2 条）。
+    双向验证：把这条改回旧口径 ⇒ smoke **4 条 FAIL**（其中直接打出 `abc+黑色+3:校验未通过`），
+    还原后 md5 逐字节一致。脚本 `D:\work\_e2e\breakverify.py`（`status|break|restore`）。
+- **商品池 CSV 的表头被当成一条真货号导进去**（2026-10-02 修）：`pool.importFile()` 原来对
+  所有非空行一视同仁 ⇒ `货号,颜色` 这行也被写进池子，池里永远多一条假货号「货号 → [颜色]」
+  （实测本机 `pool.json` 就是这样：界面显示「2 个货号」，其实只有 1 条真数据）。
+  现在**只跳过第一行、且第一格命中「货号 / 款号 / 商品编码 / sku / spu…」**这一种，宁可漏跳也不误杀。
+  双向验证：去掉这行判断 ⇒ smoke **FAIL ⑧ … 3 个货号：货号 / 26FW-YB160 / UF46FWT75EH1HF6**。
+  ⚠️ **已经导坏过的机器要重新导一次商品池**（代码修的是导入行为，不会去改你已有的 pool.json）。
 
 ### 视频发布支持（2026-10-01 **代码已实现**；只差真机抓 `videoSteps`）
 
@@ -569,7 +594,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 
 | 测试 | 覆盖 | 断言数 |
 | --- | --- | --- |
-| `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults` | 23 |
+| `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults`；★ ⑦ **货号颜色校验的「阻断」口径**（查不到货号 = 只告警、照常发布；颜色对不上才拦；统计里 `manual` 与 `blocked` 分开算；**旧数据无 `block` 字段时按结论原文回推**）；★ ⑧ **商品池导入跳过 CSV 表头** | 32 |
 | `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值）；**视频条**（推视频 → 查媒体库 → 走 `videoSteps`；没配 `videoSteps` 必失败；媒体库一直看不到也必失败）；**页面不 idle**（关动画兜底并**还原**、兜不住就明确失败、★ 抓不到时**绝不返回上一页的残留结构**）；★ **内置 adb 三段解析**（留空⇒用内置、手填不被替掉、手填不存在时有内置就退回并**说出来**、全不可用标 `configured-missing`）、★ **内置 adb 真被执行**（假 adb 记下实际被执行的程序路径）、★ **一键装中文输入法**（`install -r`→`ime enable`→`ime set` 三步且顺序正确、失败明确报卡在哪步、没 apk 如实说）、★ **中文输入通道按「设备当前输入法」判定**（没启用 ⇒ 明确失败并说清下一步；纯 ASCII 不受影响；**绝不把中文塞给 `input text`**；启用了 ⇒ 走 `ADB_INPUT_TEXT` 广播；发布行如实标失败而不是假成功）+ 源码反向断言「`c.adbKeyboard` 那种配置说了算的老写法已消失」 | 72 |
 | `tools/pendingtest.js` | 把发布单 `chmod 0444` 模拟「Excel 被占用」→ 断言整批暂存 → 恢复可写后下次补写；设备增删去重 | 9 |
 | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 绝不把它搬进 `_rejected`；「导出报告」xlsx（汇总+明细）+ csv（带 BOM） | 16 |
@@ -582,7 +607,12 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用；**通道**（默认正式版且落到 updater 上就是 `latest`；非法通道名被拒且不改坏状态；切测试版改读 `beta.yml`；**切通道作废上一次下载结果**、装不上另一条通道的包；**正式→测试不许降级、测试→正式才允许**；成功检查后收回降级放行、失败时保留；切通道不碰任何 url/feed 字段；重启后按配置里的通道走、非法值落回正式版） | 48 |
 | `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」与「**往回发**（比源上低）」两种情况分别拦下且原因可区分、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`compareVersion`（`1.0.0-beta.2` / `1.0.0-beta.10` / `1.10.0` 这些按**数值**比的用例）；`channelFile`（正式版→`latest.yml`、测试版→`beta.yml`）；`channelMismatch` **通道闸门**（`1.0.1-beta.1` 发正式通道 ⇒ 拦住，那会把测试版号写进 `latest.yml`、让所有正式版用户都看到；反向也拦；两种正确姿势必须放行；只认 `-` 段，`+build` 不算预发布；前后空格不影响；★ 与 `versionGate` 相互独立 —— Beta 首发时源上没清单，前者放行而它照样拦）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 57 |
 
-合计 **489** 项断言（每次改动后实测，不要照抄这一行：`23 + 72 + 9 + 16 + 22 + 32 + 69 + 59 + 65 + 17 + 48 + 57 = 489`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+合计 **583** 项断言（2026-10-02 实测：`32 + 72 + 9 + 16 + 22 + 32 + 69 + 74 + 65 + 17 + 65 + 65 + 45 = 583`，
+共 **13** 套 —— 新加了 `prunetest`）。
+⚠️ 上表里 `uicheck` / `updatertest` / `releasetest` 三行还写着旧数字（59 / 48 / 57），
+那是因为**另一条并行的改动**（「更新日志开关 + 老包清理规则」）正在改这三套，
+写完会由它自己刷新；**不要照抄任何一行，每次改动后实测**。
+`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
 `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
 
 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；

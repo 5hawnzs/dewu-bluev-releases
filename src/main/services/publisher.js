@@ -16,6 +16,7 @@ const path = require('path');
 const fs = require('fs');
 const adb = require('./adb');
 const uimap = require('./uimap');
+const verifySvc = require('./verify');
 const store = require('../store');
 const sheet = require('./sheet');
 const wp = require('../util/winpath');
@@ -379,8 +380,12 @@ async function run(state, ctx = {}) {
     row.images = (item.files || []).filter(f => f.type === 'image').length || 0;
     row.goods = row.goods || 1;
 
+    // ★ 拦不拦看 `verify.isBlocked()`，**不是** `pass === false`：
+    //   前者只拦「有据可判的不一致」（颜色不匹配 / 多色漏填 / 主色不符）；
+    //   「货号查不到颜色」属于**没有数据**，按真机口径只告警、照常发布 ——
+    //   否则商品池没导全时会**整批静默不发布**，而界面只显示「校验未通过」。
     const blocked = (state.verify.rows || []).find(v => v.id === row.id);
-    if (blocked && blocked.pass === false) {
+    if (blocked && verifySvc.isBlocked(blocked)) {
       row.status = '未发布'; row.result = '校验未通过'; row.reason = blocked.note || blocked.conclusion;
       onRow(row); results.push(row); done++;
       progress({ done, total: todo.length, label: row.dir });

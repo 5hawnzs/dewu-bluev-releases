@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
+const verify = require('./verify');
 const wp = require('../util/winpath');
 const store = require('../store');
 
@@ -35,7 +36,9 @@ function buildRows(state, { startAt, intervalSec }) {
     const topics = copy.topics || [];
     const goods = item.goods || [{ sku: item.sku, color: item.color }];
     const t = new Date(base.getTime() + i * step);
-    const blocked = v.pass === false;
+    // ★ 与 publisher 同一判据（verify.isBlocked）：只有「有据可判的不一致」才标「校验未通过」，
+    //   「货号查不到颜色」只把结论写进「校验结论」列，状态仍是「待发布」—— 别让发布单先骗人。
+    const blocked = verify.isBlocked(v);
     return [
       i + 1,
       item.dir,

@@ -59,28 +59,34 @@ async function check(items, ctx = {}) {
       }
     }
 
-    let conclusion = '通过', note = '', level = 'ok';
-    // 判定文案对齐真机工具；接口查不到的货号「仅告警不阻断」
+    // ★★ `level`（严重度，给界面染色）和 `block`（要不要拦住不发布）**是两回事**，别再用一个字段表达。
+    //  2026-10-02 之前只有 `level`，发布侧拿 `pass === false` 一把抓 ⇒
+    //  「查不到货号」（**没有数据**，不是有错）和「颜色不匹配 / 主色不符」（**确实有错**）
+    //  被当成同一件事一起拦住。后果：商品池只导了一部分时，凡是池里没有的货号全被判 warn
+    //  ⇒ 整批一条都发不出去，而界面只显示「校验未通过」。这与本文件与真机的口径
+    //  「接口查不到的货号**仅告警不阻断**」直接矛盾。
+    //  ⇒ 所以：**无数据只告警（block=false），有据可判的不一致才阻断（block=true）**。
+    let conclusion = '通过', note = '', level = 'ok', block = false;
     if (!poolColors) {
       conclusion = `货号 ${item.sku} 未查到颜色信息，请核对`;
       note = apiMode ? '接口查不到该货号，仅告警不阻断' : '商品池里查不到该货号，请核对';
-      level = 'warn';
+      level = 'warn';                 // 只告警：查不到 ≠ 错，照常发布，但这行会一直提醒你核对
     } else if (!declared) {
       if (poolColors.length > 1) {
         conclusion = '多色货号须指定颜色';
         note = `共 ${poolColors.length} 色：${poolColors.join(' / ')}`;
-        level = 'bad';
+        level = 'bad'; block = true;  // 多色不填色 ⇒ 发出去就是错的，必须拦
       } else {
         conclusion = '单色货号，颜色可空'; note = `商品池仅 ${poolColors[0]}`; level = 'ok';
       }
     } else if (!poolColors.includes(declared)) {
-      conclusion = '颜色不匹配'; note = `商品池：${poolColors.join(' / ')}`; level = 'warn';
+      conclusion = '颜色不匹配'; note = `商品池：${poolColors.join(' / ')}`; level = 'warn'; block = true;
     } else if (imageColor) {
       const declaredCoarse = colors.coarseOfName(declared);
       if (declaredCoarse && declaredCoarse !== imageColor.coarse) {
         conclusion = '主色不符，需人工确认';
         note = `目录写「${declared}」（${declaredCoarse}系），图片实取主色为 ${imageColor.name}（${imageColor.coarse}系）`;
-        level = 'warn';
+        level = 'warn'; block = true;   // 「需人工确认」= 机器不替人决定 ⇒ 先别发
       } else {
         note = `图片主色 ${imageColor.name}，与目录一致`;
       }
@@ -93,7 +99,7 @@ async function check(items, ctx = {}) {
       swatch: imageColor ? imageColor.hex : null,
       poolColors: poolColors || [],
       imageColor: imageColor ? imageColor.name : '—',
-      conclusion, note, level, pass: level === 'ok'
+      conclusion, note, level, block, pass: level === 'ok'
     });
     i++;
     progress({ done: i, total: items.length, label: item.sku });
@@ -103,11 +109,29 @@ async function check(items, ctx = {}) {
     pass: rows.filter(r => r.level === 'ok').length,
     manual: rows.filter(r => r.level === 'warn').length,
     missing: rows.filter(r => /未查到颜色信息/.test(r.conclusion)).length,
-    noColor: rows.filter(r => r.conclusion === '多色货号须指定颜色').length
+    noColor: rows.filter(r => r.conclusion === '多色货号须指定颜色').length,
+    // 真正会被「发布」跳过的条数。★ 和上面的 manual 不是一个数：manual 里有一部分是「查不到」
+    // （只告警、照发），只有 block=true 的才会被拦。界面要解释「为什么这一批少发了几条」时看这个。
+    blocked: rows.filter(r => isBlocked(r)).length
   };
-  log(`校验完成：通过 ${stats.pass} · 需人工 ${stats.manual} · 未查到 ${stats.missing} · 缺色 ${stats.noColor}${apiMode ? '（接口模式）' : ''}`,
+  log(`校验完成：通过 ${stats.pass} · 需人工 ${stats.manual} · 未查到 ${stats.missing} · 缺色 ${stats.noColor}`
+    + ` · 会被拦下不发 ${stats.blocked}${apiMode ? '（接口模式）' : ''}`,
     (stats.manual || stats.missing || stats.noColor) ? 'warn' : 'ok');
   return { rows, stats, poolSize: pool.size(), poolSource: pool.get().source, mode: apiMode ? 'api' : 'local' };
 }
 
-module.exports = { check };
+/**
+ * 这一条**要不要拦住不发布**（发布侧唯一该看的判据）。
+ *
+ * ★ 旧数据（2026-10-02 之前的 `verify.rows`，存在 `project.json` 里）没有 `block` 字段。
+ *   对它们按结论原文回推，而不是退回 `pass === false` —— 否则「升级了但还是被旧口径拦住」，
+ *   用户会以为没修好。**重新点一次「开始校验」就会写上新字段。**
+ */
+function isBlocked(row) {
+  if (!row) return false;
+  if (typeof row.block === 'boolean') return row.block;
+  if (/未查到颜色信息/.test(String(row.conclusion || ''))) return false;   // 无数据 ≠ 有错
+  return row.pass === false;
+}
+
+module.exports = { check, isBlocked };
