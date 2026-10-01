@@ -66,7 +66,10 @@ async function listDevices() {
     out.push({
       id: d.id, name: d.name, serial: d.serial,
       online: !!p.device, resolution: p.resolution, app: p.appPackage,
-      adbKeyboard: p.adbKeyboard, notes: p.notes
+      // 「装了这个 apk」与「它是不是当前输入法」是两件事，两个都回给界面 ——
+      // 中文能不能打进得物，只取决于后者。
+      adbKeyboard: p.adbKeyboard, adbKeyboardActive: p.adbKeyboardActive,
+      adbKeyboardCurrent: p.adbKeyboardCurrent, notes: p.notes
     });
   }
   return out;
@@ -152,7 +155,7 @@ async function saveShot(serial, tag, ctx) {
   } catch (e) { return null; }
 }
 
-async function runStep(serial, step, data, ctx, adbKeyboard) {
+async function runStep(serial, step, data, ctx) {
   switch (step.action) {
     case 'tapText': case 'tapId': case 'tapDesc': {
       const d = await adb.dumpEx(serial);
@@ -174,7 +177,11 @@ async function runStep(serial, step, data, ctx, adbKeyboard) {
       return;
     }
     case 'input': {
-      const r = await adb.inputText(serial, step.value, { adbKeyboard });
+      // ★ 输入通道（中文必须走 ADBKeyboard 广播）由 adb.inputText 自己按**设备真实输入法状态**
+      //   判定 —— 以前这里传的是配置项 `publish.adbKeyboard`，而那个键全仓没有任何地方会写它
+      //   （界面没有开关、默认配置里也没有）⇒ 恒为假 ⇒ 中文永远走 `input text`（实测打不进中文、
+      //   却返回成功）⇒ 帖子会发出去但标题正文是空的，日志还写「发布成功」。
+      const r = await adb.inputText(serial, step.value);
       if (!r.ok) throw new Error('输入失败：' + (r.stderr || '').trim());
       return;
     }
@@ -227,7 +234,6 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   const log = ctx.log || (() => {});
   const cancelled = ctx.cancelled || (() => false);
   const c = cfg();
-  const adbKeyboard = !!c.adbKeyboard;
 
   // 0) 这条发视频还是图文：报告标了就以报告为准，没标按目录推断；两边都有又没标 → 这里必须拦住
   const kind = rowKind(row, item);
@@ -296,7 +302,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     const step = uimap.fill(raw, data);
     row.status = step.name;
     if (ctx.onRow) ctx.onRow(row);
-    await runStep(serial, step, data, ctx, adbKeyboard);
+    await runStep(serial, step, data, ctx);
   }
   return true;
 }

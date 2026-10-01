@@ -84,7 +84,11 @@ const state = {
 (async () => {
   store.set({
     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
-    publish: { device: '127.0.0.1:5555', mock: false, intervalMinSec: 1, intervalMaxSec: 1, retry: 1, adbKeyboard: true }
+    // ★ 刻意**不写** `adbKeyboard` —— 这就是产线真实配置的样子：默认配置里没有这个键、
+    //   界面上也没有开关。以前产线代码用 `!!c.adbKeyboard` 决定中文走不走广播 ⇒ 恒为假
+    //   ⇒ 中文永远走 `input text`（实测打不进中文却返回 0）⇒ 会发出一条没标题没正文的帖子。
+    //   现在这条判断改由「设备当前输入法」决定，配置里有没有这个键都不影响。
+    publish: { device: '127.0.0.1:5555', mock: false, intervalMinSec: 1, intervalMaxSec: 1, retry: 1 }
   });
 
   // 1) 设备检查（界面上叫「检查能不能发布」；probe() 的返回体同时带 notes 与 fix 两套说法）
@@ -130,6 +134,9 @@ const state = {
   ok('未配定位表直接失败', /UI 定位表/.test(threw), threw);
 
   // 4) 真实通道发布
+  //    先让假设备进入「ADBKeyboard 已装进模拟器且是当前输入法」的状态 —— 中文要用它。
+  const IME_ACTIVE = path.join(FDB, 'IME_ACTIVE');
+  fs.writeFileSync(IME_ACTIVE, '1');
   store.set({ publish: { uiMap } });
   clearCalls();
   const logs = [];
@@ -272,9 +279,66 @@ const state = {
   ok('⑫ 抓取前先删远端文件（顺序：rm → dump）',
     iRm >= 0 && iDump >= 0 && iRm < iDump, `rm@${iRm} dump@${iDump}`);
 
+  // ============ 12b) ★ 中文输入：必须按「设备真实输入法状态」决定走哪条通道 ============
+  const adbMod = require(path.join(base, 'src/main/services/adb.js'));
+  // 这一组是本轮报障的直接回归：「设备检查说中文打不进去」背后其实还有一条更严重的
+  // —— 产线代码把「走不走 ADBKeyboard 广播」交给配置项 publish.adbKeyboard，而那个键
+  // **全仓没有任何地方会写它** ⇒ 恒为假 ⇒ 中文永远走 `input text`。
+  // 实测（2026-10-02，MuMu 12 / Chrome 地址栏截图取证）：`input text "中文标题"` 一个字都进不去，
+  // 但退出码 0、无任何输出；而 `am broadcast -a ADB_INPUT_TEXT --es msg "中文标题"` 能进去。
+  // ⇒ 所以这里的断言是：**没启用输入法时中文必须明确失败，绝不许静默退化**。
+  fs.unlinkSync(IME_ACTIVE);                       // 设备回到「装了 apk 但没启用」的状态
+  const it1 = await adbMod.inputText('127.0.0.1:5555', '中文标题');
+  ok('⑯ 设备没启用 ADBKeyboard ⇒ 中文输入明确失败（不假装成功）',
+    it1.ok === false && it1.code === 'ime-not-active',
+    JSON.stringify({ ok: it1.ok, code: it1.code, err: String(it1.stderr || '').slice(0, 60) }));
+  ok('⑯ 失败原因说清「下一步点哪里」，不是一句「输入失败」',
+    /一键装上中文输入法/.test(it1.stderr) && /ADBKeyboard/.test(it1.stderr),
+    String(it1.stderr || '').slice(0, 90));
+
+  clearCalls();
+  const it2 = await adbMod.inputText('127.0.0.1:5555', 'abc123');
+  ok('⑯ 纯 ASCII 不受影响 ⇒ 走 input text（不依赖设备输入法状态）',
+    it2.ok === true && /input text "abc123"/.test(calls()) && !/ADB_INPUT_TEXT/.test(calls()),
+    calls().trim().split(/\r?\n/).join(' | '));
+
+  // 真跑一遍发布：设备没启用输入法时，整条必须**失败**（而不是发一条空帖子还报成功）
+  clearCalls();
+  Object.assign(state.publish.rows[0], { status: '排队', result: '', reason: '', retries: 0 });
+  const rNoIme = await publisher.run(state, ctx);
+  const logNoIme = calls();
+  ok('⑯ 中文打不进去时，这一条如实标「失败」',
+    rNoIme.rows[0].result === '失败', rNoIme.rows[0].result + ' / ' + rNoIme.rows[0].reason);
+  ok('⑯ 失败原因点明是中文输入的问题（不是含糊的「未知」）',
+    /中文|输入失败/.test(rNoIme.rows[0].reason), rNoIme.rows[0].reason);
+  ok('⑯ ★ 绝不把中文塞给 `input text`（实测无效却返回成功，会发出没标题的帖子）',
+    !/input text "白色的鞋谁懂"/.test(logNoIme) && !/input text "这双冠军白/.test(logNoIme),
+    (logNoIme.match(/input text "[^"]*"/g) || []).join(' | ') || '（没有 input text 调用）');
+
+  // 反向自证：把设备切成「已启用」，同一条发布必须走广播、并且真的成功
+  fs.writeFileSync(IME_ACTIVE, '1');
+  clearCalls();
+  Object.assign(state.publish.rows[0], { status: '排队', result: '', reason: '', retries: 0 });
+  const rIme = await publisher.run(state, ctx);
+  ok('⑯ 设备启用了 ADBKeyboard ⇒ 中文走 ADB_INPUT_TEXT 广播，这一条发布成功',
+    rIme.rows[0].result === '发布成功' && /ADB_INPUT_TEXT --es msg "白色的鞋谁懂"/.test(calls()),
+    rIme.rows[0].result + ' / ' + (calls().match(/ADB_INPUT_TEXT --es msg "[^"]*"/g) || []).join(' | '));
+
+  // 源码级反向断言：那条「配置说了算」的老写法不许回来
+  const adbSrc = fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8');
+  const pubSrc = fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8');
+  ok('⑯ 源码：inputText 不再从配置推导开关（老写法 `inputText(serial, text, { adbKeyboard = false })` 已消失）',
+    !/inputText\(serial,\s*text,\s*\{\s*adbKeyboard/.test(adbSrc), '已改成按设备状态判定');
+  ok('⑯ 源码：publisher 不再拿配置项决定中文怎么输（`c.adbKeyboard` / 传 `{ adbKeyboard }` 都已消失）',
+    !/c\.adbKeyboard/.test(pubSrc) && !/inputText\(serial,\s*step\.value,\s*\{/.test(pubSrc),
+    (pubSrc.match(/.*[aA]dbKeyboard.*/g) || []).map(s => s.trim()).join(' | '));
+  ok('⑯ 源码：中文走广播这条路还在，且判定依据是设备当前输入法',
+    /am broadcast -a ADB_INPUT_TEXT/.test(adbSrc) && /default_input_method/.test(adbSrc),
+    '广播 + 设备输入法判定都在');
+
   // ============ 13) adb 三段解析：手填 > 程序内置 > 系统 PATH ============
   // ★ 纯函数，不碰文件系统也不起进程 —— 直接喂「谁存在」进去验判断，快且可复现。
-  const adbMod = require(path.join(base, 'src/main/services/adb.js'));
+  //   （adbMod 在 12b) 那段已经 require 过了，同一个模块实例，这里不再重复 require）
   const B = 'R:/app/resources/adb/adb.exe';
   const always = () => true, never = () => false;
   const only = p => (q => q === p);
@@ -294,6 +358,7 @@ const state = {
     r13e.source === 'path' && r13e.path === 'adb', JSON.stringify(r13e));
 
   // 同一套判断要真的反映到设备检查的结果里（界面「来源」那一列读的就是这几个字段）
+  fs.unlinkSync(IME_ACTIVE);                // 回到「装了这个 apk、但没设成当前输入法」的状态
   const APK = path.join(TMP, 'ADBKeyboard.apk');
   fs.writeFileSync(APK, 'PK\u0003\u0004fake-apk-bytes');
   adbMod.setBundledApkPath(APK);            // 包里「有」中文输入法 apk，才会给一键装按钮
@@ -312,9 +377,12 @@ const state = {
   ok('⑬ 手填的不存在但有内置 ⇒ 退回内置，并且**在界面上说出来**（不静默替你换）',
     pb2.adbSource === 'bundled' && pb2.fix.some(f => /你填的 adb 路径不存在/.test(f.title)),
     JSON.stringify({ src: pb2.adbSource, titles: pb2.fix.map(f => f.title) }));
-  ok('⑬ ★ 装了 ADBKeyboard 但没设成当前输入法 ⇒ 提示「装了没启用」，并挂上「一键装上」按钮',
-    pb2.fix.some(f => f.act && f.act.act === 'pub:installIme' && /没启用/.test(f.title)),
+  ok('⑬ ★ 装了 ADBKeyboard 但没设成当前输入法 ⇒ 判「中文发不出去」(bad，不是「能发但影响体验」)，并挂「一键装上」按钮',
+    pb2.fix.some(f => f.act && f.act.act === 'pub:installIme' && f.level === 'bad' && /中文发不出去/.test(f.title)),
     JSON.stringify(pb2.fix.filter(f => f.act)));
+  ok('⑬ 这条还要说清「内置 ≠ 已装进模拟器」（否则用户会以为已经好了）',
+    pb2.fix.some(f => f.act && /不等于/.test(f.how) && /装进模拟器/.test(f.how)),
+    (pb2.fix.find(f => f.act) || {}).how || '');
   adbMod.setAdbPath('');
 
   // ============ 14) 一键装中文输入法：三条命令缺一不可 ============

@@ -279,17 +279,6 @@ async function keyevent(serial, code) {
   return shell(serial, `input keyevent ${code}`);
 }
 
-/** 中文必须走 ADBKeyboard 广播；纯 ASCII 可以退化到 input text */
-async function inputText(serial, text, { adbKeyboard = false } = {}) {
-  if (adbKeyboard) {
-    const esc = String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/ /g, '%s');
-    const r = await shell(serial, `am broadcast -a ADB_INPUT_TEXT --es msg "${esc}"`);
-    if (r.ok && /result=0/.test(r.stdout)) return r;
-  }
-  const esc = String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/ /g, '%s');
-  return shell(serial, `input text "${esc}"`);
-}
-
 const IME_COMPONENT_DEFAULT = 'com.android.adbkeyboard/.AdbIME';
 
 /** 设备「已启用」的输入法里有没有 ADBKeyboard（返回组件名，没有则空串） */
@@ -303,6 +292,66 @@ async function adbKeyboardIme(serial) {
 async function defaultIme(serial) {
   const r = await shell(serial, 'settings get secure default_input_method');
   return r.ok ? String(r.stdout || '').trim() : '';
+}
+
+/**
+ * 设备现在**真的能用 ADBKeyboard 打中文**吗。
+ *
+ * ★ 判据只有一个：**它是不是设备当前的输入法**（`settings get secure default_input_method`）。
+ *   注意三种状态别混：① 没装 ② 装了但没 `ime enable` ③ 启用了但不是当前输入法 ——
+ *   ②③ 两种下 `ADB_INPUT_TEXT` 广播都**没有接收者**（接收器是跟着 AdbIME 服务动态注册的，
+ *   实测 `cmd package query-receivers -a ADB_INPUT_TEXT` 回 `No receivers found`）。
+ *
+ * ★ 故意**不做缓存**：一次发布里输入步骤也就几条，多出来的是一次 `settings get`（几十毫秒），
+ *   而缓存会带来「用户刚点了装输入法、前几秒还被判为没启用」这种假失败 —— 不值得。
+ *   读不到就重试一次；仍读不到按「不可用」处理（宁可不发，也不发一条没标题的帖子）。
+ */
+async function keyboardReady(serial) {
+  let current = await defaultIme(serial);
+  if (!current) current = await defaultIme(serial);
+  return { active: /adbkeyboard/i.test(current), current };
+}
+
+/**
+ * 往当前焦点输入框里打字。
+ *
+ * ★★ 这一条踩过两个坑，都是实测出来的（2026-10-02，MuMu 12 / Android 12，
+ *    拿 Chrome 地址栏当靶子，截图取证）：
+ *
+ *   ① **`input text` 注不进中文。** `input text "中文标题"` 打完之后地址栏**纹丝不动**
+ *      （同一流程里 `input text "abc"` 正常进框），而这条命令**退出码是 0、标准输出为空** ——
+ *      光看返回值发现不了。⇒ 中文只有 `ADB_INPUT_TEXT` 广播这一条路，没有"退而求其次"。
+ *
+ *   ② **广播的返回码也不能当成功依据。** `am broadcast -a ADB_INPUT_TEXT` 在「有人接」
+ *      和「没人接」两种情况下返回**一模一样**（都是 `Broadcast completed: result=0`）。
+ *      ⇒ 旧实现拿 `result=0` 当"打进去了"，等于给「中文压根没进去」盖了个合格的章；
+ *        更早的实现则把这条判断整个交给了配置项 `publish.adbKeyboard`，而这个键
+ *        **全仓没有任何地方会写它**（界面没开关、默认配置里也没有）⇒ 恒为假
+ *        ⇒ 中文永远走 `input text` ⇒ 标题/正文永远是空的，流程却一路报「发布成功」。
+ *
+ * 所以这里改成：**先问设备真实状态，再决定怎么发**；中文打不进去就**明确失败**，
+ * 让上层如实报错，绝不静默退化去 `input text` 假装成功。
+ */
+async function inputText(serial, text) {
+  const s = String(text == null ? '' : text);
+  const esc = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/ /g, '%s');
+  const asciiOnly = /^[\t\n\r\x20-\x7E]*$/.test(s);
+
+  // 纯 ASCII：`input text` 实测可用，而且不依赖设备上的输入法状态，优先用它
+  if (asciiOnly) return shell(serial, `input text "${esc}"`);
+
+  const kbd = await keyboardReady(serial);
+  if (!kbd.active) {
+    const short = s.length > 12 ? s.slice(0, 12) + '…' : s;
+    return {
+      ok: false, code: 'ime-not-active', stdout: '',
+      stderr: `要输入的内容「${short}」里有中文（或其它非 ASCII 字符），这类字符只有 ADBKeyboard 能打进去，`
+        + `而设备上它现在不是当前输入法（当前是 ${kbd.current || '未知'}）—— 广播没有人接收，一个字也进不去。`
+        + '（不要去改「用 input text 硬打」：实测它对中文无效，却照样返回成功，会把没标题没正文的帖子发出去。）'
+        + '处理：到「模拟器发布」页点一次「一键装上中文输入法」，再重新发布。'
+    };
+  }
+  return shell(serial, `am broadcast -a ADB_INPUT_TEXT --es msg "${esc}"`);
 }
 
 /**
@@ -347,6 +396,22 @@ async function packages(serial, filter) {
 }
 
 /**
+ * 当前抢焦点的窗口 / Activity 原文。
+ *
+ * 用途只有一个：dump 抓不到时，告诉用户**当时停在哪一屏**。
+ * 实测（2026-10-02）：同一个得物发布页（TotalPublishProcessActivity），卡住时连续 4 次
+ * `could not get idle state`（连临时关掉系统动画都救不了）；把 App 切到后台再回前台之后，
+ * 同一页同一窗口 id **8/8 全部抓到**。所以「抓不到」是**跟当前这一屏的状态有关**的，
+ * 不写清停在哪一屏，用户只会以为工具坏了。
+ */
+async function currentFocus(serial) {
+  const r = await shell(serial, 'dumpsys window | grep mCurrentFocus');
+  const s = String(r.stdout || '').trim();
+  const m = s.match(/mCurrentFocus=Window\{[^}]*?\s([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)\}/);
+  return m ? m[1] : '';
+}
+
+/**
  * 设备检查：把「能不能真的发」拆成可验证的几条。
  *
  * ★ 返回体里同时带两套说法，别混用：
@@ -365,6 +430,7 @@ async function probe(serial) {
     imeApkBundled: apkPath || null, imeApkExists: !!(apkPath && fs.existsSync(apkPath)),
     adb: null, device: null, resolution: null,
     appPackage: null, adbKeyboard: false, adbKeyboardIme: '', adbKeyboardActive: false,
+    adbKeyboardCurrent: '', focus: null,
     tools: {}, notes: [], fix: []
   };
   const say = (level, title, how, act2) => out.fix.push(act2 ? { level, title, how, act: act2 } : { level, title, how });
@@ -377,7 +443,7 @@ async function probe(serial) {
     say('warn', `你填的 adb 路径不存在，已自动改用${toWhat}`,
       `在「设备管理」那一行填的是「${adbBin}」，这个文件找不到。`
       + `现在用的是${toWhat}（不影响使用）。`
-      + '建议把那一格**清空**（留空=自动：优先内置、再退系统），或者把路径改对。');
+      + '建议把那一格清空（留空=自动：优先内置、再退系统），或者把路径改对。');
   }
 
   out.adb = await version();
@@ -433,17 +499,29 @@ async function probe(serial) {
   if (out.adbKeyboard) {
     // 装了 ≠ 能用：必须「已启用」且「是当前输入法」，否则 ADB_INPUT_TEXT 广播打不进字
     out.adbKeyboardIme = await adbKeyboardIme(serial);
-    out.adbKeyboardActive = /adbkeyboard/i.test(await defaultIme(serial));
+    const kbd = await keyboardReady(serial);
+    out.adbKeyboardActive = kbd.active;
+    out.adbKeyboardCurrent = kbd.current;
   }
 
   if (!out.tools.uiautomator) {
     const d = lastDumpInfo() || {};
-    out.notes.push(d.idle
+    const on = await currentFocus(serial);
+    out.focus = on;
+    out.notes.push((d.idle
       ? `uiautomator dump 失败：当前页面一直不 idle（得物发布页会这样），拿不到界面结构 —— 原始输出「${d.why || ''}」`
-      : `uiautomator dump 失败：拿不到界面结构，无法定位发布按钮${d.why ? ` —— 原始输出「${d.why}」` : ''}`);
-    say('bad', '读不到 App 的界面（发布时会找不到按钮）',
-      '① 先把得物退回到首页，再点一次「检查能不能发布」；'
-      + '② 还不行就把模拟器里其他占着画面的应用关掉。得物自己的发布页本来就抓不动，这是已知情况。');
+      : `uiautomator dump 失败：拿不到界面结构，无法定位发布按钮${d.why ? ` —— 原始输出「${d.why}」` : ''}`)
+      + (on ? ` · 当时停在这一屏：${on}` : ''));
+    // ★ 这一条**只是"此刻这一屏抓不动"，不代表 adb / uiautomator 坏了**（实测：同一台设备
+    //   切到桌面就能抓到，几秒后回到同一页也能抓到）。所以文案里必须把这两件事分开说，
+    //   否则用户会以为要重装 / 换工具。
+    say('bad', '现在这一屏抓不到界面（发布时会找不到按钮）',
+      (on ? `刚才是停在「${on.split('/').pop()}」这一屏上。` : '')
+      + '① 把得物退到首页、或切到桌面再点一次「检查能不能发布」（实测这一步就能恢复）；'
+      + '② 还不行就把模拟器里其他占着画面的应用关掉、确认没锁屏。'
+      + '得物自己的发布页本来就偶发抓不动，这是已知情况，不是 adb 坏了。');
+  } else {
+    out.focus = await currentFocus(serial);
   }
   if (!out.tools.screencap) {
     out.notes.push('screencap 失败：失败时截不了图');
@@ -454,12 +532,18 @@ async function probe(serial) {
     const canInstall = out.imeApkExists;
     out.notes.push(!out.adbKeyboard
       ? '未装 ADBKeyboard：中文标题/正文输入会失败（ASCII 不受影响）'
-      : `ADBKeyboard 已装但没设成当前输入法（ime list 里是「${out.adbKeyboardIme || '没找到'}」）—— 中文照样打不进去`);
-    say('warn',
-      out.adbKeyboard ? '能发，但中文打不进去（输入法装了、没启用）' : '能发，但中文标题和正文会打不进去',
-      (!out.adbKeyboard ? '中文标题和正文会打不进去，只发英文和数字不受影响。' : '')
+      : `ADBKeyboard 已装但没设成当前输入法（ime list 里是「${out.adbKeyboardIme || '没找到'}」，`
+        + `当前输入法是「${out.adbKeyboardCurrent || '未知'}」）—— 广播没有接收者，中文一个字也进不去`);
+    // ★ 为什么是 bad 而不是 warn：得物的标题/正文/话题几乎全是中文，而**中文只有 ADBKeyboard
+    //   这一条通道**（实测 `input text` 对中文无效，却照样返回 0）。没有它，发布会直接在这几步
+    //   失败（改之前更糟：会静默发出一条没标题没正文的帖子）。所以这不是"影响体验"，是"发不出去"。
+    say('bad',
+      out.adbKeyboard ? '中文发不出去（输入法装了，但不是当前输入法）' : '中文标题和正文发不出去（没装中文输入法）',
+      (!out.adbKeyboard ? '得物的标题、正文、话题都是中文，中文只有 ADBKeyboard 这一条输入通道，'
+        + '`input text` 是打不进的（实测）。只发英文和数字不受影响。' : '')
       + (canInstall
-        ? '点下面的按钮一键搞定（装好 + 启用 + 设成当前输入法），完事再点一次「检查能不能发布」。'
+        ? '点下面的按钮一键搞定（装进模拟器 + 启用 + 设成当前输入法），完事再点一次「检查能不能发布」。'
+          + '★ 注意：「程序内置了输入法」= 安装包自带这个 apk，不等于已经装进模拟器并启用 —— 这一步必须做一次。'
         : '这台机器的安装包里没有内置输入法，需要自己装一个 ADBKeyboard（包名 com.android.adbkeyboard）。'),
       canInstall ? { act: 'pub:installIme', label: '一键装上中文输入法' } : null);
   }
@@ -476,5 +560,5 @@ module.exports = {
   dump, dumpEx, lastDumpInfo, tap, keyevent, inputText, packages, probe,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
-  installKeyboard, adbKeyboardIme, defaultIme
+  installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus
 };

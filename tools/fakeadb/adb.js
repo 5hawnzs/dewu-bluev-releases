@@ -18,6 +18,9 @@
  *                     否则 → 只在系统动画开着（animator_duration_scale != 0）时失败，
  *                     关掉动画就能成功 —— 对齐真机实测到的行为。
  *   IME_INSTALL_FAIL —— `adb install` 报 Failure（测「装中文输入法失败」时要说清卡在哪一步）
+ *   IME_ACTIVE       —— 假装「ADBKeyboard 已装进模拟器且是当前输入法」。**不建这个文件**就是
+ *                       全新模拟器的样子（装了 apk 但没启用）——中文输入在这两种状态下行为完全不同，
+ *                       必须两种都测（见 src/main/services/adb.js#inputText 的注释）。
  *
  * 另外它接受**绝对路径**的可执行名（只要 basename 是 adb / adb.exe）——
  * 因为内置 adb 走的是 `resources/adb/adb.exe` 这种绝对路径，替身不能只认字符串 'adb'。
@@ -51,6 +54,13 @@ function makeFakeAdb(dir) {
 
   // 设备上的输入法状态：全新模拟器**没有**启用 ADBKeyboard —— 用来测「装了没启用」这条分支
   const ime = { default: 'com.android.internal/.Default', enabled: [] };
+  // 现场开关 IME_ACTIVE：模拟「已经把 ADBKeyboard 装进模拟器并设为当前输入法」。
+  // 建了这个文件 → default_input_method 直接回 ADBKeyboard，且 ime list -s 里也有它。
+  // ★ 为什么一定要有这个开关：中文输入能不能成功**只取决于设备的当前输入法**，
+  //   跟「apk 有没有打进安装包」是两件事（见 adb.js#inputText 的注释）。
+  const IME_AUTO = 'com.android.adbkeyboard/.AdbIME';
+  const imeReady = () => fs.existsSync(path.join(dir, 'IME_ACTIVE'));
+  const imeList = () => (imeReady() && !ime.enabled.includes(IME_AUTO) ? [IME_AUTO] : []).concat(ime.enabled);
 
   const okOut = out => ({ out: out == null ? '' : out, code: 0 });
   const fail = msg => ({ out: msg + '\n', code: 1 });
@@ -82,7 +92,7 @@ function makeFakeAdb(dir) {
       if (!devFiles.has(target)) return fail(`cat: ${target}: No such file or directory`);
       return okOut(devFiles.get(target));
     }
-    if (/^ime list( |$)/.test(cmd)) return okOut(ime.enabled.map(c => c + '\n').join(''));
+    if (/^ime list( |$)/.test(cmd)) return okOut(imeList().map(c => c + '\n').join(''));
     if (/^ime enable /.test(cmd)) {
       const c = cmd.split(/\s+/).pop();
       if (!ime.enabled.includes(c)) ime.enabled.push(c);
@@ -99,7 +109,7 @@ function makeFakeAdb(dir) {
       if (!m) return fail('settings: bad args');
       const [, verb, key, val] = m;
       if (key === 'default_input_method') {
-        if (verb === 'get') return okOut(ime.default + '\n');
+        if (verb === 'get') return okOut((imeReady() ? IME_AUTO : ime.default) + '\n');
         ime.default = verb === 'put' ? val : '';
         return okOut('');
       }
