@@ -75,11 +75,41 @@ async function listDevices() {
 function rand(a, b) { return Math.round(a + Math.random() * Math.max(0, b - a)); }
 function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
 
-function estimate(count) {
+/**
+ * 这条到底发视频还是图文。优先级：
+ *   发布行上的 kind（从「AI 内容报告」导入时按「内容类型」列判定好）→ 行上的内容类型原文 → 目录里实际有什么。
+ * 两样都有、又没标内容类型 → 返回 ''（判不了），由调用方明确报错 —— 绝不猜着发错内容。
+ */
+function rowKind(row, item = {}) {
+  const declared = (row && row.kind) || wp.contentKind(row && row.contentType);
+  if (declared === 'image' || declared === 'video') return declared;
+  const files = (item && item.files) || [];
+  const nImg = files.filter(f => f.type === 'image').length;
+  const nVid = files.filter(f => f.type === 'video').length;
+  if (nVid && !nImg) return 'video';
+  if (nImg) return 'image';
+  return '';
+}
+
+/**
+ * 预估耗时。
+ * 单条技术下限：图文 ≈30 秒（真机实测 65–80s，含固定间隔）；视频 push 抖动大、上传久，
+ * 还要多等一段「媒体库索引到相册」，所以按 60 秒算 —— 以前拿图文那一套算视频，预估会明显偏短。
+ * kinds 传 { image, video } 可分别计；不传就全按图文算（保持老调用方式）。
+ */
+function estimate(count, kinds = null) {
   const c = cfg();
-  const avg = c.mock ? (c.mockIntervalSec || 5) : (c.intervalSec || c.intervalMinSec || 60);
-  const perItem = avg + 30;   // 单条技术下限 ≈30 秒
-  return { minutes: Math.round(count * perItem / 60), seconds: Math.round(count * perItem) };
+  const per = kind => {
+    const isV = kind === 'video';
+    const avg = c.mock ? (c.mockIntervalSec || 5)
+      : (isV ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
+        : (c.intervalSec || c.intervalMinSec || 60));
+    return avg + (isV ? 60 : 30);
+  };
+  const nImg = kinds ? (Number(kinds.image) || 0) : count;
+  const nVid = kinds ? (Number(kinds.video) || 0) : 0;
+  const seconds = nImg * per('image') + nVid * per('video');
+  return { minutes: Math.round(seconds / 60), seconds: Math.round(seconds), image: nImg, video: nVid };
 }
 
 /* ---------------- 真实通道 ---------------- */
@@ -125,8 +155,12 @@ async function saveShot(serial, tag, ctx) {
 async function runStep(serial, step, data, ctx, adbKeyboard) {
   switch (step.action) {
     case 'tapText': case 'tapId': case 'tapDesc': {
-      const xml = await adb.dump(serial);
-      if (!xml) throw new Error('拿不到界面结构（uiautomator dump 失败）');
+      const d = await adb.dumpEx(serial);
+      if (!d.ok) throw new Error(`拿不到界面结构：${d.why}${d.idle ? '（这个页面一直不 idle）' : ''}`);
+      if (d.animOff && ctx && ctx.log) {
+        ctx.log('页面一直不 idle，已临时关掉系统动画抓到结构（抓完已还原）', 'warn');
+      }
+      const xml = d.xml;
       const nodes = uimap.parseNodes(xml);
       const cond = step.action === 'tapText' ? { text: step.value }
         : step.action === 'tapId' ? { id: step.value } : { desc: step.value };
@@ -169,8 +203,9 @@ async function recover(serial, map, ctx) {
     for (const raw of steps) {
       const step = uimap.fill(raw, {});
       if (step.action === 'tapText' || step.action === 'tapId' || step.action === 'tapDesc') {
-        const xml = await adb.dump(serial);
-        if (!xml) break;
+        const d = await adb.dumpEx(serial);
+        if (!d.ok) break;
+        const xml = d.xml;
         const nodes = uimap.parseNodes(xml);
         const node = uimap.findNode(nodes, step.action === 'tapText' ? { text: step.value }
           : step.action === 'tapId' ? { id: step.value } : { desc: step.value });
@@ -191,30 +226,69 @@ async function recover(serial, map, ctx) {
 async function runReal(row, item, copyRow, serial, map, ctx) {
   const log = ctx.log || (() => {});
   const cancelled = ctx.cancelled || (() => false);
-  const adbKeyboard = !!(store.get('publish') || {}).adbKeyboard;
+  const c = cfg();
+  const adbKeyboard = !!c.adbKeyboard;
 
-  // 1) 推图 + 触发媒体扫描（不推图，得物相册里根本看不到）
-  const images = (item.files || []).filter(f => f.type === 'image');
-  if (!images.length) throw new Error('该条没有图片可推');
+  // 0) 这条发视频还是图文：报告标了就以报告为准，没标按目录推断；两边都有又没标 → 这里必须拦住
+  const kind = rowKind(row, item);
+  if (!kind) throw new Error('判不了这条该发图文还是视频：这个叶子里图和视频都有，报告里也没标「内容类型」');
+  const isVideo = kind === 'video';
+  const mediaWord = isVideo ? '视频' : '图';
+  row.kind = kind;
+
+  // 1) 推素材 + 触发媒体扫描（不推，得物相册里根本看不到）
+  const media = (item.files || []).filter(f => f.type === (isVideo ? 'video' : 'image'));
+  if (!media.length) throw new Error(`这条按「${isVideo ? '视频' : '图文'}」发，但没有可推的${mediaWord}片文件`);
   const remoteDir = '/sdcard/DCIM/Camera';
-  for (const f of images) {
+  const remotes = [];
+  for (const f of media) {
     const abs = path.join(item.absDir || item.dir, f.name);
     const remote = `${remoteDir}/${String(f.name).replace(/[^\w.\-+]/g, '_')}`;
     const r = await adb.push(serial, abs, remote);
-    if (!r.ok) throw new Error(`推图失败 ${f.name}：${(r.stderr || '').trim()}`);
+    if (!r.ok) throw new Error(`推${mediaWord}片失败 ${f.name}：${(r.stderr || '').trim()}`);
     await adb.mediaScan(serial, remote);
+    remotes.push(remote);
   }
-  log(`${row.dir}：已推 ${images.length} 张图并触发媒体扫描`, 'info');
+  log(`${row.dir}：已推 ${media.length} 个${mediaWord}片并触发媒体扫描`, 'info');
 
-  // 2) 按 UI 定位表走真实界面
+  // 视频体积大，媒体库索引比图片慢得多：广播发完相册里往往还没有它 → 必须等到真能看见再往下走。
+  // 否则会稳定卡在「相册里选不到这条视频」，而且看起来像点击步骤配错了，很难查。
+  if (isVideo) {
+    const sec = Number(c.videoIndexTimeoutSec) > 0 ? Number(c.videoIndexTimeoutSec) : 180;
+    row.status = '等媒体库索引';
+    if (ctx.onRow) ctx.onRow(row);
+    const w = await adb.mediaVisible(serial, remotes, {
+      timeoutMs: sec * 1000,
+      onTick: s => { row.status = `等媒体库索引 ${s}s`; if (ctx.onRow) ctx.onRow(row); }
+    });
+    if (!w.ok) {
+      throw new Error(`视频已推到设备，但等了 ${w.waited}s 媒体库还没索引到（相册里选不到）`
+        + (w.error ? `：${w.error}` : '')
+        + `；可把 publish.videoIndexTimeoutSec 调大（当前 ${sec}s），或先在模拟器相册里确认能看到这个文件`);
+    }
+    log(`${row.dir}：媒体库已索引到视频（等待 ${w.waited}s）`, 'info');
+  }
+
+  // 2) 按 UI 定位表走真实界面。
+  //    视频发布页与图文**不是同一套界面**（入口文案、相册页签、编辑页都不同），
+  //    所以视频条必须走 videoSteps；拿图文那套硬套只会点到别的地方去。
+  const steps = isVideo ? (map.videoSteps || []) : (map.steps || []);
+  if (isVideo && !steps.length) {
+    throw new Error('这条是视频，但 UI 定位表里没有 videoSteps —— 得物的视频发布页和图文不是一套界面，不能拿图文步骤硬套。'
+      + '请在得物「发布视频」页点「抓取页面结构」，改好 videoSteps 后再导入 uiMap.json');
+  }
+
   const data = {
     title: (copyRow && copyRow.title) || '',
     body: (copyRow && copyRow.body) || '',
-    sku: item.sku || '', color: item.color || ''
+    sku: item.sku || '', color: item.color || '',
+    // 相册里按文件名点选时用：要填**推上去之后**的文件名（含中文的名字在推送时会被清洗成下划线），
+    // 拿本地原名去匹配是匹配不到的
+    videoName: remotes[0] ? path.basename(remotes[0]) : ''
   };
   (copyRow && copyRow.topics || []).forEach((t, i) => { data['topic' + (i + 1)] = t; });
 
-  for (const raw of map.steps) {
+  for (const raw of steps) {
     if (cancelled()) throw new Error('已取消');
     const step = uimap.fill(raw, data);
     row.status = step.name;
@@ -263,8 +337,15 @@ async function run(state, ctx = {}) {
   const tAll = Date.now();   // 批量总耗时（真机日志：批量发布完成，总耗时 86.6s）
 
   const todo = rows.filter(r => r.result !== '发布成功');
-  const est = estimate(todo.length);
-  log(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条，预计 ${est.minutes} 分钟`, mode === 'adb' ? 'ok' : 'warn');
+  // 预估要按图文/视频分开算：视频单条更慢（推得久 + 还要等媒体库索引），混着算会明显偏短
+  const itemById = new Map((state.items || []).map(it => [String(it.id), it]));
+  const estKinds = todo.reduce((a, r) => {
+    if (rowKind(r, itemById.get(String(r.id)) || {}) === 'video') a.video++; else a.image++;
+    return a;
+  }, { image: 0, video: 0 });
+  const est = estimate(todo.length, estKinds);
+  const mix = estKinds.video ? `（图文 ${estKinds.image} · 视频 ${estKinds.video}）` : '';
+  log(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条${mix}，预计 ${est.minutes} 分钟`, mode === 'adb' ? 'ok' : 'warn');
   if (mode === 'mock') log('模拟通道不接触设备，只演练节奏/重试/回写；要真发请先「连接模拟器」并通过驱动自检', 'warn');
   log('发布期间不占用发布单文件，结果先写 publish-log.jsonl', 'info');
 
@@ -287,8 +368,11 @@ async function run(state, ctx = {}) {
     }
 
     if (done > 0) {
-      // 真机是固定间隔（默认 60 秒），带倒计时
-      const wait = c.mock ? (c.mockIntervalSec || 5) : (c.intervalSec || c.intervalMinSec || 60);
+      // 真机是固定间隔（默认 60 秒），带倒计时；视频单条更慢，间隔单独放宽
+      const video = rowKind(row, item) === 'video';
+      const wait = c.mock ? (c.mockIntervalSec || 5)
+        : (video ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
+          : (c.intervalSec || c.intervalMinSec || 60));
       log(`按 ${wait} 秒间隔，${wait}s 后执行`, 'info');
       if (!await sleep(wait * 1000, cancelled, left => {
         progress({ done, total: todo.length, label: `${left}s 后执行`, waitLeft: left });
@@ -328,14 +412,16 @@ async function run(state, ctx = {}) {
       onRow(row);
     }
 
+    const tag = rowKind(row, item) === 'video' ? '视频' : '图文';
     row.elapsed = +((Date.now() - t0) / 1000).toFixed(1);
-    if (success) log(`行 ${row.seq}[图文] 发布完成，已回填时间 ${row.startAt}（耗时 ${row.elapsed}s）`, 'ok');
-    else log(`行 ${row.seq} 发布失败：${row.reason}（耗时 ${row.elapsed}s）`, 'warn');
+    if (success) log(`行 ${row.seq}[${tag}] 发布完成，已回填时间 ${row.startAt}（耗时 ${row.elapsed}s）`, 'ok');
+    else log(`行 ${row.seq}[${tag}] 发布失败：${row.reason}（耗时 ${row.elapsed}s）`, 'warn');
 
-    sheet.appendLog({ batch, seq: row.seq, id: row.id, dir: row.dir, at: row.startAt, result: row.result, reason: row.reason, retries: row.retries, elapsed: row.elapsed, mode });
+    sheet.appendLog({ batch, seq: row.seq, id: row.id, dir: row.dir, at: row.startAt, result: row.result, reason: row.reason, retries: row.retries, elapsed: row.elapsed, mode, kind: tag });
     results.push({
       batch, seq: row.seq, at: row.startAt, result: row.result, reason: row.reason,
-      retries: row.retries, elapsed: row.elapsed, audit: row.result === '发布成功' ? '审核中' : '',
+      retries: row.retries, elapsed: row.elapsed, kind: tag,
+      audit: row.result === '发布成功' ? '审核中' : '',
       reportRow: row.reportRow || 0   // 从「AI 内容报告」导入的行：回写时需要它在 Excel 里的行号
     });
     done++;
@@ -351,6 +437,6 @@ async function run(state, ctx = {}) {
 
 module.exports = {
   connect, run, estimate, saveShot, recover,
-  probes: adb.probe, probe: adb.probe, dump: adb.dump,
+  probes: adb.probe, probe: adb.probe, dump: adb.dump, dumpEx: adb.dumpEx,
   devices, listDevices, addDevice, removeDevice
 };

@@ -62,13 +62,134 @@ async function screencap(serial, outFile) {
   return r.stdout;
 }
 
-/** uiautomator dump → XML */
-async function dump(serial) {
-  const remote = '/sdcard/bluev_window.xml';
-  await shell(serial, `uiautomator dump ${remote}`, { timeout: 30000 });
-  const r = await shell(serial, `cat ${remote}`, { timeout: 20000 });
-  if (!r.ok || !/</.test(r.stdout)) return null;
-  return r.stdout.replace(/^\s*[\s\S]*?<\?xml/, '<?xml').trim();
+/**
+ * 媒体库里能不能看见这几个文件（= 得物相册里有没有）。
+ *
+ * 为什么非要有这一条：推完文件只发一条 MEDIA_SCANNER_SCAN_FILE 广播，**索引是异步的**。
+ * 图片小、扫得快，所以一直没暴露；视频几十 MB，广播一发就去点相册 → 稳定「相册里选不到这条视频」，
+ * 而且看起来像是点击步骤配错了，很难查。所以视频推完必须**等到真能看见**再往下走。
+ *
+ * 查不动这条命令时返回 ok:false 并把原始输出带回去 —— 不假装看到、也不假装没看到。
+ * 返回 { ok, waited(秒), rows, error }
+ */
+async function mediaVisible(serial, remoteFiles, { timeoutMs = 120000, pollMs = 2000, onTick } = {}) {
+  const want = (Array.isArray(remoteFiles) ? remoteFiles : [remoteFiles]).filter(Boolean);
+  if (!want.length) return { ok: true, waited: 0, rows: '' };
+  // /sdcard 与 /storage/emulated/0 是同一个地方，但 MediaStore 的 _data 记的是后者
+  const asMedia = p => String(p).replace(/^\/sdcard\//, '/storage/emulated/0/');
+  const t0 = Date.now();
+  let rows = '';
+  let lastErr = '';
+  for (;;) {
+    const r = await shell(serial, 'content query --uri content://media/external/video/media --projection _data', { timeout: 20000 });
+    rows = String(r.stdout || '');
+    lastErr = String(r.stderr || '').trim();
+    if (r.ok && want.every(p => rows.includes(asMedia(p)) || rows.includes(p))) {
+      return { ok: true, waited: +((Date.now() - t0) / 1000).toFixed(1), rows };
+    }
+    const waited = Date.now() - t0;
+    if (waited >= timeoutMs) {
+      return { ok: false, waited: +(waited / 1000).toFixed(1), rows, error: r.ok ? '' : (lastErr || 'content query 执行失败') };
+    }
+    if (onTick) onTick(Math.round(waited / 1000));
+    await new Promise(res => setTimeout(res, pollMs));
+  }
+}
+
+const DUMP_REMOTE = '/sdcard/bluev_window.xml';
+/**
+ * 系统动画开关（三个）。得物发布页上有一个跟随它运行的循环动画：
+ * 实测 animator_duration_scale=1 时 uiautomator 永远等不到 idle（连续 60 次、约 10 分钟全失败），
+ * 同一秒内只把它置 0 就能立刻抓到 —— 所以「关动画重试一次，抓完还原」是可行的兜底。
+ */
+const ANIM_KEYS = ['window_animation_scale', 'transition_animation_scale', 'animator_duration_scale'];
+
+const sleepMs = ms => new Promise(res => setTimeout(res, Math.max(0, Number(ms) || 0)));
+
+/** 读三个动画开关；读不齐就不动它们（宁可重试失败，也不猜着改回去） */
+async function animGet(serial) {
+  const r = await shell(serial, ANIM_KEYS.map(k => `settings get global ${k}`).join('; '));
+  if (!r.ok) return null;
+  const vals = String(r.stdout || '').trim().split(/\s+/);
+  if (vals.length !== ANIM_KEYS.length) return null;
+  return vals;
+}
+
+/** 关闭三个动画开关 */
+async function animSet(serial, v) {
+  return shell(serial, ANIM_KEYS.map(k => `settings put global ${k} ${v}`).join('; '));
+}
+
+/** 还原；原本「没设过」的要用 delete，别把字面量 "null" 写进去 */
+async function animRestore(serial, vals) {
+  const cmd = ANIM_KEYS
+    .map((k, i) => (vals[i] === 'null' ? `settings delete global ${k}` : `settings put global ${k} ${vals[i]}`))
+    .join('; ');
+  return shell(serial, cmd);
+}
+
+/**
+ * 抓一次，成功/失败都给出结构化结果 —— **绝不会返回上一次的旧内容**。
+ *
+ * 为什么要先 rm：uiautomator dump 失败时**不写文件**（实测「页面不 idle」失败后，
+ * 目标文件仍是上一次的 47 字节哨兵，一字未动）。而旧实现是共用一个远端路径、
+ * 抓完直接 cat，且不检查 dump 的返回 —— 失败时会把**上一个页面**的结构当成本页返回，
+ * 调用方于是拿着旧页面的坐标去点新页面。这是「静默点错」，比报错危险得多。
+ */
+async function dumpOnce(serial) {
+  await shell(serial, `rm -f ${DUMP_REMOTE}`);
+  const r = await shell(serial, `uiautomator dump ${DUMP_REMOTE}`, { timeout: 30000 });
+  const out = String(r.stdout || '').trim();
+  if (!/dumped to/i.test(out)) {
+    const last = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+    return { ok: false, idle: /idle state/i.test(out), why: last || 'uiautomator dump 没有任何输出' };
+  }
+  const c = await shell(serial, `cat ${DUMP_REMOTE}`, { timeout: 20000 });
+  if (!c.ok || !/</.test(String(c.stdout || ''))) return { ok: false, idle: false, why: 'dump 已写出，但内容读不出来' };
+  return { ok: true, xml: String(c.stdout).replace(/^\s*[\s\S]*?<\?xml/, '<?xml').trim() };
+}
+
+/**
+ * dump 的详细版：拿不到时告诉调用方**为什么**（是页面不 idle，还是设备不在线）。
+ * 返回 { ok, xml?, why, idle, animOff }
+ */
+async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true } = {}) {
+  let last = { ok: false, idle: false, why: '未尝试' };
+  for (let i = 0; i <= retries; i++) {
+    const r = await dumpOnce(serial);
+    if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: false };
+    last = r;
+    if (i < retries) await sleepMs(retryMs);
+  }
+  if (!last.idle || !allowAnimOff) return Object.assign({ animOff: false }, last);
+
+  const before = await animGet(serial);
+  if (!before) {
+    return Object.assign({ animOff: false }, last, {
+      why: last.why + '（想临时关掉系统动画重试，但读不到设备的动画开关，所以没动它）'
+    });
+  }
+  await animSet(serial, 0);
+  try {
+    const r = await dumpOnce(serial);
+    if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: true };
+    return Object.assign({ animOff: true }, r, { why: r.why || last.why });
+  } finally {
+    // 无论成功还是抛错都还原：不能把用户设备的设置留在改过的状态
+    await animRestore(serial, before);
+  }
+}
+
+let lastDump = null;
+/** uiautomator dump → XML；抓不到返回 null（保持老调用方的契约）。要原因用 dumpEx。 */
+async function dump(serial, opts) {
+  lastDump = await dumpEx(serial, opts);
+  return lastDump.ok ? lastDump.xml : null;
+}
+
+/** 最近一次 dump 的详情，供日志/界面说明「为什么抓不到」 */
+function lastDumpInfo() {
+  return lastDump;
 }
 
 async function tap(serial, x, y) {
@@ -117,12 +238,21 @@ async function probe(serial) {
   out.tools.input = (await shell(serial, 'input')).ok;
   out.tools.screencap = (await screencap(serial)).length > 0;
   out.tools.uiautomator = !!(await dump(serial));
+  if (out.tools.uiautomator) {
+    const d = lastDumpInfo();
+    if (d && d.animOff) out.notes.push('自检时页面一直不 idle，已临时关掉系统动画才抓到结构（已还原）');
+  }
 
   const pkgs = await packages(serial);
   out.appPackage = pkgs.find(p => /shizhuang|duapp|poizon|dewu/i.test(p)) || null;
   out.adbKeyboard = pkgs.some(p => p.includes('com.android.adbkeyboard'));
 
-  if (!out.tools.uiautomator) out.notes.push('uiautomator dump 失败：拿不到界面结构，无法定位发布按钮');
+  if (!out.tools.uiautomator) {
+    const d = lastDumpInfo() || {};
+    out.notes.push(d.idle
+      ? `uiautomator dump 失败：当前页面一直不 idle（得物发布页会这样），拿不到界面结构 —— 原始输出「${d.why || ''}」`
+      : `uiautomator dump 失败：拿不到界面结构，无法定位发布按钮${d.why ? ` —— 原始输出「${d.why}」` : ''}`);
+  }
   if (!out.tools.screencap) out.notes.push('screencap 失败：失败时截不了图');
   if (!out.adbKeyboard) out.notes.push('未装 ADBKeyboard：中文标题/正文输入会失败（ASCII 不受影响）');
   if (!out.appPackage) out.notes.push('设备里没找到得物 App 包名，请确认已安装登录');
@@ -130,6 +260,6 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, screencap,
-  dump, tap, keyevent, inputText, packages, probe
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, screencap,
+  dump, dumpEx, lastDumpInfo, tap, keyevent, inputText, packages, probe
 };

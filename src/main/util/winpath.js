@@ -152,6 +152,20 @@ function ext(name) { return path.extname(String(name)).toLowerCase(); }
 function isMedia(name) { return MEDIA_EXT.includes(ext(name)); }
 function isVideo(name) { return VIDEO_EXT.includes(ext(name)); }
 
+/**
+ * 报告「内容类型」列 → 'video' / 'image' / ''（认不出）。
+ * 为什么需要它：一个叶子目录里可能同时有图和视频（达人两种素材都拍了），
+ * 这时只能以运营在报告里标的内容类型为准；「按目录里有什么」会在这种素材上做错事。
+ * 认不出时返回空串，交给调用方按目录内容推断 —— 只有「两边都有、又没标」才真的判不了。
+ */
+function contentKind(name) {
+  const s = String(name == null ? '' : name).trim();
+  if (!s) return '';
+  if (/视频|短片|video|mp4/i.test(s)) return 'video';
+  if (/图文|图片|照片|image|photo/i.test(s)) return 'image';
+  return '';
+}
+
 function stamp(d = new Date()) {
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
@@ -178,6 +192,6 @@ function defaultPaths() {
 module.exports = {
   isWin, toLong, toDisplay, pathRisk, sameVolume, retry, isFileLockError,
   mkdirp, readdirSafe, statSafe, exists, linkOrCopy, copyFile, renameDir, moveFile,
-  isJunk, ext, isMedia, isVideo, stamp, humanSize, defaultPaths,
+  isJunk, ext, isMedia, isVideo, contentKind, stamp, humanSize, defaultPaths,
   MEDIA_EXT, VIDEO_EXT
 };

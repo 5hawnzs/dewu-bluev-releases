@@ -4,7 +4,7 @@
      ② 报告行 ↔ 叶子文件夹一一对应（叶子名自然排序：_2 排在 _10 前）；数量不等直接报错并列出多/少哪些
      ③ 标题/文案：报告里有就用，空的本地生成
      ④ 好物 1..9 都带上，颜色可空
-     ⑤ 含视频 / 没图片的叶子 → 明确标成「校验未通过」并写明原因（不静默丢）
+     ⑤ 发图文还是发视频以报告的「内容类型」列为准；没标按目录推断；图和视频都有又没标 → 标「校验未通过」不静默丢
      ⑥ 执行结果已是「发布成功」的行 → 续跑时跳过
      ⑦ 发布结果回写报告的 B（实际执行时间）/ C（执行结果）；报告被占用 → 整批暂存 → 下次先补写
      ⑧ 端到端：report.import → publish.run(mock) → 报告落字
@@ -95,10 +95,11 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     publish: { mock: true, mockIntervalSec: 1, retry: 1 }
   });
 
-  // 批次目录：3 个叶子（第 2 个含视频）
+  // 批次目录：4 个叶子（第 2 个图+视频都有、报告又没标；第 3 个只有视频、报告标「视频」）
   const batchDir = makeBatch(path.join(TMP, '卡宾', '20260901'), {
     'UWG460108+本白_1': ['1.jpg', '2.jpg'],
     'UWG460108+本白_2': ['1.jpg', '短片.mp4'],
+    'UWG460110+白色_1': ['短片.mp4'],
     'UWH760085+黑色条纹_1': ['1.jpg']
   });
 
@@ -107,10 +108,11 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   await writeReport(repFile, COLS, [
     { 素材路径: batchDir, 标题: '白色的鞋谁懂', 文案: '这双本白真的百搭', 好物1_货号: 'UWG460108', 好物1_颜色: '本白', 好物2_货号: 'UWG460109', 内容类型: '26FWT75', 素材来源: 'KIDS' },
     { 素材路径: batchDir, 好物1_货号: 'UWG460110', 好物1_颜色: '本白', 好物3_货号: 'UWH760085' },
+    { 素材路径: batchDir, 好物1_货号: 'UWG460111', 内容类型: '视频' },
     { 素材路径: batchDir, 好物1_货号: 'UWH760085', 好物1_颜色: '黑色条纹', 执行结果: '发布成功', 实际执行时间: '2026-09-01 10:00:00' }
   ]);
   const rep = await report.readReport(repFile);
-  ok('① 列顺序打乱也能按列名识别', rep.rows.length === 3 && rep.rows[0].dir === batchDir, `${rep.rows.length} 行 · 表「${rep.sheetName}」`);
+  ok('① 列顺序打乱也能按列名识别', rep.rows.length === 4 && rep.rows[0].dir === batchDir, `${rep.rows.length} 行 · 表「${rep.sheetName}」`);
   ok('① 好物 1/2/3 与颜色都取到（颜色可为空）',
     rep.rows[0].goods.length === 2 && rep.rows[0].goods[0].sku === 'UWG460108' && rep.rows[0].goods[0].color === '本白' && rep.rows[0].goods[1].color === '' && rep.rows[1].goods[1].sku === 'UWH760085',
     JSON.stringify(rep.rows.map(r => r.goods)));
@@ -125,21 +127,21 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     ])), {});
   } catch (e) { mismatch = e.message; }
   ok('② 行数与叶子数不等 → 直接报错并列出这个路径下有几个叶子',
-    /3 个叶子文件夹/.test(mismatch) && /报告里有 2 行指向它/.test(mismatch) && /UWG460108\+本白_1/.test(mismatch),
+    /4 个叶子文件夹/.test(mismatch) && /报告里有 2 行指向它/.test(mismatch) && /UWG460108\+本白_1/.test(mismatch),
     mismatch.split('，但').pop() || mismatch);
 
   const built = await report.build(rep, { generateCopy: async sub => sub.map(i => ({ id: i.id, title: '【本地】' + i.sku, body: '本地正文' + i.color })) });
-  ok('② 3 行 ↔ 3 个叶子，按叶子名自然排序配对',
-    built.items.length === 3 && built.items[0].id === 'UWG460108+本白_1' && built.items[2].id === 'UWH760085+黑色条纹_1',
+  ok('② 4 行 ↔ 4 个叶子，按叶子名自然排序配对',
+    built.items.length === 4 && built.items[0].id === 'UWG460108+本白_1' && built.items[3].id === 'UWH760085+黑色条纹_1',
     built.items.map(i => i.id).join(' | '));
   ok('② 叶子里的图片/视频被分清', built.publishRows[0].images === 2 && built.publishRows[1].videos === 1, JSON.stringify(built.publishRows.map(r => ({ i: r.images, v: r.videos }))));
 
   // ---- ③ 标题/文案：有则用、空则生成 ----
-  ok('③ 报告里有标题/文案的用报告的，空的两个本地生成',
-    built.copyRows.length === 3
+  ok('③ 报告里有标题/文案的用报告的，空的三个本地生成',
+    built.copyRows.length === 4
     && built.copyRows.find(r => r.id === 'UWG460108+本白_1').from === '报告'
     && built.copyRows.find(r => r.id === 'UWG460108+本白_1').title === '白色的鞋谁懂'
-    && built.copyRows.filter(r => r.from === '本地生成').length === 2,
+    && built.copyRows.filter(r => r.from === '本地生成').length === 3,
     built.copyRows.map(r => `${r.id}:${r.from}`).join(' | '));
   ok('③ 本地生成时拿到了对应货号', /UWG460110/.test(built.copyRows.find(r => r.id === 'UWG460108+本白_2').title));
 
@@ -147,34 +149,50 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   ok('④ 发布行带上全部好物（好物2 颜色空也保留）',
     built.publishRows[0].goods === 2 && built.publishRows[0].goodsList[1].sku === 'UWG460109' && built.publishRows[0].goodsList[1].color === '',
     JSON.stringify(built.publishRows[0].goodsList));
-  ok('⑤ 含视频的叶子被明确标出不发布（不是静默丢）',
-    built.blocked.length === 1 && built.blocked[0].id === 'UWG460108+本白_2' && /视频/.test(built.blocked[0].note) && /暂不发布/.test(built.notes.join('')),
+  ok('⑤ 图和视频都有、报告又没标内容类型 → 标「校验未通过」并说清判不了（不静默丢）',
+    built.blocked.length === 1 && built.blocked[0].id === 'UWG460108+本白_2'
+    && /内容类型/.test(built.blocked[0].note) && /暂不发布/.test(built.notes.join('')),
     built.blocked.map(b => b.id + '：' + b.note).join(' | '));
+  ok('⑤ 报告标了「视频」且叶子里有视频 → 判为视频，不再被一票否决',
+    built.publishRows.find(r => r.id === 'UWG460110+白色_1').kind === 'video',
+    JSON.stringify(built.publishRows.map(r => ({ id: r.id, kind: r.kind }))));
+  ok('⑤ 报告没标时按目录内容推断（只有图 → 图文），并把推断写进说明',
+    built.publishRows.find(r => r.id === 'UWG460108+本白_1').kind === 'image'
+    && /判定为「图文」/.test(built.notes.join('')),
+    built.notes.join(' | '));
 
   // ---- ⑥ 已是「发布成功」的行 → 续跑跳过 ----
   ok('⑥ 报告里已「发布成功」的行带上了状态（发布时跳过）',
-    built.publishRows[2].result === '发布成功', built.publishRows.map(r => r.result || '（待发）').join(' | '));
+    built.publishRows[3].result === '发布成功', built.publishRows.map(r => r.result || '（待发）').join(' | '));
 
   // ---- ⑦ 端到端：导入 → 发布（mock）→ 回写报告 ----
   const imported = await jobs.run('report.import', { file: repFile });
-  ok('⑦ 导入成功并生成发布队列', imported.ok === true && imported.result.total === 3, imported.error || JSON.stringify(imported.result && imported.result.total));
+  ok('⑦ 导入成功并生成发布队列', imported.ok === true && imported.result.total === 4, imported.error || JSON.stringify(imported.result && imported.result.total));
   const st = project.get();
   ok('⑦ 工程状态已替换为这份报告（items / copyRows / verify / publish）',
-    st.items.length === 3 && st.copyRows.length === 3 && st.verify.rows.length === 1 && st.publish.rows.length === 3 && st.publish.reportFile === repFile,
+    st.items.length === 4 && st.copyRows.length === 4 && st.verify.rows.length === 1 && st.publish.rows.length === 4 && st.publish.reportFile === repFile,
     `items ${st.items.length} · copy ${st.copyRows.length} · verify ${st.verify.rows.length} · rows ${st.publish.rows.length}`);
+  ok('⑦ 发布队列里带上了每条的发文类型（图文/视频）',
+    st.publish.rows.filter(r => r.kind === 'video').length === 1 && st.publish.rows.filter(r => r.kind === 'image').length === 2
+    && st.publish.rows.find(r => r.id === 'UWG460108+本白_2').kind === '',
+    JSON.stringify(st.publish.rows.map(r => r.id + ':' + r.kind)));
   ok('⑦ 报告的暂存队列是干净的（没有误用发布单的队列）',
     report.pendingCount() === 0 && require(path.join(base, 'src/main/services/sheet.js')).takePending('sheet').length === 0);
 
   const pub = await jobs.run('publish.run', {});
-  ok('⑦ 发布跑完（视频那条按「校验未通过」跳过）', pub.ok === true && pub.result.total === 2, pub.error || JSON.stringify(pub.result));
+  ok('⑦ 发布跑完（只有判不了那条按「校验未通过」跳过）', pub.ok === true && pub.result.total === 3, pub.error || JSON.stringify(pub.result));
 
   const after = await readBack(repFile);
-  const videoRow = after.find(r => r['好物1_货号'] === 'UWG460110');
+  const undecided = after.find(r => r['好物1_货号'] === 'UWG460110');
+  const videoPub = after.find(r => r['好物1_货号'] === 'UWG460111');
   const doneRow = after.find(r => r['好物1_货号'] === 'UWH760085');
   const genRow = after.find(r => r['好物1_货号'] === 'UWG460108');
-  ok('⑦ 含视频那行的 C 列写明原因（B 列留空，因为没执行）',
-    /校验未通过/.test(videoRow['执行结果']) && /视频/.test(videoRow['执行结果']) && videoRow['实际执行时间'] === '',
-    videoRow['执行结果']);
+  ok('⑦ 判不了那行的 C 列写明原因（B 列留空，因为没执行）',
+    /校验未通过/.test(undecided['执行结果']) && /内容类型/.test(undecided['执行结果']) && undecided['实际执行时间'] === '',
+    undecided['执行结果']);
+  ok('⑦ 标了「视频」那条真跑了，B/C 都落字（不再被一票否决）',
+    !!videoPub['实际执行时间'] && /发布成功|失败/.test(videoPub['执行结果']),
+    `${videoPub['实际执行时间']} / ${videoPub['执行结果']}`);
   ok('⑦ 真正发布的那行 B/C 都落字了', !!genRow['实际执行时间'] && /发布成功|失败/.test(genRow['执行结果']),
     `${genRow['实际执行时间']} / ${genRow['执行结果']}`);
   ok('⑦ 报告里本来就「发布成功」的行没被覆盖', doneRow['执行结果'] === '发布成功' && doneRow['实际执行时间'] === '2026-09-01 10:00:00',
@@ -209,11 +227,12 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   const noPath = await writeReport(path.join(TMP, '没写路径.xlsx'), COLS, [
     { 好物1_货号: 'UWG460108', 好物1_颜色: '本白' },
     { 好物1_货号: 'UWG460110', 好物1_颜色: '本白' },
+    { 好物1_货号: 'UWG460111' },
     { 好物1_货号: 'UWH760085', 好物1_颜色: '黑色条纹' }
   ]);
   const withDir = await jobs.run('report.import', { file: noPath, dir: batchDir });
-  ok('⑩ 报告没写素材路径时，用选择的批次目录照样配成 3 条',
-    withDir.ok === true && withDir.result.total === 3, withDir.error || JSON.stringify(withDir.result && withDir.result.total));
+  ok('⑩ 报告没写素材路径时，用选择的批次目录照样配成 4 条',
+    withDir.ok === true && withDir.result.total === 4, withDir.error || JSON.stringify(withDir.result && withDir.result.total));
   ok('⑩ 选的素材目录被记进工程状态（界面能看到用的是哪个目录）',
     project.get().publish.reportDir === batchDir, project.get().publish.reportDir);
   const noDirGiven = await jobs.run('report.import', { file: noPath });

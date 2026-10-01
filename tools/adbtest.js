@@ -1,4 +1,7 @@
 /* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备
+   覆盖：驱动自检 / dump 解析与定位表 / 未配定位表必失败 / 图文条全流程 / 页面结构变了必失败 /
+        **视频条**（推视频 → 等媒体库索引 → 走 videoSteps；没配 videoSteps 必失败；媒体库一直看不到也必失败）/
+        **页面不 idle**（自动关动画兜底并还原；兜不住就明确失败；★ 抓不到时绝不返回上一页的残留结构）
    假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
    Windows 的 execFile('adb') 只认 adb.exe，无扩展名的 bash 脚本跑不起来，故改为函数级替身）。 */
 const Module = require('module');
@@ -149,6 +152,121 @@ const state = {
   const shots = fs.existsSync(path.join(TMP, '输出', 'failures'))
     ? fs.readdirSync(path.join(TMP, '输出', 'failures')) : [];
   ok('失败时存了截图', shots.length > 0, shots.join(', '));
+
+  // 6) 视频条：推视频 → 等媒体库索引 → 走 videoSteps（不是图文那一套）
+  const itemDir2 = path.join(TMP, 'flat', '26FW-YB160+冠军白+2');
+  fs.mkdirSync(itemDir2, { recursive: true });
+  fs.writeFileSync(path.join(itemDir2, '短片.mp4'), Buffer.from('fake video bytes'));
+  const videoItem = {
+    id: '26FW-YB160+冠军白+2', dir: itemDir2, absDir: itemDir2, sku: '26FW-YB160', color: '冠军白',
+    files: [{ name: '短片.mp4', type: 'video' }]
+  };
+  const videoMap = {
+    package: 'com.shizhuang.duapp',
+    steps: uiMap.steps,
+    videoSteps: [
+      { name: '打开发布入口（视频）', action: 'tapText', value: '发布' },
+      { name: '切到视频页签', action: 'tapText', value: '相册' },
+      { name: '确认选视频', action: 'tapText', value: '下一步' },
+      { name: '填标题', action: 'input', value: '${title}' },
+      { name: '关联好物', action: 'tapText', value: '关联好物' }
+    ]
+  };
+  const videoState = {
+    items: [videoItem],
+    copyRows: [{ id: videoItem.id, title: '视频标题', body: '视频正文', topics: [] }],
+    verify: { rows: [{ id: videoItem.id, conclusion: '通过' }] },
+    publish: {
+      rows: [{ seq: 1, id: videoItem.id, dir: videoItem.id, kind: 'video', goods: 1, images: 0, startAt: '', status: '排队', result: '', retries: 0, reason: '' }],
+      mode: 'adb', device: '127.0.0.1:5555'
+    }
+  };
+  store.set({ publish: { uiMap: videoMap, videoIndexTimeoutSec: 5 } });
+  clearCalls();
+  const vlogs = [];
+  const vctx = { log: (m, l) => vlogs.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} };
+  const rv = await publisher.run(videoState, vctx);
+  const vlog = calls();
+  ok('⑥ 视频条跑通（走 videoSteps）', rv.total === 1 && rv.okCount === 1, `成功 ${rv.okCount}/${rv.total}`);
+  ok('⑥ 推的是视频文件（只推 1 个，不是图片）',
+    (vlog.match(/push /g) || []).length === 1 && /push .*短片\.mp4/.test(vlog), (vlog.match(/push .*/g) || []).join(' | '));
+  ok('⑥ 推完真的去查了媒体库（content query）',
+    /content query --uri content:\/\/media\/external\/video\/media/.test(vlog));
+  ok('⑥ 媒体库等待被记进日志', vlogs.some(l => /已索引到视频/.test(l)), vlogs.filter(l => /索引/.test(l)).join(' | '));
+  ok('⑥ videoSteps 的点击真的执行了（不是图文那 4 步）',
+    /input tap 162 160/.test(vlog) && /input tap 162 280/.test(vlog) && /input tap 920 2250/.test(vlog) && /input tap 220 1540/.test(vlog));
+  ok('⑥ 日志标的是 [视频]', vlogs.some(l => /\[视频\] 发布完成/.test(l)), vlogs.filter(l => /发布完成/.test(l)).join(' | '));
+
+  // 7) 视频条但没配 videoSteps → 直接失败，绝不拿图文那套硬套
+  //    注意：store.set 是**深合并**，只写 steps 的话上一份表的 videoSteps 会被留下来，
+  //    所以这里显式给 videoSteps: []（真实导入路径里 publish.importMap 也会显式置空）
+  store.set({ publish: { uiMap: { package: 'com.shizhuang.duapp', steps: uiMap.steps, videoSteps: [] } } });
+  videoState.publish.rows[0].result = '';
+  clearCalls();
+  const rv2 = await publisher.run(videoState, vctx);
+  const vlog2 = calls();
+  ok('⑦ 没配 videoSteps 的视频条直接失败', rv2.rows[0].result === '失败', rv2.rows[0].result + ' / ' + rv2.rows[0].reason);
+  ok('⑦ 失败原因说清缺的是 videoSteps', /videoSteps/.test(rv2.rows[0].reason), rv2.rows[0].reason);
+  ok('⑦ 没有拿图文步骤硬点（推完素材就停住）', !/input tap/.test(vlog2), (vlog2.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
+
+  // 8) 视频推上去了但媒体库一直没索引到 → 明确失败，不许硬点（硬点只会点空）
+  fs.writeFileSync(path.join(FDB, 'MEDIA_LAG'), '1');
+  store.set({ publish: { uiMap: videoMap, videoIndexTimeoutSec: 1 } });
+  videoState.publish.rows[0].result = '';
+  clearCalls();
+  const rv3 = await publisher.run(videoState, vctx);
+  const vlog3 = calls();
+  fs.unlinkSync(path.join(FDB, 'MEDIA_LAG'));
+  ok('⑧ 媒体库一直看不到 → 失败，不硬点',
+    rv3.rows[0].result === '失败' && /媒体库还没索引到/.test(rv3.rows[0].reason), rv3.rows[0].reason);
+  ok('⑧ 等不到就一步界面都没点', !/input tap/.test(vlog3), (vlog3.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
+
+  // 9) 页面一直不 idle（得物发布页实测就这样）→ 自动关动画兜底，且**必须还原**
+  const NOTIDLE = path.join(FDB, 'DUMP_NOT_IDLE');
+  const animLines = () => calls().split(/\r?\n/).filter(l => /settings (get|put|delete) global/.test(l));
+  fs.writeFileSync(NOTIDLE, 'anim');       // 只在系统动画开着时失败（对齐真机实测：关掉动画同一秒就能抓到）
+  clearCalls();
+  const d9 = await publisher.dumpEx('127.0.0.1:5555');
+  ok('⑨ 页面一直不 idle 时，能靠临时关动画抓到结构', d9.ok === true, JSON.stringify({ ok: d9.ok, why: d9.why }));
+  ok('⑨ 这次抓取被标记为「关了动画才抓到」', d9.animOff === true, String(d9.animOff));
+  const ac = animLines().join(' | ');
+  ok('⑨ 抓完把系统动画还原了（不留设备被改过的状态）',
+    /settings put global animator_duration_scale 1/.test(ac), ac || '（一次 settings 都没调）');
+
+  // 10) 关动画也救不了 → 明确失败，绝不硬点
+  fs.writeFileSync(NOTIDLE, 'always');
+  store.set({ publish: { uiMap } });
+  state.publish.rows[0].result = '';
+  state.publish.rows[0].reason = '';
+  clearCalls();
+  const r10 = await publisher.run(state, ctx);
+  const log10 = calls();
+  ok('⑩ 关动画也抓不到时，发布明确失败并说明原因',
+    r10.rows[0].result === '失败' && /idle/.test(r10.rows[0].reason),
+    r10.rows[0].result + ' / ' + r10.rows[0].reason);
+  ok('⑩ 抓不到结构就一步界面都没点', !/input tap/.test(log10),
+    (log10.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
+
+  // 11) ★ 抓不到时**绝不返回上一页的结构**。
+  //     哨兵法：先正常抓到一次（此时设备上留着一份 XML），再让它失败 ——
+  //     旧实现把「dump 失败」和「cat 旧文件」连在一起，会把这上一份当成本页返回，
+  //     调用方于是拿着旧页面的坐标去点新页面（静默点错）。
+  fs.unlinkSync(NOTIDLE);
+  clearCalls();
+  const dA = await publisher.dumpEx('127.0.0.1:5555');
+  ok('⑪ 前置：正常情况下能抓到结构', dA.ok === true && /<hierarchy/.test(dA.xml || ''), dA.ok ? '有内容' : dA.why);
+  fs.writeFileSync(NOTIDLE, 'always');
+  const dOld = await publisher.dump('127.0.0.1:5555');
+  ok('⑪ 抓不到时 dump() 返回 null（不是设备上残留的上一页 XML）',
+    dOld === null, dOld === null ? 'null' : '返回了残留内容：' + String(dOld).slice(0, 60));
+  fs.unlinkSync(NOTIDLE);
+
+  // 12) 结构上也要能看出来：每次 dump 之前必须先删掉远端那个复用文件
+  const seq = calls().split(/\r?\n/);
+  const iRm = seq.findIndex(l => /shell rm -f \/sdcard\/bluev_window\.xml/.test(l));
+  const iDump = seq.findIndex(l => /uiautomator dump/.test(l));
+  ok('⑫ 抓取前先删远端文件（顺序：rm → dump）',
+    iRm >= 0 && iDump >= 0 && iRm < iDump, `rm@${iRm} dump@${iDump}`);
 
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));

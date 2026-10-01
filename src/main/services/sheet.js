@@ -143,9 +143,11 @@ async function exportPublishLog(opts = {}) {
     for (const e of es) {
       const mark = e.result === '发布成功' ? 'V' : (e.result === '失败' ? 'X' : '-');
       const time = e.at ? `，已回填时间 ${e.at}` : '';
+      // 老日志里没有 kind（那时只有图文通道），按图文渲染 —— 与当年的输出一致
+      const kindTag = e.kind === '视频' ? '视频' : '图文';
       const detail = e.result === '发布成功'
-        ? `[${mark}] 行 ${e.seq} [图文] 发布完成${time}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`
-        : `[${mark}] 行 ${e.seq} ${e.result}${e.reason ? '：' + e.reason : ''}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`;
+        ? `[${mark}] 行 ${e.seq} [${kindTag}] 发布完成${time}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`
+        : `[${mark}] 行 ${e.seq} [${kindTag}] ${e.result}${e.reason ? '：' + e.reason : ''}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`;
       lines.push(detail + (e.retries ? `（重试 ${e.retries} 次）` : ''));
       csv.push([name, e.seq, e.dir || '', e.result || '', e.at || '', e.elapsed == null ? '' : e.elapsed, e.retries || 0, e.reason || '', e.mode || '', e.ts ? when(new Date(e.ts)) : '']);
     }

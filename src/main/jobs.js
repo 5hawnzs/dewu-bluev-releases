@@ -166,6 +166,11 @@ async function dispatch(type, args, ctx) {
           expect: row[17], title: row[4], goods1: row[11] ? (row[11] + (row[12] ? ' / ' + row[12] : '')) : '',
           result: row[20] === '校验未通过' ? '校验未通过' : '',
           retries: 0, reason: row[21] || '',
+          // 「这条发图文还是视频」也要跟着带过来：发布单本身没有「内容类型」列，
+          // 只从 items 重建的话这个判定会丢，视频条会被当成图文推图
+          kind: prev.kind || '',
+          contentType: prev.contentType || '',
+          videos: prev.videos || 0,
           reportRow: Number(prev.reportRow || 0)      // 0 = 不是从报告导进来的，回写时会被跳过
         };
       });
@@ -212,7 +217,15 @@ async function dispatch(type, args, ctx) {
       const generated = built.copyRows.filter(r => r.from === '本地生成').length;
       if (generated) logbus.info(`其中 ${fromReport} 条用报告里的标题/文案，${generated} 条报告里是空的、已本地生成`);
       built.problems.forEach(p => logbus.warn(`第 ${p.rowNo} 行跳过：${p.why}`));
-      logbus.warn(`${built.blocked.length ? built.blocked.length + ' 条暂不发布（含视频/没图片）' : '全部 ' + built.publishRows.length + ' 条可发布'}；发布结果会回写到报告的第 B（实际执行时间）/ C（执行结果）列`);
+      const nVideo = built.publishRows.filter(r => r.kind === 'video').length;
+      logbus.warn(`${built.blocked.length ? built.blocked.length + ' 条暂不发布（内容类型判不了 / 缺对应素材）' : '全部 ' + built.publishRows.length + ' 条可发布'}；发布结果会回写到报告的第 B（实际执行时间）/ C（执行结果）列`);
+      if (nVideo) {
+        const um = store.get('publish.uiMap') || {};
+        const vn = (um.videoSteps || []).length;
+        logbus.info(`其中 ${nVideo} 条按「视频」发布（封面用得物推荐的）：${vn
+          ? `videoSteps 已配 ${vn} 步`
+          : '⚠ UI 定位表里还没有 videoSteps —— 请到得物「发布视频」页抓一次结构再导入，否则这几条会直接失败（不会拿图文步骤硬套）'}`);
+      }
       return {
         batch, total: built.publishRows.length, fromReport, generated,
         blocked: built.blocked.length, problems: built.problems, notes: built.notes,
@@ -248,8 +261,14 @@ async function dispatch(type, args, ctx) {
     }
     case 'publish.dump': {
       const serial = args.device || (st().publish && st().publish.device) || store.get('publish.device');
-      const xml = await publisher.dump(serial);
-      if (!xml) throw new Error('uiautomator dump 失败：确认设备在线且没锁屏');
+      const d = await publisher.dumpEx(serial);
+      if (!d.ok) {
+        throw new Error(d.idle
+          ? `抓不到界面结构：当前页面一直不 idle（得物发布页会这样）—— 原始输出「${d.why}」`
+          : `抓不到界面结构：${d.why}。确认设备在线、没锁屏`);
+      }
+      if (d.animOff) logbus.warn('页面一直不 idle，已临时关掉系统动画抓到结构（抓完已还原）');
+      const xml = d.xml;
       const nodes = require('./services/uimap').parseNodes(xml);
       const map = require('./services/uimap').suggest(nodes);
       const outDir = path.join(store.get('paths.output'), 'dumps');
@@ -260,16 +279,33 @@ async function dispatch(type, args, ctx) {
       await fs.promises.writeFile(wp.toLong(xmlFile), xml, 'utf8');
       await fs.promises.writeFile(wp.toLong(mapFile), JSON.stringify(map, null, 2), 'utf8');
       logbus.ok(`已抓取 ${nodes.length} 个节点 → ${path.basename(xmlFile)}`);
-      logbus.warn(`已生成候选定位表 ${path.basename(mapFile)}：它是按关键词猜的，改对后再导入`);
-      return { xmlFile, mapFile, nodeCount: nodes.length, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
+      logbus.warn(`已生成候选定位表 ${path.basename(mapFile)}：steps（图文）与 videoSteps（视频）都是按关键词猜的，改对后再导入`);
+      return { xmlFile, mapFile, nodeCount: nodes.length, steps: map.steps.length, videoSteps: (map.videoSteps || []).length, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
     }
     case 'publish.importMap': {
       const raw = await fs.promises.readFile(wp.toLong(args.file), 'utf8');
       const j = JSON.parse(raw.replace(/^\uFEFF/, ''));
-      if (!j.steps || !j.steps.length) throw new Error('文件里没有 steps 数组');
-      store.set({ publish: { uiMap: j } });
-      logbus.ok(`UI 定位表已导入：${j.steps.length} 步（来自 ${path.basename(args.file)}）`);
-      return { steps: j.steps.length, file: args.file };
+      const um = require('./services/uimap');
+      // 写错的 action 在**导入时**就报出来（并列出可用值），别等发布跑一半才抛「未知步骤类型」
+      const steps = um.normalizeSteps(j.steps, 'steps');
+      const videoSteps = (Array.isArray(j.videoSteps) && j.videoSteps.length) ? um.normalizeSteps(j.videoSteps, 'videoSteps') : [];
+      // ⚠️ store.set 是深合并：只给 steps 的话，上一份定位表里的 videoSteps 会被**原样留下**，
+      // 结果「导入了新表、视频却在用旧坐标」。所以整表替换，缺的键显式置空。
+      const prev = store.get('publish.uiMap') || {};
+      const uiMap = {
+        package: j.package || '',
+        generatedAt: j.generatedAt || 0,
+        steps,
+        videoSteps,
+        videoNote: j.videoNote || ''
+      };
+      // 恢复动作是在界面上单独维护的（「失败恢复动作」），导入定位表不该把它清掉
+      if (Array.isArray(prev.recover) && prev.recover.length) uiMap.recover = prev.recover;
+      store.set({ publish: { uiMap } });
+      logbus.ok(`UI 定位表已导入：图文 ${steps.length} 步 · ${videoSteps.length
+        ? `视频 ${videoSteps.length} 步`
+        : '视频没配（videoSteps）—— 视频条会直接失败，不会拿图文那套硬套'}（来自 ${path.basename(args.file)}）`);
+      return { steps: steps.length, videoSteps: videoSteps.length, file: args.file };
     }
     case 'publish.setRecover': {
       // 失败恢复动作可编辑（真机每个账号/版本不同：「回退转发页」「删除卡片」…）

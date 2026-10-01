@@ -13,7 +13,9 @@
  *      数量不一致直接报错并列出多/少哪些 —— 绝不猜着配
  *   4. 标题 / 文案：报告里有就用，空的交给 copywriter 生成
  *   5. 好物最多 9 个；颜色可空（单色货号）
- *   6. 含视频的叶子：真实通道目前只推图片 → 明确标成「校验未通过：含视频」并跳过，不静默丢
+ *   6. 发图文还是发视频：**以报告的「内容类型」列为准**（图文 → 推图，视频 → 推视频）。
+ *      没标时按目录内容推断（只有图 / 只有视频 都无歧义）；只有「图和视频都有、又没标」才判不了，
+ *      这时明确标成「校验未通过」并说清原因，绝不猜着发（同一叶子里两种素材都拍是常态）。
  *   7. 回写：实际执行时间(B) / 执行结果(C)；被 WPS 占用时整批暂存，下次先补写
  */
 const fs = require('fs');
@@ -265,10 +267,23 @@ async function build(report, opts = {}) {
       needGen.push(id);
     }
 
-    // 含视频 / 没有图片：明确标出来，交给发布环节按「校验未通过」跳过并说明原因
+    // 这条发图文还是发视频：报告的「内容类型」列说了算（运营明确标过，比目录里有什么更可靠）。
+    // 没标时按目录内容推断：只有图 / 只有视频 都无歧义；
+    // 只有「图和视频都有、又没标」才真的判不了 —— 标出来让人去报告里补，绝不猜着发
+    // （同一个叶子两种素材都拍在达人素材里是常态，猜错就是发错内容）。
+    const declared = wp.contentKind(row.contentType);
+    let kind = declared;
+    if (!kind) {
+      if (images.length && !videos.length) kind = 'image';
+      else if (videos.length && !images.length) kind = 'video';
+    }
     const reasons = [];
-    if (videos.length) reasons.push(`含 ${videos.length} 个视频，真实通道目前只推图片`);
-    if (!images.length) reasons.push('没有可发布的图片');
+    if (!kind) reasons.push(`报告没标「内容类型」，而这个叶子里同时有 ${images.length} 张图 / ${videos.length} 个视频，判不了该发哪个（请在报告里标好内容类型）`);
+    else if (kind === 'video' && !videos.length) reasons.push('内容类型是视频，但这个叶子里没有视频文件');
+    else if (kind === 'image' && !images.length) reasons.push('内容类型是图文，但这个叶子里没有图片');
+    if (kind && declared !== kind) {
+      notes.push(`「${id}」报告没标内容类型，按目录内容判定为「${kind === 'video' ? '视频' : '图文'}」`);
+    }
     if (reasons.length) {
       blocked.push({ id, note: reasons.join('；') });
       notes.push(`「${id}」暂不发布：${reasons.join('；')}`);
@@ -283,6 +298,8 @@ async function build(report, opts = {}) {
       goodsList: goods,
       images: images.length,
       videos: videos.length,
+      // 'image' / 'video'：发布时据此决定推图还是推视频、走 steps 还是 videoSteps
+      kind: kind || '',
       startAt: '',
       status: '排队',
       // C 列已经是「发布成功」的行 → 续跑时跳过（真机也是这么做的）

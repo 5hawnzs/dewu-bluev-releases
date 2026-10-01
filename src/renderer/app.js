@@ -473,7 +473,14 @@ TABS[6] = {
     const pub = state.project.publish || {};
     const mode = pub.mode || 'mock';
     const rows = pub.rows || [];
-    const est = Math.round(rows.length * ((cfg.mock ? cfg.mockIntervalSec : (cfg.intervalMinSec + cfg.intervalMaxSec) / 2) + 30) / 60);
+    // 与主进程 publisher.estimate 同一口径：图文「间隔+30s」、视频「间隔+60s」（视频推得久，还要等媒体库索引）
+    const est = Math.round(rows.reduce((a, r) => {
+      const isV = r.kind === 'video';
+      const gap = cfg.mock ? (cfg.mockIntervalSec || 5)
+        : (isV ? (cfg.videoIntervalSec || Math.round(((cfg.intervalMinSec + cfg.intervalMaxSec) / 2) * 1.5))
+          : (cfg.intervalMinSec + cfg.intervalMaxSec) / 2);
+      return a + gap + (isV ? 60 : 30);
+    }, 0) / 60);
     const okCount = rows.filter(r => r.result === '发布成功').length;
     return `
       <div class="box">
@@ -495,11 +502,12 @@ TABS[6] = {
           <button class="btn sm" data-act="pub:recoverEdit">失败恢复动作</button>
           <span class="chip">${mode === 'adb' ? '真实设备通道' : '模拟通道'}</span>
           <span class="chip ${(state.config.publish.uiMap || {}).steps ? '' : 'warn'}">${(state.config.publish.uiMap || {}).steps ? '定位表 ' + state.config.publish.uiMap.steps.length + ' 步' : '定位表未配'}</span>
+          ${(() => { const m = state.config.publish.uiMap || {}; if (!m.steps) return ''; const vn = (m.videoSteps || []).length; return vn ? `<span class="chip">视频 ${vn} 步</span>` : '<span class="chip">视频未配</span>'; })()}
           <span class="chip">批次 ${esc(pub.batch || '（导出发布单后自动命名）')}</span>
         </div>
         ${recoverHtml()}
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
-        <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒 + 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。缩短间隔要你自己拍板，默认值按实测给的是 60–120 秒。</p>
+        <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒（视频 ≈60 秒，还要等媒体库索引）+ 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。缩短间隔要你自己拍板，默认值按实测给的是 60–120 秒（视频默认 90 秒）。</p>
       </div>
       ${probeHtml()}
       ${batchesHtml('', '运行中的批次 / 任务')}

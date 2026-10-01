@@ -46,6 +46,8 @@ function defaults() {
       intervalSec: 60,                 // 真机是固定 1 分钟间隔，带倒计时
       intervalMinSec: 60,
       intervalMaxSec: 60,
+      videoIntervalSec: 90,            // 视频单条更慢（push 抖动大 + 上传久 + 还要等媒体库索引），间隔单独放宽
+      videoIndexTimeoutSec: 180,       // 视频推上去后等「相册真的能看到」的上限；超时直接失败报出来，不硬点
       retry: 2,
       mock: true,
       mockIntervalSec: 5
