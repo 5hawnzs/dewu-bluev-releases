@@ -93,7 +93,7 @@ git@gitee.com:abulaitifans/dewu-bluev-publisher.git
 | 依赖 | 在仓库目录 `npm install`（慢就先 `set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`） | `npm start` 能开窗口 |
 | 雷电模拟器 | 开一个实例 | `adb devices` 能看到 `emulator-5554` |
 | adb | 雷电自带的 `C:\LDPlayer\LDPlayer9\adb.exe`，或 platform-tools，加进 PATH | `adb version` |
-| **ADBKeyboard**（中文输入必装） | https://github.com/senzhk/ADBKeyBoard 下载 APK → `adb install ADBKeyboard.apk` | 发布页「驱动自检」里 ADBKeyboard 显示已安装 |
+| **ADBKeyboard**（中文输入必装） | https://github.com/senzhk/ADBKeyBoard 下载 APK → `adb install ADBKeyboard.apk` | 发布页「检查能不能发布」的「技术详情」里 ADBKeyboard 显示已安装 |
 | 得物 App | 模拟器里装好并登录好发布账号 | 自检能识别 `com.shizhuang.duapp` |
 | WPS / Excel（可选） | 用来验「被占用 → 暂存 → 下次补写」 | — |
 
@@ -181,7 +181,9 @@ set BLUEV_NO_LOGIN=1 && npm start
 ### 4.7 模拟器发布（页签 6）—— 最容易卡的一段
 
 1. **设备管理**：添加设备（序列号 `emulator-5554` + 账号名）→「检测在线」→「选用」。
-2. **驱动自检**：adb / 设备在线 / 分辨率 / 得物包名 / uiautomator / screencap / ADBKeyboard —— **7 项全绿**才算能真发；
+2. **点「检查能不能发布」**（旧名叫「驱动自检」）：先看结论那一行 ——
+   **绿色「一切就绪」**才可以真发；红色会**直接写出下一步该点哪里**（不是一堆术语）。
+   术语明细收在「技术详情」折叠里：adb 路径 / 设备在线 / 分辨率 / 得物包名 / uiautomator / screencap / ADBKeyboard；
    任何一项红 → 系统会退回「模拟通道」（只演练节奏，不真发）。
 3. **抓取页面结构**：在模拟器里把得物 App 打开到发布页 → 点「抓取页面结构」→ 输出目录 `dumps\` 出现
    `ui-dump-<时间>.xml` 和 `uiMap-<时间>.json`（后者的 steps 是**按关键词猜的候选**）。
@@ -484,11 +486,27 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就�
 | 得物首页发布入口 | `tapId` → `com.shizhuang.duapp:id/ivCamera`（**无文字、无 desc**） | `(854,69)` |
 | 底部导航 | `tapId` → `tab_trends/tab_mall/tab_service/tab_user`（无文字） | 得物`(113,1557)` / 购买`(338,1557)` / 探索`(563,1557)` / 我`(788,1557)` |
 | 发布页「视频」页签 | `tapText '视频'`（**无 id**；可点击的是父 `ActionBar$Tab`，文字子节点 `clickable=false`） | `(528,251)`（父 Tab `[489,204][567,270]`） |
-| 发布页相册第 1 格 | 按坐标（格内**无任何文字/描述**） | `(88,358)`；勾选圈 `flThumbSelect` `(138,308)` |
+| 发布页相册第 1 格（**图片布局**：一行多格） | 按坐标（格内**无任何文字/描述**） | `(88,358)`；该行 `[0,270][899,445]`；勾选圈 `flThumbSelect` `(138,308)` |
+| 发布页视频缩略图（**视频布局**：单格 174×174） | 按坐标（同样无文字/描述） | ★ `(87,255)`，块 `[0,168][174,342]` —— **与图片布局的 y 差约 100px**，写死一个必然点空 |
 | 发布页底部 | `tapId` → `tvTab1~4` | 开直播`(180,1558)` / 相册`(374,1558)` / 拍摄`(557,1558)` / 模板`(740,1558)` |
 
 **发布页首屏没有「下一步 / 发布」按钮**，必须选中素材之后才会出现 —— 配 `videoSteps` 时注意这一点。
 完整卡点清单见 `HANDOFF.md` §5「视频发布 · 真机实测卡点」。
 
-**仍未做**：`videoSteps` 真实坐标（含「提交发布」那一步）、真机成功链路。两者都需要你点头再往下走。
+#### ★ 2026-10-01 复测：两个被推翻/修正的前提
+
+1. **「相册缩略图块点不动」不成立** —— 点对坐标就能点动。
+   视频进媒体库后，缩略图在 `(87,255)`；点它之后截图 md5 从 `dc968252…` 变成 `9cc3bc28…`。
+   以前"怎么点都没反应"，是因为①相册里没有素材（点在空白）②用的是图片布局的 `(88,358)`，在视频布局下是空白区。
+2. **真正的卡点是「素材进不了相册」** —— 三条路实测全断：
+   `MEDIA_MOUNTED` 广播 → `SecurityException`（受保护广播，shell 发不出）；
+   `MEDIA_SCANNER_SCAN_FILE` → `result=0` 但**等 20 秒仍未收录**（不是慢，是没有接收者）；
+   `content insert` → 静默失败（不在 `media_rw` 组）。
+   ★ **只有重启模拟器**才会收录（`bluev_t.mp4` 重启后进库，`_id=68`）。
+
+⇒ 还有个副作用：**在空相册的页面上测点击，必然得出「点不动」**。
+以后测「某块区域能不能点」，先确认那块区域上**确实有东西**。
+
+**仍未做**：`videoSteps` 真实坐标（含「提交发布」那一步）、真机成功链路、让媒体库收录视频的可行办法。
+都需要你点头再往下走。
 

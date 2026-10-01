@@ -1,5 +1,5 @@
 /* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备
-   覆盖：驱动自检 / dump 解析与定位表 / 未配定位表必失败 / 图文条全流程 / 页面结构变了必失败 /
+   覆盖：设备检查 / dump 解析与定位表 / 未配定位表必失败 / 图文条全流程 / 页面结构变了必失败 /
         **视频条**（推视频 → 等媒体库索引 → 走 videoSteps；没配 videoSteps 必失败；媒体库一直看不到也必失败）/
         **页面不 idle**（自动关动画兜底并还原；兜不住就明确失败；★ 抓不到时绝不返回上一页的残留结构）
    假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
@@ -83,7 +83,7 @@ const state = {
     publish: { device: '127.0.0.1:5555', mock: false, intervalMinSec: 1, intervalMaxSec: 1, retry: 1, adbKeyboard: true }
   });
 
-  // 1) 驱动自检
+  // 1) 设备检查（界面上叫「检查能不能发布」；probe() 的返回体同时带 notes 与 fix 两套说法）
   clearCalls();
   const p = await publisher.probe('127.0.0.1:5555');
   ok('自检：adb 版本', !!p.adb, p.adb);

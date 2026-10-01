@@ -63,7 +63,22 @@ async function push(serial, local, remote) {
   return execAdb(withS(serial, ['push', local, remote]), { timeout: 120000 });
 }
 
-/** 推完图必须触发媒体扫描，否则得物相册里看不到 */
+/**
+ * 推完素材触发媒体扫描，否则得物相册里看不到。
+ *
+ * ★★ 实测（2026-10-01，MuMu 12 / Android 12，900×1600）：**这一对广播都不生效**。
+ *   · `MEDIA_MOUNTED` 已是受保护广播 ⇒ `SecurityException: Permission Denial:
+ *     not allowed to send broadcast android.intent.action.MEDIA_MOUNTED from uid=2000(shell)`；
+ *   · `MEDIA_SCANNER_SCAN_FILE` 能发出去（`Broadcast completed: result=0`）但**没有接收者**：
+ *     发完等 20 秒，MediaStore 里依然查不到那个文件（不是慢，是没人处理）；
+ *   · 直接 `content insert` 写 MediaStore 也没权限（shell 不在 media_rw 组）。
+ *   ⇒ ★ **只有重启模拟器**（系统重扫）才会把新文件收进相册。
+ *   （图片看起来"能进库"，是因为系统自己的 idle 扫描补上了小文件，跟这两条广播无关。）
+ *
+ *   所以调用方**必须**用 `mediaVisible()` 等「真的能看见」再往下走，等不到就明确失败 ——
+ *   这里"发完就当成功"会在几步之后变成「相册里选不到素材」，极难查。
+ *   这两条广播保留着：换设备/换系统版本可能仍然有效，成本只是一次 shell 调用。
+ */
 async function mediaScan(serial, remoteFile) {
   await shell(serial, `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://${remoteFile}`);
   return shell(serial, `am broadcast -a android.intent.action.MEDIA_MOUNTED -d file://${remoteFile.split('/').slice(0, -1).join('/')}`);
@@ -231,9 +246,22 @@ async function packages(serial, filter) {
     .filter(p => !filter || p.includes(filter));
 }
 
-/** 驱动自检：把「能不能真的发」拆成可验证的几条 */
+/**
+ * 设备检查：把「能不能真的发」拆成可验证的几条。
+ *
+ * ★ 返回体里同时带两套说法，别混用：
+ *   · `notes` —— 给**排查问题的人**看的技术原文（命令输出、原始报错）
+ *   · `fix`   —— 给**普通用户**看的：{ level:'bad'|'warn', title, how }
+ *     title = 「现在卡在哪」，how = 「下一步点哪里」。界面上只显示这一套，
+ *     notes 收进折叠区。以前界面上直接摆 7 行术语，用户看到「不满足」也不知道该干什么。
+ */
 async function probe(serial) {
-  const out = { serial, adbPath: adbBin, adb: null, device: null, resolution: null, appPackage: null, adbKeyboard: false, tools: {}, notes: [] };
+  const out = {
+    serial, ts: Date.now(), adbPath: adbBin, adb: null, device: null, resolution: null,
+    appPackage: null, adbKeyboard: false, tools: {}, notes: [], fix: []
+  };
+  const say = (level, title, how) => out.fix.push({ level, title, how });
+
   out.adb = await version();
   if (!out.adb) {
     // 这两条都是**真的能用的**办法。以前这里写着「或在设置里填 adb 完整路径」，
@@ -241,13 +269,16 @@ async function probe(serial) {
     out.notes.push(`没检测到 adb（现在找的是「${adbBin}」）—— 两个办法任选：`
       + '① 把 adb 所在目录加进系统 PATH（用模拟器自带的那个就行）；'
       + '② 在「模拟器发布」页把 adb 的完整路径填上，例如 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe');
+    say('bad', '没找到 adb —— 它是电脑跟模拟器之间的“对讲机”',
+      '在下面「设备管理」最后一行「adb 路径」里，填上模拟器自带的 adb.exe 完整路径'
+      + '（MuMu 默认在 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe），填完立刻生效，再点一次上面的「检查能不能发布」。');
     return out;
   }
 
   out.device = await online(serial);
   if (!out.device) {
     const list = await devices();
-    // 这一条是「自检整表报错」最常见的原因：serial 填错。
+    // 这一条是「整张表都报错」最常见的原因：serial 填错。
     // MuMu 的「网络桥接地址」（127.0.0.1:16385 这类）和 adb 侧真正认到的 serial
     // （emulator-5554）经常不是同一个 —— 填错就每一项都失败，看起来像设备坏了，其实只是名字不对。
     const usable = list.filter(d => d.state === 'device');
@@ -255,6 +286,12 @@ async function probe(serial) {
       ? `设备 ${serial} 不在线。adb 现在认到的是：${list.map(d => `${d.serial}(${d.state})`).join('、')}`
         + (usable.length ? ` —— 上面「设备」那一栏请选「${usable[0].serial}」。模拟器重启后端口/名字可能变，别照抄上一次的。` : '')
       : 'adb 在线但一个设备都没有：先把模拟器启动起来，并在模拟器设置里打开 ADB 调试');
+    say('bad', serial ? `你选的设备「${serial}」没连上` : '还没选设备',
+      usable.length
+        ? `模拟器现在能连上的是「${usable[0].serial}」：在下面的设备列表里点它的「选用」；'
+          + '列表里没有就先点「检测在线」再看。★ 模拟器每次重启，这个名字可能变，别照抄上一次的。`
+        : '三步：① 先把模拟器启动起来；② 确认模拟器设置里打开了「ADB 调试」；'
+          + '③ 回来点「检测在线」，从列表里点一台的「选用」。');
     return out;
   }
 
@@ -277,10 +314,25 @@ async function probe(serial) {
     out.notes.push(d.idle
       ? `uiautomator dump 失败：当前页面一直不 idle（得物发布页会这样），拿不到界面结构 —— 原始输出「${d.why || ''}」`
       : `uiautomator dump 失败：拿不到界面结构，无法定位发布按钮${d.why ? ` —— 原始输出「${d.why}」` : ''}`);
+    say('bad', '读不到 App 的界面（发布时会找不到按钮）',
+      '① 先把得物退回到首页，再点一次「检查能不能发布」；'
+      + '② 还不行就把模拟器里其他占着画面的应用关掉。得物自己的发布页本来就抓不动，这是已知情况。');
   }
-  if (!out.tools.screencap) out.notes.push('screencap 失败：失败时截不了图');
-  if (!out.adbKeyboard) out.notes.push('未装 ADBKeyboard：中文标题/正文输入会失败（ASCII 不受影响）');
-  if (!out.appPackage) out.notes.push('设备里没找到得物 App 包名，请确认已安装登录');
+  if (!out.tools.screencap) {
+    out.notes.push('screencap 失败：失败时截不了图');
+    say('warn', '能发，但发布失败时截不了图（以后排查会麻烦些）',
+      '一般是模拟器权限问题：重启模拟器，再点一次「检查能不能发布」。');
+  }
+  if (!out.adbKeyboard) {
+    out.notes.push('未装 ADBKeyboard：中文标题/正文输入会失败（ASCII 不受影响）');
+    say('warn', '能发，但中文标题和正文会打不进去',
+      '给模拟器装一个 ADBKeyboard（包名 com.android.adbkeyboard）就能打中文了；只发英文和数字不受影响。');
+  }
+  if (!out.appPackage) {
+    out.notes.push('设备里没找到得物 App 包名，请确认已安装登录');
+    say('bad', '模拟器里没找到「得物」',
+      '确认这台模拟器装的是得物并且已经登录，再点一次「检查能不能发布」。');
+  }
   return out;
 }
 

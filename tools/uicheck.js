@@ -315,6 +315,43 @@ app.whenReady().then(async () => {
   const adbMod = require(path.join(ROOT, 'src/main/services/adb.js'));
   ok('★ 填完立刻生效、不用重启（自检第一行会回显用的是哪个 adb）',
     adbMod.getAdbPath() === 'D:/fake/adb.exe', adbMod.getAdbPath());
+
+  // ★ 设备检查：给「不懂 adb 的人」看的那套说法 —— 一句结论 + 下一步动作，术语收进折叠区。
+  //   这一组守的是「界面不许拿术语糊用户」这个意图，和具体检查项无关（换检查项也不用改）。
+  //   跑之前 adbPath 已经是 D:/fake/adb.exe（不存在）⇒ 必然走到「没找到 adb」那条引导。
+  const probeUi = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="6"]').click();
+    await new Promise(r => setTimeout(r, 120));
+    const btn = document.querySelector('[data-act="pub:probe"]');
+    if (!btn) return { err: '找不到检查按钮' };
+    const btnLabel = btn.textContent.trim();
+    btn.click();
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 250));
+      if (document.body.textContent.includes('设备检查结果')) break;
+    }
+    const box = [...document.querySelectorAll('.box')].find(b => b.textContent.includes('设备检查结果'));
+    if (!box) return { err: '结果面板没出现', btnLabel };
+    const det = box.querySelector('details');
+    return {
+      btnLabel,
+      headline: (box.querySelector('.b') || {}).textContent || '',
+      hasDetails: !!det,
+      open: det ? det.hasAttribute('open') : null,
+      summary: det ? det.querySelector('summary').textContent.trim() : '',
+      guidances: box.querySelectorAll('div[style*="border-left"]').length
+    };
+  })()`);
+  ok('检查按钮的名字是给用户看的（不再是术语「驱动自检」）',
+    probeUi.btnLabel === '检查能不能发布', probeUi.btnLabel || probeUi.err || '?');
+  ok('★ 结果先用一句人话回答「能不能发」',
+    /还不能真机发布|能发布|一切就绪/.test(probeUi.headline || ''), probeUi.headline || probeUi.err || '?');
+  ok('★ 折叠区外就能看到「下一步点哪里」（不是只有一张术语表）',
+    probeUi.hasDetails && (probeUi.guidances > 0 || /一切就绪/.test(probeUi.headline || '')),
+    `引导块 ${probeUi.guidances} 个 · 结论「${probeUi.headline}」`);
+  ok('技术详情默认收起、并写明「一般不用看」',
+    probeUi.hasDetails && probeUi.open === false && /一般不用看/.test(probeUi.summary || ''),
+    `折叠「${probeUi.summary}」 open=${probeUi.open}`);
   ok('设置页把那两个裸输入框换成了「打开文案提示词」入口',
     await win.webContents.executeJavaScript(`(() => {
       document.querySelector('.nav[data-tab="7"]').click();
@@ -382,17 +419,21 @@ app.whenReady().then(async () => {
       : batchRun.error);
   ok('批次跑完后从面板消失', batchRun.afterEmpty);
 
-  // 品牌标记：界面上是**两处**内联 SVG（标题栏 17、登录卡 26），加上打包图标 build/icon.ico，
-  // 一共**三份来源**。换 logo 最容易「只改一处」，所以这里把它们绑住 ——
-  // 光断言「有 path」不够：旧的「方底 + 白 V」也有 path。
+  // 品牌标记：界面上是**两处**内联 SVG（标题栏 17、登录卡 26），而打包图标 build/icon.ico
+  // 由 tools/make-icon.js **从 index.html 里读出那个 SVG** 生成 ⇒ index.html 是唯一来源。
+  // （踩过的坑：曾经是三份来源，换 logo 只改一处也不会报错；也曾经用「断言具体图形」的方式绑，
+  //   结果一换 logo 断言就得跟着改 —— 现在改成绑「两处一致」+「图标颜色来自界面」，与图形无关。）
   const brand = await win.webContents.executeJavaScript(`
     (() => {
       const pick = (sel) => {
         const svg = document.querySelector(sel + ' svg');
         if (!svg) return null;
+        const rect = svg.querySelector('rect');
         return {
           ds: [...svg.querySelectorAll('path')].map(p => p.getAttribute('d')),
           rects: svg.querySelectorAll('rect').length,
+          rectFill: rect ? rect.getAttribute('fill') : null,
+          strokes: [...svg.querySelectorAll('path')].map(p => p.getAttribute('stroke')),
           viewBox: svg.getAttribute('viewBox')
         };
       };
@@ -404,31 +445,56 @@ app.whenReady().then(async () => {
   const sameD = !!(brand.title && brand.gate &&
     JSON.stringify(brand.title.ds) === JSON.stringify(brand.gate.ds));
   ok('标题栏与登录卡的 logo 是同一份矢量（两处 path 逐字相同）', sameD,
-    sameD ? `viewBox ${brand.title.viewBox}` :
-      `标题栏 ${JSON.stringify(brand.title)} / 登录卡 ${JSON.stringify(brand.gate)}`);
-  ok('logo 是新字母标（两笔 V、无方底），不是旧的「方底 + 白 V」',
-    sameD && brand.title.rects === 0 && brand.title.ds.length === 2 &&
-    brand.title.ds.includes('M300 308L512 728L724 308'),
-    `rects=${brand.title ? brand.title.rects : '?'} paths=${brand.title ? brand.title.ds.length : '?'}`);
+    sameD ? `viewBox ${brand.title.viewBox}` : `标题栏 ${JSON.stringify(brand.title)} / 登录卡 ${JSON.stringify(brand.gate)}`);
 
   const ico = (() => {
     try {
+      const { PNG } = require('pngjs');
       const b = fs.readFileSync(path.join(ROOT, 'build', 'icon.ico'));
       const n = b.readUInt16LE(4);
       let fine = b.readUInt16LE(2) === 1 && n >= 6;
-      for (let i = 0; i < n && fine; i++) {
+      const sizes = [];
+      let best = null;
+      for (let i = 0; i < n; i++) {
         const off = 6 + i * 16;
+        let w = b[off]; if (w === 0) w = 256;
         const len = b.readUInt32LE(off + 8);
         const pos = b.readUInt32LE(off + 12);
         // 越界、或该条不是内嵌 PNG（Vista 起 ICO 允许直接放 PNG）—— 都算坏
-        if (pos + len > b.length) fine = false;
-        else if (!(b[pos] === 0x89 && b.toString('ascii', pos + 1, pos + 4) === 'PNG')) fine = false;
+        if (pos + len > b.length || !(b[pos] === 0x89 && b.toString('ascii', pos + 1, pos + 4) === 'PNG')) { fine = false; continue; }
+        sizes.push(w);
+        if (!best || w > best.w) best = { w, pos, len };
       }
-      return { fine, n, size: b.length };
-    } catch (e) { return { fine: false, n: 0, size: 0, err: e.message }; }
+      let corner = null;
+      if (best) {
+        const png = PNG.sync.read(b.subarray(best.pos, best.pos + best.len));
+        const m = Math.floor(png.width / 8);
+        const i = (m * png.width + m) * 4;
+        corner = [png.data[i], png.data[i + 1], png.data[i + 2]];
+      }
+      return { fine, n, sizes, corner, size: b.length };
+    } catch (e) { return { fine: false, n: 0, sizes: [], corner: null, size: 0, err: e.message }; }
   })();
-  ok('打包图标 build/icon.ico 在内且结构可解（每个尺寸都是内嵌 PNG）', ico.fine,
-    ico.fine ? `${ico.n} 个尺寸 / ${ico.size} B` : (ico.err || '结构损坏'));
+  ok('打包图标 build/icon.ico 结构可解、尺寸齐全（256 与 16 都在，每条都是内嵌 PNG）',
+    ico.fine && ico.sizes.includes(256) && ico.sizes.includes(16),
+    ico.fine ? `${ico.sizes.join('/')} · ${ico.size} B` : (ico.err || '结构损坏'));
+
+  // ★ 行为级：打包图标里的底色，必须对得上界面那个标记的颜色。
+  //   只有这一条能抓住「换了 logo 却没重新生成 ico」——「ico 存在且结构完好」是查不出来的。
+  const htmlColor = (brand.title && (brand.title.rectFill || (brand.title.strokes || [])[0])) || '';
+  const htmlHex = (/^#([0-9a-f]{6})$/i.exec(String(htmlColor).trim()) || [, ''])[1].toLowerCase();
+  const icoHex = ico.corner ? ico.corner.map(v => v.toString(16).padStart(2, '0')).join('') : '';
+  const close = !!htmlHex && !!icoHex &&
+    [0, 2, 4].every(i => Math.abs(parseInt(htmlHex.slice(i, i + 2), 16) - parseInt(icoHex.slice(i, i + 2), 16)) <= 8);
+  ok('打包图标的底色与界面标记一致（换了 logo 没重新生成图标就会红）', close,
+    `界面 ${htmlColor || '?'} / ico #${icoHex || '?'}`);
+
+  const mk = fs.readFileSync(path.join(ROOT, 'tools', 'make-icon.js'), 'utf8');
+  const mkReads = /['"]renderer['"]\s*,\s*['"]index\.html['"]/.test(mk);
+  const mkSpan = /class="logo"/.test(mk);
+  ok('图标生成脚本从 index.html 读标记（唯一来源，不许再另写一份 SVG）',
+    mkReads && mkSpan,
+    `读 index.html=${mkReads ? '有' : '没有'} · 找 <span class="logo">=${mkSpan ? '有' : '没有'}`);
 
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));

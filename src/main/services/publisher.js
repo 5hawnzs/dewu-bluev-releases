@@ -262,9 +262,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       onTick: s => { row.status = `等媒体库索引 ${s}s`; if (ctx.onRow) ctx.onRow(row); }
     });
     if (!w.ok) {
-      throw new Error(`视频已推到设备，但等了 ${w.waited}s 媒体库还没索引到（相册里选不到）`
+      // ★ 实测（2026-10-01，MuMu 12 / Android 12）：这台设备上媒体扫描广播**不生效**，
+      //   所以「把超时调大」是一条必然失败的建议 —— 不要写进提示里，那是给用户假期待。
+      throw new Error(`视频已推到设备，但等了 ${w.waited}s 媒体库还没索引到（所以得物相册里选不到它）`
         + (w.error ? `：${w.error}` : '')
-        + `；可把 publish.videoIndexTimeoutSec 调大（当前 ${sec}s），或先在模拟器相册里确认能看到这个文件`);
+        + '；★ 这台模拟器上「媒体扫描广播」是不生效的（MEDIA_MOUNTED 被系统拒、'
+        + 'MEDIA_SCANNER_SCAN_FILE 发了也不收录），**只有重启模拟器**系统才会把新文件收进相册。');
     }
     log(`${row.dir}：媒体库已索引到视频（等待 ${w.waited}s）`, 'info');
   }
@@ -357,7 +360,7 @@ async function run(state, ctx = {}) {
   const est = estimate(todo.length, estKinds);
   const mix = estKinds.video ? `（图文 ${estKinds.image} · 视频 ${estKinds.video}）` : '';
   log(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条${mix}，预计 ${est.minutes} 分钟`, mode === 'adb' ? 'ok' : 'warn');
-  if (mode === 'mock') log('模拟通道不接触设备，只演练节奏/重试/回写；要真发请先「连接模拟器」并通过驱动自检', 'warn');
+  if (mode === 'mock') log('模拟通道不接触设备，只演练节奏/重试/回写；要真发请先「连接模拟器」并点「检查能不能发布」通过', 'warn');
   log('发布期间不占用发布单文件，结果先写 publish-log.jsonl', 'info');
 
   const copyById = new Map((state.copyRows || []).map(r => [r.id, r]));

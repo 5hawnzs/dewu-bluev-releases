@@ -13,14 +13,9 @@
   <div class="titlebar">
     <div class="tb-left">
       <span class="logo" id="logo" aria-hidden="true">
-        <!-- 字母标 L2「深锚」：底笔 #007D79 画整条 V，前笔（左半）用 #008A85→#009994 渐变压在上面，
-             于是左亮右深、底端交叠 —— 和 build/icon.ico 是同一张源图（tools/make-icon.js）。
-             viewBox 是紧致包围盒（端点 ± stroke-width/2），不是 0 0 1024 1024：字母标在源画布里
-             只占中间约一半，照原画布缩到 17px 会又小又细 -->
-        <svg viewBox="170 178 684 680" width="17" height="17">
-          <defs><linearGradient id="lgLogo" gradientUnits="userSpaceOnUse" x1="300" y1="300" x2="560" y2="740"><stop offset="0" stop-color="#008A85"/><stop offset="1" stop-color="#009994"/></linearGradient></defs>
-          <path d="M300 308L512 728L724 308" fill="none" stroke="#007D79" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M300 308L512 728" fill="none" stroke="url(#lgLogo)" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg viewBox="0 0 32 32" width="17" height="17">
+          <rect width="32" height="32" rx="7" fill="#0f6e56"/>
+          <path d="M9.5 10l6.5 13 6.5-13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </span>
       <span class="name">得物蓝V 素材发布工具</span>
@@ -130,12 +125,9 @@
     </button>
     <div class="gbrand">
       <span class="glogo" aria-hidden="true">
-        <!-- 同标题栏那个标记，只是大一档（26 vs 17）。id 必须不同：同一页里两个 SVG 用同一个
-             渐变 id 是无效 HTML，第二个会去引用第一个 -->
-        <svg viewBox="170 178 684 680" width="26" height="26">
-          <defs><linearGradient id="lgGlogo" gradientUnits="userSpaceOnUse" x1="300" y1="300" x2="560" y2="740"><stop offset="0" stop-color="#008A85"/><stop offset="1" stop-color="#009994"/></linearGradient></defs>
-          <path d="M300 308L512 728L724 308" fill="none" stroke="#007D79" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M300 308L512 728" fill="none" stroke="url(#lgGlogo)" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg viewBox="0 0 32 32" width="26" height="26">
+          <rect width="32" height="32" rx="7" fill="#0f6e56"/>
+          <path d="M9.5 10l6.5 13 6.5-13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </span>
       <div>

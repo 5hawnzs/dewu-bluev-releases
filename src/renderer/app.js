@@ -516,7 +516,7 @@ TABS[6] = {
           <label class="row" style="gap:6px;min-width:auto"><input type="checkbox" data-cfg="publish.mock" ${cfg.mock ? 'checked' : ''}> 演示节奏（${cfg.mockIntervalSec} 秒/条）</label>
         </div>
         <div class="row" style="margin-top:10px">
-          <button class="btn sm" data-act="pub:probe">驱动自检</button>
+          <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
           <button class="btn sm" data-act="pub:dump">抓取页面结构</button>
           <button class="btn sm" data-act="pub:map">导入 UI 定位表</button>
           <button class="btn sm" data-act="pub:recoverEdit">失败恢复动作</button>
@@ -930,32 +930,59 @@ function devicesHtml() {
       <input class="inp mono" value="${esc((state.config.publish || {}).adbPath || '')}" data-cfg="publish.adbPath"
         placeholder="留空 = 用系统 PATH 里的 adb；找不到就填完整路径，如 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe">
     </div>
-    <p class="hint">自检第一行查的就是它 —— <b>PATH 里没有 adb，整张自检表都会报错</b>，看起来像设备坏了，其实只是没找到 adb。
-      填了完整路径就不必再动系统环境变量；改完点「驱动自检」，第一行会回显当前用的是哪一个。</p>
+    <p class="hint">这一行是<b>电脑跟模拟器之间的“对讲机”</b>。留空就用系统里装好的那个；
+      如果「检查能不能发布」第一项报「没找到 adb」，把模拟器自带的 adb.exe 完整路径填在这里
+      （MuMu 默认在 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe）。填完<b>立刻生效、不用重启</b>，
+      再点一次「检查能不能发布」就能看到结果。</p>
     </div>`;
 }
 
-/** 驱动自检结果：说清楚「现在到底能不能真发」 */
+/**
+ * 设备检查结果。
+ * ★ 目标只有一个：让**不懂 adb 的人**一眼看出「现在能不能发」和「不能的话下一步点哪里」。
+ *   以前这里是把 7 行术语直接摆出来（adb / uiautomator / ADBKeyboard…），用户看到「不满足」
+ *   根本不知道要干什么。现在改成：一句结论 + 每条一条明确的动作 + 技术详情收进折叠。
+ *   （给用户看的那套说法由主进程 adb.probe() 的 `fix` 给，这里只负责显示。）
+ */
 function probeHtml() {
   const p = state.probe || (state.project.publish && state.project.publish.probe);
   if (!p) return '';
-  const line = (k, v, bad) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v || '—')}</td><td>${badge(bad ? '不满足' : '可用', bad ? 'bad' : 'ok')}</td></tr>`;
+  const fix = Array.isArray(p.fix) ? p.fix : [];
+  const bad = fix.filter(f => f.level === 'bad');
+  const warn = fix.filter(f => f.level === 'warn');
+  const headline = bad.length ? `还不能真机发布 —— ${bad.length} 项要先处理`
+    : warn.length ? '能发布，但有一处会影响体验'
+      : '一切就绪，可以真机发布了';
+  const kind = bad.length ? 'bad' : warn.length ? 'warn' : 'ok';
+  const accent = { bad: 'var(--red)', warn: 'var(--amber)' };
+  const line = (k, v, pass) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v || '—')}</td><td>${badge(pass ? '可用' : '不满足', pass ? 'ok' : 'bad')}</td></tr>`;
+  const items = bad.concat(warn);
   return `
     <div class="box">
-      <h3>驱动自检</h3>
-      <div class="tw"><table>
-        <thead><tr><th>检查项</th><th>结果</th><th>状态</th></tr></thead>
-        <tbody>
-          ${line('adb', p.adb, !p.adb)}
-          ${line('设备在线', p.device ? p.device.serial + '（' + p.device.state + '）' : '不在线', !p.device)}
-          ${line('分辨率', p.resolution, !p.resolution)}
-          ${line('得物包名', p.appPackage, !p.appPackage)}
-          ${line('界面抓取 uiautomator', (p.tools && p.tools.uiautomator) ? '可用' : '不可用', !(p.tools && p.tools.uiautomator))}
-          ${line('失败截图 screencap', (p.tools && p.tools.screencap) ? '可用' : '不可用', !(p.tools && p.tools.screencap))}
-          ${line('中文输入 ADBKeyboard', p.adbKeyboard ? '已安装' : '未安装', !p.adbKeyboard)}
-        </tbody>
-      </table></div>
-      ${(p.notes && p.notes.length) ? `<p class="hint">${p.notes.map(n => '⚠ ' + esc(n)).join('<br>')}</p>` : '<p class="hint">全部检查通过。</p>'}
+      <h3>设备检查结果${p.ts ? `（${esc(new Date(p.ts).toLocaleTimeString())}）` : ''}</h3>
+      <div class="row">${badge(headline, kind)}
+        <span class="ts" style="color:var(--tx3)">点上面的「检查能不能发布」可随时重查</span></div>
+      ${items.map(f => `
+        <div style="border-left:3px solid ${accent[f.level]};background:var(--panel);border-radius:6px;padding:9px 12px;margin-top:9px">
+          <div style="font-size:12.5px;font-weight:600;color:${accent[f.level]}">${esc(f.title)}</div>
+          <div style="font-size:12px;color:var(--tx2);line-height:1.75;margin-top:3px">${esc(f.how)}</div>
+        </div>`).join('') || '<p class="hint">7 项检查全部通过 —— 按上面的「开始发布」就是真机发布了。</p>'}
+      <details style="margin-top:11px">
+        <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">技术详情（一般不用看，出问题给开发看）</summary>
+        <div class="tw" style="margin-top:8px"><table>
+          <thead><tr><th>检查项</th><th>结果</th><th>状态</th></tr></thead>
+          <tbody>
+            ${line('adb 路径', p.adbPath === 'adb' ? '（用系统 PATH 里的 adb）' : p.adbPath, !!p.adb)}
+            ${line('设备在线', p.device ? p.device.serial + '（' + p.device.state + '）' : '不在线', !!p.device)}
+            ${line('分辨率', p.resolution, !!p.resolution)}
+            ${line('得物包名', p.appPackage, !!p.appPackage)}
+            ${line('界面抓取 uiautomator', (p.tools && p.tools.uiautomator) ? '可用' : '不可用', !!(p.tools && p.tools.uiautomator))}
+            ${line('失败截图 screencap', (p.tools && p.tools.screencap) ? '可用' : '不可用', !!(p.tools && p.tools.screencap))}
+            ${line('中文输入 ADBKeyboard', p.adbKeyboard ? '已安装' : '未安装', !!p.adbKeyboard)}
+          </tbody>
+        </table></div>
+        ${(p.notes && p.notes.length) ? `<p class="hint">${p.notes.map(n => '⚠ ' + esc(n)).join('<br>')}</p>` : ''}
+      </details>
     </div>`;
 }
 
@@ -1679,7 +1706,16 @@ const ACTS = {
   },
   'pub:probe': async () => {
     const r = await appApi.run('publish.probe', {});
-    if (r.ok) { state.probe = r.result; toast(r.result.device ? '设备在线，自检完成' : '自检未通过，看下方明细', r.result.device ? 'ok' : ''); }
+    if (r.ok) {
+      state.probe = r.result;
+      const fx = r.result.fix || [];
+      const bad = fx.filter(f => f.level === 'bad').length;
+      const warn = fx.filter(f => f.level === 'warn').length;
+      toast(bad ? `还不能真机发布：有 ${bad} 项要先处理，看下面的提示`
+        : warn ? `可以真机发布，但有 ${warn} 处会影响体验`
+          : '一切就绪，可以真机发布',
+      bad ? 'err' : warn ? '' : 'ok');
+    }
     renderAll();
   },
   'pub:dump': async () => {

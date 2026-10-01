@@ -217,7 +217,7 @@ function register() {
   ipcMain.handle('config:get', guard((_e, key) => store.get(key)));
   ipcMain.handle('config:set', guard((_e, patch) => {
     store.set(patch);
-    // adb 路径改完要**立刻**生效：用户填完就想点「驱动自检」看第一行对不对，不该等重启
+    // adb 路径改完要**立刻**生效：用户填完就想点「检查能不能发布」看结果对不对，不该等重启
     if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'adbPath')) {
       adb.setAdbPath(store.get('publish.adbPath'));
     }
