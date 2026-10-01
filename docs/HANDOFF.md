@@ -663,7 +663,7 @@ git push -u origin HEAD       # 合并走 PR，冲突在合并时暴露，而不
 
 ## 边界
 
-- **不要提交**：`node_modules/`（522MB）、`dist/`（169MB，两个 ~88MB 安装包）、运行时数据
+- **不要提交**：`node_modules/`（522MB）、`dist/`（**实测 2026-10-01：392MB** = 1 个 85.0 MiB 安装包 + 307MB `win-unpacked/` 解包目录；去掉 portable 后**只剩一个 exe**）、运行时数据
   （`auth.json` / `config.json` / `project.json` / `pending-results.json` …）—— `.gitignore` 已覆盖。
 - 安装包给同事用走 **Releases / 网盘**：二进制一旦进了 git 历史就删不干净，仓库会一直背着它。
 - 可选：加 `.gitattributes`（`* text=auto eol=lf`，`*.bat eol=crlf`），避免 Windows 同事提交 CRLF 造成满屏 diff。
