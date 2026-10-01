@@ -37,6 +37,15 @@ function electronBin() {
 const NODE = process.execPath;
 const ELECTRON = electronBin();
 
+// 子进程环境：ELECTRON_RUN_AS_NODE 会让 electron.exe 退化成纯 Node
+// （require('electron').app 变 undefined → 两个 Electron 套件一上来就 TypeError），必须清掉
+const CHILD_ENV = { ...process.env };
+delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
+
+// uicheck / logintest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
+// （远程/CI/沙箱）GPU 进程会反复退出并 FATAL 掉整个 Electron，所以固定关掉 GPU、改进程内渲染。
+const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
+
 const SUITES = [
   ['smoke', 'node', ['tools/smoke.js']],
   ['adbtest', 'node', ['tools/adbtest.js']],
@@ -70,7 +79,8 @@ let totalPass = 0;
 for (const [name, kind, args] of SUITES) {
   if (FILTER && !name.includes(FILTER)) continue;
   const bin = kind === 'electron' ? ELECTRON : NODE;
-  const r = spawnSync(bin, args, { cwd: ROOT, encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 });
+  const argv = kind === 'electron' ? ELECTRON_FLAGS.concat(args) : args;
+  const r = spawnSync(bin, argv, { cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, maxBuffer: 64 * 1024 * 1024 });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   const pass = (out.match(/^PASS/gm) || []).length;
   const fail = (out.match(/^FAIL/gm) || []).length;

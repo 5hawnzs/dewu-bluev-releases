@@ -350,6 +350,13 @@ async function mergeResults(file, results, meta = {}) {
     sheet.putPending('report', []);
     return { updated, pending: 0, flushed: backlog.length, skipped };
   } catch (e) {
+    // 只有「文件被别的程序占着」才谈得上「暂存、下次再试」。
+    // 表头缺列 / 文件损坏这类逻辑错误重试一万次也不会好，暂存只会让人一直等一个补不进去的队列，
+    // 所以原样报出来，并说清是哪里不对 —— 不能拿「报告仍被占用」糊过去。
+    if (!wp.isFileLockError(e)) {
+      logbus.error(`回写报告失败（${all.length} 条未写入）：${e.message}`);
+      return { updated: 0, pending: 0, busy: false, skipped, error: e.message };
+    }
     sheet.putPending('report', all);
     logbus.warn(`报告仍被占用，${all.length} 条结果已暂存，下次再试（可只读打开但不建议编辑保存）`);
     return { updated: 0, pending: all.length, busy: true, skipped, error: e.message };

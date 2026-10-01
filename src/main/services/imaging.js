@@ -17,7 +17,13 @@ function init() {
   try {
     sharp = require('sharp');
     sharp.concurrency(2);              // PRD：按内存限流，避免 4000×4000 RGBA 开满把内存打爆
-    sharp.cache({ memory: 64 });
+    // files:0 —— 关掉 libvips 的「输入文件缓存」。
+    // 默认 files:20 会让 libvips 在处理完一张图后仍持有源文件句柄，
+    // Windows 上紧接着 unlink 源文件必报 EPERM（合规「等比缩放 / 压缩 / 转 JPG」都是
+    // 「先写临时文件 → 删原文件 → 改名」三步，会稳定踩到）。实测三组对照：
+    //   默认(files:20) → unlink 失败；files:0 → 成功；cache(false) → 成功。
+    // 内存缓存照留，性能不受影响（操作缓存 items 也保留）。
+    sharp.cache({ memory: 64, files: 0 });
     engine = 'sharp';
   } catch (e) {
     sharp = null;

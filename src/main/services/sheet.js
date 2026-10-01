@@ -227,6 +227,10 @@ async function mergeResults(file, results, target = 'sheet') {
     return { updated, pending: 0, flushed: backlog.length };
   } catch (e) {
     // 真机日志原话：Excel 仍被占用，暂存保留，下次再试（可只读打开但不建议编辑保存）
+    // —— 但只有「被占用」才配这句。文件不存在/损坏这类错误暂存也补不进去，得原样报出来。
+    if (!wp.isFileLockError(e)) {
+      return { updated: 0, pending: 0, busy: false, error: e.message };
+    }
     putPending(target, all);
     return { updated: 0, pending: all.length, busy: true, error: e.message };
   }

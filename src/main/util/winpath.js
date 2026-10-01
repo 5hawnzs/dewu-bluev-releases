@@ -73,6 +73,21 @@ async function mkdirp(dir) {
   await fs.promises.mkdir(toLong(dir), { recursive: true });
 }
 
+/** 「文件被别的程序占着」这类可重试的锁错误（WPS/Excel 打开着发布单时就是这种） */
+const LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE']);
+/**
+ * 判断异常是不是「被占用」。
+ * 用途：结果回写时，**只有**这类错误才该「整批暂存、下次再试」；
+ * 像「报告表头缺列」这种逻辑错误重试一万次也不会好，必须原样报出来 ——
+ * 否则会把不可恢复的错误伪装成「仍被占用」，让人以为关掉 Excel 就能补写。
+ */
+function isFileLockError(e) {
+  const code = String((e && e.code) || '');
+  if (LOCK_CODES.has(code)) return true;
+  const msg = String((e && e.message) || '');
+  return /EBUSY|EPERM|EACCES|being used by another process|permission denied|the process cannot access|cannot access the file|被占用|正在使用|拒绝访问/i.test(msg);
+}
+
 async function readdirSafe(dir) {
   try {
     return await fs.promises.readdir(toLong(dir), { withFileTypes: true });
@@ -161,7 +176,7 @@ function defaultPaths() {
 }
 
 module.exports = {
-  isWin, toLong, toDisplay, pathRisk, sameVolume, retry,
+  isWin, toLong, toDisplay, pathRisk, sameVolume, retry, isFileLockError,
   mkdirp, readdirSafe, statSafe, exists, linkOrCopy, copyFile, renameDir, moveFile,
   isJunk, ext, isMedia, isVideo, stamp, humanSize, defaultPaths,
   MEDIA_EXT, VIDEO_EXT

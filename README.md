@@ -154,7 +154,7 @@ bash tools/run-all.sh          # 五套主进程测试 + 隐藏窗口界面自�
 | 测试 | 覆盖 | 断言 |
 | --- | --- | --- |
 | `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults`：清单扫描、硬链接扁平化、**原素材完全不动**、层级命名用 `_` 连接、PNG/尺寸超限等比缩放、垃圾文件隔离、HEIC 缺解码器降级、标题格式与话题组合去重、主色反查、26 列 xlsx、jsonl 追加与回写 | 23 |
-| `tools/adbtest.js` | 假 `adb`（`tools/fakeadb/`）验证真实发布通道：驱动自检、dump 节点解析与坐标计算、候选定位表、占位符替换、未配定位表直接报错、**真实推图 + 媒体扫描 + 坐标点击 + 中文广播输入**、页面结构变化时报失败并存截图；失败恢复动作的校验 | 27 |
+| `tools/adbtest.js` | 假 `adb`（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：驱动自检、dump 节点解析与坐标计算、候选定位表、占位符替换、未配定位表直接报错、**真实推图 + 媒体扫描 + 坐标点击 + 中文广播输入**、页面结构变化时报失败并存截图；失败恢复动作的校验 | 27 |
 | `tools/pendingtest.js` | 发布单 chmod 只读模拟「Excel 被 WPS 占用」→ 整批暂存 `pending-results.json` → 恢复可写后**先补写上次的**；设备增删去重与固定间隔预估 | 9 |
 | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 不会把好图搬进 `_rejected`；「导出报告」两个工作表 + csv 带 BOM | 16 |
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、恢复动作保存与校验 | 22 |

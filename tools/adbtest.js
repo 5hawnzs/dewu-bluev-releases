@@ -1,4 +1,6 @@
-/* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备 */
+/* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备
+   假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
+   Windows 的 execFile('adb') 只认 adb.exe，无扩展名的 bash 脚本跑不起来，故改为函数级替身）。 */
 const Module = require('module');
 const fs = require('fs');
 const path = require('path');
@@ -18,6 +20,18 @@ Module._load = function (r) { if (r === 'electron') return fake; return origLoad
 
 // 工程根目录 = 本文件上一级；不写死绝对路径，换机器/换目录也能跑
 const base = path.resolve(__dirname, '..');
+
+// 假 adb 的现场文件：复制到临时目录（测试会就地改 window.xml 模拟页面变化，不污染仓库）
+const FDB = path.join(TMP, 'fakeadb');
+fs.cpSync(path.join(__dirname, 'fakeadb'), FDB, { recursive: true });
+const FAKE_WINDOW = path.join(FDB, 'window.xml');
+const CALLS = path.join(FDB, 'calls.log');
+const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
+const clearCalls = () => fs.writeFileSync(CALLS, '');
+
+// ★ 必须在 require 被测模块之前替换：src/main/services/adb.js 在加载时就解构了 execFile
+require('child_process').execFile = require(path.join(__dirname, 'fakeadb', 'adb.js')).makeFakeAdb(FDB);
+
 const store = require(path.join(base, 'src/main/store.js'));
 const publisher = require(path.join(base, 'src/main/services/pubublisher.js'.replace('pubublisher', 'publisher')));
 const uimap = require(path.join(base, 'src/main/services/uimap.js'));
@@ -38,14 +52,6 @@ const ok = (label, cond, extra) => {
   console.log((cond ? 'PASS  ' : 'FAIL  ') + label + (extra ? '  → ' + extra : ''));
   if (!cond) process.exitCode = 1;
 };
-// 把仓库里的假 adb 复制到临时目录再跑：不污染仓库，多次运行互不干扰
-const FDB = path.join(TMP, 'fakeadb');
-fs.cpSync(path.join(__dirname, 'fakeadb'), FDB, { recursive: true });
-fs.chmodSync(path.join(FDB, 'adb'), 0o755);
-const FAKE_WINDOW = path.join(FDB, 'window.xml');
-const CALLS = path.join(FDB, 'calls.log');
-const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
-const clearCalls = () => fs.writeFileSync(CALLS, '');
 
 const uiMap = {
   package: 'com.shizhuang.duapp',
@@ -69,7 +75,6 @@ const state = {
 };
 
 (async () => {
-  process.env.PATH = FDB + ':' + process.env.PATH;
   store.set({
     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     publish: { device: '127.0.0.1:5555', mock: false, intervalMinSec: 1, intervalMaxSec: 1, retry: 1, adbKeyboard: true }

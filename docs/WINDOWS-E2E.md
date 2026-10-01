@@ -108,7 +108,8 @@ node tools\run-all.js
 预期最后一行：**`全部通过，共 176 项断言。`**
 
 - 逐套单跑：`node tools\smoke.js`、`node tools\reporttest.js`、`node tools\compliancetest.js` …
-- `uicheck` / `logintest` 两个 Electron 套件**需要有桌面会话**（远程桌面里要有人在的会话；纯后台 SSH 起不来）
+- `uicheck` / `logintest` 两个 Electron 套件由 `run-all.js` 统一补上 `--in-process-gpu --disable-gpu`、并清掉 `ELECTRON_RUN_AS_NODE`，
+  所以**没有桌面会话 / 没有可用 GPU 的机器（远程、CI、沙箱）也能跑**；手工单跑时请照抄这两个参数
 - 想看设计意图：每个 `tools\*.js` 头部的注释写了它在守什么
 
 ---
@@ -201,10 +202,49 @@ set BLUEV_NO_LOGIN=1 && npm start
 
 ### 4.8 打包（最后一步）
 ```
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 npm run dist:win
 ```
 - 预期：`dist\` 出 `得物蓝V素材发布工具-1.0.0-x64-win.exe`（安装版）和 `…-便携版.exe`。
 - **一定要在一台干净 Windows 上装一遍**，重点验：窗口按钮/拖动、HEIC 转换、长路径、卸载后 `%APPDATA%` 数据保留。
+
+> **实测（2026-10-01，Windows 10 22631 / node 22.22.2 / electron-builder 24.13.3）**
+>
+> ✅ 两个产物都在，与预期一致：
+> | 产物 | 大小 |
+> | --- | --- |
+> | `dist\得物蓝V素材发布工具-1.0.0-x64-win.exe`（NSIS 安装版） | 88,807,540 B |
+> | `dist\得物蓝V素材发布工具-1.0.0-x64-便携版.exe`（portable） | 88,672,906 B |
+>
+> ✅ 产物内容检查：`resources\app.asar.unpacked\node_modules\@img\` 下**只有 `sharp-win32-x64`**，没有混进 darwin / linux 版（`files` 里的排除规则生效，这也是 HEIC 能在 Windows 上用的前提）。
+>
+> ✅ `dist\win-unpacked\得物蓝V素材发布工具.exe` 能正常启动（主进程 + GPU + 渲染三个进程都在），
+> 且 **userData 仍是 `%APPDATA%\dewu-bluev-publisher`**（不会因为打包后叫中文名就跑去找 `%APPDATA%\得物蓝V素材发布工具`
+> —— 这点和硬约束①一致，从开发版切到安装版不会「配置全丢」）。
+>
+> ⚠️ **踩到的坑（非管理员账号必踩）**：第一次打包在「准备 winCodeSign」这一步失败：
+> ```
+> ERROR: Cannot create symbolic link : 客户端没有所需的特权 :
+>   ...\Cache\winCodeSign\<随机数>\darwin\10.12\lib\libcrypto.dylib
+> ⨯ cannot execute  cause=exit status 2
+> ```
+> 原因：`winCodeSign-2.6.0.7z` 里含 **macOS 侧的符号链接**，Windows 非管理员（或未开「开发者模式」）无法创建符号链接，
+> 7-Zip 解压直接失败，重试 3 次后中止。而这批 darwin 文件在 Windows 打包里根本用不到。
+>
+> **绕过办法**（已实测可行，之后重跑 46 秒就出包）：手动把那台机器上的缓存准备好，排除 darwin：
+> ```
+> :: 先下同一个 7z（走镜像）
+> curl -sSL -o D:\wcs.7z https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z
+> :: 用仓库自带的 7za 解压，排除 darwin（-xr!darwin），目标路径必须写 Windows 风格
+> D:\work\dewu-bluev-publisher\node_modules\7zip-bin\win\x64\7za.exe x -bd -y D:\wcs.7z ^
+>   -o"C:\Users\<你>\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0" -xr!darwin
+> ```
+> 另外两个 `nsis-3.0.4.1.7z` / `nsis-resources-3.4.1.7z` 没有符号链接，走镜像能自动下，不用管。
+>
+> ❌ **本次**没做**：在干净 Windows 上真装一遍（窗口按钮/拖动、HEIC 转换、长路径、卸载后数据保留）——
+> 需要一台干净的机器 + 管理员权限，测试机不具备。交付前请补这一项。
+
 
 ---
 
@@ -223,19 +263,25 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就�
 
 ---
 
-## 6. 待确认的问题（回我编号即可）
+## 6. 已确认的口径（2026-10-01 定稿，不必再问）
 
-| # | 问题 | 现在的默认/现状 |
-| --- | --- | --- |
-| 1 | 含**视频**的叶子怎么发？ | 现在标成「校验未通过：含 N 个视频，真实通道目前只推图片」并跳过 |
-| 2 | 「**内容类型**」列（`26FWT75`）是什么？ | 只做留档，不参与文案生成 |
-| 3 | 「**素材来源**」（如 `KIDS`）要不要参与命名/显示？ | 只留档 |
-| 4 | 报告里的标题/文案——空着就本地生成，对吗？ | 是 |
-| 5 | 好物要支持到 **9** 个吗？ | 已支持 9 个（真机报告留了 9 组列） |
-| 6 | 素材整理要不要加「**选择目标输出目录**」？ | 未做：扁平副本固定放在源目录同级（为保住硬链接；跨卷会变实体复制） |
-| 7 | 品牌要不要做成**多品牌增删改**（真机有品牌管理）？ | 未做：现在是单个「品牌」输入框 |
-| 8 | 发布间隔默认 **60 秒**可以吗？ | 可选 30/60/90/120 |
-| 9 | 出厂口令 `admin / BlueV@2026` 发版前要不要换成你们的？ | README 有三种换法（seed 文件 / 环境变量 / 登录后改） |
+> 原来这一节列的 9 个「待确认问题」已逐条定论。定论原则：**对齐真机 + 不猜 + 最小改动**。
+
+| # | 问题 | 结论 | 依据 |
+| --- | --- | --- | --- |
+| 1 | 含**视频**的叶子怎么发？ | **维持现状**：标成「校验未通过：含 N 个视频，真实通道目前只推图片」并跳过，**不静默丢** | 实测（4.7.6）：`行 4 [图文] result=校验未通过 reason=含 1 个视频，真实通道目前只推图片`。真机里视频是另一条产线（报告里「口 视频 2」单独统计），不在本工具口径内 |
+| 2 | 「**内容类型**」列（`26FWT75`）是什么？ | **维持现状**：只在导入时读进 `contentType` 留档，不参与文案生成 | 该列的字典含义无法确认（真机录屏里也没有解释），**不猜** |
+| 3 | 「**素材来源**」（如 `KIDS`）要不要参与命名/显示？ | **维持现状**：只留档；扁平命名仍按真机口径用 `_` 连接层级路径，**不含来源**。发布单暂不加「素材来源」列 | 它属于功能待办（见 HANDOFF §5 可抄项 #11），本次是「只测不改」 |
+| 4 | 报告里的标题/文案——空着就本地生成，对吗？ | **是**（确认） | 实测（4.6 路A）：`报告已导入：4 条待发布（用报告里的标题文案 2 条 · 本地生成 2 条 · 1 条暂不发布）` |
+| 5 | 好物要支持到 **9** 个吗？ | **已支持 9 个**（确认） | `report.js` 用 `好物(\d+)(货号\|颜色\|sku\|color)` 泛化匹配列名，列序无关；与真机 26 列报告留的 9 组列对齐 |
+| 6 | 素材整理要不要加「**选择目标输出目录**」？ | **不加**。扁平副本固定放源目录同级 | 只有同卷才能建硬链接；跨卷会退化成**实体复制**（慢、双倍磁盘）。加了会诱导用户跨盘选。若将来要加，必须先弹「跨卷将复制，耗时与占用翻倍」的确认框 —— 列为功能待办 |
+| 7 | 品牌要不要做成**多品牌增删改**？ | **本轮不做**（列为功能待办：`copy.brands: [{name, pool}]` + 设置页列表） | 当前单个「品牌」输入框够用；改动会动 `store.js` 结构 + 文案生成取词，超出「只测不改」范围 |
+| 8 | 发布间隔默认 **60 秒**可以吗？ | **60 秒**（确认） | 对齐真机「固定 1 分钟间隔 + 倒计时」（录屏日志原文：`按 1 分钟间隔，57s 后执行`）；界面可选 30/60/90/120 |
+| 9 | 出厂口令 `admin / BlueV@2026` 发版前要不要换？ | **发版前必须换** | 三种换法见 README：① 环境变量 `BLUEV_ADMIN_USER/PASS`；② **推荐** `%APPDATA%\dewu-bluev-publisher\auth.seed.json`（用完即删）；③ 登录后到「设置 → 账号与安全」改。口令只存 scrypt 哈希，不在仓库里 |
+
+> **说明**：HANDOFF §5 里「可抄项」#7~#13（品牌管理、素材来源列、推荐流程步骤条、文案对齐等）属于**产品功能待办**，
+> 不在本次「只测不改」的范围内，未实现。要做得另开一轮，并按 §6 的回归要求每改一处跑一遍 `node tools\run-all.js`。
+
 
 ---
 
@@ -264,7 +310,7 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就�
 | 路径过长报错 | 已自动加 `\\?\` 前缀；同时也把素材根目录改短（如 `D:\卡宾`） |
 | 报告/发布单写不进去 | WPS/Excel 开着 → 这是**设计内**行为，会暂存，关掉后重跑自动补写 |
 | `npm install` 卡在 Electron 下载 | 先 `set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 再装 |
-| clone 后脚本没执行权限（WSL/Git Bash） | `chmod +x tools/run-all.sh tools/fakeadb/adb`（Windows 原生跑 `node tools\run-all.js` 不需要） |
+| clone 后脚本没执行权限（WSL/Git Bash） | `chmod +x tools/run-all.sh`（假 adb 现在是 `tools/fakeadb/adb.js`，不需要执行位；Windows 原生跑 `node tools\run-all.js` 也不需要） |
 
 ---
 
@@ -275,3 +321,34 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就�
 卡点现象：…
 日志原文：…
 ```
+
+---
+
+### 本次实测结论（2026-10-01，Windows 10 22631 · MuMu 12 模拟器 · 得物 6.0.5）
+
+```
+整体流程：通过（4.1 ~ 4.8 全部走完）
+环境    ：node v22.22.2 / electron 31.7.7 / sharp 0.33.5(win32-x64) / adb 36.0.0 / 设备 emulator-5554(Android 12)
+回归    ：node tools\run-all.js → 全部通过，共 176 项断言（跑绿了才动第 4 节）
+第 4 节  ：44 个检查点，37 通过 / 7 未通过 → 其中 3 个是真缺陷（已修，见下），4 个是测试脚本断言写错
+打包    ：两个 exe 产出正常；win-unpacked 能启动；userData 目录不变
+```
+
+**过程中发现并已修掉的 3 个真缺陷**（都在 `src/`，每修一处都跑过完整回归）：
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| P1 | 「处理可自动项」里**等比缩放在 Windows 上必失败**，日志 `EPERM: operation not permitted, unlink '…\4.jpg'`，并残留 `.__tmp_scale_4.jpg` | libvips 的**输入文件缓存**（默认 `files:20`）在处理完后仍持有源文件句柄 → 紧接着 unlink 必失败（合规的「缩放 / 压缩 / 转 JPG」都是「写临时文件 → 删原文件 → 改名」三步） | `imaging.js` 的 init 改成 `sharp.cache({ memory: 64, files: 0 })`（内存缓存照留，只关文件缓存） |
+| P2 | 先「导出发布单」再发布 → **回写报告静默失效**：界面显示「已回写报告：0 行」且不报错 | `sheet.export` 重建 `publish.rows` 时**丢掉了 `reportRow`**（Excel 行号）→ 回写时被过滤成空集 | `jobs.js` 的 `sheet.export` 按 `id` 把旧行的 `reportRow` 带过来 |
+| P3 | 「导出报告」时把**不可恢复的错误**（如表头缺列）也报成「报告仍被占用，N 条已暂存」并反复暂存 | `report.mergeResults` / `sheet.mergeResults` 的 catch 把**所有**异常都归成「被占用」 | 新增 `winpath.isFileLockError()`，只有真锁错误才暂存；逻辑错误原样报出（并去掉「已回写 0 行」这种像成功的措辞） |
+
+> 这三处都做了**双向验证**（改前必须红、改后必须绿），不是只看「回归全绿」：
+> - P1：改前 `转换 0 / 失败 1 / 残留 .__tmp_scale_4.jpg` → 改后 `转换 1 / 失败 0 / 无残留`
+> - P2：改前导出后 `reportRow = [0,0,0,0]` → 改后 `[2,3,4,5]`
+> - P3：改前表头缺列 `busy=true` 且往暂存队列塞了 1 条 → 改后 `busy=false`、队列不动，且「真被占用」仍正确走 `busy=true` + 暂存
+
+**4.7 真实通道的成功链路**因「不真发帖」而改用**模拟设备通道**验证（`child_process.execFile` 层装假 adb，
+其余全是真代码）：自检 7 项 → 推 3 张图 + 媒体扫描 → 15 次 `uiautomator dump` → 14 次坐标点击 →
+4 次 ADBKeyboard 中文广播 → 2 条发布成功、回填时间 → `publish-log.jsonl` → **回写报告 B/C 列 2 行**，共 15 项断言全绿。
+**真机成功链路（真往账号发）尚未验证** —— 那一步需要把 `uiMap` 换成得物发布页的真实节点。
+

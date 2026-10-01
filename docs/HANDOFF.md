@@ -121,6 +121,15 @@
   **固定 60s 间隔 + 倒计时**；**单条耗时**；失败存截图并**回退**；UI 定位表 `uiMap` 可抓取、可导入
 - **2026-09-30 这一轮（原 §5 待办 ①②③④，已完成，别重做）**：多批次并行任务列表 · 合规报告导出 · 发布日志重导出 ·
   失败恢复动作界面可编辑；测试也一并收进 `tools/`（`bash tools/run-all.sh`，115 项断言）
+- **2026-10-01 Windows E2E 轮（3 处真缺陷，已修 + 双向验证；完整记录见 `WINDOWS-E2E.md` §9）**：
+  - `imaging.js`：init 改成 `sharp.cache({ memory: 64, files: 0 })` —— **关掉 libvips 的输入文件缓存**。
+    Windows 上默认 `files:20` 会让合规的「等比缩放 / 压缩 / 转 JPG」在 `unlink` 源文件时**必报 EPERM**
+    并残留 `.__tmp_scale_*.jpg`（这三条都是「写临时文件 → 删原文件 → 改名」三步）。
+  - `jobs.js` 的 `sheet.export`：重建 `publish.rows` 时按 `id` 把上一批的 `reportRow` 带过来。
+    丢了它 → 「先导出发布单、再发布」会把回写报告静默变成「已回写报告：0 行」（不报错，最容易漏）。
+  - 新增 `winpath.isFileLockError()`，`report.js` / `sheet.js` 的 `mergeResults` 用它分流：
+    **只有真锁错误**（EBUSY / EPERM / EACCES…）才「整批暂存、下次再试」；
+    表头缺列这类不可恢复的错误必须原样报出来，不能伪装成「仍被占用」让人一直等一个补不进去的队列。
 
 ## 5. 待做（按优先级）
 
@@ -177,6 +186,10 @@
 >   （`pending-results.json` 按目标分队列：`sheet` / `report`，互不覆盖）；
 > - 回归：`tools/reporttest.js`（28 项）。
 
+> ⚠️ 上表 **#7~#13 是「产品功能待办」**（真机有、我们还没有），**不属于测试范围**；
+> 本次 Windows E2E 轮按「只测不改」的原则**没有实现**它们。要做请另开一轮，并按 §6 每改一处跑一遍 `node tools\run-all.js`。
+> 其中 #11（发布单加「素材来源」列）已由 WINDOWS-E2E §6 的结论确认「暂不加」，理由见那张表。
+
 > 录屏里**已经对齐**的（不用再做）：扁平命名 `_` 连接、原素材完全不动、合规四条规则、父目录分组、「导出报告」、
 > 颜色预检 5 种判定文案、设备矩阵、固定 1 分钟间隔 + 倒计时、单条耗时、Excel 占用暂存、失败回退、重导出日志、多批次并行。
 
@@ -203,7 +216,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | 测试 | 覆盖 | 断言数 |
 | --- | --- | --- |
 | `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults` | 23 |
-| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/`，运行时复制到临时目录）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值） | 27 |
+| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值） | 27 |
 | `tools/pendingtest.js` | 把发布单 `chmod 0444` 模拟「Excel 被占用」→ 断言整批暂存 → 恢复可写后下次补写；设备增删去重 | 9 |
 | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 绝不把它搬进 `_rejected`；「导出报告」xlsx（汇总+明细）+ csv（带 BOM） | 16 |
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
@@ -214,7 +227,9 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 合计 **176** 项断言。`logintest.js` / `uicheck.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
 `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
 
-假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb,window.xml,shot.png}`；
+假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
+`adb.js` 是**可 `require` 的替身模块**（替换 `child_process.execFile`），不再依赖 shell / 可执行位 / PATH ——
+原因是 Windows 的 `execFile('adb')` 只认 `adb.exe`，无扩展名的 bash 脚本跑不起来（详见该文件顶部注释）。
 脚本用 `$0` 反推目录（`DIR="$(cd "$(dirname "$0")" && pwd)"`），所以整套复制到临时目录也能跑。
 
 ---

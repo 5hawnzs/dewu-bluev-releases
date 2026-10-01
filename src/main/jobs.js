@@ -152,14 +152,23 @@ async function dispatch(type, args, ctx) {
       const pc = store.get('publish') || {};
       const intervalSec = pc.mock ? (pc.mockIntervalSec || 5) : (pc.intervalMinSec || 60);
       const r = await sheet.exportSheet(s, Object.assign({ intervalSec }, args || {}));
-      const pubRows = r.rows.map((row, i) => ({
-        seq: i + 1, id: s.items[i] ? s.items[i].id : String(i + 1), dir: row[1],
-        goods: row[11] ? (row[13] ? 2 : 1) : 1,
-        images: 0, startAt: '', status: '排队',
-        expect: row[17], title: row[4], goods1: row[11] ? (row[11] + (row[12] ? ' / ' + row[12] : '')) : '',
-        result: row[20] === '校验未通过' ? '校验未通过' : '',
-        retries: 0, reason: row[21] || ''
-      }));
+      // 导出发布单会重建 publish.rows，必须把上一批的「Excel 行号」按 id 带过来：
+      // 从「AI 内容报告」导进来的行靠 reportRow 才能把发布结果回写进原报告，
+      // 丢了它 → 回写时被过滤成空集 → 界面显示「已回写报告：0 行」且不报错（静默失效）。
+      const prevById = new Map((s.publish.rows || []).map(x => [String(x.id), x]));
+      const pubRows = r.rows.map((row, i) => {
+        const id = s.items[i] ? s.items[i].id : String(i + 1);
+        const prev = prevById.get(String(id)) || {};
+        return {
+          seq: i + 1, id, dir: row[1],
+          goods: row[11] ? (row[13] ? 2 : 1) : 1,
+          images: 0, startAt: '', status: '排队',
+          expect: row[17], title: row[4], goods1: row[11] ? (row[11] + (row[12] ? ' / ' + row[12] : '')) : '',
+          result: row[20] === '校验未通过' ? '校验未通过' : '',
+          retries: 0, reason: row[21] || '',
+          reportRow: Number(prev.reportRow || 0)      // 0 = 不是从报告导进来的，回写时会被跳过
+        };
+      });
       project.patch({ sheet: { file: r.file, rowCount: r.rowCount, colCount: r.colCount, locked: false, exportedAt: Date.now() }, publish: Object.assign({}, s.publish, { rows: pubRows, batch: path.basename(r.file, '.xlsx') }) });
       return r;
     }
@@ -286,6 +295,8 @@ async function dispatch(type, args, ctx) {
         const m = await sheet.mergeResults(s.sheet.file, r.results);
         if (m.busy) {
           logbus.warn(`Excel 仍被占用，${m.pending} 条结果已暂存，下次再试（可只读打开但不建议编辑保存）`);
+        } else if (m.error) {
+          logbus.error(`回写发布单失败：${m.error}`);   // 不是「被占用」，别假装写进去了
         } else {
           logbus.ok(`已合并回写发布单：${m.updated} 行${m.flushed ? `（含补写上次的 ${m.flushed} 条）` : ''}`);
         }
@@ -295,8 +306,13 @@ async function dispatch(type, args, ctx) {
         const mr = await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
         if (mr.busy) {
           logbus.warn(`报告仍被占用，${mr.pending} 条已暂存，下次导入/发布时先补写`);
-        } else if (mr.updated || mr.skipped) {
+        } else if (mr.error) {
+          logbus.error(`回写报告失败：${mr.error}`);     // 例如报告表头缺列：不可恢复，必须直说
+        } else if (mr.updated) {
           logbus.ok(`已回写报告：${mr.updated} 行${mr.flushed ? `（含补写上次的 ${mr.flushed} 条）` : ''} → ${path.basename(s.publish.reportFile)}`);
+        } else if (mr.skipped) {
+          // 这条以前会打成「已回写报告：0 行」——看着像成功，其实一条都没写
+          logbus.info(`本次结果没有可回写的报告行（${mr.skipped} 条不是从这份报告导进来的），跳过回写`);
         }
       }
       notify('发布批次结束', `成功 ${r.okCount} / ${r.total} 条，记得回查审核状态`);

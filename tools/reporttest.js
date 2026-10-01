@@ -163,7 +163,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     st.items.length === 3 && st.copyRows.length === 3 && st.verify.rows.length === 1 && st.publish.rows.length === 3 && st.publish.reportFile === repFile,
     `items ${st.items.length} · copy ${st.copyRows.length} · verify ${st.verify.rows.length} · rows ${st.publish.rows.length}`);
   ok('⑦ 报告的暂存队列是干净的（没有误用发布单的队列）',
-    report.pendingCount() === 0 && (await import(path.join(base, 'src/main/services/sheet.js')).then(m => m.takePending('sheet'))).length === 0);
+    report.pendingCount() === 0 && require(path.join(base, 'src/main/services/sheet.js')).takePending('sheet').length === 0);
 
   const pub = await jobs.run('publish.run', {});
   ok('⑦ 发布跑完（视频那条按「校验未通过」跳过）', pub.ok === true && pub.result.total === 2, pub.error || JSON.stringify(pub.result));
