@@ -309,6 +309,9 @@
     （此前测试通道是 `1.0.1-beta.2`，那个包里**不含**内置 adb / 输入法，也**不含** logo 回退。）
     发布前的可复算证据：全量回归 **478 全绿**（就是上面这一版树）；产物里 `resources/adb/adb.exe version`
     实测打印 `1.0.41 / 37.0.1-15733141`；四个内置文件的 md5 与 `vendor/README.md` **逐字节一致**；
+    ★ 直接读产物 `resources/app.asar` 的头：包内 `package.json` 的 `version` = **`1.0.1`**（界面「当前版本」读的就是它），
+    且 asar 顶层只有 `package.json` / `src` / `node_modules` —— **`vendor/` 确认没进 asar**（正是 §2 那条设计要求的）；
+    产物 `resources/app-update.yml` = `provider: generic` + COS 桶根 URL + `channel: latest`；
     公网核对 `latest.yml = 1.0.1`、安装包 `HTTP 200 / Content-Length 92,229,456`（与本地同）、
     `beta.yml` 一个字节没动（仍 `1.0.1-beta.2`）。安装包 `89,151,294 B → 92,229,456 B`（85.03 → **88.0 MB**，+2.94 MB）。
     ★ **打包机上若 `dist/` 里还留着上一次的 `win-unpacked/`，electron-builder 会中断**：
