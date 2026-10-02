@@ -837,6 +837,39 @@
   双向验证：去掉这行判断 ⇒ smoke **FAIL ⑧ … 3 个货号：货号 / 26FW-YB160 / UF46FWT75EH1HF6**。
   ⚠️ **已经导坏过的机器要重新导一次商品池**（代码修的是导入行为，不会去改你已有的 pool.json）。
 
+### ★★ 「得物发布页」到底是哪一屏、怎么进、抓哪一屏（2026-10-02）
+
+> 起因：用户在**第四次**追问「得物发布页是指哪里」。此前文档只写了「打开到发布页」，
+> **没写怎么去**，于是每次都要他重讲一遍。现在把它写进代码 + 文档，程序自己在抓取前回显这一屏。
+
+**入口（真机实测 2026-10-01，MuMu 12 / 得物 900×1600）**：
+
+| 步骤 | 真机事实 |
+| --- | --- |
+| ① 打开得物 App | 停在**首页** |
+| ② 点**首页右上角那个相机图标** | `com.shizhuang.duapp:id/ivCamera`，clickable，center `(854,69)`，**text 与 content-desc 都为空**（全 App 的 content-desc 一律为空） |
+| ③ 进入的页面 | `media.publish.activity.TotalPublishProcessActivity` —— **这就是「发布页」** |
+| ④ 首屏长什么样 | **选素材的相册**：顶部 全部 / 照片 / 视频 三个 `ActionBar$Tab`；缩略图 `imgThumb`（**无文字无描述**，只能按坐标点） |
+
+★ **首页自己的 tab 栏里也有一个「视频」**（`tvTabTile`，center `(346,135)`）⇒ **抓 dump 前先确认停在发布页**，
+抓成首页会得到一份错坐标的表（而且不会当场报错、会一路点到「发布成功」）。
+
+**抓哪一屏**：抓 **③ 那一屏（发布页首屏）** 就对。候选表是**固定骨架**（打开发布入口 → 从相册选图 →
+确认选图 → 填标题 → 填正文 → 话题 1~5 → 关联好物 → 搜索货号 → 提交发布），抓哪一屏只影响
+**第一步的取值**和**包名**。据此定了三条：
+- 第一步现在**先认 id**（`ivCamera`）**再**猜文字 —— 真机入口没有文字，只按文字猜必然停在「⚠ 需手动确认」；
+- **不硬拦**：是得物但不是发布页时**只告警**（「填标题」「搜货号」这些后续屏本来也要单独抓）；
+- 停在**别的 App** 上**拦下**（那时抓出来的是桌面，表毫无意义），并在报错里给出上面那张「怎么进」的说明。
+
+**代码落点**：`uimap.DEWU`（入口 id / 发布页 activity / 怎么进，一处定义）· `uimap.suggest()`（先认 id）·
+`publisher.dumpForCapture()`（三档：读不到 → 照常抓 / 非得物 → 拦 / 是得物非发布页 → 告警）·
+`jobs.publish.dump`（回显这一屏）。
+
+**回归**：`adbtest` 新增 ⑰ 段 **8 条**（75 → **83**）：「停在别的 App 必被拦下」「拦下时要说清怎么去发布页」
+「停在得物首页照常抓 + 告警并回显这一屏」「停在发布页正常且无告警」「**读不到 focus 照常抓**（检查没做成 ≠ 抓错页面）」
+「无文字的相机图标 ⇒ 候选表第一步必须是 `tapId`（图文 / 视频各一条）」。全量 **780 → 834** 项全绿
+（含并行会话新增的 `cloudtest` 与 `uicheck` 增补）；5 条定点破坏分别报红 2／2／1／3／1 条，逐字节还原。
+
 ### 视频发布支持（2026-10-01 **代码已实现**；★ 2026-10-02 起**默认不用配 `videoSteps`**）
 
 > **已拍板的口径：视频封面用「得物推荐的」** —— 即不点封面区、不上传封面图、不做取帧裁图。
@@ -1171,7 +1204,7 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十五套**测试，共 **780** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十六套**测试，共 **834** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
 | `tools/make-icon.js` | 从源 SVG 生成 `build/icon.ico`（7 个尺寸，每个内嵌 PNG）+ `build/icon.png`；换 logo 只改脚本里的源路径 |
 | `tools/upload-release.js` | 把 exe + 清单文件 + `.blockmap` 传到对象存储的**桶根目录**。清单名按通道定：正式版 `latest.yml`、测试版 `beta.yml`（`channelFile()`）。上传前有**四道闸门**：版本号与 `package.json` 对不上（dist 是旧包）、`dist` 里不是恰好 1 个安装版 exe、`versionGate`（同版本号 / 往回发）、`channelMismatch`（**版本后缀与通道对得上**，见 §2 第 5 条 c）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
 | `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/`（**桶根，不带 `/stable`** —— 两条通道共用同一层，靠清单文件名区分）/ `channel: latest`（只是默认值，用户选测试版后运行时会被覆盖成 `beta`）/ `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |

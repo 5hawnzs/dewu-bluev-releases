@@ -21,6 +21,10 @@
  *   IME_ACTIVE       —— 假装「ADBKeyboard 已装进模拟器且是当前输入法」。**不建这个文件**就是
  *                       全新模拟器的样子（装了 apk 但没启用）——中文输入在这两种状态下行为完全不同，
  *                       必须两种都测（见 src/main/services/adb.js#inputText 的注释）。
+ *   FOCUS            —— 假装**前台停在哪一屏**（`dumpsys window | grep mCurrentFocus` 的返回值）。
+ *                       文件里写什么 activity 就是什么；写成 '-' 就假装这一行**读不到**。
+ *                       文件不存在时默认给「得物发布页」，这样既有用例不受影响。
+ *                       用途：验「抓取页面结构」会先说清停在哪一屏、停在别的 App 上会拦下来。
  *
  * 另外它接受**绝对路径**的可执行名（只要 basename 是 adb / adb.exe）——
  * 因为内置 adb 走的是 `resources/adb/adb.exe` 这种绝对路径，替身不能只认字符串 'adb'。
@@ -130,6 +134,15 @@ function makeFakeAdb(dir) {
       const lag = fs.existsSync(path.join(dir, 'MEDIA_LAG'));
       const list = lag ? [] : pushed;
       return okOut(list.map((p, i) => `Row: ${i} _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`).join('\n') + (list.length ? '\n' : ''));
+    }
+    if (/^dumpsys window/.test(cmd)) {
+      const f = path.join(dir, 'FOCUS');
+      const exists = fs.existsSync(f);
+      const raw = exists ? read(f, Buffer.from('')).toString('utf8').trim() : '';
+      // 现场开关 FOCUS：写什么就假装前台是什么；不存在 → 默认得物发布页；写成 '-' → 假装读不到
+      const focus = raw || (exists ? '-' : 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity');
+      if (focus === '-') return okOut('  mCurrentFocus=null\n');
+      return okOut(`  mCurrentFocus=Window{a1b2c3d4 u0 ${focus}}\n`);
     }
     if (cmd === 'pm list packages') return okOut('package:com.shizhuang.duapp\npackage:com.android.adbkeyboard\npackage:com.android.shell\n');
     return okOut('');

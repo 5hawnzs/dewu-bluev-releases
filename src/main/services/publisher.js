@@ -157,7 +157,8 @@ async function connect(device) {
   const ready = !!(p.device && p.tools.uiautomator && p.tools.input && p.appPackage);
   const notes = p.notes.slice();
   if (ready && !(map && map.steps && map.steps.length)) {
-    notes.push('还没配 UI 定位表（「设置 → 高级设置」→「抓取页面结构」→ 导入），配好前不会走真实通道');
+    notes.push('还没配 UI 定位表（「设置 → 高级设置」→「抓取页面结构」→ 导入），配好前不会走真实通道'
+      + '；抓之前先把模拟器停在得物发布页（首页右上角那个相机图标进去那一页）');
   }
   return {
     connected: ready,
@@ -228,6 +229,36 @@ async function runStep(serial, step, data, ctx) {
     default:
       throw new Error('未知步骤类型：' + step.action);
   }
+}
+
+/**
+ * 抓界面结构（给「抓取页面结构」按钮用）—— 比 adb.dumpEx 多一层「你现在停在哪一屏」。
+ *
+ * 为什么必须先看这一屏：dump 抓的**就是当前这一屏**。抓错页面的代价是**一份错坐标的表**，
+ * 而错坐标不会当场报错 —— 它会一路点到「发布成功」（本项目已经吃过这个亏，见 HANDOFF ⑪）。
+ * 已知的两个坑（真机实测）：① 得物首页自己的 tab 栏里也有一个「视频」（`tvTabTile`），
+ * 抓成首页就被它污染；② 发布页首屏是「选素材」，抓它才配得出 `ivCamera → 选图 → 下一步 …` 这一串。
+ *
+ * 分三档处理（不是一刀切拦住）：
+ *   · 读不到 focus（命令失败/正则没匹配）→ **照常抓**：这是"检查没做成"，不是"抓错页面"；
+ *   · 读到了但**不是得物** → **拦下来**并给出「怎么进发布页」（那时抓出来的是桌面，表毫无意义）；
+ *   · 是得物但**不是发布页** → 照常抓 + 明确告警（「填标题」「搜货号」这些后续屏本来也要抓）。
+ */
+async function dumpForCapture(serial, opts) {
+  const focus = await adb.currentFocus(serial);
+  if (focus && !uimap.isDewuFocus(focus)) {
+    return {
+      ok: false, blocked: true, focus, animOff: false,
+      why: `现在屏幕上不是得物 —— 前台是「${focus}」。${uimap.DEWU.entryHow}，停在发布页再点「抓取页面结构」`
+    };
+  }
+  const d = await adb.dumpEx(serial, opts);
+  const onPublish = uimap.isPublishScreen(focus);
+  const focusNote = (!focus || onPublish) ? ''
+    : `★ 你现在抓的不是发布页首屏，而是「${focus}」—— 候选表是按**这一屏**猜的。`
+      + `如果这一步本来就要抓后面某一屏（填标题 / 搜货号），那是对的；`
+      + `如果本来想抓发布页首屏：${uimap.DEWU.entryHow}，停在那一屏再抓。`;
+  return Object.assign({}, d, { focus, focusNote, onPublish });
 }
 
 /** 失败恢复：真机日志里是「已回退转发页」「删除卡片」，避免下一条起点被残留界面污染 */
@@ -320,7 +351,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     log(`${row.dir}：这条是视频，UI 定位表没单独配 videoSteps —— 按「图文那套位置」发（图文与视频位置一样，实测）`, 'info');
   }
   if (!steps.length) {
-    throw new Error('UI 定位表是空的 —— 到「设置 → 高级设置」点「抓取页面结构」，把生成的候选表核对后导入，再发。');
+    throw new Error('UI 定位表是空的 —— 到「设置 → 高级设置」点「抓取页面结构」'
+      + `（抓之前先把模拟器停在得物发布页：${uimap.DEWU.entryHow}），把生成的候选表核对后导入，再发。`);
   }
 
   const data = {
@@ -369,7 +401,8 @@ async function run(state, ctx = {}) {
   const map = c.uiMap;
 
   if (mode === 'adb' && !(map && map.steps && map.steps.length)) {
-    throw new Error('真实通道需要先配 UI 定位表：在「设置 → 高级设置」点「抓取页面结构」，改好后导入 uiMap.json');
+    throw new Error('真实通道需要先配 UI 定位表：把模拟器停在得物发布页（首页右上角相机图标进去那一页），'
+      + '在「设置 → 高级设置」点「抓取页面结构」，改好后导入 uiMap.json');
   }
 
   const rows = (state.publish && state.publish.rows && state.publish.rows.length)
@@ -503,8 +536,9 @@ async function run(state, ctx = {}) {
 }
 
 module.exports = {
-  connect, run, estimate, saveShot, recover,
+  connect, run, estimate, saveShot, recover, dumpForCapture,
   probes: adb.probe, probe: adb.probe, dump: adb.dump, dumpEx: adb.dumpEx,
+  currentFocus: adb.currentFocus,
   // 一键装上内置的中文输入法（装 + 启用 + 设为当前输入法）—— 实现与「为什么必须三步」见 adb.js
   installIme: adb.installKeyboard,
   imeComponent: adb.adbKeyboardIme,

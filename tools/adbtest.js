@@ -1,5 +1,6 @@
 /* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备
    覆盖：设备检查 / dump 解析与定位表 / 未配定位表必失败 / 图文条全流程 / 页面结构变了必失败 /
+        **抓取前先说清停在哪一屏**（停在别的 App 上拦下 / 停在得物首页告警 / 读不到就照常抓）/
         **视频条**（推视频 → 等媒体库索引 → 走 videoSteps，没配 videoSteps 就复用图文 steps；媒体库一直看不到必失败）/
         **页面不 idle**（自动关动画兜底并还原；兜不住就明确失败；★ 抓不到时绝不返回上一页的残留结构）
    假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
@@ -282,6 +283,53 @@ const state = {
   const iDump = seq.findIndex(l => /uiautomator dump/.test(l));
   ok('⑫ 抓取前先删远端文件（顺序：rm → dump）',
     iRm >= 0 && iDump >= 0 && iRm < iDump, `rm@${iRm} dump@${iDump}`);
+
+  // 14) ★★ 「抓取页面结构」必须先说清「你现在停在哪一屏」，停在别的 App 上要拦下来。
+  //     真机依据（2026-10-01 MuMu 12 / 得物 900×1600）：得物首页右上角的发布入口是相机图标
+  //     `com.shizhuang.duapp:id/ivCamera`，text 与 content-desc **都是空的** ⇒ 按文字猜必然猜不到。
+  const FOCUS = path.join(FDB, 'FOCUS');
+  clearCalls();
+  fs.writeFileSync(FOCUS, 'com.android.launcher/com.android.launcher2.Launcher');
+  const dOut = await publisher.dumpForCapture('127.0.0.1:5555');
+  ok('⑰ 停在非得物界面时抓取被拦下（不许把别的 App 的坐标做成定位表）',
+    dOut.ok === false && dOut.blocked === true, JSON.stringify({ ok: dOut.ok, blocked: dOut.blocked }));
+  ok('⑰ 拦下时说清了「怎么去发布页」（含首页右上角相机图标）',
+    /相机/.test(dOut.why) && /发布页/.test(dOut.why), String(dOut.why).slice(0, 50) + '…');
+
+  fs.writeFileSync(FOCUS, 'com.shizhuang.duapp/com.shizhuang.duapp.MainActivity');
+  const dHome = await publisher.dumpForCapture('127.0.0.1:5555');
+  ok('⑰ 停在得物首页时照常抓（后面几屏本来也要能抓）', dHome.ok === true, String(dHome.why));
+  ok('⑰ 但会告警「抓的不是发布页首屏」并回显这一屏（首页 tab 栏也有个「视频」，会污染）',
+    dHome.onPublish === false && /MainActivity/.test(dHome.focusNote || ''),
+    String(dHome.focusNote).slice(0, 46) + '…');
+
+  fs.writeFileSync(FOCUS, 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity');
+  const dPub = await publisher.dumpForCapture('127.0.0.1:5555');
+  ok('⑰ 停在得物发布页时：正常抓、无告警、回显这一屏',
+    dPub.ok === true && dPub.onPublish === true && dPub.focusNote === ''
+      && /TotalPublishProcessActivity/.test(dPub.focus || ''),
+    JSON.stringify({ ok: dPub.ok, note: dPub.focusNote }));
+
+  fs.writeFileSync(FOCUS, '-');
+  const dNo = await publisher.dumpForCapture('127.0.0.1:5555');
+  ok('⑰ 读不到前台是哪一屏时照常抓（「检查没做成」≠「抓错页面」，不能把用户堵死）',
+    dNo.ok === true && dNo.focus === '', JSON.stringify({ ok: dNo.ok, focus: dNo.focus }));
+  fs.unlinkSync(FOCUS);
+
+  // 13b) 候选表第一步：dump 里只有「没有文字的相机图标」时，必须产出 tapId，而不是按文字瞎猜
+  const camXml = '<hierarchy rotation="0" width="1080" height="2400">'
+    + '<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.shizhuang.duapp" clickable="false" bounds="[0,0][1080,2400]" />'
+    + '<node index="1" text="" resource-id="com.shizhuang.duapp:id/ivCamera" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="true" bounds="[820,30][888,108]" />'
+    + '<node index="2" text="视频" resource-id="" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="false" bounds="[320,110][372,160]" />'
+    + '</hierarchy>';
+  const sug2 = uimap.suggest(uimap.parseNodes(camXml));
+  ok('⑰ dump 里只有无文字的相机图标时，第一步给出 tapId（不再猜文字）',
+    sug2.steps[0].action === 'tapId' && sug2.steps[0].value === 'com.shizhuang.duapp:id/ivCamera',
+    JSON.stringify(sug2.steps[0]));
+  ok('⑰ 视频那套的第一步同样认这个 id（首页 tab 栏的「视频」不会被误当成入口）',
+    sug2.videoSteps[0].action === 'tapId' && sug2.videoSteps[0].value === 'com.shizhuang.duapp:id/ivCamera',
+    JSON.stringify(sug2.videoSteps[0]));
+
 
   // ============ 12b) ★ 中文输入：必须按「设备真实输入法状态」决定走哪条通道 ============
   const adbMod = require(path.join(base, 'src/main/services/adb.js'));
