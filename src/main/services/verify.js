@@ -66,6 +66,10 @@ async function check(items, ctx = {}) {
     //  ⇒ 整批一条都发不出去，而界面只显示「校验未通过」。这与本文件与真机的口径
     //  「接口查不到的货号**仅告警不阻断**」直接矛盾。
     //  ⇒ 所以：**无数据只告警（block=false），有据可判的不一致才阻断（block=true）**。
+    //  ★★ 2026-10-02 再收紧一次（用户拍板「货号颜色校验为发布流程中非必需项目」）：
+    //     「颜色不匹配」「主色不符」也改成**只告警**（block=false）—— 真机「关联好物」是
+    //     按**货号**搜出结果后选第一件，颜色填错最多是选错规格，不该让整条发不出去。
+    //     现在唯一还会拦的是**多色货号根本没填颜色**（发布端连拿什么去对都没有）。
     let conclusion = '通过', note = '', level = 'ok', block = false;
     if (!poolColors) {
       conclusion = `货号 ${item.sku} 未查到颜色信息，请核对`;
@@ -80,13 +84,18 @@ async function check(items, ctx = {}) {
         conclusion = '单色货号，颜色可空'; note = `商品池仅 ${poolColors[0]}`; level = 'ok';
       }
     } else if (!poolColors.includes(declared)) {
-      conclusion = '颜色不匹配'; note = `商品池：${poolColors.join(' / ')}`; level = 'warn'; block = true;
+      // 颜色对不上**不拦发布**（2026-10-02 用户拍板）：仍标 warn 让人看得见，但照发。
+      conclusion = '颜色不匹配';
+      note = `商品池：${poolColors.join(' / ')} → 发布时按货号搜出来的第一件商品发`;
+      level = 'warn'; block = false;
     } else if (imageColor) {
       const declaredCoarse = colors.coarseOfName(declared);
       if (declaredCoarse && declaredCoarse !== imageColor.coarse) {
-        conclusion = '主色不符，需人工确认';
-        note = `目录写「${declared}」（${declaredCoarse}系），图片实取主色为 ${imageColor.name}（${imageColor.coarse}系）`;
-        level = 'warn'; block = true;   // 「需人工确认」= 机器不替人决定 ⇒ 先别发
+        // 同上：主色不符也只告警，不再拦发布（发布端按货号搜第一件）。
+        conclusion = '主色不符';
+        note = `目录写「${declared}」（${declaredCoarse}系），图片实取主色为 ${imageColor.name}（${imageColor.coarse}系）`
+          + ' → 颜色不拦发布，这一条会按货号搜出来的第一件商品发';
+        level = 'warn'; block = false;
       } else {
         note = `图片主色 ${imageColor.name}，与目录一致`;
       }
@@ -110,8 +119,8 @@ async function check(items, ctx = {}) {
     manual: rows.filter(r => r.level === 'warn').length,
     missing: rows.filter(r => /未查到颜色信息/.test(r.conclusion)).length,
     noColor: rows.filter(r => r.conclusion === '多色货号须指定颜色').length,
-    // 真正会被「发布」跳过的条数。★ 和上面的 manual 不是一个数：manual 里有一部分是「查不到」
-    // （只告警、照发），只有 block=true 的才会被拦。界面要解释「为什么这一批少发了几条」时看这个。
+    // 真正会被「发布」跳过的条数。★ 和上面的 manual 不是一个数：manual 里绝大多数是
+    // 「查不到 / 颜色对不上」（只告警、照发），只有 block=true（多色漏填）才会被拦。
     blocked: rows.filter(r => isBlocked(r)).length
   };
   log(`校验完成：通过 ${stats.pass} · 需人工 ${stats.manual} · 未查到 ${stats.missing} · 缺色 ${stats.noColor}`
@@ -123,15 +132,17 @@ async function check(items, ctx = {}) {
 /**
  * 这一条**要不要拦住不发布**（发布侧唯一该看的判据）。
  *
- * ★ 旧数据（2026-10-02 之前的 `verify.rows`，存在 `project.json` 里）没有 `block` 字段。
- *   对它们按结论原文回推，而不是退回 `pass === false` —— 否则「升级了但还是被旧口径拦住」，
- *   用户会以为没修好。**重新点一次「开始校验」就会写上新字段。**
+ * ★ 现在唯一还会拦的：**多色货号根本没填颜色**（`block` 由 check() 写的 true）。
+ *   「货号查不到」「颜色不匹配」「主色不符」一律只告警、照常发布。
+ *
+ * ★ 旧数据（没有 `block` 字段的 `verify.rows`，存在 `project.json` 里）按**结论原文**回推，
+ *   不退回 `pass === false`：老口径会把「查不到 / 颜色对不上」也拦下，升级后还照着老账拦就白改了。
+ *   **重新点一次「开始校验」就会写上新字段。**
  */
 function isBlocked(row) {
   if (!row) return false;
   if (typeof row.block === 'boolean') return row.block;
-  if (/未查到颜色信息/.test(String(row.conclusion || ''))) return false;   // 无数据 ≠ 有错
-  return row.pass === false;
+  return /多色货号须指定颜色/.test(String(row.conclusion || ''));
 }
 
 module.exports = { check, isBlocked };

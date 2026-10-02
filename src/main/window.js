@@ -15,10 +15,16 @@ let normalGeo = null;         // 进登录门前记住的正常几何，登录�
 const GATE_WIDTH = 380;
 const GATE_HEIGHT = 336;
 const GATE_PAD_Y = 18;        // 卡片上下各留的呼吸位
+// ★ 登录页固定浅色（渲染层 .gate 里也把浅色变量重声明了一遍）⇒ 窗口底色也必须跟着浅，
+//   否则深色系统下会先闪一块近黑再被页面盖住。主界面仍跟随系统主题。
+const GATE_BG = '#f2f1ed';
+
+/** 主界面窗口底色：跟随系统深色 */
+function bgColor() { return nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed'; }
 
 function createWindow(locked) {
   const b = store.get('window.bounds') || {};
-  const bg = nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed';
+  const bg = bgColor();
   // 「正常几何」= 不做登录门收缩时本该用的那套尺寸/位置。
   // 开场就是小窗时也必须先把它记下来，否则登录成功后 setLoginMode(false) 没有还原目标，
   // 窗口会一直卡在 380 宽的小尺寸上（这条被 gateflow 的行为测试抓到过）。
@@ -45,7 +51,7 @@ function createWindow(locked) {
     resizable: !locked,           // 登录门是个「刚好装下卡片」的小窗，不允许拉伸
     maximizable: !locked,
     frame: false,                 // 自绘 Windows 标题栏（最小化/最大化/关闭在右上角）
-    backgroundColor: bg,
+    backgroundColor: locked ? GATE_BG : bg,   // 登录门是固定浅色，见 GATE_BG
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -87,7 +93,10 @@ function createWindow(locked) {
   win.on('unmaximize', () => win.webContents.send('win:max', false));
 
   nativeTheme.on('updated', () => {
-    if (!win.isDestroyed()) win.webContents.send('theme:changed', theme());
+    if (win.isDestroyed()) return;
+    // 登录门期间窗口底色固定在浅色（见 GATE_BG），不跟着系统变
+    if (!loginMode) win.setBackgroundColor(bgColor());
+    win.webContents.send('theme:changed', theme());
   });
 
   win.webContents.on('did-finish-load', () => {
@@ -141,10 +150,12 @@ function setLoginMode(on) {
     win.setMinimumSize(320, 320);
     win.setResizable(false);
     win.setMaximizable(false);
+    win.setBackgroundColor(GATE_BG);      // 登录页固定浅色，窗口底色跟着走
     win.setBounds({ width: GATE_WIDTH, height: GATE_HEIGHT });
     win.center();
   } else {
     loginMode = false;
+    win.setBackgroundColor(bgColor());    // 回主界面：底色交还给系统主题
     win.setResizable(true);
     win.setMaximizable(true);
     win.setMinimumSize(900, 600);

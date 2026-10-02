@@ -218,7 +218,17 @@ code{font-family:var(--mono);font-size:11.5px;background:var(--panel);border:1px
 /* ---------- 登录门（未登录时盖住整个窗口） ---------- */
 body.locked .app{display:none}
 body:not(.locked) .gate{display:none}
+/* ★ 登录页**固定浅色**：它是封面，不跟系统深色走。
+   用户 Windows 是深色模式（AppsUseLightTheme=0），而出厂「跟随系统」会让整块登录窗变成
+   近黑底（--bg #111113），卡片周围就成了一卷黑 —— 观感像给卡片套了个黑框（2026-10-02 用户反馈）。
+   做法：把浅色那套变量在 .gate 子树里重新声明一遍（自定义属性会向下继承），
+   页面里所有 var(--x) 自动变回浅色；**主界面仍然跟随系统主题**（设置 → 外观）。 */
 .gate{
+  --bg:#f2f1ed; --panel:#ffffff; --panel2:#f7f6f3; --side:#eceae4;
+  --bd:#dedcd5; --bd2:#c9c7bf;
+  --tx:#1a1a18; --tx2:#5f5e5a; --tx3:#8d8b83;
+  --teal:#0f6e56; --teal-bg:#e1f5ee; --amber:#854f0b; --amber-bg:#faeeda;
+  --red:#a32d2d; --red-bg:#fcebeb; --gray:#5f5e5a; --gray-bg:#eeece5;
   position:fixed;inset:0;z-index:100;
   display:flex;align-items:center;justify-content:center;
   background:var(--bg);
@@ -227,7 +237,7 @@ body:not(.locked) .gate{display:none}
 }
 /* 交互控件必须显式 no-drag，否则拖拽区会把点击吃掉（输入框点不进去） */
 .gate input,.gate button,.gate label,.gate a,.gate select,
-.gate .gerr,.gate .gtip{-webkit-app-region:no-drag}
+.gate .gerr{-webkit-app-region:no-drag}
 .gate .gcard{
   position:relative;
   width:340px;background:var(--panel);
@@ -254,8 +264,6 @@ body:not(.locked) .gate{display:none}
 .gate .grem{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx3);margin:2px 0 12px;cursor:pointer}
 .gate .gerr{min-height:0;font-size:11.5px;color:var(--red);margin-bottom:6px}
 .gate .ggo{width:100%;padding:9px 10px;font-size:13px;letter-spacing:.08em}
-.gate .gtip{font-size:11px;color:var(--tx3);margin:10px 0 0;line-height:1.7}
-.gate .gtip b{color:var(--amber);font-family:var(--mono)}
 
 /* ---------- 设置：账号管理表 ---------- */
 .acct-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}

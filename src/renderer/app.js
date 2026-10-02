@@ -534,7 +534,8 @@ TABS[4] = {
           <td>${esc(r.imageColor)}</td>
           <td>${badge(r.conclusion, kindOf(r.conclusion))}${r.note ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.note)}</div>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>
-      <p class="hint">多了一道保险：<b>用图片实际提出的主色反查目录里填的色名</b>。目录写「冠军白」但图是黑的，立刻就能发现。商品池：${state.info ? state.info.pool.size : 0} 个货号（${esc(state.info ? state.info.pool.source : '')}）。</p>`;
+      <p class="hint">多了一道保险：<b>用图片实际提出的主色反查目录里填的色名</b>。目录写「冠军白」但图是黑的，立刻就能发现。商品池：${state.info ? state.info.pool.size : 0} 个货号（${esc(state.info ? state.info.pool.source : '')}）。</p>
+      <p class="hint">★ 这一页<b>只提示、不拦发布</b>：颜色对不上时，发布端会按货号搜出来的<b>第一件商品</b>发（详见「模拟器发布」页）。</p>`;
   }
 };
 
@@ -630,6 +631,10 @@ TABS[6] = {
           <td>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">还没有发布队列，先到「发布单」导出 xlsx。</div>`}
+      <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
+      发布时按你填的<b>货号</b>在「关联好物」里搜出结果，<b>默认选第一件商品</b>发出去（这条做法已实测可行）。
+      要精确到某个颜色，就到「货号颜色校验」页把颜色核对准。要让机器真按这条做，需要在 UI 定位表里、
+      「搜索货号」后面补一步「点第一件商品」（「设置 → 高级设置 → 抓取页面结构」生成的候选表里改）。</p>
       <p class="hint">已发 ${okCount} / ${rows.length}。发布完还要<b>回查审核状态</b>（创作中心 → 等级权益），发完 ≠ 发出去了。
       「重导出日志」会把 <code>publish-log.jsonl</code> 按批次导成可读的 <code>发布日志_批次_时间戳.log</code>（另有 .csv），
       内容对齐真机：<code>[V] 行 2 [图文] 发布完成，已回填时间 15:34:41（耗时 65.2s）</code>。</p>`;
@@ -1400,16 +1405,9 @@ function showGate(msg) {
     const gx = $('#gateClose');
     if (gx) gx.onclick = () => appApi.close();    // 无边框小窗必须自带一个关闭口
   }
-  const hint = state.auth && state.auth.defaultHint;
-  const tip = $('#lgTip');
-  if (hint) {
-    tip.hidden = false;
-    tip.innerHTML = `初始账号 <b>${esc(hint.username)}</b> / <b>${esc(hint.password)}</b>` +
-      ` —— 进去后到「品牌与权限 → 账号与安全」改掉。`;
-  } else {
-    tip.hidden = true;
-  }
-  fitGateWindow();                                // 提示行显隐会影响卡片高度，量完再收紧窗口
+  // ★ 出厂账号提示已删（2026-10-02 用户要求）：登录页不再回显 admin / 口令，
+  //   连带 auth.status() 的 defaultHint 字段一起删掉（不留悬空字段）。
+  fitGateWindow();                                // 量卡片实际高度，把窗口收紧
   setTimeout(() => {
     const u = $('#lgUser');
     if (u.value) $('#lgPwd').focus(); else u.focus();

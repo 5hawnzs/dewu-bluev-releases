@@ -179,9 +179,9 @@ function status() {
     user: u ? publicUser(u) : null,
     isAdmin: !!(u && u.role === 'admin'),
     userCount: db.users.length,
-    rememberDays: REMEMBER_DAYS,
-    // 出厂口令还没改时，登录页给个明示，免得拿到包的人无从下手
-    defaultHint: db.usingDefault ? { username: findUser(DEFAULT_USER) ? DEFAULT_USER : db.users[0].username, password: DEFAULT_PASS } : null
+    rememberDays: REMEMBER_DAYS
+    // ★ 出厂账号提示（defaultHint）已删：登录页不再回显 admin / 口令（2026-10-02 用户要求）。
+    //   出厂口令本身没变，管理员账号与 mustChange 提示都还在。
   };
 }
 

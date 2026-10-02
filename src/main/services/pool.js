@@ -5,14 +5,6 @@ const path = require('path');
 const { app } = require('electron');
 const wp = require('../util/winpath');
 
-const SAMPLE = {
-  '26FW-YB160': ['冠军白', '冠军黑'],
-  'UF46FWT75EH1HF6': ['领袖蓝', '智慧黄'],
-  '26FWT81': ['勃艮第红', '冠军黑'],
-  'CK-Y208': ['流沙金', '燕麦色'],
-  'abc': ['黑色', '白色']
-};
-
 let cache = null;
 
 function file() { return path.join(app.getPath('userData'), 'pool.json'); }
@@ -22,7 +14,12 @@ function load() {
   try {
     cache = JSON.parse(fs.readFileSync(wp.toLong(file()), 'utf8'));
   } catch (e) {
-    cache = { source: '示例数据（未同步）', updatedAt: 0, skus: SAMPLE };
+    // ★ 出厂**一条数据都没有**。以前这里塞了 5 条硬编码的假货号（26FW-YB160 / UF46FWT75EH1HF6 /
+    //   26FWT81 / CK-Y208 / abc），兜底 source 还写着「示例数据（未同步）」；而界面那行写的是
+    //   「商品池：5 个货号」—— 看着像已经同步过，实际一条真数据都没有
+    //   （2026-10-02 用户实测指出：「校验池中说有 5 个示例记录，实际没有」）。
+    //   没有池就是没有：条数 0，来源如实写「还没有导入商品池」。
+    cache = { source: '还没有导入商品池', updatedAt: 0, skus: {} };
   }
   return cache;
 }

@@ -74,7 +74,9 @@ app.whenReady().then(async () => {
       appHidden: () => getComputedStyle(document.querySelector('.app')).display === 'none',
       gateShown: () => getComputedStyle(document.getElementById('gate')).display !== 'none',
       err: () => (document.getElementById('lgErr') || {}).textContent || '',
-      tip: () => (document.getElementById('lgTip') || {}).textContent || '',
+      // 登录卡片整张的可见文本：出厂账号提示已删，用**真负向**断言盯住「别再冒出来」
+      cardText: () => (document.querySelector('.gate .gcard') || {}).textContent || '',
+      hasTipEl: () => !!document.getElementById('lgTip'),
       user: () => (document.getElementById('chipUser') || {}).textContent || '',
       title: () => (document.querySelector('#head h2') || {}).textContent || '',
       login: async (u, p, rem) => {
@@ -96,10 +98,16 @@ app.whenReady().then(async () => {
   const js = code => win.webContents.executeJavaScript(code);
 
   // ---- ① 未登录：界面被登录页盖住 ----
-  const boot = await js(`({ locked: __t.locked(), appHidden: __t.appHidden(), gateShown: __t.gateShown(), tip: __t.tip(), err: __t.err() })`);
+  const boot = await js(`({ locked: __t.locked(), appHidden: __t.appHidden(), gateShown: __t.gateShown(), cardText: __t.cardText(), hasTipEl: __t.hasTipEl(), err: __t.err() })`);
   ok('未登录时停在登录门（业务界面整块隐藏）', boot.locked && boot.appHidden && boot.gateShown,
     JSON.stringify({ locked: boot.locked, appHidden: boot.appHidden, gateShown: boot.gateShown }));
-  ok('登录页提示了出厂账号（拿到包的人不用猜）', /admin/.test(boot.tip) && /BlueV@2026/.test(boot.tip), boot.tip.trim().slice(0, 80));
+  // ★ 真负向（2026-10-02 用户要求删掉登录页那行 admin）：两条一起盯 ——
+  //   ① 卡片文本里不许再出现 admin / BlueV@2026 / 初始账号（换个位置重新写上去也会红）；
+  //   ② #lgTip 那个元素必须**真的不存在**，不是 hidden（只藏不删 = 读取链还在）。
+  ok('登录页不再回显任何出厂账号 / 口令',
+    !/admin/i.test(boot.cardText) && !/BlueV@2026/.test(boot.cardText) && !/初始账号/.test(boot.cardText),
+    (boot.cardText || '').replace(/\s+/g, ' ').trim().slice(0, 110));
+  ok('出厂账号提示的元素已删除（不是 hidden）', boot.hasTipEl === false, 'hasTipEl=' + boot.hasTipEl);
 
   // ---- ② 未登录：业务通道在主进程侧就被拦住（不是前端藏起来那种假登录） ----
   const blocked = await js(`(async () => {

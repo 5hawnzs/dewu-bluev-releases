@@ -989,6 +989,53 @@ app.whenReady().then(async () => {
     mkReads && mkSpan,
     `读 index.html=${mkReads ? '有' : '没有'} · 找 <span class="logo">=${mkSpan ? '有' : '没有'}`);
 
+  // ---- 2026-10-02 本轮：登录页去黑框 + 删出厂账号提示 / 颜色校验不再拦发布 / 商品池不再有示例数据 ----
+  {
+    const authSrc = fs.readFileSync(path.join(ROOT, 'src/main/auth.js'), 'utf8');
+    const gateSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+    const gateHtml = fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8');
+    const cssSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+    const poolSrc = fs.readFileSync(path.join(ROOT, 'src/main/services/pool.js'), 'utf8');
+    const vSrc = fs.readFileSync(path.join(ROOT, 'src/main/services/verify.js'), 'utf8');
+    const winSrc = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
+    // ★ 负向断言只看**代码行**：下面两处源码里的注释正在解释「原来长什么样 / 为什么删」，
+    //   一刀切会把注释误报成「没删干净」（实测踩过一次：注释里写着 defaultHint / 示例数据）。
+    const codeOnly = s => s.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    // ① 登录页固定浅色：不能只改渲染层 —— 窗口底色也必须跟着浅，否则深色系统下先闪一块近黑
+    ok('★ 登录页固定浅色（.gate 子树重声明浅色变量 + 登录门期间窗口底色也用浅色）',
+      /\.gate\{[\s\S]{0,60}--bg:#f2f1ed; --panel:#ffffff;/.test(cssSrc)
+      && /const GATE_BG = '#f2f1ed';/.test(winSrc)
+      && /backgroundColor: locked \? GATE_BG : bg,/.test(winSrc)
+      && /win\.setBackgroundColor\(GATE_BG\)/.test(winSrc)
+      && /win\.setBackgroundColor\(bgColor\(\)\)/.test(winSrc));
+
+    // ② 出厂账号提示：元素 / 代码 / 字段三处一起没了（只删一处会留下悬空读取）
+    ok('★ 出厂账号提示已整条删除（index.html 元素 / app.js 那段 / auth.js 的 defaultHint 字段）',
+      !/id="lgTip"/.test(gateHtml) && !/gtip/.test(codeOnly(cssSrc))
+      && !/lgTip/.test(codeOnly(gateSrc)) && !/defaultHint/.test(codeOnly(authSrc)));
+
+    // ③ 颜色校验不再拦发布：verify.js 里 `block = true;` 只许剩一处（多色漏填）
+    const trueCount = (vSrc.match(/block = true;/g) || []).length;
+    ok('★ 「颜色不匹配 / 主色不符」都不再拦发布（源码里 block = true; 只剩「多色漏填」那一处）',
+      trueCount === 1 && /多色货号须指定颜色/.test(vSrc), 'block = true; 出现 ' + trueCount + ' 处');
+
+    // ④ 商品池出厂没有任何示例数据
+    ok('★ 商品池出厂没有示例货号（源码里不再有 SAMPLE / 示例数据）',
+      !/SAMPLE/.test(codeOnly(poolSrc)) && !/示例数据/.test(codeOnly(poolSrc))
+      && /skus: \{\}/.test(codeOnly(poolSrc)));
+
+    // ⑤ 规则要写在「模拟器发布」页上（删掉那段文字时必须红）
+    const pubHint = await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.nav[data-tab="6"]').click();
+      await new Promise(r => setTimeout(r, 200));
+      return document.querySelector('#pane').textContent || '';
+    })()`);
+    ok('★ 「模拟器发布」页写清了颜色规则（不是必需项 / 都不会拦住发布 / 默认选第一件商品）',
+      /颜色校验不是必需项/.test(pubHint) && /都不会拦住发布/.test(pubHint)
+      && /默认选第一件商品/.test(pubHint));
+  }
+
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 
