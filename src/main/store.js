@@ -88,10 +88,7 @@ function defaults() {
     // 自动更新的**通道偏好**。★ 只存通道名，**源地址永远编译在包里**（不许运行时改，见
     // src/main/updater.js 文件头铁律 2）；通道名只决定读源上哪个清单文件：正式版 latest.yml / 测试版 beta.yml。
     // 存 stable|beta；非法值由 updater.init() 忽略并落回 stable。
-    // log = 更新日志开关（默认关）。开着的时候 updater 会把 electron-updater 自己的 logger
-    // 一并接进 userData/logs/update.log —— 「差分下载静默退回全量」只有那里看得见。
-    // ★ 它**不违**「数据不出本机」：只写版本号/通道名/字节数，不含素材、品牌、SKU。
-    update: { channel: 'stable', log: false },
+    update: { channel: 'stable' },
     // 云端协作（只上行发布结果给网页看板做聚合，**不参与发布**）。
     // ★★ 出厂这三个键**必须留空**：留空 = 跟随 `clouddefaults.js` 里的内置组织值
     //    （在 cfgOf() 读取时兜底，**不写回**）。装上就能连，各台机器不用手填。

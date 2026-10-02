@@ -81,10 +81,7 @@ if (!app.requestSingleInstanceLock()) {
       version: app.getVersion(),
       // 通道偏好从配置里读。非法值 updater 自己会忽略并落回 stable
       channel: store.get('update.channel'),
-      // 更新日志（默认关，界面可开）：路径 + 上次的开关偏好。开启后会把 electron-updater
-      // 自己的 logger 一并收进文件 —— 「差分下载静默退回全量」只有那里看得见
-      logFile: ipc.updateLogFile(),
-      logEnabled: !!store.get('update.log')
+
     });
     // 通道权限复核：勾了「记住我」时启动就已经登录了，这里要把上一次留下的测试版通道按权限收回
     // （否则普通成员一开机就在测试版通道上收测试包，而他连那个按钮都看不见）

@@ -435,7 +435,7 @@ app.whenReady().then(async () => {
 
   // 弹窗：点「提示词配置」→ 列出品牌 → 点进去是「品牌名 + 两段文案 + 两个勾选」
   const modal = await js(`(async () => {
-    document.querySelector('.nav[data-tab="7"]').click();
+    document.querySelector('.nav[data-tab="3"]').click();
     await new Promise(r => setTimeout(r, 120));
     const btn = document.querySelector('[data-act="copy:prompt"]');
     if (btn) btn.click();

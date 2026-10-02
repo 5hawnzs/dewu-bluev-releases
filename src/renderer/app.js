@@ -606,7 +606,7 @@ TABS[4] = {
 
 TABS[5] = {
   title: '发布单',
-  desc: '26 列，与前司发布文件结构一致 · 运营确认后交发布端',
+  desc: '26 列 · 运营确认后交发布端',
   actions: () => [
     { act: 'sheet:importReport', label: '导入 AI 内容报告' },
     { act: 'sheet:open', label: '打开文件', disabled: !state.project.sheet.file },
@@ -768,23 +768,6 @@ TABS[7] = {
         <h3>路径</h3>
         <div class="row" style="margin-bottom:9px"><span class="lbl">输出目录</span><input class="inp mono" value="${esc(c.paths.output)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.output">修改</button></div>
         <div class="row"><span class="lbl">隔离目录</span><input class="inp mono" value="${esc(c.paths.rejected)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.rejected">修改</button></div>
-      </div>
-      <div class="box">
-        <h3>内容与校验（对齐真机）</h3>
-        <p class="hint">品牌不在这里填 —— 见左侧「<b>品牌与权限</b>」页：能建多个品牌，并按账号分配权限。产出的文案 / 发布单 / 发布记录都会带上所属品牌，管理员在「品牌统计」页按品牌查频次、数量和执行日志。</p>
-        <div class="row">
-          <span class="lbl">文案提示词</span>
-          <span class="chip">按品牌各配一份</span>
-          <button class="btn sm primary" data-act="copy:prompt">打开「文案提示词」…</button>
-        </div>
-        <p class="hint">点上面的按钮在弹窗里配：<b>品牌名 / 文案 / 是否启用 / 本次选用</b>。没配提示词的品牌，<b>文案生成会直接拦下</b> —— 不会拿别的品牌的口吻顶替。</p>
-        <p class="hint">原先这里是两个全局输入框（「筛选排序提示词」「文案生成提示词」），它们<b>从来没被代码读过</b>，填了不生效 —— 已经去掉。现在弹窗里改的那份才是真正进模型的。</p>
-        <div class="row">
-          <span class="lbl">货号颜色</span>
-          <span class="chip">${c.verify.mode === 'api' ? '接口查询（得物后台）' : '本地商品池（导入 CSV）'}</span>
-          ${canAdmin() ? '<button class="btn sm" data-act="go:advanced">去「高级设置」换…</button>' : ''}
-        </div>
-        <p class="hint">判定文案为「单色货号，颜色可空 / 多色货号须指定颜色 / 未查到颜色信息，请核对」；接口模式下查不到的货号<b>仅告警不阻断</b>（真机口径）。</p>
       </div>
       <div class="box">
         <h3>外观</h3>
@@ -961,31 +944,6 @@ const UPD_KIND = {
   error: ['bad', '出错']
 };
 
-/**
- * 更新日志开关（默认关）。
- * ★ 为什么值得单列一块：更新这条链上最坑的失败是**静默**的 —— 「差分下载失败、
- *   悄悄退回全量下载」只有 electron-updater 自己的 logger 报出来（应用里原本把它设成 null，
- *   等于把唯一的线索一起吞了）。开启后我们把它接过来写进文件，下次更新就能拿
- *   「这次到底下了多少 MB」的硬数字说话，不用猜。
- * 关着时也照样显示「开了会写到哪」—— 否则用户根本不知道开了有没有用。
- */
-function updLogHtml(u) {
-  const lg = u.log || {};
-  const on = !!lg.enabled;
-  const mb = Math.round((lg.maxBytes || 0) / 1024 / 1024);
-  return `<div class="row" style="margin-top:9px">
-      <span class="lbl">更新日志</span>
-      <button class="btn sm${on ? '' : ' primary'}" data-act="${on ? 'upd:log:off' : 'upd:log:on'}">${on ? '关闭' : '开启'}</button>
-      <button class="btn sm" data-act="upd:log:open">打开日志文件</button>
-      ${badge(on ? '记录中' : '未开启', on ? 'ok' : 'wait')}
-    </div>
-    <p class="hint">${lg.error
-      ? `日志<b>打不开</b>：${esc(lg.error)}`
-      : (on
-        ? `正在写 <code>${esc(lg.path || '')}</code>（超过 ${mb} MB 自动轮转，只留 1 份 .1 备份）`
-        : `默认关闭。开启后会把更新库自己的日志一并收进来 —— <b>「差分下载退回全量」只有这里看得见</b>；写到这里：<code>${esc(lg.path || '取不到路径')}</code>。日志里只有版本号、通道名与字节数，<b>不含</b>素材/品牌/SKU。`)}</p>`;
-}
-
 function updateHtml() {
   const u = state.upd;
   if (!u) return `<div class="box" id="updBox"><h3>应用更新</h3><p class="hint">正在读取更新状态…</p></div>`;
@@ -1033,7 +991,6 @@ function updateHtml() {
       <button class="btn sm${u.status === 'ready' ? ' primary' : ''}" data-act="upd:install" ${u.status === 'ready' ? '' : 'disabled'}>立即安装并重启</button>
     </div>
     ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
-    ${updLogHtml(u)}
     <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
     「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
     ${canBeta ? `<p class="hint">${isBeta
@@ -2231,24 +2188,6 @@ const ACTS = {
   // 切通道：只换「读源上哪个清单文件」，**不动源地址**。换完立刻刷新，别让界面显示旧通道
   'upd:chan:stable': async () => { await switchUpdateChannel('stable'); },
   'upd:chan:beta': async () => { await switchUpdateChannel('beta'); },
-  // 更新日志开关：默认关。开启后把更新库自己的日志也接进文件 —— 「差分退回全量」只有那里看得见
-  'upd:log:on': async () => {
-    const r = await appApi.updateSetLog(true);
-    if (r && r.enabled) toast('更新日志已开启：下次更新就能看到「到底下了多少」', 'ok');
-    else toast(`开启失败：${(r && r.error) || '取不到原因'}`, 'err');
-    await refreshUpdate();
-  },
-  'upd:log:off': async () => {
-    await appApi.updateSetLog(false);
-    toast('更新日志已关闭（已经写下的内容不会删）');
-    await refreshUpdate();
-  },
-  'upd:log:open': async () => {
-    const lg = (state.upd && state.upd.log) || {};
-    if (!lg.enabled) { toast('先点「开启」—— 开启之后才会建这个文件', 'err'); return; }
-    try { await appApi.reveal(lg.path); } catch (e) { toast(`打不开：${(e && e.message) || e}`, 'err'); }
-  },
-
   'flatten:pick': async () => {
     const d = await appApi.pickDir({ title: '选择素材目录', defaultPath: state.project.sourceDir || '' });
     if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', { sourceDir: d }).then(r => r.ok ? r.result : null); renderAll(); }
