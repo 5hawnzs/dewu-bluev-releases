@@ -1294,3 +1294,29 @@ git push --all origin && git push --tags origin
 - **多平台双写时，别在两个平台的网页上各改一次**同一份文件，容易分叉。
 - ⚠️ 别把仓库再 clone 一份到别的目录继续开发：应用把绝对路径存在**同一个** `%APPDATA%\dewu-bluev-publisher`，
   两份副本会互相打架（就是 §2 说的「两份分叉的 app」）。开发机上保持一份。
+
+### ★★ 发版 SOP（并发工作区下的硬约束，2026-10-02 起）
+
+> 完整版（坑清单 + 可复制清单）= 技能 `concurrent-workspace-safe-release`。这里只放**必须遵守**的几条。
+> 起因：2026-10-02 发现这个仓库**同时有两路会话在改同一棵 main**，其中一次发版差点把别人的半成品打进安装包。
+
+1. **发版前先体检**：`git status --short` 里出现「我没碰过的文件」⇒ 有人在同时改，逐条记下文件名；
+   再看其它会话是否活跃（按 mtime 倒序）：
+   `ls -lt --time-style=+%m-%d\ %H:%M ~/.workbuddy/projects/*/*.jsonl | head -6`。
+   ★ 一次采样只能说明「刚动过」，判「还在跑」要**隔 1 分钟复采**（两次都前进才算）。
+2. **只 `git add <自己的文件>`，永不用 `git commit -a`**；提交前 `git diff --cached --stat` 复核。
+3. **打包必须在 `git worktree` 干净快照里做**（别从主工作区打，那里躺着别人的未提交改动）：
+   `git worktree add --detach D:/work/_rel<版本> HEAD` → 用目录联接共享主仓 `node_modules`
+   （PowerShell `New-Item -ItemType Junction`）→
+   `env -u ELECTRON_RUN_AS_NODE node node_modules/electron-builder/cli.js --win --x64 --publish never`。
+   ★ 给 Windows 程序传路径写 `D:/work/x`；写 `/d/work/x` 实测会被拼成 `D:\d\work\x`。
+4. ★★ **收尾顺序不能反**：先 `[System.IO.Directory]::Delete(...)` 摘掉那个 `node_modules` 联接，
+   并 `Test-Path 主仓\node_modules\electron\dist\electron.exe` 复核共享依赖完好，**再**
+   `git worktree remove --force`。`worktree remove` 是整目录递归删除，而那个联接指向主仓 522 MB 依赖 ——
+   会不会穿透我没实测过，不赌（先摘联接是零成本的）。
+5. **发版范围要先问用户**（只推我这条修复 / 推 main 全量 / 先不推），并把答案写进提交信息。
+6. ★★ **「已推送」的唯一证据**是 `git ls-remote origin refs/heads/main` 的 SHA == `git rev-parse HEAD`。
+   实测反例（2026-10-02）：`git status` 干净、`git log` 有像模像样的提交、安装包已在公网可下载，
+   但 `git branch -vv` 显示 `ahead 3` —— 三个提交**一次都没推**。
+7. 上传用桶凭据（`.env`）、推送用 git 凭据，**两条独立的路**，各自取证；
+   `.env` 复制进快照上传完**立刻 `rm`**。
