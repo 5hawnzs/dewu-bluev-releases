@@ -301,6 +301,15 @@ async function test() {
     if (!res.ok) {
       let detail = '';
       try { detail = (await res.text()).slice(0, 200); } catch (e) { /* 忽略 */ }
+      // ★ 表还没建 —— 这是**每个人第一次用必然走的路**（凭据已内置，建表 SQL 只能由人在控制台跑）。
+      //   照直甩一串 PostgREST JSON 的话，用户只会看到「连不上」+ 一段看不懂的英文。
+      if (/PGRST205|Could not find the table|does not exist/i.test(detail)) {
+        return {
+          ok: false,
+          error: '能与这个项目连通，但表还没建：请在 Supabase 控制台的 SQL Editor 里跑一次 docs/supabase-setup.sql'
+            + '（返回原文：' + detail.slice(0, 120) + '）'
+        };
+      }
       return { ok: false, error: `HTTP ${res.status}${detail ? ' · ' + detail : ''}` };
     }
     return { ok: true, machineId: machineOf().id };

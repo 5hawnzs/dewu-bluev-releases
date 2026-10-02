@@ -59,12 +59,15 @@ function setCfg(patch) {
 
 // ---- fetch 桩：记录每一次请求，**不允许真的发出去** ----
 let calls = [];
-let mode = 'ok';        // ok | http500 | throw
+let mode = 'ok';        // ok | http500 | throw | tableMissing
 let lastBody = null;
+// PostgREST 在「表还没建」时返回的真实原文（照抄实测回来的那段，别自己编）
+const NO_TABLE_BODY = '{"code":"PGRST205","details":null,"hint":"Perhaps you meant the table \'public.app_users\'","message":"Could not find the table \'public.publish_log\' in the schema cache"}';
 globalThis.fetch = async (url, opts) => {
   calls.push({ url, opts });
   if (mode === 'throw') throw new Error('ECONNREFUSED 连不上');
   if (mode === 'http500') return { ok: false, status: 500, text: async () => 'upstream error' };
+  if (mode === 'tableMissing') return { ok: false, status: 404, text: async () => NO_TABLE_BODY };
   lastBody = opts.body ? JSON.parse(opts.body) : null;   // GET（test 连接）没有 body
   return { ok: true, status: 201, text: async () => '' };
 };
@@ -198,6 +201,14 @@ let r = null;
   const t = await cs.test();
   ok('test() 只查不改（GET + limit=1）', /select=machine_id&limit=1/.test(calls[calls.length - 1].url) && calls[calls.length - 1].opts.method === 'GET', calls[calls.length - 1].url);
   ok('test() 返回 ok', t.ok === true, JSON.stringify(t));
+  // ★★ 每个人第一次用必然走这条路：凭据已内置、项目能连通，但**表还没建**。
+  //    这时候必须把「去控制台跑一次建表 SQL」说清楚 —— 甩一段 PGRST205 的英文 JSON 等于没说。
+  mode = 'tableMissing';
+  const t404 = await cs.test();
+  ok('★★ 表还没建 ⇒ 直说要跑 supabase-setup.sql（不是甩一串 PostgREST JSON）',
+    t404.ok === false && /还没建/.test(t404.error || '') && /supabase-setup\.sql/.test(t404.error || ''),
+    t404.error);
+  mode = 'ok';
 
   console.log('\nG. 下发配置：导出 / 导入都要先校验\n');
   const exp = cs.exportConfig();
