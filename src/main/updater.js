@@ -382,7 +382,8 @@ function enforceChannelPermission(isAdmin) {
  * @param {boolean} opts.packaged                     app.isPackaged
  * @param {string}  opts.version                      app.getVersion()
  * @param {string}  [opts.channel]                    持久化的通道偏好（stable|beta），非法值忽略
- * @param {(ms:number, fn:Function)=>{}} [opts.setTimer] 便于测试注入
+ * @param {(fn:Function, ms:number)=>{}} [opts.setTimer] 便于测试注入。
+ *        ★ 签名与真 `setTimeout` 一致（fn 在前、毫秒在后）——别写成 (ms, fn)
  */
 function init(opts) {
   const o = opts || {};
@@ -432,7 +433,13 @@ function scheduleStartupCheck() {
   if (started || !state.supported) return false;
   started = true;
   timer = timer || setTimeout;
-  timer(STARTUP_DELAY_MS, () => { check({ manual: false }); });
+  // ★ 参数顺序必须和真 setTimeout 一致：(fn, ms)。
+  //   写反成 (ms, fn) **不会**报编译错，代价却很大：
+  //     · Electron 主进程（Node 环境）= 直接抛 ERR_INVALID_ARG_TYPE 的未捕获拒绝（实测）；
+  //     · 其它（浏览器式）定时器 = 不报错，但回调永远不会被调用。
+  //   两种表现的共同后果都是「自检排上了、状态也显示已启用，但从来没真的检查过」——
+  //   假成功，最难发现。tools/updatertest.js 里那条**签名断言**就是专门拦这个的。
+  timer(() => { check({ manual: false }); }, STARTUP_DELAY_MS);
   return true;
 }
 

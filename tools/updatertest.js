@@ -41,7 +41,13 @@ function fakeUpdater() {
 
 const sent = [];
 const send = (ch, payload) => sent.push({ ch, payload });
-const initBase = extra => Object.assign({ send, packaged: true, version: '1.0.0', setTimer: () => {} }, extra || {});
+/* ★ 定时器桩：按**真 setTimeout 的签名 (fn, ms)** 记录下来，而不是写成 `() => {}`。
+   空函数会把「参数顺序写反」这类缺陷整个吃掉：updater 曾经写成 timer(STARTUP_DELAY_MS, fn)，
+   桩照单全收 ⇒ 测试全绿，可主进程里 setTimeout(20000, fn) 直接抛 ERR_INVALID_ARG_TYPE，
+   「启动 20 秒后自检一次」实际上从来没跑过。桩只记录、不销毁证据。 */
+const timers = [];
+const spyTimer = (fn, ms) => { timers.push({ fn, ms }); return 0; };
+const initBase = extra => Object.assign({ send, packaged: true, version: '1.0.0', setTimer: spyTimer }, extra || {});
 
 (async () => {
   /* ---------- A. 开发模式（没打包）：如实说不可用，不是报错 ---- */
@@ -73,8 +79,26 @@ const initBase = extra => Object.assign({ send, packaged: true, version: '1.0.0'
   ok('安装版：supported=true，状态 idle，带出当前版本', st.supported === true && st.status === 'idle' && st.current === '1.0.0');
   ok('★ autoDownload 被压成 false（不许自己偷偷下 88MB）', f.autoDownload === false);
   ok('★ autoInstallOnAppQuit 被压成 false（退出时也不许偷偷装）', f.autoInstallOnAppQuit === false);
+  timers.length = 0;
   ok('延迟自检：第一次排上', upd.scheduleStartupCheck() === true);
   ok('延迟自检：只排一次（不是定时轮询）', upd.scheduleStartupCheck() === false);
+  /* ★ 签名断言：真主进程里 timer 就是 setTimeout，写成 (ms, fn) 会抛 ERR_INVALID_ARG_TYPE，
+     表现是「状态说已启用、其实从没检查过」。只验返回值 true/false 抓不到这个。 */
+  const t0 = timers[0] || {};
+  ok('★ 延迟自检：定时器签名是 (fn, 毫秒)，且延迟 == STARTUP_DELAY_MS',
+     timers.length === 1 && typeof t0.fn === 'function' && t0.ms === upd.STARTUP_DELAY_MS,
+     `共排 ${timers.length} 个 · typeof fn=${typeof t0.fn} · ms=${t0.ms}（期望 ${upd.STARTUP_DELAY_MS}）`);
+  /* ★ 再加一层行为断言：签名对、回调体是空的也一样白搭 ⇒ 真跑一遍那个回调，
+     看它是不是真的去检查更新、且来源标成「启动自检」(manual=false) */
+  f.calls.check = 0;
+  if (typeof t0.fn === 'function') t0.fn();
+  await new Promise(r => setTimeout(r, 80));
+  ok('★ 延迟自检的回调真的会去检查更新，且来源是「启动自检」(manual=false)',
+     f.calls.check === 1 && upd.status().manual === false,
+     `checkForUpdates 被调 ${f.calls.check} 次 · manual=${upd.status().manual}`);
+  // 把这一跳留下的状态清干净，别串到 D 段
+  upd._reset(); upd._setUpdater(f); upd.init(initBase());
+  f.calls.check = 0;      // 上面那次自检已经计过数了，D 段要重新从 0 数
 
   /* ---------- D. 状态机：检查中 → 有新版本 → 下载中 → 可安装 ---- */
   sent.length = 0;
