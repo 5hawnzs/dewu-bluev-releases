@@ -492,6 +492,123 @@ const state = {
   ok('⑯ 引导的是「扫描设备 → 加入并使用」，不是让人手抄名字',
     /扫描设备/.test(f16.how || '') && /加入并使用/.test(f16.how || ''), f16.how || '');
 
+  // ============ 17) ★★ 动画页抓不下来时的备用通道：dumpsys activity top ============
+  //   实机背景（2026-10-02）：得物发布页首屏是**持续动画**（相册预览在轮播），
+  //   `uiautomator dump` 永远等不到 idle —— 连试十几次、--compressed、关系统动画、静置 15s 全败。
+  //   而 `dumpsys activity top` **不等 idle**，直接把各 task 的 View Hierarchy 打出来。
+  //   代价（必须如实说清、不许美化）：只有 class / resource-id / bounds / clickable，**没有文字**。
+  const TOP_DUMP = path.join(FDB, 'activity-top.txt');
+  const NO_DEWU = path.join(FDB, 'NO_DEWU_TOP');
+  const NOT_IDLE17 = path.join(FDB, 'DUMP_NOT_IDLE');
+
+  // 17a) 纯函数：把 dumpsys 文本转成 uiautomator 风格 XML
+  const topTxt = fs.readFileSync(TOP_DUMP, 'utf8');
+  const xml17 = adbMod.vhToXml(topTxt, 'com.shizhuang.duapp');
+  ok('⑱ dumpsys 的 View Hierarchy 能转成 uiautomator 风格 XML', !!xml17 && /<hierarchy/.test(xml17),
+    String(xml17 || '').slice(0, 34));
+  const n17 = uimap.parseNodes(xml17 || '');
+  ok('⑱ 解析出的可见节点数与真机一致（110 个）', n17.length === 110, String(n17.length));
+  ok('⑱ 只取得物那一段：夹具里前面两段别的 App 的节点不许混进来（按包名过滤，不是取第一段）',
+    n17.every(n => n.pkg === 'com.shizhuang.duapp') && !/otherTv/.test(xml17 || ''),
+    '包名集合=' + JSON.stringify([...new Set(n17.map(n => n.pkg))]));
+  ok('⑱ 坐标按缩进逐级累加：抽查真机已知节点（flThumbSelect 首格 = 100,270-175,345）',
+    n17.some(n => n.id === 'com.shizhuang.duapp:id/flThumbSelect' && n.bounds === '[100,270][175,345]'),
+    JSON.stringify((n17.find(n => n.id.endsWith('flThumbSelect')) || {}).bounds));
+  // ★ 双向：先证明**原件里真的有**不可见节点，再断言解析结果里一个都没有
+  //   （否则「两边都空」也能过 = 假通过 —— 夹具里要是压根没有不可见节点，这条就等于没测）
+  const flagsOf = l => { const m = l.match(/\{[0-9a-f]+\s+([^}]*?)\s+\d+,\d+-\d+,\d+/); return m ? m[1] : ''; };
+  const rawHidden = topTxt.split(/\r?\n/).map(flagsOf).filter(f => f && f[0] !== 'V').length;
+  ok('⑱ 不可见节点（flags 第 0 位不是 V）不许收 —— 真机里这类 bounds 是 0,0-0,0，收了会让后续点击落空',
+    rawHidden > 0 && !n17.some(n => n.box && n.box.x1 === 0 && n.box.y1 === 0 && n.box.x2 === 0 && n.box.y2 === 0),
+    '原件里不可见行 ' + rawHidden + ' 条 → 解析结果里零尺寸节点 '
+      + n17.filter(n => n.box && n.box.x2 <= n.box.x1).length + ' 条');
+  ok('⑱ `#7f... app:id/xxx` 补全成完整 resource-id（否则按 id 点会点空）',
+    n17.some(n => n.id === 'com.shizhuang.duapp:id/placeholderLayout'),
+    JSON.stringify(n17.map(n => n.id).filter(Boolean).slice(0, 3)));
+  ok('⑱ clickable 解析正确（flags 第 6 位 C=可点）',
+    n17.some(n => n.id === 'com.shizhuang.duapp:id/flThumbSelect' && n.clickable === true),
+    '可点数=' + n17.filter(n => n.clickable).length + ' / 共 ' + n17.length);
+  ok('⑱ ★ 如实反映局限：这条通道**拿不到文字** ⇒ text/content-desc 必须全空，不许编',
+    n17.every(n => n.text === '' && n.desc === ''),
+    '非空文字节点数=' + n17.filter(n => n.text || n.desc).length);
+
+  // 17b) dumpViaDumpsys 本身
+  const vA = await adbMod.dumpViaDumpsys('127.0.0.1:5555', 'com.shizhuang.duapp');
+  ok('⑱ dumpViaDumpsys 能抓到并返回 XML', vA.ok === true && /<node/.test(vA.xml || ''),
+    JSON.stringify({ ok: vA.ok, why: vA.why }));
+  const vB = await adbMod.dumpViaDumpsys('127.0.0.1:5555', '');
+  ok('⑱ 没给包名 ⇒ 明确失败（不知道抠哪一段），不许瞎抓', vB.ok === false && /包名/.test(vB.why), String(vB.why));
+  fs.writeFileSync(NO_DEWU, '1');
+  const vC = await adbMod.dumpViaDumpsys('127.0.0.1:5555', 'com.shizhuang.duapp');
+  ok('⑱ dumpsys 输出里没有得物 ⇒ 明确失败并说清（绝不返回别的 App 的结构）',
+    vC.ok === false && /没有「com\.shizhuang\.duapp」/.test(vC.why), String(vC.why));
+  fs.unlinkSync(NO_DEWU);
+
+  // 17c) ★★ 降级链（最关键）：uiautomator 全败才退到 dumpsys；能成功时一步都不多走
+  fs.writeFileSync(NOT_IDLE17, 'always');
+  clearCalls();
+  const dDown = await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp' });
+  ok('⑱ uiautomator 彻底抓不到（动画页）时自动退到 dumpsys，并如实标注 via=dumpsys / noText',
+    dDown.ok === true && dDown.via === 'dumpsys' && dDown.noText === true,
+    JSON.stringify({ ok: dDown.ok, via: dDown.via, noText: dDown.noText }));
+  const c17 = calls();
+  ok('⑱ 退到 dumpsys 前确实先试过「关系统动画」（不是一上来就抄近路）',
+    /animator_duration_scale 0/.test(c17), (c17.match(/animator_duration_scale \d/g) || []).join(' | '));
+  ok('⑱ ★ 关掉的动画必须还原（不能把用户设备的设置留在改过的状态）',
+    (() => { const a = c17.indexOf('animator_duration_scale 0'), b = c17.indexOf('animator_duration_scale 1');
+      return a >= 0 && b > a; })(),
+    (c17.match(/settings put global animator_duration_scale \d/g) || []).join(' | '));
+  clearCalls();
+  const dNoPkg = await adbMod.dumpEx('127.0.0.1:5555', {});
+  // ★ 不能只看 ok/via —— D5 破坏（把 `if (pkg)` 改成 `if (true)`）时这两个值**恰好不变**
+  //   （dumpViaDumpsys('') 自己也拒绝，最后仍落到 via:'uiautomator'），断言会假绿。
+  //   真正能分辨的是「到底有没有去调那条命令」+ 报错里有没有多出备用通道的字样。
+  ok('⑱ 没给包名时**不许**降级（保持老行为）：连 dumpsys 都不该调，报错里也不该多出备用通道的字样',
+    dNoPkg.ok === false && dNoPkg.via === 'uiautomator'
+    && !/dumpsys activity top/.test(calls()) && !/dumpsys/.test(dNoPkg.why || ''),
+    JSON.stringify({ ok: dNoPkg.ok, via: dNoPkg.via, calledDumpsys: /dumpsys activity top/.test(calls()),
+      why: String(dNoPkg.why || '').slice(0, 40) }));
+  fs.unlinkSync(NOT_IDLE17);
+  clearCalls();
+  const dUp = await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp' });
+  ok('⑱ uiautomator 能成功时照旧走它，一次 dumpsys 都不调用（老路径行为不变）',
+    dUp.ok === true && dUp.via === 'uiautomator' && !/dumpsys activity top/.test(calls()),
+    JSON.stringify({ via: dUp.via, calledDumpsys: /dumpsys activity top/.test(calls()) }));
+
+  // 17d) 走了备用通道时，程序必须**主动告诉用户**这条通道少了什么
+  const FOCUS17 = path.join(FDB, 'FOCUS');
+  fs.writeFileSync(FOCUS17, 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity');
+  fs.writeFileSync(NOT_IDLE17, 'always');
+  const cap17 = await publisher.dumpForCapture('127.0.0.1:5555');
+  ok('⑱ 走备用通道时，提示里必须说清「有 id/坐标/可点，但**没有文字**」（不许闷着不说）',
+    cap17.ok === true && cap17.via === 'dumpsys' && /没有文字/.test(cap17.viaNote || ''),
+    String(cap17.viaNote).slice(0, 62));
+  fs.unlinkSync(NOT_IDLE17);
+  fs.unlinkSync(FOCUS17);
+
+  // 17e) 两条入口路线：常量 + 候选表优先用「有文字」的那条（用户 2026-10-02 提供的路径）
+  ok('⑱ DEWU.route 记下了推荐路线三步（「我」→「主页」→「发布新动态」）',
+    Array.isArray(uimap.DEWU.route) && uimap.DEWU.route.length === 3
+    && uimap.DEWU.route.map(s => s.text).join('/') === '我/主页/发布新动态',
+    JSON.stringify((uimap.DEWU.route || []).map(s => s.text)));
+  const routeXml = '<hierarchy rotation="0">'
+    + '<node index="0" text="我" resource-id="com.shizhuang.duapp:id/tab_user" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[740,1500][840,1590]" />'
+    + '<node index="1" text="主页" resource-id="com.shizhuang.duapp:id/tvGoHomePage" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[800,120][880,180]" />'
+    + '<node index="2" text="发布新动态" resource-id="com.shizhuang.duapp:id/rlPublish" class="android.widget.LinearLayout" package="com.shizhuang.duapp" clickable="true" bounds="[60,890][840,960]" />'
+    + '<node index="3" text="" resource-id="com.shizhuang.duapp:id/ivCamera" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="true" bounds="[820,30][888,108]" />'
+    + '</hierarchy>';
+  const sug17 = uimap.suggest(uimap.parseNodes(routeXml));
+  ok('⑱ 候选表第一步优先用「发布新动态」（有文字、可 tapText），而不是没文字的相机图标',
+    sug17.steps[0].action === 'tapText' && sug17.steps[0].value === '发布新动态',
+    sug17.steps[0].action + ' / ' + sug17.steps[0].value);
+  ok('⑱ 但要把另一条路线的 id 留在提示里备用（rlPublish 可点 id + ivCamera 备用 id 都在）',
+    /rlPublish/.test(sug17.steps[0].hint || '') && /ivCamera/.test(sug17.steps[0].hint || ''),
+    String(sug17.steps[0].hint).slice(0, 72));
+  ok('⑱ ★ 图文与视频两套的首步必须一致（它们走的是同一个发布页）',
+    sug17.videoSteps[0].action === sug17.steps[0].action
+    && sug17.videoSteps[0].value === sug17.steps[0].value,
+    JSON.stringify({ 图文: sug17.steps[0].value, 视频: sug17.videoSteps[0].value }));
+
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));
 })().catch(e => { console.error('ADB TEST ERROR', e); process.exitCode = 1; });

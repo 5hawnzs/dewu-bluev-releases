@@ -232,32 +232,112 @@ async function dumpOnce(serial) {
  * dump 的详细版：拿不到时告诉调用方**为什么**（是页面不 idle，还是设备不在线）。
  * 返回 { ok, xml?, why, idle, animOff }
  */
-async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true } = {}) {
+async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true, pkg = '' } = {}) {
   let last = { ok: false, idle: false, why: '未尝试' };
   for (let i = 0; i <= retries; i++) {
     const r = await dumpOnce(serial);
-    if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: false };
+    if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: false, via: 'uiautomator' };
     last = r;
     if (i < retries) await sleepMs(retryMs);
   }
-  if (!last.idle || !allowAnimOff) return Object.assign({ animOff: false }, last);
-
-  const before = await animGet(serial);
-  if (!before) {
-    return Object.assign({ animOff: false }, last, {
-      why: last.why + '（想临时关掉系统动画重试，但读不到设备的动画开关，所以没动它）'
-    });
+  if (last.idle && allowAnimOff) {
+    const before = await animGet(serial);
+    if (!before) {
+      last = Object.assign({}, last, {
+        why: last.why + '（想临时关掉系统动画重试，但读不到设备的动画开关，所以没动它）'
+      });
+    } else {
+      await animSet(serial, 0);
+      try {
+        const r = await dumpOnce(serial);
+        if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: true, via: 'uiautomator' };
+        last = Object.assign({ animOff: true }, r, { why: r.why || last.why });
+      } finally {
+        // 无论成功还是抛错都还原：不能把用户设备的设置留在改过的状态
+        await animRestore(serial, before);
+      }
+    }
   }
-  await animSet(serial, 0);
-  try {
-    const r = await dumpOnce(serial);
-    if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: true };
-    return Object.assign({ animOff: true }, r, { why: r.why || last.why });
-  } finally {
-    // 无论成功还是抛错都还原：不能把用户设备的设置留在改过的状态
-    await animRestore(serial, before);
+  // ★★ 最后一道：uiautomator 对这个页面彻底没辙时，退到 dumpsys（**不等 idle**）。
+  //    只在 uiautomator 全败时才走这条路 ⇒ 能正常抓的页面行为一点不变。
+  if (pkg) {
+    const v = await dumpViaDumpsys(serial, pkg);
+    if (v.ok) return { ok: true, xml: v.xml, why: '', animOff: false, via: 'dumpsys', noText: true };
+    last = Object.assign({}, last, { why: last.why + '（dumpsys 备用通道也没抓到：' + v.why + '）' });
   }
+  return Object.assign({ animOff: false, via: 'uiautomator' }, last);
 }
+
+/**
+ * ★★ 备用抓取通道：`dumpsys activity top`。
+ *
+ * 为什么需要它：`uiautomator dump` 要等窗口 idle，而**持续动画的页面永远等不到** ——
+ * 得物发布页首屏（选素材的相册）实测连试十几次、`--compressed`、关系统动画、静置 15 秒
+ * 全部报 `could not get idle state`（2026-10-02 实机）。而 dumpsys **不等 idle**，
+ * 它直接打印各 task 的 View Hierarchy。
+ *
+ * 代价（如实说明，不美化）：
+ *   · **拿不到 text** —— 只有 class / resource-id / bounds / clickable；
+ *   · 给的是**整棵树**（含滚出屏幕的节点）⇒ 靠 `V` 标志 + bounds 非零过滤；
+ *   · 坐标是**相对父节点**的 ⇒ 按缩进还原层次后逐级累加。
+ *     已与 uiautomator 结果交叉验证：2026-10-02 同一屏 43 个同名控件坐标完全一致（±2px）。
+ */
+
+/** dumpsys View Hierarchy 的一行：`<缩进><类名>{<hash> <flags> <bounds> [#<idhex> <resource-id>]}`
+ *  flags 第 0 位 V=可见；第 6 位 C=clickable（View.toString 的固定次序） */
+const VH_LINE = /^(\s*)([A-Za-z0-9_.$]+)\{([0-9a-f]+)\s+([^}]*?)\s*(\d+,\d+-\d+,\d+)(?:\s+#([0-9a-f]+)(?:\s+(\S+))?)?\}$/;
+
+/** 把 `dumpsys activity top` 的输出里**目标包**那一段 View Hierarchy 转成 uiautomator 风格的 XML */
+function vhToXml(txt, pkg) {
+  const lines = String(txt || '').split(/\r?\n/);
+  let want = false, inVh = false;
+  const vh = [];
+  for (const ln of lines) {
+    if (/^TASK /.test(ln)) { want = ln.includes(pkg); inVh = false; continue; }
+    if (!want) continue;
+    if (!inVh) { if (ln.trim() === 'View Hierarchy:') inVh = true; continue; }
+    const ind = ln.length - ln.replace(/^\s+/, '').length;
+    if (ln.trim() && ind <= 4) break;          // 已经走出这一段
+    if (ln.trim()) vh.push(ln);
+  }
+  if (!vh.length) return null;
+
+  const out = [];
+  const stack = [];                            // [indent, 绝对x, 绝对y]
+  for (const ln of vh) {
+    const m = VH_LINE.exec(ln);
+    if (!m) continue;                          // `DecorView@2bc4ef[Activity]` 这种没有 bounds，跳过
+    const ind = m[1].length;
+    const cls = m[2];
+    const flags = m[4] || '';
+    const rid = m[7] || '';
+    const b = m[5].split(/[,\-]/).map(Number); // x1,y1,x2,y2（相对父节点）
+    while (stack.length && stack[stack.length - 1][0] >= ind) stack.pop();
+    const p = stack.length ? stack[stack.length - 1] : null;
+    const px = p ? p[1] : 0, py = p ? p[2] : 0;
+    const x1 = px + b[0], y1 = py + b[1], x2 = px + b[2], y2 = py + b[3];
+    stack.push([ind, x1, y1]);
+    if (flags[0] !== 'V' || x2 <= x1 || y2 <= y1) continue;   // 不可见 / 没布局 → 不收
+    const id = rid ? rid.replace(/^app:id\//, pkg + ':id/') : '';
+    out.push('<node class="' + cls + '" resource-id="' + id + '" package="' + pkg
+      + '" clickable="' + ((flags[6] || '') === 'C') + '" text=""'
+      + ' content-desc="" bounds="[' + x1 + ',' + y1 + '][' + x2 + ',' + y2 + ']" />');
+  }
+  if (!out.length) return null;
+  return "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n<hierarchy rotation=\"0\">\n  "
+    + out.join('\n  ') + '\n</hierarchy>\n';
+}
+
+/** 走 `dumpsys activity top` 抓一屏。失败返回 { ok:false, why } */
+async function dumpViaDumpsys(serial, pkg) {
+  if (!pkg) return { ok: false, why: '没给包名，不知道抠哪一段' };
+  const r = await shell(serial, 'dumpsys activity top', { timeout: 30000 });
+  if (!r.ok) return { ok: false, why: 'dumpsys activity top 跑不起来' };
+  const xml = vhToXml(String(r.stdout || ''), pkg);
+  if (!xml) return { ok: false, why: 'dumpsys 里没有「' + pkg + '」的 View Hierarchy' };
+  return { ok: true, xml };
+}
+
 
 let lastDump = null;
 /** uiautomator dump → XML；抓不到返回 null（保持老调用方的契约）。要原因用 dumpEx。 */
@@ -567,7 +647,7 @@ async function probe(serial) {
 
 module.exports = {
   execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, screencap,
-  dump, dumpEx, lastDumpInfo, tap, keyevent, inputText, packages, probe,
+  dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, keyevent, inputText, packages, probe,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
   installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus

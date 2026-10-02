@@ -306,12 +306,13 @@ async function dispatch(type, args, ctx) {
       const d = await publisher.dumpForCapture(serial);
       if (!d.ok) {
         throw new Error(d.blocked ? `先看这一屏：${d.why}`
-          : d.idle ? `抓不到界面结构：当前页面一直不 idle（得物发布页会这样）—— 原始输出「${d.why}」`
-          : `抓不到界面结构：${d.why}。确认设备在线、没锁屏`);
+          : `抓不到界面结构：${d.why}。确认设备在线、没锁屏；`
+            + `若卡在动画页（得物发布页首屏会这样），dumpsys 备用通道也没抓到，把上面这句原始输出发我`);
       }
       if (d.focusNote) logbus.warn(d.focusNote);
       else if (d.focus) logbus.info(`当前停在这一屏：${d.focus}`);
       if (d.animOff) logbus.warn('页面一直不 idle，已临时关掉系统动画抓到结构（抓完已还原）');
+      if (d.viaNote) logbus.warn(d.viaNote);
       const xml = d.xml;
       const nodes = require('./services/uimap').parseNodes(xml);
       const map = require('./services/uimap').suggest(nodes);
@@ -324,7 +325,7 @@ async function dispatch(type, args, ctx) {
       await fs.promises.writeFile(wp.toLong(mapFile), JSON.stringify(map, null, 2), 'utf8');
       logbus.ok(`已抓取 ${nodes.length} 个节点 → ${path.basename(xmlFile)}`);
       logbus.warn(`已生成候选定位表 ${path.basename(mapFile)}：steps 是按关键词猜的，改对后再导入（视频默认复用这套，不用单独配）`);
-      return { xmlFile, mapFile, nodeCount: nodes.length, steps: map.steps.length, videoSteps: (map.videoSteps || []).length, focus: d.focus, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
+      return { xmlFile, mapFile, nodeCount: nodes.length, steps: map.steps.length, videoSteps: (map.videoSteps || []).length, focus: d.focus, via: d.via, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
     }
     case 'publish.importMap': {
       const raw = await fs.promises.readFile(wp.toLong(args.file), 'utf8');

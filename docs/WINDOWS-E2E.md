@@ -204,13 +204,17 @@ set BLUEV_NO_LOGIN=1 && npm start
      程序不会拿内置的偷偷替掉它。填了一个不存在的路径时会自动退回内置，并在检查结果里**明说**。
 3. **抓取页面结构**：先把模拟器**停在得物发布页** → 点「抓取页面结构」→ 输出目录 `dumps\` 出现
    `ui-dump-<时间>.xml` 和 `uiMap-<时间>.json`（后者的 steps 是**按关键词猜的候选**）。
-   **「得物发布页」到底是哪一屏**（真机实测 2026-10-01，MuMu 12 / 得物 900×1600）：
-   得物 App **首页右上角那个相机图标**（`com.shizhuang.duapp:id/ivCamera`，clickable，center `(854,69)`，
-   **text 与 content-desc 都是空的**）点进去就是了 —— 页面是
-   `media.publish.activity.TotalPublishProcessActivity`，首屏是**选素材的相册**（顶部 全部/照片/视频 三个页签，
-   缩略图 `imgThumb` **没有文字**，只能按坐标点）。
-   ★ 首页自己的 tab 栏里**也有一个「视频」**（`tvTabTile`，center `(346,135)`）—— 抓成首页会得到一份错坐标的表，
+   **「得物发布页」到底是哪一屏、怎么去**（真机实测 2026-10-01 / 10-02，MuMu 12 / 得物 900×1600）——
+   有**两条**路，都通向同一个发布页 `media.publish.activity.TotalPublishProcessActivity`（首屏是**选素材的相册**，
+   顶部 全部/照片/视频 三个页签，缩略图 `imgThumb` **没有文字**，只能按坐标点）：
+   · ★ **推荐**：底部「我」→ 右上角「主页」→「发布新动态」（3 跳；入口 `com.shizhuang.duapp:id/rlPublish`
+     **有文字**，起点是固定底部导航，不是内容流）；
+   · 备用：动态流**右上角那个相机图标**（`com.shizhuang.duapp:id/ivCamera`，1 跳，但 **text 与 content-desc 都是空的**）。
+   ★ 首页自己的 tab 栏里**也有一个「视频」**（`tvTabTile`）—— 抓成首页会得到一份错坐标的表，
    而且不会当场报错。程序会在抓之前把「你现在停在哪一屏」打出来：停在别的 App 上直接拦下，停在得物但不是发布页只告警。
+   ★ 图文与视频**位置一样**（2026-10-02 实测）⇒ 只抓这一次图文页就够，`videoSteps` 留空会复用 `steps`。
+   ★ 发布页首屏是**持续动画**页，`uiautomator dump` 永远等不到 idle（实测连续十几次全报 could not get idle state）；
+   程序会自动改用 `dumpsys activity top` 备用通道 —— **id / 坐标 / 是否可点都有，但没有文字**（界面会明说）。
 4. **改对定位表**（必然要手改的一步）：打开 `uiMap-<时间>.json`，把每步的 `value` 改成你 App 版本里真实的
    按钮文本 / `resource-id` / 描述；用「失败恢复动作」配上失败后要执行的收尾动作。改好后「导入 UI 定位表」。
 5. **开始发布**，预期日志（对齐真机）：

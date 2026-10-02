@@ -41,20 +41,32 @@ function findNode(nodes, cond) {
 }
 
 /**
- * ★★ 「得物发布页」到底是哪一屏、怎么去 —— 真机实测（2026-10-01，MuMu 12 / 得物 900×1600）：
- *   · 入口：得物 App **首页右上角的相机图标** —— resource-id `com.shizhuang.duapp:id/ivCamera`，
- *     clickable=true，**text 与 content-desc 都是空的**（全 App 的 content-desc 都为空）。
- *   · 点进去就是发布页 = `media.publish.activity.TotalPublishProcessActivity`，
+ * ★★ 「得物发布页」到底是哪一屏、怎么去 —— 真机实测（2026-10-01 / 2026-10-02，MuMu 12 / 得物 900×1600）：
+ *   · 发布页 = `media.publish.activity.TotalPublishProcessActivity`，
  *     首屏是**选素材的相册**（顶部 全部 / 照片 / 视频 三个页签）。
- *   · ★ 首页自己的 tab 栏里也有一个「视频」（`tvTabTile`，center (346,135)）——
- *     所以**抓 dump 前先确认停在发布页**，抓成首页会得到一份错坐标的表。
+ *   · 有**两条**入口路线，2026-10-02 实机逐跳验证：**都通向同一个发布页**。
+ *     ① 动态流右上角相机 `ivCamera`：1 跳；★ 图标**无文字**（text/content-desc 皆空），
+ *       只能按 id 点，而且它只在「动态」tab 上出现。
+ *     ② 「我」→「主页」→「发布新动态」：3 跳；入口 `rlPublish`（可点容器）
+ *       + 文字「发布新动态」**双保险**，起点是固定的底部导航 `tab_user`，不依赖内容流。
+ *       ⇒ **推荐这条**（用户 2026-10-02 提供）。
+ *   · ★★ 两条路线的终点是**同一屏**，而那一屏 `uiautomator dump` **抓不下来**
+ *     （持续动画，永远等不到 idle）⇒ 程序已内置 dumpsys 备用通道（见 adb.js 的 dumpViaDumpsys）。
  */
 const DEWU = {
   pkg: 'com.shizhuang.duapp',
-  entryId: 'com.shizhuang.duapp:id/ivCamera',
   publishActivity: 'media.publish.activity.TotalPublishProcessActivity',
-  entryHow: '打开得物 App → 首页**右上角那个相机图标**（没有文字，就是相机图案）→ 就是发布页'
-    + '（首屏是选素材的相册，顶部有 全部/照片/视频 三个页签）'
+  // 路线①（老路径，保留下来作备用）
+  entryId: 'com.shizhuang.duapp:id/ivCamera',
+  // 路线②（推荐）：底部「我」→ 右上角「主页」→ 个人主页里的「发布新动态」
+  route: [
+    { id: 'com.shizhuang.duapp:id/tab_user', text: '我', how: '底部导航点「我」' },
+    { id: 'com.shizhuang.duapp:id/tvGoHomePage', text: '主页', how: '点右上角「主页」，进个人主页' },
+    { id: 'com.shizhuang.duapp:id/rlPublish', text: '发布新动态', how: '点「发布新动态」（在「全部」那一行的下面）' }
+  ],
+  entryHow: '两条路都到同一个发布页：① 动态流右上角相机图标（1 跳，但图标没文字）；'
+    + '② 底部「我」→ 右上角「主页」→「发布新动态」（3 跳，推荐）。'
+    + '到了发布页（首屏是选素材的相册，顶部有 全部/照片/视频 三个页签）再点「抓取页面结构」'
 };
 /** 当前前台是不是得物（入参是 `dumpsys window` 里 mCurrentFocus 的原文） */
 function isDewuFocus(focus) { return /shizhuang|duapp/i.test(String(focus || '')); }
@@ -67,12 +79,21 @@ function suggest(nodes, pkg) {
   const steps = [];
   const pushStep = (name, action, value, hint) => steps.push({ name, action, value, hint, unverified: true });
 
-  // ★★ 先认 id、再猜文字：真机首页的发布入口**没有文字**（`ivCamera`，text/content-desc 皆空），
-  //    只按文字猜的话候选表第一格永远停在「⚠ 需手动确认」，用户第一步就卡住（实测踩过）。
+  // ★★ 得物有**两条**入口路线，2026-10-02 实机逐跳验证：都通向同一个发布页。
+  //    ① 动态流右上角相机 `ivCamera`：1 跳，但**图标无文字**，只能按 id 点；
+  //    ② 「我」→ 右上角「主页」→「发布新动态」：3 跳，入口 **id + 文字双保险**，起点是固定底部导航。
+  //    ⇒ 候选表按②生成（更稳），① 写进 hint 备用。
   const camId = (nodes.find(n => /(^|[:/])ivCamera$/.test(n.id)) || {}).id;
-  if (camId) {
-    pushStep('打开发布入口（得物首页右上角相机图标，无文字）', 'tapId', camId,
-      '首页右上角那个相机图标 —— text/content-desc 都是空的，只能按 resource-id 点');
+  const pubId = (nodes.find(n => /(^|[:/])rlPublish$/.test(n.id)) || {}).id;
+  const pubTxt = nodes.find(n => (n.text || '') === '发布新动态');
+  if (pubTxt || pubId) {
+    pushStep('打开发布入口（「我」→「主页」→「发布新动态」，推荐）', 'tapText', '发布新动态',
+      (pubId ? '也可以按 id 点：' + pubId + '（同一格，双保险）；' : '')
+      + '这条入口有文字，比首页右上角那个没文字的相机图标稳'
+      + (camId ? '（备用 id：' + camId + '）' : ''));
+  } else if (camId) {
+    pushStep('打开发布入口（得物动态流右上角相机图标，无文字）', 'tapId', camId,
+      '那个相机图标 text/content-desc 都是空的，只能按 resource-id 点');
   } else {
     const pub = hit('发布', '发笔记', '创作')[0];
     if (pub) pushStep('打开发布入口', 'tapText', pub.text || pub.desc, '取自 dump 的匹配节点');
@@ -96,8 +117,14 @@ function suggest(nodes, pkg) {
   //   真要用，就去得物「发布视频」页抓一次 dump，改这一套，别改 steps。
   const videoSteps = [];
   const vpush = (name, action, value, hint) => videoSteps.push({ name, action, value, hint, unverified: true });
-  if (camId) {
-    vpush('打开发布入口（视频）', 'tapId', camId, '同上：首页右上角相机图标，进去之后再切「视频」页签');
+  // ★ 图文和视频走的是**同一个发布页**（2026-10-02 用户实测）⇒ 入口也必须是同一条，
+  //   否则「视频复用图文」这件事只在 steps 那一侧成立、videoSteps 这一侧还指着老路。
+  if (pubTxt || pubId) {
+    vpush('打开发布入口（视频）', 'tapText', '发布新动态',
+      '★ 图文和视频是**同一个发布页** ⇒ 入口同一条（「我」→「主页」→「发布新动态」），'
+      + '进去之后再切「视频」页签' + (camId ? '；备用 id：' + camId : ''));
+  } else if (camId) {
+    vpush('打开发布入口（视频）', 'tapId', camId, '同上：动态流右上角相机图标，进去之后再切「视频」页签');
   } else {
     const ventry = hit('上传视频', '发视频', '视频号')[0];
     if (ventry) vpush('打开发布入口（视频）', 'tapText', ventry.text || ventry.desc, '取自 dump 的匹配节点');

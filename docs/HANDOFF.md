@@ -870,6 +870,45 @@
 「无文字的相机图标 ⇒ 候选表第一步必须是 `tapId`（图文 / 视频各一条）」。全量 **780 → 834** 项全绿
 （含并行会话新增的 `cloudtest` 与 `uicheck` 增补）；5 条定点破坏分别报红 2／2／1／3／1 条，逐字节还原。
 
+### ★★ 两条入口路线 + 动画页的 dumpsys 备用通道（2026-10-02 深夜 · 第五轮）
+
+> 起因：用户说「我不确定我这个发布路径对你会不会更有用……点击我的，点击主页，在全部下面有一个发布新动态，
+> 你可以调用模拟器去看看。你看看哪个入口更适合你」。⇒ **真机逐跳实测**两条路线并对比，结论落进代码。
+
+**实测（MuMu 12 / 得物 900×1600）：两条路都到同一个发布页** `media.publish.activity.TotalPublishProcessActivity`。
+
+| | 路线① 动态流右上角相机 | 路线②「我」→「主页」→「发布新动态」 |
+| --- | --- | --- |
+| 跳数 | 1 跳 | 3 跳 |
+| 入口 | `com.shizhuang.duapp:id/ivCamera` | `com.shizhuang.duapp:id/rlPublish`（可点容器）+ 文字「发布新动态」 |
+| 文字 | **无**（text/content-desc 皆空，只能按 id 点） | **有**（id + 文字双保险） |
+| 起点 | 只在「动态」tab 上出现 | 固定底部导航 `tab_user`，不依赖内容流 |
+| 结论 | 备用 | ★ **推荐**（用户提供） |
+
+实测链路：`HomeActivity`（我 tab）→ 点 `tvGoHomePage`「主页」(838,149) → `PersonalActivity` → 点
+`rlPublish`「发布新动态」(121,925) → `TotalPublishProcessActivity`。`suggest()` 改成**优先用②**（有文字），
+把①的 id 写进 hint 备用；**`videoSteps` 也一起改**（否则「视频复用图文」只在 steps 那一侧成立、videoSteps 还指着老路）。
+
+**★ 顺带实测出一件更要紧的事：发布页首屏根本抓不下来。**
+它是**持续动画**页（相册预览轮播），`uiautomator dump` 永远等不到 idle —— 2026-10-02 连试十几次、
+`--compressed`、关系统动画、静置 15s **全部报 `could not get idle state.`**。
+而 `dumpsys activity top` **不等 idle**，直接把各 task 的 View Hierarchy 打出来 ⇒ 做成备用通道：
+- `adb.dumpViaDumpsys()` + `adb.vhToXml()`：按**包名**过滤 TASK 段 → 按缩进还原层次 → 坐标**逐级累加**
+  → 滤掉 flags 第 0 位不是 `V` 的节点（真机里这类 bounds 是 `0,0-0,0`）→ 输出 uiautomator 风格 XML。
+- **代价（如实说，不美化）**：只有 class / resource-id / bounds / clickable，**没有文字** ⇒ 靠文字找的步骤
+  得手动改或用 id；界面会**主动**把这一点说出来（`viaNote`）。
+- **只在 uiautomator 全败时才走**（`dumpEx({ pkg })`）⇒ 能正常抓的页面行为一点不变；不带 `pkg` 时**不降级**。
+- 交叉验证：同一屏用两套**独立实现**（Node 版 `vhToXml` 与 Python 版）各解析一遍 ——
+  **110 个节点、43 个同名控件坐标逐一对上（±2px）**、clickable 一致。
+
+**回归**：`adbtest` 新增 ⑱ 段 **21 条**（83 → **104**）：dumpsys 解析（包名过滤 / 缩进累加 / V 过滤 / id 补全 /
+clickable / **text 必须全空**）、`dumpViaDumpsys` 三种失败路径、**降级链**（全败才降 / 不带包名不降 /
+能成功时一次都不调）、**关掉的动画必须还原**、`viaNote` 必须说清「没有文字」、`DEWU.route` 三步、
+候选表**优先路线②**、**图文与视频首步必须一致**。全量 **834 → 864** 项全绿（含并行会话的 `uicheck` 增补）。
+8 条定点破坏分别报红 3 / 1 / 1 / 2 / **1** / 2 / 1 / 1 条，逐字节还原。
+★ 其中 D5 第一次报红 **0** 条 —— 暴露我那条断言只看 `ok`/`via`（破坏后这两个值恰好不变、dumpsys 自己也会拒绝空包名），
+加固成「连 dumpsys 都不该调 + 报错里不许出现备用通道字样」后才红。已按「比较型断言假空过」记进教训。
+
 ### 视频发布支持（2026-10-01 **代码已实现**；★ 2026-10-02 起**默认不用配 `videoSteps`**）
 
 > **已拍板的口径：视频封面用「得物推荐的」** —— 即不点封面区、不上传封面图、不做取帧裁图。
@@ -1204,7 +1243,7 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十六套**测试，共 **834** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十六套**测试，共 **864** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
 | `tools/make-icon.js` | 从源 SVG 生成 `build/icon.ico`（7 个尺寸，每个内嵌 PNG）+ `build/icon.png`；换 logo 只改脚本里的源路径 |
 | `tools/upload-release.js` | 把 exe + 清单文件 + `.blockmap` 传到对象存储的**桶根目录**。清单名按通道定：正式版 `latest.yml`、测试版 `beta.yml`（`channelFile()`）。上传前有**四道闸门**：版本号与 `package.json` 对不上（dist 是旧包）、`dist` 里不是恰好 1 个安装版 exe、`versionGate`（同版本号 / 往回发）、`channelMismatch`（**版本后缀与通道对得上**，见 §2 第 5 条 c）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
 | `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/`（**桶根，不带 `/stable`** —— 两条通道共用同一层，靠清单文件名区分）/ `channel: latest`（只是默认值，用户选测试版后运行时会被覆盖成 `beta`）/ `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |

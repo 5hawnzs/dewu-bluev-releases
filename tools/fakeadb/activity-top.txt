@@ -1,0 +1,352 @@
+TASK 1000:com.android.settings.root id=34 userId=0
+  ACTIVITY com.android.settings/.Settings f111 pid=100
+    View Hierarchy:
+      DecorView@aaa[Settings]
+        android.widget.LinearLayout{bbb V.E...... ........ 0,0-1080,2400}
+          android.widget.TextView{ccc V.E...... ........ 0,0-200,80}
+
+TASK 1000:com.android.settings id=35 userId=0
+  ACTIVITY com.android.settings/.SubSettings f222 pid=100
+    View Hierarchy:
+      DecorView@ddd[SubSettings]
+        android.widget.TextView{eee V.E...... ........ 0,0-300,90 #7f010001 app:id/otherTv}
+
+TASK 10042:com.shizhuang.duapp id=33 userId=0
+  ACTIVITY com.shizhuang.duapp/.media.publish.activity.TotalPublishProcessActivity f14132b pid=2643
+    Local Activity ab8ec25 State:
+      mResumed=true mStopped=false mFinished=false
+      mIsInMultiWindowMode=false mIsInPictureInPictureMode=false
+      mChangingConfigurations=false
+      mCurrentConfig={1.0 460mcc65535mnc [zh_CN] ldltr sw600dp w600dp h1042dp 240dpi lrg long port night finger -keyb/v/v dpad/v winConfig={ mBounds=Rect(0, 0 - 900, 1600) mAppBounds=Rect(0, 0 - 900, 1600) mMaxBounds=Rect(0, 0 - 900, 1600) mWindowingMode=fullscreen mDisplayWindowingMode=fullscreen mActivityType=standard mAlwaysOnTop=undefined mRotation=ROTATION_0} as.2 s.1 fontWeightAdjustment=0}
+      mLoadersStarted=true
+      Active Fragments in 1cdde6e:
+        #0: ReportFragment{581690f #0 androidx.lifecycle.LifecycleDispatcher.report_fragment_tag}
+          mFragmentId=#0 mContainerId=#0 mTag=androidx.lifecycle.LifecycleDispatcher.report_fragment_tag
+          mState=5 mIndex=0 mWho=android:fragment:0 mBackStackNesting=0
+          mAdded=true mRemoving=false mFromLayout=false mInLayout=false
+          mHidden=false mDetached=false mMenuVisible=true mHasMenu=false
+          mRetainInstance=false mRetaining=false mUserVisibleHint=true
+          mFragmentManager=FragmentManager{1cdde6e in HostCallbacks{6b67d9c}}
+          mHost=android.app.Activity$HostCallbacks@6b67d9c
+          Child FragmentManager{8a133a5 in ReportFragment{581690f}}:
+            FragmentManager misc state:
+              mHost=android.app.Activity$HostCallbacks@6b67d9c
+              mContainer=android.app.Fragment$1@fd737a
+              mParent=ReportFragment{581690f #0 androidx.lifecycle.LifecycleDispatcher.report_fragment_tag}
+              mCurState=5 mStateSaved=false mDestroyed=false
+      Added Fragments:
+        #0: ReportFragment{581690f #0 androidx.lifecycle.LifecycleDispatcher.report_fragment_tag}
+      FragmentManager misc state:
+        mHost=android.app.Activity$HostCallbacks@6b67d9c
+        mContainer=android.app.Activity$HostCallbacks@6b67d9c
+        mCurState=5 mStateSaved=false mDestroyed=false
+    ViewRoot:
+      mAdded=true
+      mRemoved=false
+      mStopped=false
+      mPausedForTransition=false
+      mConsumeBatchedInputScheduled=false
+      mConsumeBatchedInputImmediatelyScheduled=false
+      mPendingInputEventCount=0
+      mProcessInputEventsScheduled=false
+      mTraversalScheduled=false
+      mIsAmbientMode=false
+      mUnbufferedInputSource=0
+      mAttachInfo=       AttachInfo:
+        mHasWindowFocus=true
+        mWindowVisibility=0
+        mInTouchMode=true
+        mUnbufferedDispatchRequested=false
+      android.view.ViewRootImpl$NativePreImeInputStage: mQueueLength=0
+      android.view.ViewRootImpl$ImeInputStage: mQueueLength=0
+      android.view.ViewRootImpl$NativePostImeInputStage: mQueueLength=0
+      android.view.ViewRootImpl$WindowInputEventReceiver
+       mInputChannel: c60ceb8 com.shizhuang.duapp/com.shizhuang.duapp.media.publish.activity.TotalPublishProcessActivity (client)
+       mSeqMap: {}
+       mReceiverPtr:
+        mInputConsumer:
+          mResampleTouch = false
+          mChannel = c60ceb8 com.shizhuang.duapp/com.shizhuang.duapp.media.publish.activity.TotalPublishProcessActivity (client)
+          mMsgDeferred: false
+          Batches:
+              <empty>
+          mSeqChains:
+              <empty>
+          mConsumeTimes:
+              <empty>
+          
+        mBatchedInputEventPending: false
+        mOutboundQueue:
+          <empty>
+        
+    Choreographer:
+      mFrameScheduled=true
+      mLastFrameTime=88157980 (9 ms ago)
+    InsetsController:
+      InsetsState
+        mDisplayFrame=Rect(0, 0 - 900, 1600)
+        mDisplayCutout=DisplayCutout{insets=Rect(0, 0 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=0 displayHeight=0 density={0.0} cutoutSpec={} rotation={0} scale={0.0}}}}
+        mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=0, center=Point(0, 0)}, RoundedCorner{position=TopRight, radius=0, center=Point(0, 0)}, RoundedCorner{position=BottomRight, radius=0, center=Point(0, 0)}, RoundedCorner{position=BottomLeft, radius=0, center=Point(0, 0)}]}
+        mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(756, 0 - 879, 36) rotation=0}
+          InsetsSource type=ITYPE_STATUS_BAR frame=[0,0][900,36] visible=true
+          InsetsSource type=ITYPE_TOP_MANDATORY_GESTURES frame=[0,0][900,36] visible=true
+          InsetsSource type=ITYPE_TOP_TAPPABLE_ELEMENT frame=[0,0][900,36] visible=true
+          InsetsSource type=ITYPE_IME frame=[0,0][0,0] visible=false
+    View Hierarchy:
+      DecorView@5575bf8[TotalPublishProcessActivity]
+        android.widget.LinearLayout{f93975b V.E...... ........ 0,0-900,1600}
+          android.view.ViewStub{f75872b G.E...... ......I. 0,0-0,0 #10201b3 android:id/action_mode_bar_stub}
+          android.widget.FrameLayout{865e66a V.E...... ........ 0,0-900,1600}
+            androidx.appcompat.widget.FitWindowsLinearLayout{5c8dc55 V.E...... ........ 0,0-900,1600 #7f09008b app:id/action_bar_root}
+              androidx.appcompat.widget.ViewStubCompat{a7bd788 G.E...... ......I. 0,0-0,0 #7f09009b app:id/action_mode_bar_stub}
+              androidx.appcompat.widget.ContentFrameLayout{6659b0c V.E...... ........ 0,0-900,1600 #1020002 android:id/content}
+                androidx.constraintlayout.widget.ConstraintLayout{b8dd63f V.E...... ........ 0,0-900,1600}
+                  com.shizhuang.duapp.common.widget.PlaceholderLayout{4a0025e V.E...... ........ 0,0-900,1600 #7f093311 app:id/placeholderLayout}
+                    android.widget.FrameLayout{bb2df99 V.E...... ........ 0,0-900,1600 #7f090be0 app:id/content}
+                      androidx.constraintlayout.widget.ConstraintLayout{dc50e0 V.E...... ........ 0,0-900,1600 #7f090cf9 app:id/cslContent}
+                        androidx.viewpager2.widget.ViewPager2{3812ee3 V.E...... ........ 0,0-900,1600 #7f09605b app:id/viewPager}
+                          androidx.viewpager2.widget.ViewPager2$RecyclerViewImpl{848712 VFED..... ........ 0,0-900,1600 #187}
+                            android.widget.FrameLayout{c0769d V.E...... ........ 0,0-900,1600 #188}
+                              androidx.constraintlayout.widget.ConstraintLayout{2bd9174 V.E...... ........ 0,0-900,1600 #7f091512 app:id/galleryRoot}
+                                com.shizhuang.duapp.media.view.common.PublishGalleryPageTitleBarView{d966521 V.E...... ........ 0,36-900,102 #7f0942ee app:id/titleBar}
+                                  androidx.appcompat.widget.AppCompatImageView{45f4d46 VFED..C.. ........ 0,7-96,59 #7f092105 app:id/ivLeft}
+                                  androidx.appcompat.widget.AppCompatTextView{436b07 VFED..C.. ........ 381,0-495,66 #7f095783 app:id/tvTitle}
+                                  androidx.appcompat.widget.AppCompatImageView{5bae434 VFED..C.. ........ 495,21-519,45 #7f091e2a app:id/ivArrow}
+                                  androidx.appcompat.widget.AppCompatTextView{653325d G.ED..... ......I. 0,0-0,0 #7f094c0d app:id/tvHighlight}
+                                  androidx.appcompat.widget.AppCompatTextView{bb2f7d2 G.ED..... ......I. 0,0-0,0 #7f095748 app:id/tvTextToPic}
+                                  androidx.constraintlayout.widget.ConstraintLayout{121b0a3 G.E...... ......I. 0,0-0,0 #7f090a5c app:id/clTextTemplateArea}
+                                    androidx.appcompat.widget.AppCompatImageView{3c0fa0 VFED..C.. ......I. 0,0-0,0 #7f09240f app:id/ivTextTemplateText}
+                                    androidx.appcompat.widget.AppCompatImageView{c159759 VFED..C.. ......I. 0,0-0,0 #7f09240c app:id/ivTextTemplateProduct}
+                                    androidx.appcompat.widget.AppCompatImageView{124bf1e VFED..C.. ......I. 0,0-0,0 #7f09240b app:id/ivTextTemplateAiTryOn}
+                                  androidx.constraintlayout.widget.ConstraintLayout{e14b3ff G.E...... ......I. 0,0-0,0 #7f090a5d app:id/clTextTemplateArea2}
+                                    androidx.appcompat.widget.AppCompatImageView{3e285cc V.ED..... ......I. 0,0-0,0 #7f092410 app:id/ivTextTemplateText2}
+                                    androidx.appcompat.widget.AppCompatTextView{3ff5015 V.ED..... ......ID 0,0-0,0 #7f093ed3 app:id/slTextTemplateTextName2}
+                                  com.shizhuang.duapp.libs.darktheme.shapeview.ShapeTextView{359af2a G.ED..... ......I. 0,0-0,0 #7f093faa app:id/stMultiArea}
+                                com.shizhuang.duapp.media.view.TextTemplateOfGalleryView{50a911b VFE...C.. ........ 0,102-900,204 #7f0960fe app:id/viewTextTemplate}
+                                  androidx.constraintlayout.widget.ConstraintLayout{39832b8 VFE...C.. ........ 0,0-900,102 #7f0939e1 app:id/rootView}
+                                    com.shizhuang.duapp.libs.darktheme.shapeview.ShapeConstraintLayout{991d891 VFE...C.. ........ 30,18-302,84 #7f093ed0 app:id/slTextTemplateText}
+                                      androidx.appcompat.widget.AppCompatImageView{43b93f6 V.ED..... ........ 87,18-117,48 #7f093ed1 app:id/slTextTemplateTextIcon}
+                                      androidx.appcompat.widget.AppCompatTextView{ab723f7 V.ED..... ........ 123,19-186,48 #7f093ed2 app:id/slTextTemplateTextName}
+                                    com.shizhuang.duapp.libs.darktheme.shapeview.ShapeConstraintLayout{4f9c264 VFE...C.. ........ 314,18-586,84 #7f093ecf app:id/slTextTemplateProduct}
+                                      androidx.appcompat.widget.AppCompatImageView{4ea6ccd V.ED..... ........ 87,18-117,48 #7f09240d app:id/ivTextTemplateProductIcon}
+                                      androidx.appcompat.widget.AppCompatTextView{884f982 V.ED..... ........ 123,19-186,48 #7f09240e app:id/ivTextTemplateProductName}
+                                    com.shizhuang.duapp.libs.darktheme.shapeview.ShapeConstraintLayout{1300893 VFE...C.. ........ 598,18-870,84 #7f093ece app:id/slTextTemplateAiTryOn}
+                                      DuImageLoaderView{holder=DraweeHolder{controllerAttached=false, holderAttached=true, drawableVisible=false, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_CLEAR_CONTROLLER, ON_HOLDER_ATTACH]}}
+                                      androidx.appcompat.widget.AppCompatTextView{8c2a0d0 V.ED..... ........ 113,19-196,48 #7f0944f4 app:id/tvAiTryOnName}
+                                com.shizhuang.duapp.libs.darktheme.shapeview.ShapeConstraintLayout{8be08c9 G.E...... ......I. 0,0-0,0 #7f09601c app:id/viewInspCardBanner}
+                                  com.shizhuang.duapp.libs.darktheme.shapeview.ShapeConstraintLayout{40d2bce V.E...... ......I. 0,0-0,0 #7f09601b app:id/viewInspCardArea}
+                                    com.shizhuang.duapp.libs.darktheme.shapeview.ShapeTextView{c489aef G.ED..... ......I. 0,0-0,0 #7f094b66 app:id/tvGalleryInspBadge}
+                                    androidx.appcompat.widget.AppCompatTextView{df8f9fc V.ED..... ......I. 0,0-0,0 #7f094b67 app:id/tvGalleryInspTitle}
+                                    androidx.appcompat.widget.AppCompatImageView{4156885 V.ED..... ......ID 0,0-0,0 #7f092027 app:id/ivGalleryInspArrow}
+                                com.shizhuang.duapp.common.widget.tablayout.TabLayout{ed436da VFED..... ........ 0,204-900,270 #7f091518 app:id/galleryTabLayout}
+                                  com.shizhuang.duapp.common.widget.tablayout.TabLayout$SlidingTabStrip{fadf70b V.ED..... ........ 0,0-900,66}
+                                    com.shizhuang.duapp.common.widget.tablayout.TabLayout$TabView{bd9b9e8 VFE...C.. ..S..... 333,0-411,66}
+                                      androidx.appcompat.widget.AppCompatImageView{3c90801 G.ED..... ..S...I. 0,0-0,0}
+                                      androidx.appcompat.widget.AppCompatTextView{ecee6a6 V.ED..... ..S..... 18,18-60,47}
+                                    com.shizhuang.duapp.common.widget.tablayout.TabLayout$TabView{2c2f8e7 VFE...C.. ........ 411,0-489,66}
+                                      androidx.appcompat.widget.AppCompatImageView{e848c94 G.ED..... ......I. 0,0-0,0}
+                                      androidx.appcompat.widget.AppCompatTextView{fbd233d V.ED..... ........ 18,18-60,47}
+                                    com.shizhuang.duapp.common.widget.tablayout.TabLayout$TabView{272c732 VFE...C.. ........ 489,0-567,66}
+                                      androidx.appcompat.widget.AppCompatImageView{63c3c83 G.ED..... ......I. 0,0-0,0}
+                                      androidx.appcompat.widget.AppCompatTextView{267de00 V.ED..... ........ 18,18-60,47}
+                                com.shizhuang.duapp.media.view.CustomViewPager{a9b8547 VFED..... ........ 0,270-900,1516 #7f09151b app:id/galleryViewPager}
+                                  androidx.constraintlayout.widget.ConstraintLayout{703a841 V.E...... ......I. 0,0-900,1246}
+                                    androidx.recyclerview.widget.RecyclerView{fddb639 VFED..... ........ 0,0-900,1246 #7f0937cd app:id/recyclerView}
+                                      androidx.constraintlayout.widget.ConstraintLayout{802247e VFE...C.. ........ 0,0-175,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{77c1ddf VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{a6cda2c V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{4da7cf5 V.E...... ........ 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{d980a8a V.ED..... ........ 118,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{daeb8fb G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{ce36d18 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{a2f371 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{5f44556 VFE...C.. ........ 181,0-356,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{ca5e9d7 VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{32e42c4 V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{aa255ad I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{e0760e2 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{9754c73 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{82ec730 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{bbb9fa9 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{f3ea92e VFE...C.. ........ 362,0-537,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{cce3ccf VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{171265c V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{e058d65 I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{a902a3a V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{f1bd6eb G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{f184c48 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{c469ae1 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{846b006 VFE...C.. ........ 543,0-718,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{a5ef6c7 VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{e89e4f4 V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{d31041d I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{88dc692 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{dca3863 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{bda5c60 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{65ec519 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{bdb9de VFE...C.. ........ 724,0-900,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{f1df7bf VFE...C.. ........ 101,0-176,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{df8de8c V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{30d99d5 I.E...... ......ID 0,131-176,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{16795ea V.ED..... ......ID 165,9-176,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{5c450db G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{99b5778 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{a9afe51 I.ED..... ......I. 0,0-176,176 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{12126b6 VFE...C.. ........ 0,182-175,357}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{bad1fb7 VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{6ea7324 V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{2c02e8d I.E...... ......ID 0,130-175,175 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{810f842 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{fea0053 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{5ed9d90 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{98e2689 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                    com.shizhuang.duapp.modules.du_community_common.view.PublishPageLoadingView{155b328 G.ED..... ......I. 0,0-0,0 #7f092e93 app:id/lvLoading}
+                                    com.shizhuang.duapp.media.publish.view.GalleryScrollView{83a568e G.E...... ......I. 0,0-0,0 #7f091513 app:id/galleryScrollBar}
+                                      androidx.constraintlayout.widget.ConstraintLayout{70a4eaf V.E...... ......I. 0,0-0,0}
+                                        android.view.View{db702bc V.ED..... ......I. 0,0-0,0 #7f091514 app:id/galleryScrollBarBg}
+                                        androidx.appcompat.widget.AppCompatTextView{329a245 VFED..C.. ......I. 0,0-0,0 #7f091515 app:id/galleryScrollBarText}
+                                        android.view.View{e894d9a V.ED..... ......I. 0,0-0,0 #7f091513 app:id/galleryScrollBar}
+                                    android.widget.LinearLayout{53726cb G.E...... ......I. 0,0-0,0 #7f092abe app:id/llEmptyState}
+                                      androidx.appcompat.widget.AppCompatTextView{24f8ea8 V.ED..... ......ID 0,0-0,0 #7f0949e1 app:id/tvEmptyText}
+                                      androidx.appcompat.widget.AppCompatTextView{7471dc1 GFED..C.. ......I. 0,0-0,0 #7f0905a6 app:id/btnAddMore}
+                                    com.shizhuang.duapp.common.widget.font.IconFontTextView{89ea966 G.ED..... ......ID 0,0-0,0 #7f094bf0 app:id/tvHdrPrompt}
+                                  androidx.constraintlayout.widget.ConstraintLayout{17a6886 V.E...... ......I. 900,0-1800,1246}
+                                    androidx.recyclerview.widget.RecyclerView{e0f64a7 VFED..... ........ 0,0-900,1246 #7f0937cd app:id/recyclerView}
+                                      androidx.constraintlayout.widget.ConstraintLayout{d62ed54 VFE...C.. ........ 0,0-175,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{a66d4fd VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{b5bf5f2 V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{643a443 I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{5ab8ac0 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{ed0c3f9 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{62f7f3e GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{2f2419f I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{11e92ec VFE...C.. ........ 181,0-356,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{950a6b5 VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{f20514a V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{2c358bb I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{dd7f1d8 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{5b1f931 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{39a3816 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{cc4c597 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{dc65384 VFE...C.. ........ 362,0-537,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{6fbf76d VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{9f9bfa2 V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{1062433 I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{11723f0 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{f6d9d69 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{fd833ee GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{6f4d08f I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{b628f1c VFE...C.. ........ 543,0-718,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{c39a725 VFE...C.. ........ 100,0-175,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{117a0fa V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{577e6ab I.E...... ......ID 0,131-175,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{f978108 V.ED..... ......ID 164,9-175,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{10290a1 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{3aed2c6 GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{cc4287 I.ED..... ......I. 0,0-175,175 #7f095fce app:id/viewCover}
+                                      androidx.constraintlayout.widget.ConstraintLayout{ea7a5b4 VFE...C.. ........ 724,0-900,176}
+                                        DuImageLoaderView{holder=DraweeHolder{controllerAttached=true, holderAttached=true, drawableVisible=true, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_DRAWABLE_SHOW, ON_ATTACH_CONTROLLER, ON_DETACH_CONTROLLER, ON_SET_CONTROLLER, ON_ATTACH_CONTROLLER]}}
+                                        android.widget.FrameLayout{f1695dd VFE...C.. ........ 101,0-176,75 #7f091395 app:id/flThumbSelect}
+                                          androidx.appcompat.widget.AppCompatTextView{4355552 V.ED..... ........ 38,7-68,37 #7f092415 app:id/ivThumbSelect}
+                                        android.widget.FrameLayout{a208023 I.E...... ......ID 0,131-176,176 #7f0913af app:id/flVideo}
+                                          androidx.appcompat.widget.AppCompatTextView{4f36920 V.ED..... ......ID 165,9-176,35 #7f0949b3 app:id/tvDuration}
+                                        androidx.appcompat.widget.AppCompatImageView{46bb2d9 G.ED..... ......I. 0,0-0,0 #7f092124 app:id/ivLive}
+                                        androidx.appcompat.widget.AppCompatCheckBox{f2f749e GFED..C.. ......I. 0,0-0,0 #7f0907ed app:id/cbLiveBtn}
+                                        android.view.View{cf0fb7f I.ED..... ......I. 0,0-176,176 #7f095fce app:id/viewCover}
+                                    com.shizhuang.duapp.modules.du_community_common.view.PublishPageLoadingView{c8be561 G.ED..... ......I. 0,0-0,0 #7f092e93 app:id/lvLoading}
+                                    com.shizhuang.duapp.media.publish.view.GalleryScrollView{275f74c G.E...... ......I. 0,0-0,0 #7f091513 app:id/galleryScrollBar}
+                                      androidx.constraintlayout.widget.ConstraintLayout{e5ba395 V.E...... ......I. 0,0-0,0}
+                                        android.view.View{31a3caa V.ED..... ......I. 0,0-0,0 #7f091514 app:id/galleryScrollBarBg}
+                                        androidx.appcompat.widget.AppCompatTextView{623d09b VFED..C.. ......I. 0,0-0,0 #7f091515 app:id/galleryScrollBarText}
+                                        android.view.View{9b13c38 V.ED..... ......I. 0,0-0,0 #7f091513 app:id/galleryScrollBar}
+                                    android.widget.LinearLayout{c1fe411 G.E...... ......I. 0,0-0,0 #7f092abe app:id/llEmptyState}
+                                      androidx.appcompat.widget.AppCompatTextView{7377976 V.ED..... ......ID 0,0-0,0 #7f0949e1 app:id/tvEmptyText}
+                                      androidx.appcompat.widget.AppCompatTextView{e4db77 GFED..C.. ......I. 0,0-0,0 #7f0905a6 app:id/btnAddMore}
+                                    com.shizhuang.duapp.common.widget.font.IconFontTextView{159e3e4 G.ED..... ......ID 0,0-0,0 #7f094bf0 app:id/tvHdrPrompt}
+                        android.view.View{d0db04d V.ED..... ........ 0,1516-900,1600 #7f095e59 app:id/vBottomBackground}
+                        androidx.appcompat.widget.AppCompatTextView{319b702 VFED..C.. ........ 145,1516-214,1600 #7f0956e8 app:id/tvTab1}
+                        com.shizhuang.duapp.libs.darktheme.shapeview.ShapeTextView{541b813 VFED..C.. ..S..... 351,1516-397,1600 #7f0956e9 app:id/tvTab2}
+                        androidx.appcompat.widget.AppCompatTextView{4c35a50 VFED..C.. ........ 534,1516-580,1600 #7f0956ea app:id/tvTab3}
+                        androidx.appcompat.widget.AppCompatTextView{6920449 VFED..C.. ........ 717,1516-763,1600 #7f0956eb app:id/tvTab4}
+                        androidx.appcompat.widget.AppCompatTextView{2f0414e G.ED..... ......ID 0,0-0,0 #7f0956ec app:id/tvTab5}
+                        androidx.appcompat.widget.AppCompatTextView{485c26f G.ED..... ......ID 0,0-0,0 #7f0956ed app:id/tvTab6}
+                        androidx.appcompat.widget.AppCompatTextView{f0bcb7c I.ED..... ......ID 717,1542-763,1574 #7f0950b7 app:id/tvPlaceHolder}
+                        android.view.View{ded9c05 V.ED..... ........ 746,1542-763,1559 #7f09604b app:id/viewNewTip}
+                        com.shizhuang.duapp.media.publish.fragment.PublishPreviewView{6ecd2f V.E...... ........ 0,0-900,1600 #7f0933bf app:id/previewView}
+                          com.shizhuang.duapp.media.publish.view.PreviewDragView{77fbf0e V.E...... ........ 0,0-900,1600 #7f0933ba app:id/previewDragView}
+                            android.widget.RelativeLayout{b5de109 V.E...... ........ 0,36-900,1600}
+                              androidx.viewpager.widget.ViewPager{395b210 VFED..... ........ 0,0-900,1564 #7f0933c0 app:id/previewViewPager}
+                                androidx.constraintlayout.widget.ConstraintLayout{e8b96d3 V.E...... ........ 0,0-900,1564}
+                                  com.shizhuang.duapp.libs.video.view.DuVideoView{578d8c2 V.E...... ........ 0,0-900,1564 #7f095f6b app:id/videoView}
+                                    com.shizhuang.duapp.libs.videoplayer.DuVideoTextureView{493245a V.ED..... ........ 10,0-889,1564 #7f090f38 app:id/du_libs_video_view}
+                                    com.shizhuang.duapp.libs.video.view.DuVideoControllerView{451410d V.E...... ........ 0,0-900,1564}
+                                      android.widget.LinearLayout{f56168b G.E...... ......I. 0,0-0,0 #7f09282b app:id/layout_top}
+                                        androidx.appcompat.widget.AppCompatImageView{d082368 VFED..C.. ......I. 0,0-0,0 #7f0924d3 app:id/iv_back}
+                                        androidx.appcompat.widget.AppCompatTextView{1b0f381 V.ED..... ......I. 0,0-0,0 #7f0942e9 app:id/title}
+                                      android.widget.LinearLayout{fa23fa4 G.E...... ......I. 0,0-0,0 #7f0927e2 app:id/layout_bottom}
+                                        androidx.appcompat.widget.AppCompatSeekBar{94f2c26 VFED..... ......ID 0,0-0,0 #7f093cf2 app:id/seek_progress}
+                                        android.widget.LinearLayout{d6a4e37 V.E...... ......I. 0,0-0,0}
+                                          androidx.appcompat.widget.AppCompatImageView{18d9067 VFED..C.. ......I. 0,0-0,0 #7f09259e app:id/iv_play}
+                                          android.view.View{1f00e14 V.ED..... ......I. 0,0-0,0}
+                                          android.widget.LinearLayout{4f3ff36 V.E...... ......I. 0,0-0,0}
+                                            androidx.appcompat.widget.AppCompatTextView{e07e8d1 V.ED..... ......ID 0,0-0,0 #7f095a5f app:id/tv_current_time}
+                                            androidx.appcompat.widget.AppCompatTextView{ef846bd V.ED..... ......ID 0,0-0,0}
+                                            androidx.appcompat.widget.AppCompatTextView{30bdf3c V.ED..... ......ID 0,0-0,0 #7f095d80 app:id/tv_total_time}
+                                          androidx.appcompat.widget.AppCompatImageView{871e4b2 GFED..C.. ......I. 0,0-0,0 #7f092537 app:id/iv_fullscreen}
+                                  DuImageLoaderView{holder=DraweeHolder{controllerAttached=false, holderAttached=true, drawableVisible=false, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_HOLDER_ATTACH, ON_CLEAR_CONTROLLER, ON_CLEAR_CONTROLLER]}}
+                                  com.shizhuang.duapp.media.publish.view.DispatchSeekBar{540800a V.ED..... ........ 24,1409-876,1499 #7f093ce8 app:id/seekBarVideo}
+                                  androidx.appcompat.widget.AppCompatImageView{fd8cc03 GFED..C.. ......I. 405,737-495,827 #7f093326 app:id/playPauseBtn}
+                                  androidx.appcompat.widget.AppCompatTextView{3fcbe1a G.ED..... ......ID 0,0-0,0 #7f0949a6 app:id/tvDragVideoStart}
+                                  androidx.appcompat.widget.AppCompatTextView{ac9f780 G.ED..... ......ID 0,0-0,0 #7f0949b6 app:id/tvDurationSplit}
+                                  androidx.appcompat.widget.AppCompatTextView{e7a84c5 G.ED..... ......ID 0,0-0,0 #7f0949a5 app:id/tvDragVideoEnd}
+                                  androidx.constraintlayout.widget.Group{e6791b9 G.ED..... ......I. 0,0-0,0 #7f091603 app:id/groupImmerseDuration}
+                                com.shizhuang.duapp.media.view.PreviewImageViewContainer{e9599fe V.E...... ........ 900,0-1800,1564}
+                                  com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView{312255f VFED..C.. ........ 0,0-900,1564}
+                                  android.widget.FrameLayout{c970bac GFE...C.. ......I. 0,0-0,0}
+                                    android.widget.ImageView{4e69075 V.ED..... ......I. 0,0-0,0}
+                              androidx.appcompat.widget.AppCompatImageView{5ad580a GFED..C.. ......I. 0,0-96,84 #7f091a29 app:id/imgBack}
+                              android.widget.FrameLayout{d5db87b GFE...C.. ......ID 804,0-900,84 #7f0912c6 app:id/flImageSelect}
+                                androidx.appcompat.widget.AppCompatTextView{93f3698 V.ED..... ......ID 30,24-66,60 #7f094c8a app:id/tvImageSelect}
+                        com.shizhuang.duapp.media.publish.view.PublishBottomView{41cbef1 V.E...... ........ 0,0-900,1600 #7f0935cd app:id/publishBottomView}
+                          android.widget.FrameLayout{32e9aaf IFE...C.. .......D 0,1492-900,1600 #7f0908f8 app:id/clBottom}
+                            android.widget.LinearLayout{3b058db V.E...... ........ 0,0-753,84 #7f092a02 app:id/llBottom}
+                              com.shizhuang.duapp.media.publish.view.PublishBottomGalleryView{18abf78 V.E...... ........ 0,0-753,84 #7f09151a app:id/galleryView}
+                                androidx.appcompat.widget.AppCompatTextView{d3a4651 V.ED..... ........ 30,28-732,57 #7f0954aa app:id/tvSelectCount}
+                                com.shizhuang.duapp.modules.du_community_common.view.AlwaysFocusTextView{6e2ceb6 GFED..C.. ......I. 0,0-0,0 #7f0958b8 app:id/tvVideoTemplate}
+                            android.widget.FrameLayout{51a7b7 VFE...C.. .......D 738,0-900,84 #7f0912fd app:id/flNextStep}
+                              com.shizhuang.duapp.modules.du_community_common.view.AlwaysFocusTextView{2685b24 V.ED..... ......ID 30,18-132,66 #7f094f23 app:id/tvNextStep}
+                            com.shizhuang.duapp.media.publish.view.PublishBottomThumbView{40bf68d I.E...... ......ID 0,0-900,108 #7f0942b1 app:id/thumbView}
+                              androidx.recyclerview.widget.RecyclerView{c452042 VFED..... ......ID 0,15-900,120 #7f090ed5 app:id/dragRecyclerView}
+                            com.shizhuang.duapp.media.publish.view.PublishBottomPitPlaceView{e4f0853 G.E...... ......I. 0,0-0,0 #7f0932f2 app:id/pitPlaceView}
+                              androidx.recyclerview.widget.RecyclerView{f620590 VFED..... ......I. 0,0-0,0 #7f090ed5 app:id/dragRecyclerView}
+                          android.widget.LinearLayout{1d0ead6 G.E...... ......ID 0,0-0,0 #7f09040f app:id/bottomDeleteLayout}
+                            androidx.appcompat.widget.AppCompatImageView{5056157 V.ED..... ......ID 0,0-0,0}
+                            androidx.appcompat.widget.AppCompatTextView{73d2444 V.ED..... ......ID 0,0-0,0 #7f095a6e app:id/tv_delete}
+                        androidx.constraintlayout.widget.ConstraintLayout{6ad592d G.E...... ......I. 0,0-0,0 #7f092800 app:id/layout_include}
+                          DuImageLoaderView{holder=DraweeHolder{controllerAttached=false, holderAttached=true, drawableVisible=false, events=[ON_SET_HIERARCHY, ON_DRAWABLE_HIDE, ON_CLEAR_CONTROLLER, ON_HOLDER_ATTACH]}}
+                          androidx.appcompat.widget.AppCompatTextView{ec8de62 V.ED..... ......ID 0,0-0,0 #7f094b69 app:id/tvGalleryTip}
+                          androidx.appcompat.widget.AppCompatTextView{114bbf3 G.ED..... ......I. 0,0-0,0 #7f094a3a app:id/tvExpandGuide}
+                          androidx.appcompat.widget.AppCompatImageView{80a40b0 V.ED..... ......I. 0,0-0,0 #7f091ee8 app:id/ivClose}
+                    android.view.ViewStub{4335b29 G.E...... ......I. 0,0-0,0}
+                    android.view.ViewStub{a5a7eae G.E...... ......I. 0,0-0,0}
+                    android.view.ViewStub{3b5244f G.E...... ......I. 0,0-0,0}
+                    android.view.ViewStub{94ab7dc G.E...... ......I. 0,0-0,0}
+                    android.view.ViewStub{8fd80e5 G.E...... ......I. 0,0-0,0}
+                  com.shizhuang.duapp.media.publish.view.PublishTopView{753d7ba V.E...... ........ 0,36-900,36 #7f0935de app:id/publishTopView}
+                    androidx.appcompat.widget.AppCompatImageView{e49b66b IFED..C.. ......I. 0,0-84,0 #7f091a29 app:id/imgBack}
+                    androidx.appcompat.widget.AppCompatTextView{cb975c8 I.ED..... ......I. 450,0-450,0 #7f0957d1 app:id/tvTopMid}
+                    androidx.appcompat.widget.AppCompatTextView{d8a4661 G.ED..... ......I. 0,0-0,0 #7f091176 app:id/featuredGuide}
+        android.view.View{557b586 V.ED..... ........ 0,0-900,36 #102002f android:id/statusBarBackground}
+
+    Choreographer:
+      mFrameScheduled=false

@@ -252,13 +252,21 @@ async function dumpForCapture(serial, opts) {
       why: `现在屏幕上不是得物 —— 前台是「${focus}」。${uimap.DEWU.entryHow}，停在发布页再点「抓取页面结构」`
     };
   }
-  const d = await adb.dumpEx(serial, opts);
+  // ★ 抓取要带上包名：uiautomator 对**持续动画的页面**（发布页首屏）永远抓不到，
+  //   带上包名后 dumpEx 才能退到 dumpsys 备用通道（见 adb.js 的 dumpViaDumpsys）。
+  const pkg = (String(focus || '').match(/^([a-zA-Z0-9_.]+)\//) || [])[1] || uimap.DEWU.pkg;
+  const d = await adb.dumpEx(serial, Object.assign({}, opts, { pkg }));
   const onPublish = uimap.isPublishScreen(focus);
   const focusNote = (!focus || onPublish) ? ''
     : `★ 你现在抓的不是发布页首屏，而是「${focus}」—— 候选表是按**这一屏**猜的。`
       + `如果这一步本来就要抓后面某一屏（填标题 / 搜货号），那是对的；`
       + `如果本来想抓发布页首屏：${uimap.DEWU.entryHow}，停在那一屏再抓。`;
-  return Object.assign({}, d, { focus, focusNote, onPublish });
+  // ★ 如实告知：走了备用通道就得说清楚它少了什么（没有文字），不能让用户以为抓到的一样全
+  const viaNote = d.via === 'dumpsys'
+    ? '★ 这一屏是**动画页**（uiautomator 等不到 idle，实测连试十几次全败），已自动改用 dumpsys 抓：'
+      + '**控件 id / 坐标 / 是否可点**都有，但**没有文字** —— 候选表里按文字找的步骤要手动改或用 id 代替。'
+    : '';
+  return Object.assign({}, d, { focus, focusNote, onPublish, viaNote });
 }
 
 /** 失败恢复：真机日志里是「已回退转发页」「删除卡片」，避免下一条起点被残留界面污染 */

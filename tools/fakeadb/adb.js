@@ -25,6 +25,10 @@
  *                       文件里写什么 activity 就是什么；写成 '-' 就假装这一行**读不到**。
  *                       文件不存在时默认给「得物发布页」，这样既有用例不受影响。
  *                       用途：验「抓取页面结构」会先说清停在哪一屏、停在别的 App 上会拦下来。
+ *   NO_DEWU_TOP     —— `dumpsys activity top` 返回一份**不含得物**的层级（其它 App 的）。
+ *                       用途：验「uiautomator 与 dumpsys 都没抓到」时的报错文案。
+ *
+ * `dumpsys activity top` 走的是同目录下的 activity-top.txt 夹具（真机数据，110 个可见节点）。
  *
  * 另外它接受**绝对路径**的可执行名（只要 basename 是 adb / adb.exe）——
  * 因为内置 adb 走的是 `resources/adb/adb.exe` 这种绝对路径，替身不能只认字符串 'adb'。
@@ -41,6 +45,11 @@ function makeFakeAdb(dir) {
   const WINDOW_XML = path.join(dir, 'window.xml');
   const SHOT_PNG = path.join(dir, 'shot.png');
   const NOT_IDLE_FLAG = path.join(dir, 'DUMP_NOT_IDLE');
+  // `dumpsys activity top` 的夹具 = 真机抓下来的得物发布页 View Hierarchy
+  //（前面**故意**垫了两段别的 App，用来证明过滤是按包名做的，不是「取第一段」）。
+  // 现场开关：建 NO_DEWU_TOP 文件 → 返回一份**不含得物**的输出（测「备用通道也没抓到」）。
+  const TOP_DUMP = path.join(dir, 'activity-top.txt');
+  const TOP_NO_DEWU = path.join(dir, 'NO_DEWU_TOP');
 
   const read = (p, fallback) => { try { return fs.readFileSync(p); } catch (e) { return fallback; } };
 
@@ -143,6 +152,18 @@ function makeFakeAdb(dir) {
       const focus = raw || (exists ? '-' : 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity');
       if (focus === '-') return okOut('  mCurrentFocus=null\n');
       return okOut(`  mCurrentFocus=Window{a1b2c3d4 u0 ${focus}}\n`);
+    }
+    if (/^dumpsys activity top/.test(cmd)) {
+      // ★ 真机：这是 uiautomator 抓不到时**唯一的退路**（dumpsys 不等 idle）。
+      //   见 src/main/services/adb.js#dumpViaDumpsys —— 得物发布页首屏是持续动画页，
+      //   uiautomator 连试十几次全报 could not get idle state。
+      if (fs.existsSync(TOP_NO_DEWU)) {
+        return okOut('TASK 1000:com.android.settings id=35 userId=0\n'
+          + '    View Hierarchy:\n'
+          + '      DecorView@ddd[SubSettings]\n'
+          + '        android.widget.TextView{eee V.E...... ........ 0,0-300,90}\n');
+      }
+      return okOut(read(TOP_DUMP, Buffer.from('')).toString('utf8'));
     }
     if (cmd === 'pm list packages') return okOut('package:com.shizhuang.duapp\npackage:com.android.adbkeyboard\npackage:com.android.shell\n');
     return okOut('');
