@@ -1036,6 +1036,49 @@ app.whenReady().then(async () => {
       && /默认选第一件商品/.test(pubHint));
   }
 
+  // ---- 2026-10-02 第二轮：品牌管理的「文案」按钮删除；账号权限改成行内按钮 + 弹窗 ----
+  {
+    const A = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+    const H = fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8');
+    const C = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+    // ★ 负向只看代码行：注释里正当地写着「原来那条下拉工具栏已经删了」，一刀切会误报
+    const codeOnly = s => s.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    const A2 = codeOnly(A);
+    const brandsFn = A2.slice(A2.indexOf('function brandsHtml()'), A2.indexOf('function adminUsersHtml()'));
+    const adminFn = A2.slice(A2.indexOf('function adminUsersHtml()'), A2.indexOf('function upPermHtml'));
+
+    // ① 品牌管理表里不再挂「文案」按钮（读的那条链要一起没了，不然旧路还能走回来）
+    ok('★ 品牌管理表里没有「文案」按钮了（提示词统一在「文案生成 → 提示词配置」里改）',
+      brandsFn.length > 0 && !/bm:open/.test(brandsFn) && !/>文案</.test(brandsFn),
+      '这一段里 bm:open 出现 ' + (brandsFn.match(/bm:open/g) || []).length + ' 次');
+
+    // ② 账号管理：行内两个入口
+    ok('★ 账号管理表每行右侧是「配置权限 / 重置密码」两个按钮',
+      /data-act="up:perm"/.test(adminFn) && /data-act="up:pwd"/.test(adminFn));
+
+    // ③ 旧的两条下拉工具栏连元素带动作一起删（只删控件、留着读取点 = 行为没变）
+    ok('★ 旧的下拉工具栏整条删除（#pbUser / #rsUser / #rsPwd / auth:brands / >保存品牌权限< / permUserId 一个都不剩）',
+      !/id="pbUser"/.test(A2) && !/id="rsUser"/.test(A2) && !/id="rsPwd"/.test(A2)
+      && !/auth:brands/.test(A2) && !/>保存品牌权限</.test(A2) && !/permUserId/.test(A2));
+
+    // ④ 弹窗容器：挂在 index.html，与品牌弹窗并列、在 .app 外面（塞进 .body 会被 overflow 裁掉）
+    ok('★ 账号操作弹窗的容器在 index.html（#umodal + #umBox + 窄一档的 .mbox-sm）',
+      /id="umodal"/.test(H) && /id="umBox"/.test(H) && /\.mbox-sm\{/.test(C));
+
+    // ⑤ 两个视图与四个动作 + 两条关闭路径（Esc / 点遮罩）
+    ok('★ 弹窗两个视图与四个动作都在（upPermHtml / upPwdHtml / up:permSave / up:pwdSave / up:close）',
+      /function upPermHtml\(/.test(A2) && /function upPwdHtml\(/.test(A2)
+      && /'up:permSave'/.test(A2) && /'up:pwdSave'/.test(A2) && /'up:close'/.test(A2));
+    ok('★ 弹窗的关闭路径齐（Esc / 点遮罩 / 按钮都走 closeUserModal）',
+      /closeUserModal\(\)/.test(A2) && /e\.target === umask/.test(A2)
+      && /state\.userModal\) \{ closeUserModal\(\)/.test(A2));
+
+    // ⑥ 权限判定不许只看界面：保存走真 IPC（authUpdateUser），不是只改内存
+    ok('★ 弹窗保存权限走真 IPC（appApi.authUpdateUser(id, { brands: ids })），不是只改内存',
+      /appApi\.authUpdateUser\(id, \{ brands: ids \}\)/.test(A2));
+  }
+
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 

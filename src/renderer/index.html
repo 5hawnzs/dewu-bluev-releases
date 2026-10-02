@@ -131,6 +131,12 @@
   <div class="mbox" id="bmBox"></div>
 </div>
 
+<!-- 账号操作弹窗（配置品牌权限 / 重置密码）。跟上面那个一样挂在 .app 外面，
+     塞进 .body 里会被它的 overflow 裁掉；内容少，用窄一档的 .mbox-sm -->
+<div class="modal" id="umodal" hidden>
+  <div class="mbox mbox-sm" id="umBox"></div>
+</div>
+
 <div class="gate" id="gate">
   <form class="gcard" id="loginForm" autocomplete="off">
     <!-- 无边框小窗的关闭口：做在卡片内部右上角，不许浮到卡片边框外面去 -->

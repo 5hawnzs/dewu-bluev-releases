@@ -23,7 +23,8 @@ const state = {
   statsBusy: false,
   statsPath: null,    // 输出目录可写性自检结果（{ ok, dir, checks[], error }）
   brandEdit: null,    // 正在改名的品牌 { id, name }
-  permUserId: null,   // 「品牌权限」面板里当前选中的账号
+  // 账号操作弹窗：null=关着；{view:'perm'|'pwd', id} —— 配置某个账号的品牌权限 / 重置他的密码
+  userModal: null,
   // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
   brandModal: null,
   upd: null,          // 应用更新状态（来自主进程）null=还没读到
@@ -1465,10 +1466,10 @@ async function doLogout() {
   state.brandId = '';
   state.stats = null;
   state.statsTried = false;
-  state.permUserId = null;
   state.brandEdit = null;
-  // 弹窗里是上一个账号看得见的品牌和模板，登录门一出来必须一起收掉
+  // 弹窗里是上一个账号看得见的品牌、模板与账号清单，登录门一出来必须一起收掉
   closeBrandModal();
+  closeUserModal();
   showGate('已退出登录');
 }
 
@@ -1547,6 +1548,44 @@ function openBrandModal(view, id) {
 function closeBrandModal() {
   state.brandModal = null;
   renderBrandModal();
+}
+
+/* ---------------- 账号操作弹窗（配置品牌权限 / 重置密码） ---------------- */
+/*
+ * ★ 为什么从「页面里那条工具栏」改成弹窗（2026-10-02 用户要求）：
+ *   原来是「先在下拉框里选出账号 → 再勾品牌 → 保存」，用的人得先在一堆名字里找到那个人，
+ *   勾完还得自己记住刚才选的是谁；重置密码更绕 —— 表格行里那个「重置密码」按钮本身不管用，
+ *   它读的是下面工具栏里填的密码。改成从「那个人自己那一行」点进去，就不会对错人。
+ * ★ 跟文案提示词弹窗同一个套路：挂在 .app 外面，只在开 / 关 / 切视图时构建一次 DOM。
+ *   （renderAll 会被后台任务的进度事件频繁触发；挂在 #pane 里的话，正在勾的复选框会被重画回去。）
+ */
+function renderUserModal() {
+  const mask = $('#umodal'), box = $('#umBox');
+  if (!mask || !box) return;
+  const m = state.userModal;
+  if (!m) { mask.hidden = true; box.innerHTML = ''; return; }
+  mask.hidden = false;
+  box.innerHTML = m.view === 'pwd' ? upPwdHtml(m.id || '') : upPermHtml(m.id || '');
+  // 重置密码那个输入框：开了就聚焦，回车直接提交。
+  // ★ 回车只能在这儿绑 —— CSP 不许内联 onkeydown，而 bind() 只跑一次（那时弹窗还没建出来）
+  const pwd = box.querySelector('#upPwd');
+  if (pwd) {
+    pwd.focus();
+    pwd.onkeydown = e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const b = box.querySelector('[data-act="up:pwdSave"]');
+      if (b) b.click();
+    };
+  }
+}
+function openUserModal(view, id) {
+  state.userModal = { view: view || 'perm', id: id || '' };
+  renderUserModal();
+}
+function closeUserModal() {
+  state.userModal = null;
+  renderUserModal();
 }
 
 /**
@@ -1719,8 +1758,7 @@ function brandsHtml() {
         <td>${editing
         ? `<button class="btn sm primary" data-act="brand:save" data-id="${b.id}">保存</button>
              <button class="btn sm" data-act="brand:cancel">取消</button>`
-        : `<button class="btn sm" data-act="bm:open" data-id="${b.id}">文案</button>
-             <button class="btn sm" data-act="brand:edit" data-id="${b.id}">改名</button>
+        : `<button class="btn sm" data-act="brand:edit" data-id="${b.id}">改名</button>
              <button class="btn sm" data-act="brand:toggle" data-id="${b.id}" data-next="${b.enabled === false ? '1' : '0'}">${b.enabled === false ? '启用' : '停用'}</button>
              <button class="btn sm" data-act="brand:del" data-id="${b.id}" data-name="${esc(b.name)}">删除</button>`}</td>
       </tr>`;
@@ -1746,6 +1784,8 @@ function brandsHtml() {
       </div>
       <p class="hint">权限记的是品牌 <b>id</b>，所以<b>改名不会丢掉任何人的权限</b>（存名字就会丢）。删掉的品牌，历史发布记录仍按原样保留，
         在「品牌统计」里单列为「已删除的品牌」，不会被并进别的品牌里。</p>
+      <p class="hint">这一页只管品牌本身：<b>文案提示词</b>不在这儿改（到「<b>文案生成 → 提示词配置</b>」的弹窗里配）；
+        <b>谁能用哪些品牌</b>也不在这儿分配（到下面的「账号管理」里，点那一行右侧的「<b>配置权限</b>」）。</p>
     </div>`;
 }
 
@@ -1809,24 +1849,11 @@ function adminUsersHtml() {
       <td class="brandcell">${brandTag(u)}</td>
       <td class="mono">${esc(u.lastLoginAt ? fmtDate(u.lastLoginAt) : '—')}</td>
       <td>${u.id === myId ? '<span class="chip">本人</span>' : `
+        <button class="btn sm" data-act="up:perm" data-id="${u.id}">配置权限</button>
+        <button class="btn sm" data-act="up:pwd" data-id="${u.id}">重置密码</button>
         <button class="btn sm" data-act="auth:toggle" data-id="${u.id}" data-next="${u.disabled ? '0' : '1'}">${u.disabled ? '启用' : '停用'}</button>
-        <button class="btn sm" data-act="auth:reset" data-id="${u.id}">重置密码</button>
         <button class="btn sm" data-act="auth:del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>`}</td>
     </tr>`).join('');
-  const others = us.filter(u => u.id !== myId);
-  const target = others.find(u => u.id === state.permUserId) || others[0] || null;
-  const isSelfAdminTarget = target && target.role === 'admin';
-  const permPanel = !others.length ? '' : `
-      <div class="acct-toolbar">
-        <span class="lbl">品牌权限</span>
-        <select class="inp" id="pbUser">${others.map(u => `<option value="${u.id}" ${target && target.id === u.id ? 'selected' : ''}>${esc(u.displayName)}（${esc(u.username)}）</option>`).join('')}</select>
-        ${isSelfAdminTarget
-      ? '<span class="chip chip-user">管理员 = 全部品牌，不必逐个分配</span>'
-      : `<span class="perm-list">${all.length
-        ? all.map(b => `<label class="perm"><input type="checkbox" data-brand="${b.id}" ${target && (target.brands || []).includes(b.id) ? 'checked' : ''}> ${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</label>`).join('')
-        : '<span class="hint">还没有品牌，先到上面的「品牌管理」添加一个</span>'}</span>
-         <button class="btn sm primary" data-act="auth:brands" data-id="${target ? target.id : ''}">保存品牌权限</button>`}
-      </div>`;
   return `
     <div class="box">
       <h3>账号管理（管理员）</h3>
@@ -1841,16 +1868,78 @@ function adminUsersHtml() {
         <input class="inp mono" id="nuPwd" type="password" placeholder="初始密码 ≥6 位" style="min-width:150px">
         <button class="btn sm primary" data-act="auth:create">新建账号</button>
       </div>
-      ${permPanel}
-      <div class="acct-toolbar">
-        <select class="inp" id="rsUser">${others.map(u => `<option value="${u.id}">重置：${esc(u.username)}</option>`).join('') || '<option value="">（没有其他账号）</option>'}</select>
-        <input class="inp mono" id="rsPwd" type="password" placeholder="新密码 ≥6 位" style="min-width:150px">
-        <button class="btn sm" data-act="auth:reset" data-id="">重置密码</button>
-      </div>
+      <p class="hint">行里的「<b>配置权限</b>」勾上的品牌，这个人才能在标题栏选到、才能起文案生成 / 发布单 / 发布这类产出任务；
+        一个都没勾，他起任务会被直接拦下（不会悄悄发出去）。管理员那一行显示「全部品牌」—— 管理员本来就是全部，不必逐个分配。</p>
       <p class="hint">账号存在本机 <code>auth.json</code>（与 config.json 分开），口令只存 scrypt 哈希，不存明文。
         停用/删除账号<b>不影响</b>已产出的素材、发布单与商品池。连续输错 6 次会锁定 5 分钟。</p>
       <p class="hint"><b>关于这个权限的边界</b>：它是<b>本机离线</b>的，用来防误操作、让产出可归属，<b>不是安全隔离</b> ——
         能碰到这台机器的人可以直接改 <code>auth.json</code> / <code>config.json</code>。别把它当权限系统用。</p>
+    </div>`;
+}
+
+/* ---------------- 账号操作弹窗的两个视图 ---------------- */
+
+/** 「配置权限」：这个账号能用哪些品牌。管理员不用逐个勾（他就是全部品牌，含以后新增的） */
+function upPermHtml(id) {
+  const u = (state.users || []).find(x => x.id === id);
+  const all = (state.brandsMeta && state.brandsMeta.brands) || [];
+  if (!u) {
+    return `<div class="mh"><h3>账号不见了</h3><span class="grow"></span>
+        <button class="btn sm" data-act="up:close">关闭</button></div>
+      <div class="mb"><div class="empty">这个账号刚被删掉了（可能是在另一个窗口干的）。关掉重看列表。</div></div>`;
+  }
+  const isAdminTarget = u.role === 'admin';
+  const mine = Array.isArray(u.brands) ? u.brands : [];
+  return `
+    <div class="mh">
+      <h3>配置权限 · ${esc(u.displayName)}</h3>
+      <span class="grow"></span>
+      <button class="btn sm" data-act="up:close">关闭</button>
+    </div>
+    <div class="mb">
+      <p class="mnote" style="margin:0 0 11px">账号 <b>${esc(u.username)}</b> ·
+        ${esc(u.role === 'admin' ? '管理员' : '普通成员')}${u.disabled ? ' · <b>已停用</b>' : ''}
+        —— 勾上的品牌，他才能在标题栏选到、才能起产出任务。</p>
+      ${isAdminTarget
+      ? '<p class="mnote">管理员 = <b>全部品牌</b>（包括以后新增的），不必逐个分配。要限制他，先把角色改成普通成员。</p>'
+      : (all.length
+        ? `<div class="perm-list">${all.map(b => `<label class="perm"><input type="checkbox" data-brand="${b.id}" ${mine.includes(b.id) ? 'checked' : ''}> ${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</label>`).join('')}</div>`
+        : '<div class="empty">还没有品牌。先到上面的「品牌管理」加一个，再回来分配。</div>')}
+    </div>
+    <div class="mf">
+      <span class="mnote">共 ${all.length} 个品牌</span>
+      <span class="grow"></span>
+      <button class="btn sm" data-act="up:close">取消</button>
+      ${isAdminTarget ? '' : `<button class="btn sm primary" data-act="up:permSave" data-id="${esc(u.id)}">保存权限</button>`}
+    </div>`;
+}
+
+/** 「重置密码」：管理员给别的账号设一个新口令 */
+function upPwdHtml(id) {
+  const u = (state.users || []).find(x => x.id === id);
+  if (!u) {
+    return `<div class="mh"><h3>账号不见了</h3><span class="grow"></span>
+        <button class="btn sm" data-act="up:close">关闭</button></div>
+      <div class="mb"><div class="empty">这个账号刚被删掉了（可能是在另一个窗口干的）。关掉重看列表。</div></div>`;
+  }
+  return `
+    <div class="mh">
+      <h3>重置密码 · ${esc(u.displayName)}</h3>
+      <span class="grow"></span>
+      <button class="btn sm" data-act="up:close">关闭</button>
+    </div>
+    <div class="mb">
+      <p class="mnote" style="margin:0 0 11px">给账号 <b>${esc(u.username)}</b> 设一个新口令。设完旧口令立刻失效，
+        对方用新的登录（重置出来的口令自带「请尽快改掉」的提示）。</p>
+      <label class="mfld" style="margin-bottom:0"><span>新密码（至少 6 位、不要用中文）</span>
+        <input class="inp mono" id="upPwd" type="password" placeholder="新密码 ≥6 位" style="width:100%">
+      </label>
+      <p class="mnote" style="margin-top:8px">口令只存 scrypt 哈希 + 随机盐，不存明文 —— 你设完也看不到它。回车即可提交。</p>
+    </div>
+    <div class="mf">
+      <span class="grow"></span>
+      <button class="btn sm" data-act="up:close">取消</button>
+      <button class="btn sm primary" data-act="up:pwdSave" data-id="${esc(u.id)}">确认重置</button>
     </div>`;
 }
 
@@ -2286,19 +2375,6 @@ const ACTS = {
     toast(el.dataset.next === '1' ? '已停用' : '已启用', 'ok');
     renderAll();
   },
-  'auth:reset': async (el) => {
-    const id = el.dataset.id || ($('#rsUser') ? $('#rsUser').value : '');
-    const pwd = $('#rsPwd') ? $('#rsPwd').value : '';
-    if (!id) { toast('先选一个账号', 'err'); return; }
-    if (!pwd) { toast('先填好新密码（≥6 位）', 'err'); $('#rsPwd').focus(); return; }
-    if (el.dataset.id && $('#rsUser')) $('#rsUser').value = id;
-    const r = await appApi.authResetPwd(id, pwd);
-    if (!r.ok) { toast(r.error, 'err'); return; }
-    $('#rsPwd').value = '';
-    await refreshUsers();
-    toast('密码已重置，对方首次登录后可自行修改', 'ok');
-    renderAll();
-  },
   'auth:del': async (el) => {
     if (!window.confirm(`确定删除账号 ${el.dataset.name}？删除后对方无法登录（已产出的数据不受影响）。`)) return;
     const r = await appApi.authRemoveUser(el.dataset.id);
@@ -2308,17 +2384,41 @@ const ACTS = {
     renderAll();
   },
 
-  // ---- 品牌权限（管理员）----
-  'auth:brands': async (el) => {
+  // ---- 账号操作弹窗（配置品牌权限 / 重置密码）----
+  // ★ 两个入口都在账号管理表**每一行右侧**：从人那一行点进去，不会像旧的下拉框那样对错人。
+  'up:perm': (el) => openUserModal('perm', el.dataset.id),
+  'up:pwd': (el) => openUserModal('pwd', el.dataset.id),
+  'up:close': () => closeUserModal(),
+  'up:permSave': async (el) => {
     const id = el.dataset.id;
-    if (!id) { toast('先选一个账号', 'err'); return; }
-    const boxes = [...document.querySelectorAll('#pane [data-brand]')];
-    if (!boxes.length) { toast('还没有品牌：先到上面的「品牌管理」添加一个', 'err'); return; }
+    if (!id) { toast('没拿到账号，关掉重开一次', 'err'); return; }
+    const boxes = [...document.querySelectorAll('#umBox [data-brand]')];
+    if (!boxes.length) {
+      // 管理员行的复选框本来就一个都没有（权限 = 全部品牌），这不是「还没建品牌」
+      const u = (state.users || []).find(x => x.id === id);
+      if (u && u.role === 'admin') { closeUserModal(); toast('管理员 = 全部品牌，不用单独分配'); return; }
+      toast('还没有品牌：先到上面的「品牌管理」添加一个', 'err');
+      return;
+    }
     const ids = boxes.filter(b => b.checked).map(b => b.dataset.brand);
     const r = await appApi.authUpdateUser(id, { brands: ids });
     if (!r.ok) { toast(r.error, 'err'); return; }
     await refreshUsers();
+    closeUserModal();
     toast(ids.length ? `已保存品牌权限：${ids.length} 个品牌` : '已清空品牌权限（该账号将无法起产出任务）', 'ok');
+    renderAll();
+  },
+  'up:pwdSave': async (el) => {
+    const id = el.dataset.id;
+    const inp = document.getElementById('upPwd');
+    const pwd = inp ? inp.value : '';
+    if (!id) { toast('没拿到账号，关掉重开一次', 'err'); return; }
+    if (!pwd) { toast('先填好新密码（≥6 位）', 'err'); if (inp) inp.focus(); return; }
+    const r = await appApi.authResetPwd(id, pwd);
+    if (!r.ok) { toast(r.error, 'err'); return; }
+    closeUserModal();
+    await refreshUsers();
+    toast('密码已重置，对方首次登录后可自行修改', 'ok');
     renderAll();
   },
 
@@ -2467,9 +2567,8 @@ function bindSettings() {
     sel.onchange = async () => { await appApi.themeSet(sel.value); };
   }
   // data-cfg 的绑定不在这里了 —— 改成每个页签都绑（见 bindCfgInputs）
-  // 「品牌权限」面板里选账号就重画，勾选框要跟着换成这个人的当前分配
-  const pb = $('#pbUser');
-  if (pb) pb.onchange = () => { state.permUserId = pb.value; renderAll(); };
+  // 「品牌权限」那条下拉工具栏已删（2026-10-02 用户要求）：现在从账号管理表每行右侧的
+  // 「配置权限」进弹窗，弹窗自己带状态，不必在这里按「当前选中的账号」重画。
 }
 
 /** 品牌统计页：三个下拉改了就记进 state.statsOpts，点「查询」才真去读日志（避免每动一下就全量读盘） */
@@ -2520,6 +2619,8 @@ function bind() {
   // 点遮罩关弹窗；点弹窗本体不关（否则选字拖一下鼠标就没了）
   const bmask = $('#bmodal');
   if (bmask) bmask.addEventListener('click', e => { if (e.target === bmask) closeBrandModal(); });
+  const umask = $('#umodal');
+  if (umask) umask.addEventListener('click', e => { if (e.target === umask) closeUserModal(); });
 
   document.querySelectorAll('.nav').forEach(b => {
     b.onclick = () => { state.tab = Number(b.dataset.tab); renderAll(); };
@@ -2534,6 +2635,7 @@ function bind() {
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
+    if (e.key === 'Escape' && state.userModal) { closeUserModal(); e.preventDefault(); return; }
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
       if (k >= 1 && k <= 9) { state.tab = k; renderAll(); e.preventDefault(); }

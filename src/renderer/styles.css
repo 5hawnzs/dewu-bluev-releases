@@ -315,6 +315,8 @@ body:not(.locked) .gate{display:none}
   background:var(--panel);border:1px solid var(--bd2);border-radius:10px;
   box-shadow:0 20px 52px rgba(0,0,0,.3);
 }
+/* 账号操作弹窗（配置权限 / 重置密码）：内容少，窄一档更像「对着某个人办事」 */
+.mbox-sm{width:min(520px,100%)}
 .mh{display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--bd);background:var(--panel2)}
 .mh h3{margin:0;font-size:13.5px;font-weight:600}
 .mh .grow{flex:1}

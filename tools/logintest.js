@@ -9,6 +9,10 @@
      · 普通成员看不到账号列表、能改自己密码；停用后不能登录
      · 不能停用/删除自己，不能删掉最后一个管理员
      · 退出登录回到登录门；连错到上限锁定 5 分钟（锁定期间口令正确也进不去）
+     · 账号管理页的两个入口（2026-10-02 第二轮）：品牌管理表里不再有「文案」按钮；
+       「配置权限 / 重置密码」是**行内按钮 + 弹窗**，旧的两条下拉工具栏（#pbUser / #rsUser / #rsPwd）整条删除；
+       弹窗里保存真的写进 auth.json（不是只改界面），保存后自动收起；
+       重置密码同样走弹窗：空口令不许提交、填了就真换（新口令能登、旧口令被拒）
 
    用法：npx electron tools/logintest.js
    注意：userData 指到临时目录，不会动你本机的 auth.json / config.json / project.json。
@@ -286,6 +290,118 @@ app.whenReady().then(async () => {
     renamed.ok === true && renamed.brand.name === '品牌甲 2026'
     && afterRename.users.find(u => u.username === MEMBER).brands.includes(brandId),
     `新名=${renamed.brand && renamed.brand.name}`);
+
+  // ---- ⑦d2 账号管理页的两个入口：品牌管理的「文案」按钮已删；
+  //            「配置权限 / 重置密码」改成**行内按钮 + 弹窗**，旧的两条下拉工具栏整条删除 ----
+  // ★ 负向与正向一起盯：旧工具栏（#pbUser / #rsUser / #rsPwd / 「保存品牌权限」）必须**元素级消失**，
+  //   不是 hidden —— 只藏起来的话，那条「先在下拉里选人」的旧路还能走回来。
+  // 先造一个**一次性账号**给下面的重置密码用：不动 member1 的口令（后面 ⑦e 还要用 Member@456 登他）
+  const probe = await js(`window.api.authCreateUser({ username: 'pwdprobe', displayName: '重置测试', role: 'user', password: 'Probe@1234' })`);
+  ok('⑦d2 造一个一次性账号（给「管理员重置别人口令」这条从来没测过的路用）',
+    probe.ok === true, probe.error || (probe.user && probe.user.username));
+
+  // 上面那些品牌/账号是直连 IPC 造的，渲染层的 brandsMeta / users 还不知道 ⇒ 重新登录一次，
+  // 让 enterApp() 把品牌与账号名单都刷新到最新（新造的 pwdprobe 也要出现在表里），后面才是验「真实界面」。
+  const refreshForUI = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
+  ok('⑦d2 重新登录一次，把渲染层的品牌与账号名单刷到最新（下面按真实界面验）',
+    refreshForUI.locked === false, refreshForUI.err || '');
+
+  const acctUI = await js(`(async () => {
+    document.querySelector('.nav[data-tab="9"]').click();
+    await new Promise(r => setTimeout(r, 250));
+    const tables = [...document.querySelectorAll('#pane .tw table')];
+    const brandTable = tables.find(t => /有权限的账号/.test(t.querySelector('thead').textContent));
+    const acctTable = tables.find(t => /上次登录/.test(t.querySelector('thead').textContent));
+    const brandBtns = brandTable ? [...brandTable.querySelectorAll('tbody button')].map(b => b.textContent.trim()) : null;
+    const permBtn = acctTable ? acctTable.querySelector('tbody tr [data-act="up:perm"]') : null;
+    return {
+      brandBtns,
+      permLabel: permBtn ? permBtn.textContent.trim() : '',
+      hasPwdBtn: !!(acctTable && acctTable.querySelector('tbody tr [data-act="up:pwd"]')),
+      oldPerm: !!document.getElementById('pbUser'),
+      oldRs: !!(document.getElementById('rsUser') || document.getElementById('rsPwd')),
+      saveBtn: [...document.querySelectorAll('#pane button')].some(b => b.textContent.trim() === '保存品牌权限')
+    };
+  })()`);
+  ok('⑦d2 品牌管理表里不再有「文案」按钮（提示词只在「文案生成 → 提示词配置」里改）',
+    acctUI.brandBtns !== null && !acctUI.brandBtns.includes('文案'),
+    '这一行的按钮现在是：' + (acctUI.brandBtns || []).join(' / '));
+  ok('⑦d2 账号管理表每行右侧有「配置权限」按钮（弹窗入口）',
+    acctUI.permLabel === '配置权限', 'permLabel=' + JSON.stringify(acctUI.permLabel));
+  ok('⑦d2 账号管理表每行右侧还有「重置密码」按钮', acctUI.hasPwdBtn === true, 'hasPwdBtn=' + acctUI.hasPwdBtn);
+  ok('⑦d2 旧的两条下拉工具栏整条删除（不是藏起来）：#pbUser / #rsUser / #rsPwd / 「保存品牌权限」都不在了',
+    acctUI.oldPerm === false && acctUI.oldRs === false && acctUI.saveBtn === false,
+    JSON.stringify({ pbUser: acctUI.oldPerm, rs: acctUI.oldRs, 保存按钮: acctUI.saveBtn }));
+
+  // 行为级：点行内「配置权限」→ 弹窗 → 全勾 → 保存 → 真的写进 auth.json
+  const permUI = await js(`(async () => {
+    const before = ((await window.api.authUsers()).users || []).find(u => u.username === ${JSON.stringify(MEMBER)});
+    const btn = document.querySelector('#pane [data-act="up:perm"]');
+    if (btn) btn.click();
+    await new Promise(r => setTimeout(r, 220));
+    const mask = document.getElementById('umodal');
+    const opened = !!mask && !mask.hidden;
+    const boxes = [...document.querySelectorAll('#umBox [data-brand]')];
+    const save = document.querySelector('#umBox [data-act="up:permSave"]');
+    boxes.forEach(b => { b.checked = true; });
+    if (save) save.click();
+    await new Promise(r => setTimeout(r, 700));
+    const after = ((await window.api.authUsers()).users || []).find(u => u.username === ${JSON.stringify(MEMBER)});
+    return {
+      opened, boxes: boxes.length, hasSave: !!save,
+      closedAfterSave: document.getElementById('umodal').hidden,
+      before: (before && before.brands || []).length, after: (after && after.brands || []).length
+    };
+  })()`);
+  ok('⑦d2 点行内「配置权限」弹出弹窗：里面是该账号的品牌勾选框 + 「保存权限」',
+    permUI.opened && permUI.boxes >= 2 && permUI.hasSave, JSON.stringify(permUI));
+  ok('⑦d2 弹窗里保存**真的写进 auth.json**（不是只改界面）',
+    permUI.after > permUI.before && permUI.after === permUI.boxes,
+    `${permUI.before} → ${permUI.after} 个品牌（弹窗里 ${permUI.boxes} 个框）`);
+  ok('⑦d2 保存成功后弹窗自动收起', permUI.closedAfterSave === true, 'hidden=' + permUI.closedAfterSave);
+
+  // ---- ⑦d3 「重置密码」也走弹窗：空口令不许提交；填了就**真换**（新口令能登、旧口令被拒）----
+  // ★ 为什么非要真登一次：这个弹窗看着「点了有反应」，但完全可能只在界面上把框关掉、
+  //   口令一个字节都没动。口令这种事没有第二种验收方式 —— 只有「拿新口令能进、拿旧口令进不去」算数。
+  // ★ 用一次性账号 pwdprobe，不碰 member1（下面 ⑦e 还要用 Member@456 登他）。
+  const pwdUI = await js(`(async () => {
+    const tr = [...document.querySelectorAll('#pane tbody tr')].find(x => x.textContent.includes('pwdprobe'));
+    const btn = tr ? tr.querySelector('[data-act="up:pwd"]') : null;
+    if (btn) btn.click();
+    await new Promise(r => setTimeout(r, 220));
+    const mask = document.getElementById('umodal');
+    const opened = !!mask && !mask.hidden;
+    const inp = document.getElementById('upPwd');
+    const go = document.querySelector('#umBox [data-act="up:pwdSave"]');
+    const hasBtns = !!inp && !!go;
+    // ① 空口令点「确认重置」→ 不许提交，弹窗也不许关
+    if (go) go.click();
+    await new Promise(r => setTimeout(r, 250));
+    const emptyBlocked = !!mask && !mask.hidden;
+    // ② 填新口令 → 确认
+    if (inp) inp.value = 'Probe@9999';
+    if (go) go.click();
+    await new Promise(r => setTimeout(r, 800));
+    const closed = !!mask && mask.hidden;
+    // ③ 只有主进程那条通道能证明「口令真换了」：新口令能登、旧口令被拒
+    //    （登录会把会话换成这个人 —— 所以这一组跑完必须切回管理员）
+    const newOk = await window.api.authLogin('pwdprobe', 'Probe@9999', false);
+    const oldBad = await window.api.authLogin('pwdprobe', 'Probe@1234', false);
+    return { opened, hasBtns, emptyBlocked, closed,
+             newOk: newOk.ok === true, oldOk: oldBad.ok === true, oldErr: oldBad.error || '' };
+  })()`);
+  ok('⑦d3 点行内「重置密码」弹出弹窗（新密码输入框 + 「确认重置」都在）',
+    pwdUI.opened && pwdUI.hasBtns, JSON.stringify(pwdUI));
+  ok('⑦d3 空口令点「确认重置」不许提交（弹窗不关，得先填新口令）',
+    pwdUI.emptyBlocked === true, 'emptyBlocked=' + pwdUI.emptyBlocked);
+  ok('⑦d3 填好新口令确认后弹窗自动收起', pwdUI.closed === true, 'closed=' + pwdUI.closed);
+  ok('⑦d3 新口令**真的生效**（用 Probe@9999 能登、用初始的 Probe@1234 被拒 —— 不是只把弹窗关了）',
+    pwdUI.newOk === true && pwdUI.oldOk === false,
+    JSON.stringify({ 新口令能登: pwdUI.newOk, 旧口令能登: pwdUI.oldOk, 旧口令报错: pwdUI.oldErr }));
+
+  // 上一步验口令时把会话换成了 pwdprobe ⇒ 立刻切回管理员（下面 ⑦e 要用管理员 / 成员会话）
+  const backAdminPwd = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
+  ok('⑦d3 切回管理员（上面为了验口令登过 pwdprobe）', backAdminPwd.locked === false, backAdminPwd.err || '');
 
   // ---- ⑦e 文案提示词：成员能改自己品牌的，改不了别人的；品牌名 / 启停仍归管理员 ----
   // 提示词是「写文案的人」天天要调的东西，全锁给管理员不现实；
