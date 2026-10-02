@@ -56,6 +56,11 @@ contextBridge.exposeInMainWorld('api', {
   themeGet: () => ipcRenderer.invoke('theme:get'),
   themeSet: s => ipcRenderer.invoke('theme:set', s),
 
+  // 云端协作（可选）：状态里不含密钥，密钥只存在于主进程配置
+  cloudStatus: () => ipcRenderer.invoke('cloud:status'),
+  cloudSync: () => ipcRenderer.invoke('cloud:sync'),
+  cloudTest: () => ipcRenderer.invoke('cloud:test'),
+
   min: () => ipcRenderer.send('win:min'),
   toggleMax: () => ipcRenderer.send('win:toggle-max'),
   close: () => ipcRenderer.send('win:close'),

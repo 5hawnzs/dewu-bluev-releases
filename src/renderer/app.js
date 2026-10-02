@@ -757,6 +757,7 @@ TABS[11] = {
     const c = state.config;
     const info = state.info || {};
     const pub = c.publish || {};
+    const cl = c.cloud || {};      // 老配置里没有这一项：取不到就当空，别让整页渲染挂掉
     const map = pub.uiMap || {};
     const steps = map.steps || [];
     const vsteps = map.videoSteps || [];
@@ -826,6 +827,31 @@ TABS[11] = {
           优先<b>无损转封装</b>（秒级、画质零损失），转封装放不下（如 ProRes）才转码成 H.264/AAC，转完会校验产物确实是 mp4。</p>
         <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>`,
         '内置即用 · 没特殊情况不要动')}
+      ${advBox('云端协作（可选 · 默认关）', false,
+        `<div class="row" style="margin-bottom:9px">
+          <span class="lbl">启用</span>
+          <select class="inp" data-cfg="cloud.enabled">
+            <option value="true" ${cl.enabled ? 'selected' : ''}>开启（把本机新增的发布结果推到云端）</option>
+            <option value="false" ${!cl.enabled ? 'selected' : ''}>关闭（数据不出本机）</option>
+          </select>
+        </div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">项目地址</span><input class="inp mono" value="${esc(cl.url || '')}" data-cfg="cloud.url" placeholder="https://xxxx.supabase.co"></div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">anon key</span><input class="inp mono" type="password" value="${esc(cl.anonKey || '')}" data-cfg="cloud.anonKey" placeholder="只填 anon public key"></div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">本机名称</span><input class="inp mono" value="${esc(cl.machineName || '')}" data-cfg="cloud.machineName" placeholder="留空 = 用电脑名（看板上用来区分是谁在发）"></div>
+        <div class="row">
+          <span class="lbl">推送间隔</span>
+          <select class="inp" data-cfg="cloud.intervalSec">${[30, 60, 120, 300].map(v => `<option value="${v}" ${Number(cl.intervalSec || 30) === v ? 'selected' : ''}>${v} 秒</option>`).join('')}</select>
+          <button class="btn sm" data-act="cloud:test">测试连接</button>
+          <button class="btn sm primary" data-act="cloud:sync">立即同步</button>
+        </div>
+        <div id="cloudState" class="hint">读取中…</div>
+        <p class="hint"><b>只上行「发布结果」这一张表</b>：时间 / 机器 / 执行人 / 品牌 / 批次 / 篇号 / 成功或失败 / 原因 / 耗时。
+          <b>素材内容、绝对路径、日志原文一概不上行</b>（目录只取最后一段款名）。关着的时候<b>一次都不联网</b>。</p>
+        <p class="hint">★ 这里只能填 <b>anon public key</b>（它本来就是设计成公开的，靠数据库的 RLS 策略收口）。
+          <b>绝不要把 service_role key 填进来</b> —— 那个 key 能绕过策略读写整张表，泄了等于裸奔。</p>
+        <p class="hint">★ 同步失败<b>不影响本机发布</b>：结果早就在本机 <code>publish-log.jsonl</code> 里落盘了，
+          云上少几条只是看板不全，最多界面上如实标「同步失败」。发布核心也<b>不依赖</b>这个开关。</p>`,
+        '只上行结果 · 不参与发布')}
       <p class="hint">这一页只有管理员看得到。日常操作在「模拟器发布」「设置」两页；
         <b>中文输入法</b>不在这里 —— 它按需出现在「检查能不能发布」的结果里（没装才会冒出来）。</p>`;
   }
@@ -923,6 +949,35 @@ function updateHtml() {
 async function refreshUpdate() {
   try { state.upd = await appApi.updateStatus(); } catch (e) { /* 读不到就保持原样 */ }
   renderAll();
+}
+
+/**
+ * 云端同步状态（高级设置页那一块）。
+ * ★ 取不到就如实说「取不到」，不许显示成一个看起来正常的 0 —— 那是假信息。
+ * ★ 异步返回时页面可能已被重画过（renderAll 会整个换掉 #pane），所以填之前重新查一次元素。
+ */
+function cloudStateHtml(s) {
+  if (!s) return `${badge('取不到', 'warn')} 云端状态读不出来（接口没连上）`;
+  if (!s.enabled) return `${badge('未启用', 'wait')} 关着的时候一次都不联网，台账只留在本机。`;
+  if (!s.configured) return `${badge('未配置', 'warn')} 还没填项目地址或 anon key —— 填完点「测试连接」。`;
+  const bits = [
+    `已上行 ${s.uploaded} 条`,
+    `待上行 ${s.pending} 条`,
+    s.lastSyncAt ? `上次同步 ${fmtDate(s.lastSyncAt)}` : '还没同步过',
+    `本机 ${esc(s.machineName || s.machineId || '未命名')}`
+  ];
+  if (s.reset) bits.push(`游标已重置：${esc(s.reset)}`);
+  if (s.lastError) bits.push(`上次失败：${esc(s.lastError)}`);
+  return `${badge(s.lastError ? '同步失败' : '已连接', s.lastError ? 'bad' : 'ok')} ${bits.join(' · ')}`;
+}
+
+async function refreshCloudState() {
+  if (!document.querySelector('#cloudState')) return;    // 只有高级设置页有这块
+  let s = null;
+  try { s = await appApi.cloudStatus(); } catch (e) { s = null; }
+  state.cloud = s;
+  const el = document.querySelector('#cloudState');
+  if (el) el.innerHTML = cloudStateHtml(s);
 }
 
 /**
@@ -1369,6 +1424,8 @@ function renderAll() {
   bindCfgInputs();
   // 设置页与「品牌与权限」页共用一套绑定：都按 id 找元素，找不到就跳过
   if (state.tab === 7 || state.tab === 9 || state.tab === 11) bindSettings();
+  // 云端状态是异步取的：只有高级设置页有那块，渲染完再填进去（不阻塞整页渲染）
+  if (state.tab === 11) refreshCloudState();
   // 运行日志页：行是渲染后单独铺的（而且要保住筛选框的光标，不能整页重画）
   if (state.tab === 10) bindLogPane();
   if (state.tab === 8) {
@@ -1948,6 +2005,22 @@ function upPwdHtml(id) {
 
 /* ---------------- 交互 ---------------- */
 const ACTS = {
+  // ---- 云端协作（可选）：两个动作都只是「推一次 / 试一下」，发布本身不依赖它 ----
+  'cloud:test': async () => {
+    const r = await appApi.cloudTest().catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+    toast(r && r.ok ? '连上了：地址和 key 都能用' : `连不上：${(r && r.error) || '取不到原因'}`, r && r.ok ? 'ok' : 'err');
+    await refreshCloudState();
+  },
+  'cloud:sync': async () => {
+    const r = await appApi.cloudSync().catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+    if (r && r.ok) {
+      const left = Number(r.pending) || 0;
+      toast(`已推送 ${r.uploaded} 条${left ? `，还剩 ${left} 条（下一轮接着推）` : '，全部推完了'}`, 'ok');
+    } else {
+      toast(`同步没成：${(r && (r.error || r.skipped)) || '取不到原因'}`, 'err');
+    }
+    await refreshCloudState();
+  },
   // ---- 应用更新：三个动作都要用户点，主进程不会自己下载、更不会自己重启 ----
   'upd:check': async () => {
     const r = await appApi.updateCheck();

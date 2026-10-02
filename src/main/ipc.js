@@ -10,6 +10,7 @@ const auth = require('./auth');
 const brands = require('./brands');
 const imaging = require('./services/imaging');
 const video = require('./services/video');   // ★ 不许漏：config:set 里改 ffmpeg 路径要立刻生效（漏了＝ReferenceError，接口直接报错）
+const cloudsync = require('./services/cloudsync');   // 云端协作（可选）：只上行发布结果，发布核心不依赖它
 const pool = require('./services/pool');
 const stats = require('./services/stats');
 const adb = require('./services/adb');
@@ -260,8 +261,17 @@ function register() {
     if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'ffmpegPath')) {
       video.setFfmpegPath(store.get('publish.ffmpegPath'));
     }
+    // 云端协作的开关 / 间隔改了要立刻生效（改完当场重启定时器，不用重启应用）
+    if (patch && patch.cloud) cloudsync.configure();
     return store.get();
   }));
+
+  // ---- 云端协作（阶段 1）----
+  // ★ 一律 guardAdmin：地址与 anon key 是整台机器共用的凭据，普通成员不该看、更不该改。
+  // ★ 状态里**不含 key**（cloudsync.status() 已把它排除），渲染层拿不到。
+  ipcMain.handle('cloud:status', guardAdmin(() => cloudsync.status()));
+  ipcMain.handle('cloud:sync', guardAdmin(() => cloudsync.syncOnce({ force: true })));
+  ipcMain.handle('cloud:test', guardAdmin(() => cloudsync.test()));
 
   ipcMain.handle('project:get', guard(() => project.get()));
   ipcMain.handle('log:history', guard(() => logbus.history()));

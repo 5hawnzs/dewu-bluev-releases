@@ -13,6 +13,7 @@ const imaging = require('./services/imaging');
 const pool = require('./services/pool');
 const adb = require('./services/adb');
 const video = require('./services/video');
+const cloudsync = require('./services/cloudsync');
 
 // Windows 通知/任务栏分组需要显式 AppUserModelID
 if (wp.isWin()) app.setAppUserModelId('com.bluev.publisher');
@@ -98,6 +99,13 @@ if (!app.requestSingleInstanceLock()) {
     logbus.info(st.requireLogin
       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')
       : '登录校验已关闭（BLUEV_NO_LOGIN=1）');
+
+    // 云端协作（可选，默认关）：只把本机新增的发布结果推给网页看板，**发布本身不依赖它**。
+    // 没启用就一次都不联网；启用了也是本机主动往外推，不开端口、不接收指令。
+    cloudsync.start();
+    if (store.get('cloud.enabled')) {
+      logbus.info(`云端同步已开启 · 每 ${store.get('cloud.intervalSec') || 30} 秒推一次新增的发布结果`);
+    }
 
     w.once('ready-to-show', () => { if (DEV) w.webContents.openDevTools({ mode: 'detach' }); });
 

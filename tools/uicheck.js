@@ -759,14 +759,16 @@ app.whenReady().then(async () => {
       recover: has('[data-act="pub:recoverEdit"]'),
       llm: has('[data-cfg="copy.llm.enabled"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
       mode: has('[data-cfg="verify.mode"]'), conc: has('[data-cfg="copy.concurrency"]'),
+      cloud: has('#cloudState') && has('[data-cfg="cloud.url"]') && has('[data-cfg="cloud.anonKey"]'),
       collapsed: ds.length, openCount: ds.filter(d => d.open).length
     };
   })()`);
-  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径）',
+  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作）',
     advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map && advUi.recover
-      && advUi.llm && advUi.sku && advUi.mode && advUi.conc, JSON.stringify(advUi));
-  ok('★ 高级设置里「可选」的四块默认是收起的（折叠区，不占地方）',
-    advUi.collapsed === 4 && advUi.openCount === 0, JSON.stringify(advUi));
+      && advUi.llm && advUi.sku && advUi.mode && advUi.conc && advUi.cloud, JSON.stringify(advUi));
+  // 五块：文案模型 / 并发路数 / 货号颜色 / 外部依赖路径 / 云端协作（2026-10-02 新增云端协作）
+  ok('★ 高级设置里「可选」的五块默认是收起的（折叠区，不占地方）',
+    advUi.collapsed === 5 && advUi.openCount === 0, JSON.stringify(advUi));
 
   // ★ 2026-10-02（第二轮）：用户点名「并发路数」也挪进高级设置 —— 它是运行参数（撞接口限流的旋钮），
   //   和「必带话题 / 轮换策略」那种**改产出**的业务内容不是一回事。两件事都要验：

@@ -75,7 +75,11 @@ function defaults() {
     // log = 更新日志开关（默认关）。开着的时候 updater 会把 electron-updater 自己的 logger
     // 一并接进 userData/logs/update.log —— 「差分下载静默退回全量」只有那里看得见。
     // ★ 它**不违**「数据不出本机」：只写版本号/通道名/字节数，不含素材、品牌、SKU。
-    update: { channel: 'stable', log: false }
+    update: { channel: 'stable', log: false },
+    // 云端协作（阶段 1：只上行发布结果给网页看板做聚合，**不参与发布**）。
+    // ★ 出厂默认关、地址与 anon key 全空：密钥只能由管理员现场填，源码与包里不许预置任何一个。
+    //   enabled=false 时 cloudsync 一次都不会联网。
+    cloud: { enabled: false, url: '', anonKey: '', machineId: '', machineName: '', intervalSec: 30 }
   };
 }
 

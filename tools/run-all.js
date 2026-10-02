@@ -20,6 +20,7 @@
  *   releasetest    发版工具纯逻辑（latest.yml 读错就是 404 / 便携版永不上传 / 同版本号默认拦下）
  *   prunetest      老包清理策略（唯一会删东西的工具：读错版本号就删错包 / 源上状态不明时一个字节都不删）
  *   logtest        运行日志导出格式（条数不许谎报 / 完整日期时间 / 行尾固定 \n / 真落盘）
+ *   cloudtest      云端同步（关着不联网 / 只推增量 / 幂等头 / 不留绝对路径 / 失败不推进游标 / 不预置密钥）
  *
  * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
  */
@@ -68,7 +69,8 @@ const SUITES = [
   ['updatertest', 'node', ['tools/updatertest.js']],
   ['releasetest', 'node', ['tools/releasetest.js']],
   ['prunetest', 'node', ['tools/prunetest.js']],
-  ['logtest', 'node', ['tools/logtest.js']]
+  ['logtest', 'node', ['tools/logtest.js']],
+  ['cloudtest', 'node', ['tools/cloudtest.js']]
 ];
 
 /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */
