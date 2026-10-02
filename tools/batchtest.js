@@ -58,7 +58,7 @@ const ok = (label, cond, extra) => {
   store.set({
     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4 },
-    publish: { mock: true, mockIntervalSec: 5, retry: 1 }
+    publish: { intervalSec: 5, videoIntervalSec: 5, retry: 1 }   // 「演示节奏」开关已删：现在直接给 5 秒间隔
   });
 
   // ---- ① 两个批次同时跑 ----

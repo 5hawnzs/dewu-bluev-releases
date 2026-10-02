@@ -49,9 +49,9 @@ function defaults() {
       api: { endpoint: '', apiKey: '' }
     },
     publish: {
-      // adb 可执行文件。空 = 直接叫 'adb'（走 PATH）；填了就用这个完整路径。
-      // 「模拟器发布」页可填，自检里会回显当前用的是哪一个 —— 免得 PATH 里没有 adb 时
-      // 整张自检表都报错，却不知道该去哪儿改。
+      // adb 可执行文件。空 = 自动（优先程序内置的，再退系统 PATH）；填了就用这个完整路径。
+      // ★ 2026-10-02 起主界面不再摆这个输入框（内置即用，摆着只是干扰）；要手填去
+      //   「设置 → 高级设置」（仅管理员）。自检里仍会回显当前用的到底是哪一个。
       adbPath: '',
       device: '',                      // 选中的设备 serial（多设备矩阵）
       devices: [],                     // [{id, name, serial}] 一个设备 = 一个账号
@@ -61,8 +61,9 @@ function defaults() {
       videoIntervalSec: 90,            // 视频单条更慢（push 抖动大 + 上传久 + 还要等媒体库索引），间隔单独放宽
       videoIndexTimeoutSec: 180,       // 视频推上去后等「相册真的能看到」的上限；超时直接失败报出来，不硬点
       retry: 2,
-      mock: true,
-      mockIntervalSec: 5
+      // ffmpeg 可执行文件。空 = 自动（优先内置、再退系统 PATH）。与 adbPath 同一套三段解析，
+      // 实现在 src/main/services/video.js。同样只在「高级设置」里手填。
+      ffmpegPath: ''
     },
     window: { bounds: null, maximized: false },
     ui: { theme: 'system' },

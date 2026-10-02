@@ -92,7 +92,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   store.set({
     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 4, requiredTopic: '#品牌甲', extraTopics: 4 },
-    publish: { mock: true, mockIntervalSec: 1, retry: 1 }
+    publish: { intervalSec: 1, videoIntervalSec: 1, retry: 1 }   // 「演示节奏」开关已删：现在直接给 1 秒间隔
   });
 
   // 批次目录：4 个叶子（第 2 个图+视频都有、报告又没标；第 3 个只有视频、报告标「视频」）

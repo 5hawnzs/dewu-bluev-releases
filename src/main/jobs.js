@@ -162,7 +162,7 @@ async function dispatch(type, args, ctx) {
       const s = st();
       if (!s.items.length) throw new Error('没有可导出的素材');
       const pc = store.get('publish') || {};
-      const intervalSec = pc.mock ? (pc.mockIntervalSec || 5) : (pc.intervalMinSec || 60);
+      const intervalSec = pc.intervalSec || pc.intervalMinSec || 60;
       const r = await sheet.exportSheet(s, Object.assign({ intervalSec }, args || {}));
       // 导出发布单会重建 publish.rows，必须把上一批的「Excel 行号」按 id 带过来：
       // 从「AI 内容报告」导进来的行靠 reportRow 才能把发布结果回写进原报告，
@@ -257,7 +257,13 @@ async function dispatch(type, args, ctx) {
       return r;
     }
     case 'publish.devices': {
-      return { devices: await publisher.listDevices(), selected: store.get('publish.device') || '' };
+      // ★ 两套一起回：devices = 用户加过的（逐台 probe 出详情），found = adb 现在认到的全部。
+      //   界面靠 found 把「还没加进来」的设备直接列出来 —— 用户不用再去猜 emulator-5554 这种名字。
+      return {
+        devices: await publisher.listDevices(),
+        found: await publisher.scanDevices(),
+        selected: store.get('publish.device') || ''
+      };
     }
     case 'publish.addDevice': {
       const d = publisher.addDevice({ name: args.name, serial: args.serial });
@@ -276,7 +282,7 @@ async function dispatch(type, args, ctx) {
     // 一键把内置的中文输入法装到设备上（装 apk + ime enable + ime set 三步，缺一都打不进中文）
     case 'publish.installIme': {
       const serial = args.device || (st().publish && st().publish.device) || store.get('publish.device');
-      if (!serial) throw new Error('还没选设备 —— 先在「设备管理」里点一台的「选用」');
+      if (!serial) throw new Error('还没选设备 —— 先在「设备管理」点「扫描设备」，再从列出来的设备里点「加入并使用」');
       const r = await publisher.installIme(serial);
       if (!r.ok) throw new Error(`中文输入法没装成（卡在 ${r.step} 这步）：${r.error}`);
       logbus.ok(`已装上中文输入法并设为当前输入法（${r.component}）—— 现在再点一次「检查能不能发布」`);

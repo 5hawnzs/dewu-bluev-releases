@@ -124,7 +124,7 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
-  ok('左侧导航是 10 个页签（新增「运行日志」，归在「执行」组里）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 10,
+  ok('左侧导航是 11 个页签（新增「高级设置」，排在最后）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 11,
     await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
   ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
     await win.webContents.executeJavaScript(`(() => {
@@ -195,6 +195,29 @@ app.whenReady().then(async () => {
   const phHit = phs.join(' | ').match(BAN);
   ok(`★ 渲染出来的 placeholder 里没有举例品牌名（查了 ${phs.length} 个输入框）`, !phHit, phHit ? phHit[0] : '');
 
+  // ---- 「演示节奏（mock）」这个纯演示开关已按用户要求整条删除 ----
+  // ★ 光删勾选框不够：出厂 mock=true 时**真实发布**也会用 5 秒间隔。
+  //   所以这里连源码里对 cfg.mock 的读取一起查（只查代码行，避免注释命中 —— 注释里正解释这件事）。
+  {
+    // 判据：把**注释**（// 与 /* */）和 `'mock'` 这个字符串字面量都剥掉之后，这四个文件里
+    // 不该再出现 mock。★ 为什么不能直接搜 mock：`mode === 'mock'` 是「没设备时的模拟通道」，
+    // 与被删的「演示节奏」是两件事 —— 一刀切会把它误报成没删干净。
+    const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n')
+      .replace(/'mock'/g, "''").replace(/"mock"/g, '""');
+    const hits = [];
+    for (const rel of ['src/main/store.js', 'src/main/jobs.js', 'src/main/services/publisher.js',
+      'src/renderer/app.js']) {
+      if (/\bmock\b/i.test(strip(fs.readFileSync(path.join(ROOT, rel), 'utf8')))) hits.push(rel);
+    }
+    ok('★「演示节奏（mock）」整条链路已删（配置默认值 + 主进程/界面所有读取点，注释与模拟通道除外）',
+      hits.length === 0, hits.join(' / '));
+    // 界面上的勾选框与「演示节奏」字样也要真没了（placeholder 不算 textContent，所以另查源码）
+    const uiSrc2 = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
+    ok('★ 界面上没有 mock 勾选框、也没有「演示节奏」字样',
+      !/data-cfg="publish\.mock"/.test(uiSrc2) && !/演示节奏/.test(uiSrc2));
+  }
+
   // ---- 本轮新加的按钮：按各自页签确认挂上了 ----
   const onTab = async (tab, act) => {
     await win.webContents.executeJavaScript(`document.querySelector('.nav[data-tab="${tab}"]').click()`);
@@ -205,7 +228,14 @@ app.whenReady().then(async () => {
   ok('页签 3 有「选择素材目录并启动任务」', await onTab(3, 'copy:pickRun'));
   ok('页签 5 有「导入 AI 内容报告」', await onTab(5, 'sheet:importReport'));
   ok('页签 6 有「重导出日志」', await onTab(6, 'pub:exportLog'));
-  ok('页签 6 有「失败恢复动作」', await onTab(6, 'pub:recoverEdit'));
+  // ★ 2026-10-02：这几个「装一次就不再动」的入口按用户要求从日常页面收进「高级设置」。
+  //   断言也跟着搬 —— 搬了就得能证明它**不在老地方了**，否则「收起来」等于没发生。
+  ok('页签 11 有「失败恢复动作」', await onTab(11, 'pub:recoverEdit'));
+  ok('页签 6 不再有「失败恢复动作」', !(await onTab(6, 'pub:recoverEdit')));
+  ok('页签 6 不再有「抓取页面结构」「导入 UI 定位表」',
+    !(await onTab(6, 'pub:dump')) && !(await onTab(6, 'pub:map')));
+  ok('页签 11 有「抓取页面结构」「导入 UI 定位表」',
+    (await onTab(11, 'pub:dump')) && (await onTab(11, 'pub:map')));
   ok('页签 8 有「查询」（品牌统计）', await onTab(8, 'stats:refresh'));
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
 
@@ -587,18 +617,26 @@ app.whenReady().then(async () => {
   ok('★ 文案生成页的批次设置改了就存（以前只绑了设置页，这页改了没保存）',
     cfgSaved.after === cfgSaved.picked && cfgSaved.after !== cfgSaved.before, JSON.stringify(cfgSaved));
 
+  // ★ 2026-10-02：adb 路径输入框已从「模拟器发布」页删掉（内置即用，摆着只是干扰），
+  //   手填入口挪到「设置 → 高级设置」（仅管理员）。所以这里**两件事都要验**：
+  //   ① 日常页面上它真的没了；② 高级设置里那个入口能存、且立刻生效。
   const adbSaved = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="6"]').click();
     await new Promise(r => setTimeout(r, 150));
+    const daily = !!document.querySelector('[data-cfg="publish.adbPath"]');
+    document.querySelector('.nav[data-tab="11"]').click();
+    await new Promise(r => setTimeout(r, 150));
     const el = document.querySelector('[data-cfg="publish.adbPath"]');
-    if (!el) return { found: false };
+    if (!el) return { daily, found: false };
     el.value = 'D:/fake/adb.exe';
     el.dispatchEvent(new Event('change'));
     await new Promise(r => setTimeout(r, 400));
     const cfg = await window.api.configGet();
-    return { found: true, saved: ((cfg.publish || {}).adbPath) || '' };
+    return { daily, found: true, saved: ((cfg.publish || {}).adbPath) || '' };
   })()`);
-  ok('模拟器发布页能填 adb 完整路径（自检那句提示承诺过这个入口）',
+  ok('★ 模拟器发布页不再摆 adb 路径输入框（内置即用，摆着只是干扰）',
+    adbSaved.daily === false, JSON.stringify(adbSaved));
+  ok('「高级设置」里能填 adb 完整路径，且真的存进了配置',
     adbSaved.found && adbSaved.saved === 'D:/fake/adb.exe', JSON.stringify(adbSaved));
   ok('★ 填完立刻生效、不用重启（自检第一行会回显用的是哪个 adb）',
     adbMod.getAdbPath() === 'D:/fake/adb.exe', adbMod.getAdbPath());
@@ -661,6 +699,15 @@ app.whenReady().then(async () => {
 
   // 「一键装上中文输入法」这条链路：界面有按钮 → 主进程有动作 → 真正干活的三步在 adbtest 里验
   const appSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+  // ★ 自检引导里承诺的按钮名，界面上必须真有 —— 2026-10-02 用户就是被一句
+  //   「在下面的设备列表里点它的『选用』」指到了一个**空的**列表上（配置里 0 台设备，
+  //   而那时候的「检测在线」根本不会把设备加进列表）。
+  ok('★ 引导文案里的按钮名与界面上的按钮对得上（不许把人指到不存在的东西上）',
+    appSrc.includes('pub:devScan') && appSrc.includes('扫描设备')
+      && appSrc.includes('pub:useFound') && appSrc.includes('加入并使用')
+      && /扫描设备/.test(fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8'))
+      && /加入并使用/.test(fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8'))
+      && !/「检测在线」/.test(fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8')));
   const jobsSrc = fs.readFileSync(path.join(ROOT, 'src/main/jobs.js'), 'utf8');
   ok('★ 检查结果的引导块支持挂「一键处理」按钮，并且中文输入法真的接上了',
     /f\.act \?/.test(appSrc) && appSrc.includes("'pub:installIme'")
@@ -675,13 +722,77 @@ app.whenReady().then(async () => {
     return {
       adbRow: /模拟器驱动 adb/.test(t), imeRow: /中文输入法 ADBKeyboard/.test(t),
       ffRow: /视频转 MP4/.test(t), builtin: /程序内置/.test(t),
-      ffPathInput: !!document.querySelector('[data-cfg="publish.ffmpegPath"]')
+      ffPathInput: !!document.querySelector('[data-cfg="publish.ffmpegPath"]'),
+      llmRow: !!document.querySelector('[data-cfg="copy.llm.enabled"]'),
+      skuRow: !!document.querySelector('[data-cfg="verify.api.endpoint"]'),
+      modeRow: !!document.querySelector('[data-cfg="verify.mode"]')
     };
   })()`);
   ok('设置页「外部依赖」如实说 adb / 中文输入法 / ffmpeg 都是内置的（不再是「待接入」）',
     depUi.adbRow && depUi.imeRow && depUi.ffRow && depUi.builtin, JSON.stringify(depUi));
-  ok('设置页给了「ffmpeg 路径」入口（手填 > 内置 > PATH 三段解析要能配置）',
-    depUi.ffPathInput, JSON.stringify(depUi));
+  ok('★ 设置页不再摆「文案模型」「SKU 接口」「货号颜色下拉」（都收进高级设置）',
+    !depUi.llmRow && !depUi.skuRow && !depUi.modeRow, JSON.stringify(depUi));
+  ok('★ 设置页不再摆「ffmpeg 路径」输入框（内置即用）', depUi.ffPathInput === false, JSON.stringify(depUi));
+  // 而高级设置页里它们都在（而且「文案模型 / 货号颜色 / 外部依赖路径」三块默认是**收起**的）
+  const advUi = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="11"]').click();
+    await new Promise(r => setTimeout(r, 200));
+    const pane = document.querySelector('#pane');
+    const has = s => !!pane.querySelector(s);
+    const ds = [...pane.querySelectorAll('details.box')];
+    return {
+      adbPath: has('[data-cfg="publish.adbPath"]'), ffPath: has('[data-cfg="publish.ffmpegPath"]'),
+      dump: has('[data-act="pub:dump"]'), map: has('[data-act="pub:map"]'),
+      recover: has('[data-act="pub:recoverEdit"]'),
+      llm: has('[data-cfg="copy.llm.enabled"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
+      mode: has('[data-cfg="verify.mode"]'),
+      collapsed: ds.length, openCount: ds.filter(d => d.open).length
+    };
+  })()`);
+  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / SKU 接口 / adb、ffmpeg 路径）',
+    advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map && advUi.recover
+      && advUi.llm && advUi.sku && advUi.mode, JSON.stringify(advUi));
+  ok('★ 高级设置里「可选」的三块默认是收起的（折叠区，不占地方）',
+    advUi.collapsed === 3 && advUi.openCount === 0, JSON.stringify(advUi));
+  // ★ 存 ffmpeg 路径要真的走得通：主进程 ipc.js 里那段是 `video.setFfmpegPath(...)`，
+  //   曾经漏了 `require('./services/video')` ⇒ 一改就 ReferenceError（这条断言就是为它加的）
+  const ffSaved = await win.webContents.executeJavaScript(`(async () => {
+    const el = document.querySelector('[data-cfg="publish.ffmpegPath"]');
+    if (!el) return { found: false };
+    el.value = 'D:/fake/ffmpeg.exe';
+    el.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 400));
+    const cfg = await window.api.configGet();
+    return { found: true, saved: ((cfg.publish || {}).ffmpegPath) || '' };
+  })()`);
+  ok('★ 改 ffmpeg 路径真的存得下（不许接口报错吞掉）',
+    ffSaved.found && ffSaved.saved === 'D:/fake/ffmpeg.exe', JSON.stringify(ffSaved));
+  // ★ 三段解析的真实契约：手填的不存在、又有内置可用 ⇒ source 退回 'bundled'，
+  //   但 **configuredMissing 必须为真**（不能连「你填的那个不存在」这件事一起丢掉）。
+  const ffStatus = videoMod.status();
+  ok('★ 改完立刻生效：填的路径不存在 ⇒ 退回内置，且如实标出 configuredMissing',
+    ffStatus.source === 'bundled' && ffStatus.configuredMissing === true
+      && ffStatus.usable === true, JSON.stringify(ffStatus));
+  // 而且界面上要**说出来**：设置页「外部依赖」里那一行得同时出现「不存在」与「内置」。
+  // ★ 这条同时守住另一件事：app:info 必须回传 ffmpeg 状态 —— 漏了的话这行永远是「状态取不到」，
+  //   界面等于在骗人（上一轮就是这么漏的，所以这里断言的是**渲染出来的行文本**，不是源码里有没有那行字）。
+  const ffRow = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="7"]').click();
+    await new Promise(r => setTimeout(r, 250));
+    const tr = [...document.querySelectorAll('#pane .tw table tbody tr')].find(x => /视频转 MP4/.test(x.textContent));
+    return tr ? tr.textContent.replace(/\s+/g, ' ').trim() : '';
+  })()`);
+  ok('★「外部依赖」表如实写出「手填的路径不存在、已退回内置」（不静默忽略拼错的路径）',
+    /不存在/.test(ffRow) && /内置/.test(ffRow), ffRow);
+  await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="11"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const el = document.querySelector('[data-cfg="publish.ffmpegPath"]');
+    el.value = ''; el.dispatchEvent(new Event('change')); await new Promise(r => setTimeout(r, 400));
+  })()`);
+  const ffBack = videoMod.status();
+  ok('清空 ffmpeg 路径 ⇒ 完全退回内置（configuredMissing 回到假）',
+    ffBack.source === 'bundled' && ffBack.configuredMissing === false, JSON.stringify(ffBack));
   ok('设置页把那两个裸输入框换成了「打开文案提示词」入口',
     await win.webContents.executeJavaScript(`(() => {
       document.querySelector('.nav[data-tab="7"]').click();
@@ -691,10 +802,11 @@ app.whenReady().then(async () => {
         && !!pane.querySelector('[data-act="copy:prompt"]');
     })()`));
 
-  // ---- 失败恢复动作：界面能编辑、能存进配置（走真实 IPC，不直连模块） ----
+  // ---- 失败恢复动作：界面能编辑、能存进配置（走真实 IPC，不直连模块）----
+  // （2026-10-02 起这个入口在「高级设置」页，不在「模拟器发布」页）
   const rec = await win.webContents.executeJavaScript(`
     (async () => {
-      document.querySelector('.nav[data-tab="6"]').click();
+      document.querySelector('.nav[data-tab="11"]').click();
       await new Promise(r => setTimeout(r, 120));
       document.querySelector('[data-act="pub:recoverEdit"]').click();
       await new Promise(r => setTimeout(r, 120));

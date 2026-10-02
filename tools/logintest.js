@@ -149,12 +149,14 @@ app.whenReady().then(async () => {
     }
     return titles;
   })()`);
-  ok('登录后 10 个页签都能渲染（页签数是数出来的，不是写死的）',
-    tabs.length === 10 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+  ok('登录后 11 个页签都能渲染（页签数是数出来的，不是写死的）',
+    tabs.length === 11 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
   ok('第 9 个页签是「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
     tabs[8] === '品牌与权限', tabs[8] || '(没有)');
   ok('第 10 个页签是「运行日志」（归在左侧「执行」组里；内容和底部日志栏同一份）',
     tabs[9] === '运行日志', tabs[9] || '(没有)');
+  ok('第 11 个页签是「高级设置」（管理员可见；装一次就不再动的配置都在这里）',
+    tabs[10] === '高级设置', tabs[10] || '(没有)');
 
   // ---- ⑤ 口令存储与「记住登录」落盘 ----
   const authFile = path.join(TMP, 'auth.json');
@@ -193,6 +195,21 @@ app.whenReady().then(async () => {
   ok('普通成员看不到账号列表（只有管理员能）', usersDenied.ok === false && /只有管理员/.test(usersDenied.error), usersDenied.error);
   const selfPwd = await js(`window.api.authChangePwd(${JSON.stringify(MEMBER_PASS)}, 'Member@456')`);
   ok('普通成员能改自己的密码', selfPwd.ok === true, selfPwd.error || '');
+
+  // ---- ⑦a-2「高级设置」是管理员专属页签：普通成员**看不见**，硬点也进不去 ----
+  // ★ 这条必须真跑一遍（而不是看源码里有没有 syncAdminNav）：页签是 index.html 里的静态按钮，
+  //   藏它的逻辑在渲染层，只有登录成普通成员再看 DOM 才算数。
+  const advHide = await js(`(async () => {
+    const btn = document.querySelector('.nav[data-tab="11"]');
+    if (!btn) return { err: '第 11 个页签不存在' };
+    const hidden = btn.hidden === true && getComputedStyle(btn).display === 'none';
+    btn.click();                       // 硬点一下，看会不会真的落在那一页
+    await new Promise(r => setTimeout(r, 120));
+    return { hidden, title: __t.title() };
+  })()`);
+  ok('★ 普通成员看不到「高级设置」页签（连图标都不占位）', advHide.hidden === true, JSON.stringify(advHide));
+  ok('★ 普通成员就算硬点第 11 个页签也进不去（会被拉回«素材整理»）',
+    advHide.title === '素材整理', advHide.title);
 
   // ---- ⑦b 品牌是管理员专属：普通成员连注册表都改不了 ----
   const memberBrandAdd = await js(`window.api.brandAdd({ name: '成员偷加的品牌' })`);

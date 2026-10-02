@@ -76,6 +76,25 @@ async function listDevices() {
   return out;
 }
 
+/**
+ * adb 现在认到的**全部**设备（含还没加进列表的）。
+ * ★ 为什么必须有这个：以前界面上的「检测在线」只逐个 probe 配置里那几台 —— 配置是空的时候
+ *   就永远列出空表，而自检的引导文案又写着「在下面的设备列表里点选用」，等于把用户指到一个
+ *   空列表上（2026-10-02 用户实测踩到）。有了它，界面可以把 adb 认到的设备直接列出来，
+ *   用户不必知道 emulator-5554 这种名字。
+ */
+async function scanDevices() {
+  const conf = devices();
+  const raw = await adb.devices();
+  return raw.map(d => {
+    const c = conf.find(x => x.serial === d.serial);
+    return {
+      serial: d.serial, state: d.state, online: d.state === 'device',
+      configured: !!c, id: (c && c.id) || '', name: (c && c.name) || ''
+    };
+  });
+}
+
 function rand(a, b) { return Math.round(a + Math.random() * Math.max(0, b - a)); }
 function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
 
@@ -105,9 +124,10 @@ function estimate(count, kinds = null) {
   const c = cfg();
   const per = kind => {
     const isV = kind === 'video';
-    const avg = c.mock ? (c.mockIntervalSec || 5)
-      : (isV ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
-        : (c.intervalSec || c.intervalMinSec || 60));
+    // ★ 这里原来有一支 `c.mock ? 5 秒` 的「演示节奏」——2026-10-02 按用户要求删掉：
+    //   它是个纯演示开关，却会让**真实发布**也用 5 秒间隔。现在只按真实配置算。
+    const avg = isV ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
+      : (c.intervalSec || c.intervalMinSec || 60);
     return avg + (isV ? 60 : 30);
   };
   const nImg = kinds ? (Number(kinds.image) || 0) : count;
@@ -127,7 +147,7 @@ async function connect(device) {
   const map = c.uiMap;
   const notes = p.notes.slice();
   if (ready && !(map && map.steps && map.steps.length)) {
-    notes.push('还没配 UI 定位表（发布页 →「抓取页面结构」→ 导入），配好前不会走真实通道');
+    notes.push('还没配 UI 定位表（「设置 → 高级设置」→「抓取页面结构」→ 导入），配好前不会走真实通道');
   }
   return {
     connected: ready,
@@ -311,13 +331,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
 /* ---------------- 模拟通道 ---------------- */
 
 async function runMock(row, ctx) {
-  const c = cfg();
   const cancelled = ctx.cancelled || (() => false);
   for (const st of STEPS) {
     if (cancelled()) return 'cancelled';
     row.status = st;
     if (ctx.onRow) ctx.onRow(row);
-    await sleep(c.mock ? 400 : 2500, cancelled);
+    await sleep(400, cancelled);
   }
   return Math.random() > 0.08;
 }
@@ -335,12 +354,12 @@ async function run(state, ctx = {}) {
   const map = c.uiMap;
 
   if (mode === 'adb' && !(map && map.steps && map.steps.length)) {
-    throw new Error('真实通道需要先配 UI 定位表：在「模拟器发布」点「抓取页面结构」，改好后导入 uiMap.json');
+    throw new Error('真实通道需要先配 UI 定位表：在「设置 → 高级设置」点「抓取页面结构」，改好后导入 uiMap.json');
   }
 
   const rows = (state.publish && state.publish.rows && state.publish.rows.length)
     ? state.publish.rows
-    : sheet.buildRows(state, { intervalSec: c.mock ? (c.mockIntervalSec || 5) : (c.intervalMinSec || 60) })
+    : sheet.buildRows(state, { intervalSec: c.intervalSec || c.intervalMinSec || 60 })
       .map((r, i) => ({ seq: i + 1, id: state.items[i] ? state.items[i].id : String(i + 1), dir: r[1], goods: 1, images: 0, startAt: '', status: '排队', result: '', retries: 0, reason: '' }));
   // 批次名跟着日志走：「重导出日志」要能按批次导出（真机日志行里也带批次）
   const batch = (state.publish && state.publish.batch) || `批${wp.stamp()}`;
@@ -395,9 +414,8 @@ async function run(state, ctx = {}) {
     if (done > 0) {
       // 真机是固定间隔（默认 60 秒），带倒计时；视频单条更慢，间隔单独放宽
       const video = rowKind(row, item) === 'video';
-      const wait = c.mock ? (c.mockIntervalSec || 5)
-        : (video ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
-          : (c.intervalSec || c.intervalMinSec || 60));
+      const wait = video ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
+        : (c.intervalSec || c.intervalMinSec || 60);
       log(`按 ${wait} 秒间隔，${wait}s 后执行`, 'info');
       if (!await sleep(wait * 1000, cancelled, left => {
         progress({ done, total: todo.length, label: `${left}s 后执行`, waitLeft: left });
@@ -475,5 +493,5 @@ module.exports = {
   // 一键装上内置的中文输入法（装 + 启用 + 设为当前输入法）—— 实现与「为什么必须三步」见 adb.js
   installIme: adb.installKeyboard,
   imeComponent: adb.adbKeyboardIme,
-  devices, listDevices, addDevice, removeDevice
+  devices, listDevices, scanDevices, addDevice, removeDevice
 };

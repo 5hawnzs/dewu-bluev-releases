@@ -9,6 +9,7 @@ const jobs = require('./jobs');
 const auth = require('./auth');
 const brands = require('./brands');
 const imaging = require('./services/imaging');
+const video = require('./services/video');   // ★ 不许漏：config:set 里改 ffmpeg 路径要立刻生效（漏了＝ReferenceError，接口直接报错）
 const pool = require('./services/pool');
 const stats = require('./services/stats');
 const adb = require('./services/adb');
@@ -240,8 +241,11 @@ function register() {
     engine: imaging.engineName(),
     hasHeif: imaging.hasHeif(),
     pool: { size: pool.size(), source: pool.get().source, updatedAt: pool.get().updatedAt },
-    // 随包内置的外部依赖（adb / 中文输入法 apk）在不在、现在实际用的是哪一个 —— 设置页照实显示
+    // 随包内置的外部依赖（adb / 中文输入法 apk）在不在 —— 设置页照实显示
     vendor: adb.bundledStatus(),
+    // ★ 视频转码那条依赖：ffmpeg 的三段解析结果（手填 > 内置 > PATH）。
+    //   少了这一行，「外部依赖」表里那行永远是「状态取不到」—— 界面在骗人（2026-10-02 抓到）。
+    ffmpeg: video.status(),
     userData: app.getPath('userData')
   }));
 

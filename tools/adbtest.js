@@ -88,7 +88,7 @@ const state = {
     //   界面上也没有开关。以前产线代码用 `!!c.adbKeyboard` 决定中文走不走广播 ⇒ 恒为假
     //   ⇒ 中文永远走 `input text`（实测打不进中文却返回 0）⇒ 会发出一条没标题没正文的帖子。
     //   现在这条判断改由「设备当前输入法」决定，配置里有没有这个键都不影响。
-    publish: { device: '127.0.0.1:5555', mock: false, intervalMinSec: 1, intervalMaxSec: 1, retry: 1 }
+    publish: { device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1, retry: 1 }
   });
 
   // 1) 设备检查（界面上叫「检查能不能发布」；probe() 的返回体同时带 notes 与 fix 两套说法）

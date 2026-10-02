@@ -38,7 +38,7 @@ const state = {
 
 (async () => {
   store.set({ paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
-    publish: { devices: [], device: '', intervalSec: 60, mock: true, mockIntervalSec: 1 } });
+    publish: { devices: [], device: '', intervalSec: 60 } });
 
   // ① 正常导出 + 回写
   const sh = await sheet.exportSheet(state, { intervalSec: 60 });
@@ -71,7 +71,7 @@ const state = {
   ok('④ 删除设备', left.length === 1 && left[0].serial === 'emulator-5556', JSON.stringify(left));
 
   // ⑤ 固定间隔与预估（真实节奏：60s 间隔 + 单条 ≈30s）
-  store.set({ publish: { mock: false, intervalSec: 60 } });
+  store.set({ publish: { intervalSec: 60 } });
   const est = publisher.estimate(100);
   ok('⑤ 固定 60s 间隔预估（100 条 = 150 分钟）', est.minutes === 150, est.minutes + ' 分钟');
 

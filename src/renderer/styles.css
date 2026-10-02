@@ -95,6 +95,10 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
   font-size:13px;color:var(--tx2);cursor:pointer;user-select:none;
   width:100%;text-align:left;border:0;background:transparent;font-family:var(--font);
 }
+/* ★ 必须显式写这条：UA 自带的 [hidden]{display:none} 会被上面 .nav 的 display:flex 盖掉
+   （作者样式表优先于 UA 样式表），于是「非管理员藏起高级设置页签」就只是把属性设上了、
+   按钮还杵在那儿 —— 点一下被弹回来，看着像坏了。2026-10-02 被自检抓出来。 */
+.nav[hidden]{display:none}
 .nav:hover{background:rgba(128,128,110,.12)}
 .nav .ic{width:16px;height:16px;flex:0 0 16px;display:block;opacity:.75}
 .nav .ic svg{display:block;width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}

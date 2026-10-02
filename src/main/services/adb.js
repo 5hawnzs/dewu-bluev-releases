@@ -441,7 +441,7 @@ async function probe(serial) {
     const toWhat = act.source === 'bundled' ? '程序内置的 adb' : '系统 PATH 里的 adb';
     out.notes.push(`手填的 adb 路径「${adbBin}」不存在，已自动退回${act.source === 'bundled' ? '内置' : 'PATH'}：${act.path}`);
     say('warn', `你填的 adb 路径不存在，已自动改用${toWhat}`,
-      `在「设备管理」那一行填的是「${adbBin}」，这个文件找不到。`
+      `在「设置 → 高级设置」的「adb 路径」里填的是「${adbBin}」，这个文件找不到。`
       + `现在用的是${toWhat}（不影响使用）。`
       + '建议把那一格清空（留空=自动：优先内置、再退系统），或者把路径改对。');
   }
@@ -452,10 +452,10 @@ async function probe(serial) {
     // 或者用户手填了一个不存在的路径又没清掉。
     out.notes.push(`没检测到 adb（解析结果：path=${act.path} source=${act.source}`
       + (act.configuredMissing ? ` · 手填的「${adbBin}」不存在` : '') + '）');
-    const hint = '★ 也可以临时在下面「设备管理」最后一行「adb 路径」里，手填模拟器自带的那个'
+    const hint = '★ 也可以临时在「设置 → 高级设置」的「adb 路径」里，指定模拟器自带的那个'
       + '（MuMu 默认在 D:\\MUMU\\MuMuPlayer\\nx_main\\adb.exe），填完立刻生效，再点一次上面的「检查能不能发布」。';
     say('bad', '没找到 adb —— 它是电脑跟模拟器之间的“对讲机”',
-      (act.configuredMissing ? `你在「adb 路径」里填的「${adbBin}」不存在 —— 先把它清空（留空=自动）。` : '')
+      (act.configuredMissing ? `你在「高级设置 → adb 路径」里填的「${adbBin}」不存在 —— 先把它清空（留空=自动）。` : '')
       + (bundledAdbPath()
         ? `程序内置的那份也没找到（应该在 ${bundledAdbPath()}）—— 多半是安装包不完整，重新装一次本工具最省事。`
         : '这台机器上没有内置的 adb。')
@@ -476,10 +476,11 @@ async function probe(serial) {
       : 'adb 在线但一个设备都没有：先把模拟器启动起来，并在模拟器设置里打开 ADB 调试');
     say('bad', serial ? `你选的设备「${serial}」没连上` : '还没选设备',
       usable.length
-        ? `模拟器现在能连上的是「${usable[0].serial}」：在下面的设备列表里点它的「选用」；'
-          + '列表里没有就先点「检测在线」再看。★ 模拟器每次重启，这个名字可能变，别照抄上一次的。`
+        ? `模拟器现在能连上的是「${usable[0].serial}」：点「设备管理」里的「扫描设备」，`
+          + '下面会把它列出来，再点它那一行的「加入并使用」。'
+          + '★ 模拟器每次重启，这个名字可能变，别照抄上一次的。'
         : '三步：① 先把模拟器启动起来；② 确认模拟器设置里打开了「ADB 调试」；'
-          + '③ 回来点「检测在线」，从列表里点一台的「选用」。');
+          + '③ 回来点「扫描设备」，从列出来的设备里点「加入并使用」。');
     return out;
   }
 

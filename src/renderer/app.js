@@ -30,7 +30,9 @@ const state = {
   logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
   logFilter: { level: '', q: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
   logExport: null,    // 上一次导出结果 { file, jsonFile, count }，用来给「打开 / 定位」按钮指路
-  logExportErr: ''    // 上一次导出的失败原因（失败要说出来，不能只在 toast 里一闪而过）
+  logExportErr: '',   // 上一次导出的失败原因（失败要说出来，不能只在 toast 里一闪而过）
+  devStatus: null,    // 「扫描设备」逐台结果 { serial: {...} }，null = 还没扫过
+  devFound: null      // 「扫描设备」时 adb 认到的**全部**设备（含还没加进列表的），null = 还没扫过
 };
 
 /* ---------------- 工具 ---------------- */
@@ -589,9 +591,10 @@ TABS[6] = {
     // 与主进程 publisher.estimate 同一口径：图文「间隔+30s」、视频「间隔+60s」（视频推得久，还要等媒体库索引）
     const est = Math.round(rows.reduce((a, r) => {
       const isV = r.kind === 'video';
-      const gap = cfg.mock ? (cfg.mockIntervalSec || 5)
-        : (isV ? (cfg.videoIntervalSec || Math.round(((cfg.intervalMinSec + cfg.intervalMaxSec) / 2) * 1.5))
-          : (cfg.intervalMinSec + cfg.intervalMaxSec) / 2);
+      // ★ 与主进程 publisher.estimate 同一口径（原先这里取的是 intervalMin/MaxSec 的平均，
+      //   而真跑的是 intervalSec —— 两个数不一样，界面上的「预计」会偏）。
+      const iv = cfg.intervalSec || cfg.intervalMinSec || 60;
+      const gap = isV ? (cfg.videoIntervalSec || Math.round(iv * 1.5)) : iv;
       return a + gap + (isV ? 60 : 30);
     }, 0) / 60);
     const okCount = rows.filter(r => r.result === '发布成功').length;
@@ -606,19 +609,15 @@ TABS[6] = {
           </select>
           <span class="lbl">失败重试</span>
           <select class="inp" data-cfg="publish.retry">${[0, 1, 2, 3].map(v => `<option value="${v}" ${cfg.retry === v ? 'selected' : ''}>${v} 次</option>`).join('')}</select>
-          <label class="row" style="gap:6px;min-width:auto"><input type="checkbox" data-cfg="publish.mock" ${cfg.mock ? 'checked' : ''}> 演示节奏（${cfg.mockIntervalSec} 秒/条）</label>
         </div>
         <div class="row" style="margin-top:10px">
           <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
-          <button class="btn sm" data-act="pub:dump">抓取页面结构</button>
-          <button class="btn sm" data-act="pub:map">导入 UI 定位表</button>
-          <button class="btn sm" data-act="pub:recoverEdit">失败恢复动作</button>
+          ${((cfg.uiMap || {}).steps ? '' : (canAdmin() ? '<button class="btn sm" data-act="go:advanced">去「高级设置」配 UI 定位表</button>' : ''))}
           <span class="chip">${mode === 'adb' ? '真实设备通道' : '模拟通道'}</span>
           <span class="chip ${(state.config.publish.uiMap || {}).steps ? '' : 'warn'}">${(state.config.publish.uiMap || {}).steps ? '定位表 ' + state.config.publish.uiMap.steps.length + ' 步' : '定位表未配'}</span>
           ${(() => { const m = state.config.publish.uiMap || {}; if (!m.steps) return ''; const vn = (m.videoSteps || []).length; return vn ? `<span class="chip">视频 ${vn} 步</span>` : '<span class="chip">视频未配</span>'; })()}
           <span class="chip">批次 ${esc(pub.batch || '（导出发布单后自动命名）')}</span>
         </div>
-        ${recoverHtml()}
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
         <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒（视频 ≈60 秒，还要等媒体库索引）+ 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。缩短间隔要你自己拍板，默认值按实测给的是 60–120 秒（视频默认 90 秒）。</p>
       </div>
@@ -645,13 +644,21 @@ TABS[6] = {
  */
 function ffDesc(f) {
   if (!f) return '状态取不到';
+  // ★ 手填的路径不存在时必须**说出来**（哪怕已经退回内置可用）：
+  //   静默忽略一个拼错的路径，等于让用户以为配置生效了 —— 与 adb 那边
+  //   「手填的路径不存在，已自动退回内置」的口径保持一致。
+  if (f.configuredMissing) {
+    return f.bundled
+      ? `你填的那个不存在，已退回内置：${f.path}`
+      : `你填的「${f.path}」不存在，且没有内置可用`;
+  }
   if (f.source === 'configured') return `用你指定的：${f.path}`;
   if (f.source === 'bundled') return '程序内置（装完即用，不用自己找）';
-  if (f.source === 'configured-missing') return `你填的「${f.path}」不存在，且没有内置可用`;
   return '用系统 PATH 里的 ffmpeg（不确定有没有）';
 }
 function ffBadge(f) {
   if (!f) return ['warn', '未知'];
+  if (f.configuredMissing) return ['warn', '路径不存在'];
   if (f.source === 'configured') return ['ok', '已指定'];
   if (f.source === 'bundled') return ['ok', '内置'];
   if (f.source === 'configured-missing') return ['warn', '不可用'];
@@ -660,7 +667,7 @@ function ffBadge(f) {
 
 TABS[7] = {
   title: '设置',
-  desc: '路径、文案模型、内容校验、外观、应用更新、外部依赖（品牌与权限已单独成页）',
+  desc: '路径、内容校验、外观、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」）',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
@@ -689,17 +696,6 @@ TABS[7] = {
         <div class="row"><span class="lbl">隔离目录</span><input class="inp mono" value="${esc(c.paths.rejected)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.rejected">修改</button></div>
       </div>
       <div class="box">
-        <h3>文案模型（可选）</h3>
-        <div class="row" style="margin-bottom:9px">
-          <span class="lbl">启用</span>
-          <select class="inp" data-cfg="copy.llm.enabled"><option value="true" ${c.copy.llm.enabled ? 'selected' : ''}>调用模型</option><option value="false" ${!c.copy.llm.enabled ? 'selected' : ''}>本地模板（离线）</option></select>
-        </div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">接口地址</span><input class="inp mono" value="${esc(c.copy.llm.endpoint)}" data-cfg="copy.llm.endpoint" placeholder="https://…/v1/chat/completions"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.copy.llm.apiKey)}" data-cfg="copy.llm.apiKey"></div>
-        <div class="row"><span class="lbl">模型</span><input class="inp mono" value="${esc(c.copy.llm.model)}" data-cfg="copy.llm.model"></div>
-        <p class="hint">不填也能用：本地模板会把「选择」（标题格式 / 视角 / 话题组合）定死，只让模型填空 —— 没模型时由模板填空，流程一致。</p>
-      </div>
-      <div class="box">
         <h3>内容与校验（对齐真机）</h3>
         <p class="hint">品牌不在这里填 —— 见左侧「<b>品牌与权限</b>」页：能建多个品牌，并按账号分配权限。产出的文案 / 发布单 / 发布记录都会带上所属品牌，管理员在「品牌统计」页按品牌查频次、数量和执行日志。</p>
         <div class="row">
@@ -709,15 +705,12 @@ TABS[7] = {
         </div>
         <p class="hint">点上面的按钮在弹窗里配：<b>品牌名 / 文案 / 是否启用 / 本次选用</b>。没配提示词的品牌，<b>文案生成会直接拦下</b> —— 不会拿别的品牌的口吻顶替。</p>
         <p class="hint">原先这里是两个全局输入框（「筛选排序提示词」「文案生成提示词」），它们<b>从来没被代码读过</b>，填了不生效 —— 已经去掉。现在弹窗里改的那份才是真正进模型的。</p>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">货号颜色</span>
-          <select class="inp" data-cfg="verify.mode">
-            <option value="local" ${c.verify.mode === 'local' ? 'selected' : ''}>本地商品池（导入 CSV）</option>
-            <option value="api" ${c.verify.mode === 'api' ? 'selected' : ''}>接口查询（得物后台）</option>
-          </select>
+        <div class="row">
+          <span class="lbl">货号颜色</span>
+          <span class="chip">${c.verify.mode === 'api' ? '接口查询（得物后台）' : '本地商品池（导入 CSV）'}</span>
+          ${canAdmin() ? '<button class="btn sm" data-act="go:advanced">去「高级设置」换…</button>' : ''}
         </div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">SKU 接口</span><input class="inp mono" value="${esc(c.verify.api.endpoint)}" data-cfg="verify.api.endpoint" placeholder="https://…/sku-colors"></div>
-        <div class="row"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.verify.api.apiKey)}" data-cfg="verify.api.apiKey"></div>
-        <p class="hint">接口模式下查不到的货号<b>仅告警不阻断</b>（真机口径）；判定文案为「单色货号，颜色可空 / 多色货号须指定颜色 / 未查到颜色信息，请核对」。</p>
+        <p class="hint">判定文案为「单色货号，颜色可空 / 多色货号须指定颜色 / 未查到颜色信息，请核对」；接口模式下查不到的货号<b>仅告警不阻断</b>（真机口径）。</p>
       </div>
       <div class="box">
         <h3>外观</h3>
@@ -737,19 +730,87 @@ TABS[7] = {
           <thead><tr><th>用途</th><th>依赖</th><th>状态</th></tr></thead>
           <tbody>${dep.map(([a, b, s]) => `<tr><td>${esc(a)}</td><td class="mono">${esc(b)}</td><td>${badge(s[1], s[0])}</td></tr>`).join('')}</tbody>
         </table></div>
-        <div class="row" style="margin-top:10px">
-          <span class="lbl">ffmpeg 路径</span>
-          <input class="inp mono" value="${esc((c.publish || {}).ffmpegPath || '')}" data-cfg="publish.ffmpegPath"
-            placeholder="留空 = 自动（优先用程序内置的，再退系统里的）；只有想强制用某一个时才填完整路径">
-        </div>
-        <p class="hint">用来把 <code>.mov</code> / <code>.m4v</code> 等视频转成 <code>.mp4</code>（得物只收 mp4）。
-          <b>留空就行</b> —— 程序自带一份（GPL-3.0 静态版），装完即用。填了就以你填的为准。
-          填的路径不存在时会自动退回内置那份，并在上表里提醒你。填完<b>立刻生效、不用重启</b>。</p>
-        <p class="hint">转换策略：优先<b>无损转封装</b>（H.264/HEVC 这类 mp4 容器放得下的编码，秒级完成、画质零损失）；
-          转封装放不下（如 ProRes）才<b>转码</b>成 H.264/AAC。转完会校验产物确实是 mp4 才算成功 —— 失败了会如实报错，不会假装转好了。</p>
-        <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>
+        <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。
+          要手填外部工具的路径（adb / ffmpeg）去「<b>高级设置</b>」页 —— 那两个都是装完即用，正常不用填。</p>
       </div>
       <p class="hint">品牌、账号、以及「谁能用哪些品牌」原先挤在这一页最下面 —— 已经挪到左侧的「<b>品牌与权限</b>」页。</p>`;
+  }
+};
+
+/* ---------------- 页签 11：高级设置（仅管理员可见） ----------------
+ * ★ 为什么单开一页：这里全是「装一次、之后再也不动」的配置 —— UI 定位表、失败恢复动作、
+ *   文案模型、货号颜色接口、adb 与 ffmpeg 路径。把它们平铺在日常页面上只是干扰
+ *   （用户原话：「为什么放了这么多实际根本不会点击使用的功能」）。
+ * ★ 但**不许删**：真实通道必须先有 UI 定位表（publisher.run 会直接 throw），
+ *   中文输入法不装则中文一个字都发不出去 —— 它们只是「不常点」，不是「没用」。
+ * ★ 仅管理员可见：藏起来只是不给人添乱，真正拦住的是主进程那几道 guard。
+ */
+TABS[11] = {
+  title: '高级设置',
+  admin: true,
+  desc: '装一次就不再动的配置：UI 定位表、失败恢复动作、文案模型、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
+  actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
+  render() {
+    const c = state.config;
+    const info = state.info || {};
+    const pub = c.publish || {};
+    const map = pub.uiMap || {};
+    const steps = map.steps || [];
+    const vsteps = map.videoSteps || [];
+    return `
+      <div class="box">
+        <h3>UI 定位表（真实发布必需）</h3>
+        <div class="row">
+          <span class="chip ${steps.length ? '' : 'warn'}">${steps.length ? '图文已配 ' + steps.length + ' 步' : '图文未配'}</span>
+          <span class="chip ${vsteps.length ? '' : 'warn'}">${vsteps.length ? '视频已配 ' + vsteps.length + ' 步' : '视频未配'}</span>
+          <button class="btn sm" data-act="pub:dump">抓取页面结构</button>
+          <button class="btn sm" data-act="pub:map">导入 UI 定位表</button>
+        </div>
+        <p class="hint">得物 App 的发布页结构会随版本变，所以「按钮 / 输入框在哪」做成了可抓取的定位表。
+          <b>没配这张表，真实通道会直接拦下</b>（宁可不发，也不瞎点）。做法：设备连上并停在得物发布页 →
+          点「抓取页面结构」→ 输出目录里生成一份候选 uiMap.json → 核对后点「导入 UI 定位表」导进来。</p>
+      </div>
+      <div class="box">
+        <h3>失败恢复动作</h3>
+        ${recoverHtml()}
+        ${state.recoverEdit === null ? '<div class="row" style="margin-top:6px"><button class="btn sm" data-act="pub:recoverEdit">编辑恢复动作</button></div>' : ''}
+      </div>
+      ${advBox('文案模型（可选）', false,
+        `<div class="row" style="margin-bottom:9px">
+          <span class="lbl">启用</span>
+          <select class="inp" data-cfg="copy.llm.enabled"><option value="true" ${c.copy.llm.enabled ? 'selected' : ''}>调用模型</option><option value="false" ${!c.copy.llm.enabled ? 'selected' : ''}>本地模板（离线）</option></select>
+        </div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">接口地址</span><input class="inp mono" value="${esc(c.copy.llm.endpoint)}" data-cfg="copy.llm.endpoint" placeholder="https://…/v1/chat/completions"></div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.copy.llm.apiKey)}" data-cfg="copy.llm.apiKey"></div>
+        <div class="row"><span class="lbl">模型</span><input class="inp mono" value="${esc(c.copy.llm.model)}" data-cfg="copy.llm.model"></div>
+        <p class="hint">不填也能用：本地模板会把「选择」（标题格式 / 视角 / 话题组合）定死，只让模型填空 —— 没模型时由模板填空，流程一致。</p>`,
+        '默认关闭 · 离线模板就够用')}
+      ${advBox('货号颜色查询方式', false,
+        `<div class="row" style="margin-bottom:9px"><span class="lbl">方式</span>
+          <select class="inp" data-cfg="verify.mode">
+            <option value="local" ${c.verify.mode === 'local' ? 'selected' : ''}>本地商品池（导入 CSV）</option>
+            <option value="api" ${c.verify.mode === 'api' ? 'selected' : ''}>接口查询（得物后台）</option>
+          </select>
+        </div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">SKU 接口</span><input class="inp mono" value="${esc(c.verify.api.endpoint)}" data-cfg="verify.api.endpoint" placeholder="https://…/sku-colors"></div>
+        <div class="row"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.verify.api.apiKey)}" data-cfg="verify.api.apiKey"></div>`,
+        '出厂 = 本地商品池')}
+      ${advBox('外部依赖路径（一般留空）', false,
+        `<div class="row" style="margin-bottom:9px"><span class="lbl">adb 路径</span>
+          <input class="inp mono" value="${esc(pub.adbPath || '')}" data-cfg="publish.adbPath"
+            placeholder="留空 = 自动（优先程序内置的，再退系统 PATH）"></div>
+        <div class="row"><span class="lbl">ffmpeg 路径</span>
+          <input class="inp mono" value="${esc(pub.ffmpegPath || '')}" data-cfg="publish.ffmpegPath"
+            placeholder="留空 = 自动（优先程序内置的，再退系统 PATH）"></div>
+        <p class="hint">两个都是<b>装完即用</b>，正常不用填。填了就以你填的为准；填的路径不存在会自动退回内置那份，
+          并在「设置 → 外部依赖」表里如实标出<b>「路径不存在」</b>（不会静默忽略你拼错的路径）。
+          改完<b>立刻生效、不用重启</b>。</p>
+        <p class="hint">ffmpeg 用来把 <code>.mov</code> / <code>.m4v</code> 等转成 <code>.mp4</code>（得物只收 mp4）：
+          优先<b>无损转封装</b>（秒级、画质零损失），转封装放不下（如 ProRes）才转码成 H.264/AAC，转完会校验产物确实是 mp4。</p>
+        <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>`,
+        '内置即用 · 没特殊情况不要动')}
+      <p class="hint">这一页只有管理员看得到。日常操作在「模拟器发布」「设置」两页；
+        <b>中文输入法</b>不在这里 —— 它按需出现在「检查能不能发布」的结果里（没装才会冒出来）。</p>`;
   }
 };
 
@@ -1081,8 +1142,11 @@ TABS[9] = {
 
 /** 设备矩阵：真机里「一个设备 = 一个账号」（雷电模拟器多台并行） */
 function devicesHtml() {
-  const list = (state.config.publish && state.config.publish.devices) || [];
-  const sel = (state.config.publish && state.config.publish.device) || '';
+  const p = state.config.publish || {};
+  const list = p.devices || [];
+  const sel = p.device || '';
+  // adb 现在认到的全部设备（含还没加进列表的）；null = 还没扫过
+  const found = state.devFound;
   const rows = list.length ? `<div class="tw"><table>
     <thead><tr><th>设备（账号）</th><th>序列号</th><th>状态</th><th></th></tr></thead>
     <tbody>${list.map(d => `<tr class="${String(sel) === String(d.serial) ? 'warnrow' : ''}">
@@ -1092,30 +1156,39 @@ function devicesHtml() {
       <td><button class="btn sm" data-act="pub:useDev" data-serial="${esc(d.serial)}">选用</button>
           <button class="btn sm" data-act="pub:delDev" data-id="${esc(d.id)}">删除</button></td>
     </tr>`).join('')}</tbody></table></div>`
-    : `<div class="empty">还没有设备。真机是一台模拟器对应一个账号（如 emulator-5554 = 主号），在下面添加。</div>`;
+    : `<div class="empty">还没有设备。点下面「扫描设备」—— 模拟器开着的话它会直接列出来，点一下「加入并使用」就行。</div>`;
+  // 还没加进列表的那些：直接给「加入并使用」——用户不必知道 emulator-5554 这种名字
+  const fresh = (found || []).filter(f => !f.configured);
+  const freshBox = fresh.length ? `
+    <div style="margin-top:10px">
+      <div class="hint" style="margin:0 0 6px">adb 现在认到这些设备（还没加进来）：</div>
+      <div class="tw"><table>
+        <thead><tr><th>序列号</th><th>状态</th><th></th></tr></thead>
+        <tbody>${fresh.map(f => `<tr>
+          <td class="mono">${esc(f.serial)}</td>
+          <td>${f.online ? badge('在线', 'ok') : badge(f.state || '离线', 'wait')}</td>
+          <td><button class="btn sm primary" data-act="pub:useFound" data-serial="${esc(f.serial)}"${f.online ? '' : ' disabled'}>加入并使用</button></td>
+        </tr>`).join('')}</tbody></table></div>
+    </div>` : '';
+  const noneBox = (found && !found.length)
+    ? `<p class="hint" style="margin-top:9px">adb 现在一台设备都没认到：先把模拟器启动起来，并确认它开了「ADB 调试」，再点一次「扫描设备」。</p>`
+    : '';
   return `<div class="box"><h3>设备管理（一个设备 = 一个账号）</h3>${rows}
     <div class="row" style="margin-top:10px">
-      <input class="inp mono" id="devName" placeholder="账号名，如 主号" style="flex:0 0 160px;min-width:0">
-      <input class="inp mono" id="devSerial" placeholder="序列号，如 emulator-5554" style="flex:0 0 190px;min-width:0">
-      <button class="btn sm" data-act="pub:addDev">添加设备</button>
-      <button class="btn sm" data-act="pub:devStatus">检测在线</button>
+      <button class="btn sm primary" data-act="pub:devScan">扫描设备</button>
       <span class="chip ${(state.project.publish || {}).connected ? 'run' : ''}">${(state.project.publish || {}).connected ? '已连接' : '未连接'}</span>
+      <span class="hint" style="margin:0">扫描就是问一下 adb「现在都连着谁」，不用你填序列号</span>
     </div>
-    <div class="row" style="margin-top:10px">
-      <span class="lbl">adb 路径</span>
-      <input class="inp mono" value="${esc((state.config.publish || {}).adbPath || '')}" data-cfg="publish.adbPath"
-        placeholder="留空 = 自动（优先用程序内置的，再退系统里的）；只有想强制用某一个时才填完整路径">
-    </div>
-    <p class="hint">这一行是<b>电脑跟模拟器之间的“对讲机”</b>。<b>留空就行</b> —— 程序自带一份，装完即用，
-      不用你自己去模拟器安装目录里翻。填了就以你填的为准（程序<b>不会</b>偷偷拿内置的替掉你的配置）；
-      填的路径不存在时会自动退回内置那份，并在检查结果里提醒你。填完<b>立刻生效、不用重启</b>。</p>
-    <p class="hint">★ 顺带说清一个容易误会的点：程序里“内置”的两样东西，<b>含义不一样</b> ——
-      <b>adb</b> 是电脑上的工具，装完本程序就能直接用；
-      <b>中文输入法（ADBKeyboard.apk）</b>是装到<b>模拟器</b>里的，安装包只是跟着程序一起发下来了，
-      <b>第一次还要往模拟器里装一次并启用</b>：到「模拟器发布」页点一次「检查能不能发布」，
-      结果里会出现一个「一键装上中文输入法」的按钮，点它即可（<b>只点一次</b>，之后一直有效）。
-      不装的话，得物的<b>中文</b>标题和正文打不进去（英文数字不受影响）。</p>
-    </div>`;
+    ${freshBox}${noneBox}
+    <details style="margin-top:9px">
+      <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">手动填序列号添加（一般用不到）</summary>
+      <div class="row" style="margin-top:8px">
+        <input class="inp mono" id="devName" placeholder="账号名，如 主号" style="flex:0 0 160px;min-width:0">
+        <input class="inp mono" id="devSerial" placeholder="序列号，如 emulator-5554" style="flex:0 0 190px;min-width:0">
+        <button class="btn sm" data-act="pub:addDev">添加设备</button>
+      </div>
+    </details>
+  </div>`;
 }
 
 /** adb 从哪来 —— 与技术详情里那一列配套；unknown 的取值一律显示原文，不美化 */
@@ -1252,6 +1325,7 @@ function bindLogPane() {
 
 /* ---------------- 渲染入口 ---------------- */
 function renderAll() {
+  syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
   const t = TABS[state.tab];
   document.querySelectorAll('.nav').forEach(el => el.classList.toggle('on', Number(el.dataset.tab) === state.tab));
   $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(t.desc)}</p></div>
@@ -1277,7 +1351,7 @@ function renderAll() {
   // 页内的设置项：任何页签都要能存（文案生成 / 模拟器发布页里也有）
   bindCfgInputs();
   // 设置页与「品牌与权限」页共用一套绑定：都按 id 找元素，找不到就跳过
-  if (state.tab === 7 || state.tab === 9) bindSettings();
+  if (state.tab === 7 || state.tab === 9 || state.tab === 11) bindSettings();
   // 运行日志页：行是渲染后单独铺的（而且要保住筛选框的光标，不能整页重画）
   if (state.tab === 10) bindLogPane();
   if (state.tab === 8) {
@@ -1477,6 +1551,31 @@ function closeBrandModal() {
 function canAdmin() {
   const a = state.auth || {};
   return !a.requireLogin || !!a.isAdmin;
+}
+
+/**
+ * 高级设置里的一个折叠块：默认收起，需要时展开。
+ * （`<details>` 不会继承 .box 里 h3 的样式，所以标题自己给一份）
+ */
+function advBox(title, open, body, hint) {
+  return `<details class="box"${open ? ' open' : ''}>
+    <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--tx2);letter-spacing:.03em">
+      ${esc(title)}${hint ? `<span class="hint" style="font-weight:400;margin-left:8px">${esc(hint)}</span>` : ''}
+    </summary>
+    <div style="margin-top:10px">${body}</div>
+  </details>`;
+}
+
+/**
+ * 管理员专属页签（现在只有「高级设置」）：非管理员整个按钮都不显示。
+ * ★ 这只是「不给人添乱」—— 真正拦住的是主进程那几道 guard。但这条不能省：
+ *   否则普通成员能点进一个自己改不动、也不该动的页面，只会一头雾水。
+ * 顺带把「当前正停在一个自己已经看不到的页签上」拉回来（退出登录 / 换账号时会遇到）。
+ */
+function syncAdminNav() {
+  const ok = canAdmin();
+  document.querySelectorAll('.nav[data-admin]').forEach(el => { el.hidden = !ok; });
+  if (!ok && TABS[state.tab] && TABS[state.tab].admin) state.tab = 1;
 }
 
 /** 这个人能编辑哪些品牌：管理员=全部；成员=名下的（含已停用的，否则停用一个他连看都看不到） */
@@ -2101,17 +2200,39 @@ const ACTS = {
     state.project = await appApi.projectGet();
     renderAll();
   },
-  'pub:devStatus': async () => {
+  // 扫描：问 adb「现在都连着谁」——连配置里没加过的设备也一并列出来（用户不用再自己抄序列号）
+  'pub:devScan': async () => {
     const r = await appApi.run('publish.devices', {});
     if (r.ok) {
       const map = {};
       (r.result.devices || []).forEach(d => { map[d.serial] = d; });
       state.devStatus = map;
-      const online = (r.result.devices || []).filter(d => d.online).length;
-      toast(`已检测 ${r.result.devices.length} 台设备，${online} 台在线`, online ? 'ok' : '');
+      state.devFound = r.result.found || [];
+      const online = state.devFound.filter(d => d.online).length;
+      const fresh = state.devFound.filter(d => !d.configured).length;
+      toast(state.devFound.length
+        ? `adb 认到 ${state.devFound.length} 台设备，${online} 台在线${fresh ? `（其中 ${fresh} 台还没加进来，可直接「加入并使用」）` : ''}`
+        : 'adb 现在一台设备都没认到：先把模拟器启动起来，并确认它开了「ADB 调试」',
+      state.devFound.length ? (online ? 'ok' : '') : 'err');
     }
     renderAll();
   },
+  // adb 认到、还没加进列表的设备：一键加入并选用。
+  // ★ 有了这一步，用户永远不用知道 emulator-5554 是什么 —— 原来他得自己把那个名字抄进输入框。
+  'pub:useFound': async (el) => {
+    const serial = el.dataset.serial;
+    const add = await appApi.run('publish.addDevice', { name: serial, serial });
+    if (!add.ok && !/已存在/.test(add.error || '')) { toast(add.error || '加入失败', 'err'); renderAll(); return; }
+    await appApi.configSet({ publish: { device: serial } });
+    state.config = await appApi.configGet();
+    state.project.publish = state.project.publish || {};
+    const r = await appApi.run('publish.connect', { device: serial });
+    state.project = await appApi.projectGet();
+    toast(r.ok ? `${serial}：${r.result.note}` : `${serial} 已加入，但连接没成`, r.ok ? 'ok' : 'err');
+    renderAll();
+  },
+  // 「去高级设置」：发布页/设置页只剩只读回显时，给管理员一条直达的路
+  'go:advanced': () => { state.tab = 11; renderAll(); },
   'pub:run': async () => { await runJob('publish.run', {}); },
   'pub:exportLog': async () => {
     const batch = (state.project.publish || {}).batch || '';
@@ -2307,6 +2428,14 @@ async function saveCfgFromDom() {
   });
   await appApi.configSet(patch);
   state.config = await appApi.configGet();
+  // ★ 外部工具的路径改完要**立刻**看得见「现在用的是哪一个」：adb / ffmpeg 的三段解析结果
+  //   在主进程的 app:info 里，不刷新的话「外部依赖」表还写着旧状态，用户会以为没生效。
+  //   只在真动了这两个键时刷新，且只在这两页重画 —— 别的页重画会打断正在输入的人。
+  const p2 = patch.publish || {};
+  if (Object.prototype.hasOwnProperty.call(p2, 'adbPath') || Object.prototype.hasOwnProperty.call(p2, 'ffmpegPath')) {
+    state.info = await appApi.info();
+    if (state.tab === 7 || state.tab === 11) renderAll();
+  }
 }
 
 /**

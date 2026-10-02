@@ -98,6 +98,13 @@
         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="8.2" cy="12" r="4"/><path d="M12.2 12h8.4M17.6 12v3.2M14.9 12v2.4"/></svg></span>
         <span>品牌与权限</span>
       </button>
+      <!-- 高级设置：装一次就不再动的配置（UI 定位表 / 失败恢复动作 / 文案模型 / 货号颜色接口 /
+           adb、ffmpeg 路径）。data-admin="1" ⇒ 非管理员整个按钮都不显示（见 app.js syncAdminNav）。
+           编号接在最后（11）：插进中间要改一堆已有编号、快捷键与测试断言，为一个新页签不划算 -->
+      <button class="nav" data-tab="11" data-admin="1">
+        <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.2M12 18.2v2.2M5.4 7.4l1.9 1.1M16.7 15.5l1.9 1.1M5.4 16.6l1.9-1.1M16.7 8.5l1.9-1.1"/></svg></span>
+        <span>高级设置</span>
+      </button>
     </nav>
 
     <div class="main">

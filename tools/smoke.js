@@ -64,7 +64,7 @@ const imaging = require(path.join(base, 'src/main/services/imaging.js'));
 store.set({
   paths: { source: path.join(TMP, '素材'), output: path.join(TMP, '输出/得物'), rejected: path.join(TMP, '素材/_rejected') },
   compliance: { maxImageMB: 0.0005, maxVideoSec: 600, isolateJunk: true },  // 故意压得很小，触发压缩分支
-  publish: { mock: true, mockIntervalSec: 1, retry: 1 }
+  publish: { intervalSec: 1, videoIntervalSec: 1, retry: 1 }   // 「演示节奏」开关已删：现在直接给 1 秒间隔
 });
 
 const logs = [];
