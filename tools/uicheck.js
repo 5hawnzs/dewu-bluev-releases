@@ -1110,16 +1110,47 @@ app.whenReady().then(async () => {
       && /const serial = device \|\| c\.device \|\| \(list\[0\] && list\[0\]\.serial\) \|\| '';/.test(P3)
       && /还没选设备/.test(P3));
 
-    // ④ 界面不许再提示「如 emulator-5554」（那是在让人手抄一个不该记的名字）
-    ok('★ 界面不再提示「如 emulator-5554」（改成引导用「扫描设备」）',
-      !/如 emulator-5554/.test(codeOnly3(A3)));
+    // ④ ★★ 面向用户的文案里**一个设备名字例都不许有**。
+    //    上一版只查了 app.js 的「如 emulator-5554」，结果 adb.js 的
+    //    「（雷电 / MuMu 默认就叫 emulator-5554）」整段溜过去了 —— 用户直接截图打脸。
+    //    判据（可复算）：src/ 下所有 js/html/css 里，emulator-5554 只允许出现在**注释行**。
+    const straySerials = [];
+    (function walk(p) {
+      for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+        const f = path.join(p, e.name);
+        if (e.isDirectory()) { walk(f); continue; }
+        if (!/\.(js|html|css)$/.test(e.name)) continue;
+        fs.readFileSync(f, 'utf8').split(/\r?\n/).forEach((ln, i) => {
+          if (!ln.includes('emulator-5554')) return;
+          const t = ln.trim();
+          if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return;
+          straySerials.push(path.relative(ROOT, f) + ':' + (i + 1));
+        });
+      }
+    })(path.join(ROOT, 'src'));
+    ok('★ 面向用户的文案里不再出现序列号示例（emulator-5554 只许出现在注释里）',
+      straySerials.length === 0, straySerials.join(' | '));
+
+    // ⑤ 「还没选设备」这条提示的正文里**连动态拼进去的设备名也不许有** ——
+    //    用户看到界面上冒出一串英文数字，分不清那是模拟器真名还是程序写死的，一律不出现。
+    const ADB3 = fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8');
+    const saySeg = (() => {
+      const i = ADB3.indexOf('还没选设备（但检测到你有模拟器在线）');
+      if (i < 0) return '';
+      const j = ADB3.indexOf(": '三步：", i);
+      return j < 0 ? '' : ADB3.slice(i, j);
+    })();
+    ok('★ 「还没选设备」的提示正文里不点名任何设备（连动态拼的也不许）',
+      saySeg.length > 0 && !/\$\{/.test(saySeg), saySeg.slice(0, 110));
+
+    // ⑥ 视频没单独配时复用图文 steps（用户实测两者发布位置一样）
 
     // ⑤ 视频没单独配时复用图文 steps（用户实测两者发布位置一样）
     ok('★ 视频复用图文定位表（videoSteps 为空时不再抛错，直接走 steps）',
       /const steps = isVideo \? \(vSteps\.length \? vSteps : \(map\.steps \|\| \[\]\)\) : \(map\.steps \|\| \[\]\);/.test(P3)
       && !/视频条会直接失败/.test(J3));
 
-    // ⑥ 界面不再说「视频未配」（改成「视频复用图文」，免得用户以为还要再抓一次）
+    // ⑦ 界面不再说「视频未配」（改成「视频复用图文」，免得用户以为还要再抓一次）
     ok('★ 界面把「视频未配」改成「视频复用图文」',
       !/视频未配/.test(codeOnly3(A3)) && /视频复用图文/.test(A3));
   }

@@ -428,6 +428,22 @@ const state = {
   adbMod.setBundledAdbDir('');
   adbMod.setAdbPath('adb');
 
+  // ============ 16) ★★ 「还没选设备」的提示里一个设备名都不许出现 ============
+  //   行为级验证（不只是扫源码）：假 adb 的 devices 输出里有一台 127.0.0.1:5555，
+  //   提示里只要点了名，这里就会看到它。用户对这件事提了三次。
+  clearCalls();
+  const pb16 = await adbMod.probe('');
+  const f16 = pb16.fix.find(f => /还没选设备/.test(f.title)) || {};
+  const all16 = pb16.fix.map(f => f.title + '\n' + f.how).join('\n') + '\n' + (pb16.notes || []).join('\n');
+  ok('⑯ 没选设备 ⇒ 老实报「还没选设备」，且正文里**一个设备名都没有**',
+    pb16.device === null && !!f16.title
+    && !/127\.0\.0\.1:5555/.test(all16) && !/emulator-5554/i.test(all16),
+    JSON.stringify({ title: f16.title, how: f16.how }));
+  ok('⑯ 但「扫到几台设备」这个量还是要说（不然用户不知道扫描有没有用）',
+    /在线可用 1 台/.test(all16), (pb16.notes || []).join(' | '));
+  ok('⑯ 引导的是「扫描设备 → 加入并使用」，不是让人手抄名字',
+    /扫描设备/.test(f16.how || '') && /加入并使用/.test(f16.how || ''), f16.how || '');
+
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));
 })().catch(e => { console.error('ADB TEST ERROR', e); process.exitCode = 1; });
