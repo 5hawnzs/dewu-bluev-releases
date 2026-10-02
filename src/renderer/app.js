@@ -27,6 +27,9 @@ const state = {
   userModal: null,
   // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
   brandModal: null,
+  // 云端配置弹窗：null=关着；'export' | 'import'。cloudCfg 是导出时从主进程取回的那份（含 url/key）
+  cloudModal: null,
+  cloudCfg: null,
   upd: null,          // 应用更新状态（来自主进程）null=还没读到
   logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
   logFilter: { level: '', q: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
@@ -844,7 +847,14 @@ TABS[11] = {
           <button class="btn sm" data-act="cloud:test">测试连接</button>
           <button class="btn sm primary" data-act="cloud:sync">立即同步</button>
         </div>
+        <div class="row"><span class="lbl">下发配置</span>
+          <button class="btn sm" data-act="cloud:exp">导出配置</button>
+          <button class="btn sm" data-act="cloud:imp">导入配置</button>
+          <span class="hint">换项目、或给不方便重打包的机器下发凭据时用</span>
+        </div>
         <div id="cloudState" class="hint">读取中…</div>
+        <p class="hint"><b>地址与 anon key 已内置在包里</b>（组织统一配置）：装完就能连，各台机器<b>不用填任何东西</b>，
+          机器名默认用电脑名。要换项目就用上面的「导出 / 导入配置」，或者直接改这两个框（界面上填的优先）。</p>
         <p class="hint"><b>只上行「发布结果」这一张表</b>：时间 / 机器 / 执行人 / 品牌 / 批次 / 篇号 / 成功或失败 / 原因 / 耗时。
           <b>素材内容、绝对路径、日志原文一概不上行</b>（目录只取最后一段款名）。关着的时候<b>一次都不联网</b>。</p>
         <p class="hint">★ 这里只能填 <b>anon public key</b>（它本来就是设计成公开的，靠数据库的 RLS 策略收口）。
@@ -969,6 +979,44 @@ function cloudStateHtml(s) {
   if (s.reset) bits.push(`游标已重置：${esc(s.reset)}`);
   if (s.lastError) bits.push(`上次失败：${esc(s.lastError)}`);
   return `${badge(s.lastError ? '同步失败' : '已连接', s.lastError ? 'bad' : 'ok')} ${bits.join(' · ')}`;
+}
+
+/**
+ * 云端配置弹窗（导出 / 导入）。
+ * ★ 跟品牌弹窗一个套路：挂在 .app 外面（塞进 #pane 会被 overflow 裁掉，底部按钮点不到），
+ *   而且 renderAll 会被进度事件频繁触发 —— 挂在 #pane 里的话，正在粘贴的内容会被重画没。
+ */
+function openCloudModal(view) { state.cloudModal = view || 'export'; renderCloudModal(); }
+function closeCloudModal() { state.cloudModal = null; renderCloudModal(); }
+
+function renderCloudModal() {
+  const mask = $('#cmodal'), box = $('#cmBox');
+  if (!mask || !box) return;
+  const v = state.cloudModal;
+  if (!v) { mask.hidden = true; box.innerHTML = ''; return; }
+  mask.hidden = false;
+  if (v === 'export') {
+    const c = state.cloudCfg || {};
+    box.innerHTML = `
+      <h3>导出云端配置</h3>
+      <p class="hint">把这段发给别的机器：在那台机器的「导入配置」里粘进去就行，不用手填三个框。
+        里面是 <b>anon key</b>（公开设计，靠数据库策略收口），<b>不是</b> service_role。</p>
+      <textarea id="cmText" rows="7" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;border:1px solid var(--line);border-radius:7px">${esc(JSON.stringify({ url: c.url || '', anonKey: c.anonKey || '', org: c.org || '' }, null, 2))}</textarea>
+      <div class="row" style="margin-top:10px;justify-content:flex-end">
+        <button class="btn sm" data-act="cloud:close">关闭</button>
+        <button class="btn sm primary" data-act="cloud:copy">复制</button>
+      </div>`;
+  } else {
+    box.innerHTML = `
+      <h3>导入云端配置</h3>
+      <p class="hint">把别人给你的那段 JSON 粘进来。会先校验格式、再连一次确认能用，没问题才保存 ——
+        粘错地址会让所有机器一起失联，而界面上只显示「同步失败」四个字。</p>
+      <textarea id="cmText" rows="7" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;border:1px solid var(--line);border-radius:7px" placeholder='{"url":"https://xxxx.supabase.co","anonKey":"...","org":"bluev"}'></textarea>
+      <div class="row" style="margin-top:10px;justify-content:flex-end">
+        <button class="btn sm" data-act="cloud:close">取消</button>
+        <button class="btn sm primary" data-act="cloud:impGo">导入并连接</button>
+      </div>`;
+  }
 }
 
 async function refreshCloudState() {
@@ -2005,7 +2053,37 @@ function upPwdHtml(id) {
 
 /* ---------------- 交互 ---------------- */
 const ACTS = {
-  // ---- 云端协作（可选）：两个动作都只是「推一次 / 试一下」，发布本身不依赖它 ----
+  // ---- 云端协作：推一次 / 试一下 / 下发配置。发布本身不依赖这里的任何一个 ----
+  'cloud:exp': async () => {
+    const r = await appApi.cloudExport().catch(() => null);
+    if (!r || !r.ok) { toast('取不到云端配置', 'err'); return; }
+    state.cloudCfg = r;
+    openCloudModal('export');
+  },
+  'cloud:imp': () => openCloudModal('import'),
+  'cloud:close': () => closeCloudModal(),
+  'cloud:copy': async () => {
+    const t = document.querySelector('#cmText');
+    if (!t) return;
+    try { await navigator.clipboard.writeText(t.value); toast('已复制，发给对方粘进「导入配置」就行', 'ok'); }
+    catch (e) { t.select(); toast('自动复制被拦下了：已选中，请按 Ctrl+C', 'err'); }
+  },
+  'cloud:impGo': async () => {
+    const t = document.querySelector('#cmText');
+    const raw = (t && t.value || '').trim();
+    if (!raw) { toast('先粘贴一段配置', 'err'); return; }
+    let cfg = null;
+    try { cfg = JSON.parse(raw); } catch (e) { toast('这不是合法的 JSON：粘的时候可能少了开头或结尾', 'err'); return; }
+    const r = await appApi.cloudImport(cfg).catch(e2 => ({ ok: false, error: String((e2 && e2.message) || e2) }));
+    if (r && r.ok) {
+      toast('已导入并连上：' + (r.org ? `组织「${r.org}」` : '新地址'), 'ok');
+      closeCloudModal();
+      state.config = await appApi.configGet();
+      renderAll();
+    } else {
+      toast('导入没成：' + ((r && r.error) || '取不到原因'), 'err');
+    }
+  },
   'cloud:test': async () => {
     const r = await appApi.cloudTest().catch(e => ({ ok: false, error: String((e && e.message) || e) }));
     toast(r && r.ok ? '连上了：地址和 key 都能用' : `连不上：${(r && r.error) || '取不到原因'}`, r && r.ok ? 'ok' : 'err');
@@ -2697,6 +2775,8 @@ function bind() {
   if (bmask) bmask.addEventListener('click', e => { if (e.target === bmask) closeBrandModal(); });
   const umask = $('#umodal');
   if (umask) umask.addEventListener('click', e => { if (e.target === umask) closeUserModal(); });
+  const cmask = $('#cmodal');
+  if (cmask) cmask.addEventListener('click', e => { if (e.target === cmask) closeCloudModal(); });
 
   document.querySelectorAll('.nav').forEach(b => {
     b.onclick = () => { state.tab = Number(b.dataset.tab); renderAll(); };
@@ -2712,6 +2792,7 @@ function bind() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
     if (e.key === 'Escape' && state.userModal) { closeUserModal(); e.preventDefault(); return; }
+    if (e.key === 'Escape' && state.cloudModal) { closeCloudModal(); e.preventDefault(); return; }
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
       if (k >= 1 && k <= 9) { state.tab = k; renderAll(); e.preventDefault(); }

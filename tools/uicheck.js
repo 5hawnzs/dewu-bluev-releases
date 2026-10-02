@@ -759,16 +759,52 @@ app.whenReady().then(async () => {
       recover: has('[data-act="pub:recoverEdit"]'),
       llm: has('[data-cfg="copy.llm.enabled"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
       mode: has('[data-cfg="verify.mode"]'), conc: has('[data-cfg="copy.concurrency"]'),
-      cloud: has('#cloudState') && has('[data-cfg="cloud.url"]') && has('[data-cfg="cloud.anonKey"]'),
+      cloud: has('#cloudState') && has('[data-cfg="cloud.url"]') && has('[data-cfg="cloud.anonKey"]')
+        && has('[data-act="cloud:exp"]') && has('[data-act="cloud:imp"]'),
       collapsed: ds.length, openCount: ds.filter(d => d.open).length
     };
   })()`);
-  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作）',
+  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作含导出导入）',
     advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map && advUi.recover
       && advUi.llm && advUi.sku && advUi.mode && advUi.conc && advUi.cloud, JSON.stringify(advUi));
   // 五块：文案模型 / 并发路数 / 货号颜色 / 外部依赖路径 / 云端协作（2026-10-02 新增云端协作）
   ok('★ 高级设置里「可选」的五块默认是收起的（折叠区，不占地方）',
     advUi.collapsed === 5 && advUi.openCount === 0, JSON.stringify(advUi));
+
+  // ★ 2026-10-02（第三轮）：云端配置的「下发」—— 导出 / 导入两个动作 + 一个弹窗。
+  //   ① 结构：弹窗必须写在 index.html 里，且**在 .app 外面**。
+  //      （2026-10-02 真踩过：塞进 #pane 会被 overflow 裁掉，底部按钮点不到；
+  //        而且 renderAll 会被进度事件频繁触发 —— 挂在 #pane 里，正在粘贴的内容会被重画没。）
+  //   ② 行为：真点一下「导入配置」（它只是开弹窗，不需要任何凭据），确认能开、Esc 能关。
+  const idxHtml = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
+  const iLines = idxHtml.split(/\r?\n/);
+  const appOpen = iLines.findIndex(l => /<div class="app">/.test(l));
+  const appClose = iLines.findIndex((l, i) => i > appOpen && /^<\/div>/.test(l));
+  const cmodalAt = iLines.findIndex(l => /id="cmodal"/.test(l));
+  ok('★ 云端配置弹窗在 index.html 且挂在 .app 外面（塞进 #pane 会被裁掉、底部按钮点不到）',
+    appOpen >= 0 && appClose > appOpen && cmodalAt > appClose && /id="cmBox"/.test(idxHtml),
+    JSON.stringify({ appOpen, appClose, cmodalAt }));
+
+  const cloudModalUi = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="11"]').click();
+    await new Promise(r => setTimeout(r, 200));
+    const btn = document.querySelector('[data-act="cloud:imp"]');
+    if (!btn) return { hasBtn: false };
+    btn.click();
+    await new Promise(r => setTimeout(r, 150));
+    const mask = document.querySelector('#cmodal');
+    const box = document.querySelector('#cmBox');
+    const open = !!mask && !mask.hidden;
+    const outsidePane = !!mask && !mask.closest('#pane');
+    const hasArea = !!(box && box.querySelector('#cmText'));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await new Promise(r => setTimeout(r, 150));
+    return { hasBtn: true, open, outsidePane, hasArea, closed: !!mask && mask.hidden };
+  })()`);
+  ok('★ 点「导入配置」真开出弹窗，且在 #pane 外面、有可粘贴的输入区',
+    cloudModalUi.hasBtn && cloudModalUi.open && cloudModalUi.outsidePane && cloudModalUi.hasArea,
+    JSON.stringify(cloudModalUi));
+  ok('★ Esc 能关掉云端配置弹窗（关不掉的弹窗会挡住整页）', cloudModalUi.closed === true, JSON.stringify(cloudModalUi));
 
   // ★ 2026-10-02（第二轮）：用户点名「并发路数」也挪进高级设置 —— 它是运行参数（撞接口限流的旋钮），
   //   和「必带话题 / 轮换策略」那种**改产出**的业务内容不是一回事。两件事都要验：

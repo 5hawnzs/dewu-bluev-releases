@@ -272,6 +272,10 @@ function register() {
   ipcMain.handle('cloud:status', guardAdmin(() => cloudsync.status()));
   ipcMain.handle('cloud:sync', guardAdmin(() => cloudsync.syncOnce({ force: true })));
   ipcMain.handle('cloud:test', guardAdmin(() => cloudsync.test()));
+  // 导入 / 导出配置：换项目、或者给不能重打包的同事机下发凭据时用。
+  // ★ 导出的是 anon key（公开设计）；导入时会**拦下 secret/service_role**（见 cloudsync.importConfig）。
+  ipcMain.handle('cloud:export', guardAdmin(() => cloudsync.exportConfig()));
+  ipcMain.handle('cloud:import', guardAdmin((_e, cfg) => cloudsync.importConfig(cfg)));
 
   ipcMain.handle('project:get', guard(() => project.get()));
   ipcMain.handle('log:history', guard(() => logbus.history()));

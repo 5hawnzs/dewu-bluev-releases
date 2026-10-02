@@ -25,6 +25,7 @@ const os = require('os');
 const crypto = require('crypto');
 const store = require('../store');
 const wp = require('../util/winpath');
+const CD = require('../clouddefaults');   // 内置默认值：界面上没填时用它（只有 anon/publishable key）
 
 const BATCH = 200;          // 单批最多几行（PostgREST 一次插入）
 const MAX_BATCHES = 5;      // 单次同步最多几批：台账积压很多时也要给界面留出响应
@@ -85,6 +86,10 @@ function toRow(e, machine) {
   const dir = String((e && e.dir) || '');
   const base = path.basename(dir.replace(/\\/g, '/'));
   return {
+    // 组织标识：insert 策略要按它校验（见 docs/supabase-setup.sql 的 with check (org = 'bluev')）。
+    // ★★ 这里必须兜底到内置默认值：漏了这个字段不是「少一列」，而是**整批被 RLS 拒收**，
+    //    而界面上只显示「同步失败」，排查成本极高。org 本就是组织级常量，兜底不改变语义。
+    org: (machine && machine.org) || CD.org,
     ts: Number(e.ts) || 0,
     machine_id: machine.id,
     machine_name: machine.name,
@@ -113,23 +118,59 @@ function toRow(e, machine) {
 function machineOf(create) {
   const cfg = store.get('cloud') || {};
   const name = String(cfg.machineName || '').trim() || os.hostname() || '未命名机器';
+  const org = String(cfg.org || '').trim() || CD.org;
   let id = String(cfg.machineId || '');
   if (!id) {
-    if (create === false) return { id: '', name };
+    if (create === false) return { id: '', name, org };
     id = 'm_' + crypto.randomUUID().slice(0, 8);
     try { store.set({ cloud: { machineId: id } }); } catch (e) { /* 存不下就用内存里的 */ }
   }
-  return { id, name };
+  return { id, name, org };
 }
 
 function cfgOf() {
   const c = store.get('cloud') || {};
   return {
     enabled: !!c.enabled,
-    url: String(c.url || '').trim().replace(/\/+$/, ''),
-    anonKey: String(c.anonKey || '').trim(),
+    // ★ 界面上没填（或被清空）时落回内置的组织默认值，这样「装上就能连」，不用每台手填
+    url: String(c.url || CD.url).trim().replace(/\/+$/, ''),
+    anonKey: String(c.anonKey || CD.anonKey).trim(),
     intervalSec: Number(c.intervalSec) || 30
   };
+}
+
+/**
+ * 导出配置（给别的机器用）：一段 JSON，含地址与 key。
+ * ★ 只有管理员能调（ipc 层 guardAdmin）；导出的是 anon/publishable key，不是 service_role。
+ */
+function exportConfig() {
+  const cfg = cfgOf();
+  const c = store.get('cloud') || {};
+  return { ok: true, url: cfg.url, anonKey: cfg.anonKey, org: String(c.org || CD.org) };
+}
+
+/**
+ * 导入配置：把导出那段 JSON 粘贴进来。**先校验再落盘**，落盘前连一次确认能用。
+ * ★ 校验的意义：粘进来一个错地址会让所有机器集体失联，而这毛病在界面上只是「同步失败」四个字。
+ */
+async function importConfig(input) {
+  const p = input || {};
+  const url = String(p.url || '').trim().replace(/\/+$/, '');
+  const key = String(p.anonKey || '').trim();
+  if (!/^https:\/\/[a-z0-9.-]+\.(supabase\.co|supabase\.in)(:\d+)?$/i.test(url)) {
+    return { ok: false, error: '地址看着不对：应当是 https://xxxx.supabase.co 这种形式' };
+  }
+  if (!key) return { ok: false, error: '缺少 anon key' };
+  if (/service_role|secret/i.test(key)) {
+    return { ok: false, error: '这把是 secret / service_role key —— 绝不能填进客户端，请换 anon key' };
+  }
+  const org = String(p.org || CD.org).trim() || CD.org;
+  store.set({ cloud: { url, anonKey: key, org } });
+  const t = await test();
+  configure();
+  return t.ok
+    ? { ok: true, url, org, machineId: t.machineId }
+    : { ok: false, error: '配置已保存，但连不上：' + t.error };
 }
 
 async function postRows(url, key, rows) {
@@ -287,4 +328,4 @@ function configure() {
   start();
 }
 
-module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, stateFile, logFile, dataDir };
+module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, exportConfig, importConfig, stateFile, logFile, dataDir };

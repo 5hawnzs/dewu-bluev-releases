@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const wp = require('./util/winpath');
+const CD = require('./clouddefaults');   // 云端默认值（内置进包）：只有 anon/publishable key
 
 let cache = null;
 let saveTimer = null;
@@ -77,10 +78,35 @@ function defaults() {
     // ★ 它**不违**「数据不出本机」：只写版本号/通道名/字节数，不含素材、品牌、SKU。
     update: { channel: 'stable', log: false },
     // 云端协作（阶段 1：只上行发布结果给网页看板做聚合，**不参与发布**）。
-    // ★ 出厂默认关、地址与 anon key 全空：密钥只能由管理员现场填，源码与包里不许预置任何一个。
+    // ★ 地址与 anon key 取 `clouddefaults.js` 里的**内置组织值**：装完就能连，各台机器不用手填。
+    //   内置的是 anon / publishable key（公开设计，靠 RLS 收口），**不是** service_role。
+    // ★ 默认**开启**（多机协作就是要各台都推）；不想上云的机器在这一页关掉开关即可 ——
     //   enabled=false 时 cloudsync 一次都不会联网。
-    cloud: { enabled: false, url: '', anonKey: '', machineId: '', machineName: '', intervalSec: 30 }
+    cloud: {
+      enabled: true,
+      url: CD.url, anonKey: CD.anonKey, org: CD.org,
+      machineId: '', machineName: '', intervalSec: 30
+    }
   };
+}
+
+/**
+ * 老配置补默认值 / 归一化：升级上来的 config.json 里 `cloud.url` 是空串，
+ * 而 mergeDeep 会把空串原样盖住新的默认值（空串不是 undefined）⇒ 不补的话永远连不上。
+ * ★ 只在「为空」时补：管理员在界面上**故意改成别的地址**时不会被顶回去。
+ *
+ * ★★ 必须 load() 和 set() **都调用**，理由不是洁癖，是防「界面骗人」：
+ *    cloudsync.cfgOf() 对空值本来就会兜底到内置地址 ⇒ 如果只有 load() 归一，
+ *    管理员在界面上把地址框清空、看到的是**空白**，而它其实**照样往内置地址推数据**。
+ *    把归一化也做在 set() 上，「存下来的」就永远等于「真正在用的」，界面说空就是真空。
+ *    （真要停掉上云用那一页的开关，不是清空地址 —— 界面上也是这么写的。）
+ */
+function applyCloudDefaults(c) {
+  if (!c.cloud) c.cloud = {};
+  if (!c.cloud.url) c.cloud.url = CD.url;
+  if (!c.cloud.anonKey) c.cloud.anonKey = CD.anonKey;
+  if (!c.cloud.org) c.cloud.org = CD.org;
+  return c;
 }
 
 function mergeDeep(base, patch) {
@@ -104,6 +130,7 @@ function load() {
     const raw = fs.readFileSync(wp.toLong(file()), 'utf8');
     cache = mergeDeep(cache, JSON.parse(raw));
   } catch (e) { /* 首次启动 */ }
+  applyCloudDefaults(cache);
   return cache;
 }
 
@@ -115,6 +142,7 @@ function get(key) {
 
 function set(patch) {
   cache = mergeDeep(load(), patch);
+  applyCloudDefaults(cache);   // ★ 与 load() 同一套归一：别让「界面显示空、实际仍在推」同时存在
   scheduleSave();
   return cache;
 }

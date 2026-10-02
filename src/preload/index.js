@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld('api', {
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),
   cloudSync: () => ipcRenderer.invoke('cloud:sync'),
   cloudTest: () => ipcRenderer.invoke('cloud:test'),
+  cloudExport: () => ipcRenderer.invoke('cloud:export'),
+  cloudImport: cfg => ipcRenderer.invoke('cloud:import', cfg),
 
   min: () => ipcRenderer.send('win:min'),
   toggleMax: () => ipcRenderer.send('win:toggle-max'),
