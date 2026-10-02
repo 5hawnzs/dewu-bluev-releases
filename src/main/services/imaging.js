@@ -265,5 +265,7 @@ function findMvhd(buf) {
 
 module.exports = {
   engineName, hasHeif, init,
-  convertToJpg, compressUnder, fitWithin, dominantColor, videoDurationSec, readImage, sizeOf
+  convertToJpg, compressUnder, fitWithin, dominantColor, videoDurationSec, readImage, sizeOf,
+  // 给 video.js 复用（校验转出来的 mp4 能不能读到时长）—— 同一套解析，别复制第二份
+  findMvhd
 };

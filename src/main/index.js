@@ -12,6 +12,7 @@ const wp = require('./util/winpath');
 const imaging = require('./services/imaging');
 const pool = require('./services/pool');
 const adb = require('./services/adb');
+const video = require('./services/video');
 
 // Windows 通知/任务栏分组需要显式 AppUserModelID
 if (wp.isWin()) app.setAppUserModelId('com.bluev.publisher');
@@ -49,6 +50,10 @@ if (!app.requestSingleInstanceLock()) {
     adb.setAdbPath(store.get('publish.adbPath'));
     adb.setBundledAdbDir(vendorDir('adb'));
     adb.setBundledApkPath(path.join(vendorDir('adbkeyboard'), 'ADBKeyboard.apk'));
+    // ffmpeg：同一套三段解析（手填 > 内置 > 系统 PATH）。得物只收 mp4，所以非 mp4 的视频
+    // 要能就地转 —— 内置那份（GPL-3.0 静态版，见 vendor/README.md）是「装上就能用」的关键。
+    video.setFfmpegPath(store.get('publish.ffmpegPath'));
+    video.setBundledFfmpegDir(vendorDir('ffmpeg'));
     ipc.register();
 
     const st = auth.status();

@@ -82,6 +82,15 @@
         "filter": [
           "ADBKeyboard.apk"
         ]
+      },
+      {
+        "from": "vendor/ffmpeg",
+        "to": "ffmpeg",
+        "filter": [
+          "ffmpeg.exe",
+          "LICENSE.txt",
+          "README-ffmpeg-static.txt"
+        ]
       }
     ],
     "win": {

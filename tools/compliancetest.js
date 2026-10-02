@@ -102,5 +102,63 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
   try { await compliance.exportReport({ rows: [] }, {}); } catch (e) { empty = e.message; }
   ok('④ 没有报告时明确报错', /没有可导出的报告/.test(empty), empty);
 
+  // ---- ⑤ 视频：非 mp4 要变成「可自动处理」，fix() 真转出 mp4 且 type 仍是 video ----
+  // 这一段是**集成路径**（合规检查 → 内置 ffmpeg → 回写条目清单），与 videotest.js 的
+  // 「单模块能力」互补：那边证明转得动，这边证明**接对了**（状态是 todo、类型没被改成图片）。
+  const { execFileSync } = require('child_process');
+  const vmod = require(path.join(base, 'src/main/services/video.js'));
+  const VENDOR_FF = path.join(base, 'vendor', 'ffmpeg');
+  vmod.setBundledFfmpegDir(VENDOR_FF);
+  ok('⑤ 前置：内置 ffmpeg 可用（否则本段只能验「需手动」那条路）', vmod.status().usable === true, JSON.stringify(vmod.status()));
+
+  const vleaf = path.join(TMP, 'flat', 'MOV-001+黑+1');
+  fs.mkdirSync(vleaf, { recursive: true });
+  execFileSync(path.join(VENDOR_FF, 'ffmpeg.exe'),
+    ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-f', 'mov', path.join(vleaf, '片段.mov')],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  ok('⑤ 造出一个真的 .mov 样本', fs.existsSync(path.join(vleaf, '片段.mov')));
+
+  const vitems = [{
+    id: 'MOV-001+黑+1', dir: 'MOV-001+黑+1', absDir: vleaf, sku: 'MOV-001', color: '黑',
+    files: [{ name: '片段.mov', size: 0, type: 'video' }]
+  }];
+  const vsc = await compliance.scan(vitems, ctx());
+  const vrow = vsc.rows[0] || {};
+  ok('⑤ 非 mp4 视频被判成「可自动处理」（todo / 转 MP4），而不是「需手动转 MP4」',
+    vrow.status === 'todo' && vrow.action === '转 MP4', JSON.stringify({ status: vrow.status, action: vrow.action, issue: vrow.issue }));
+  ok('⑤ 「非 MP4」按扩展名计数 = 1、「视频超时」= 0（2 秒的片子没超 600 秒，报表口径不许撒谎）',
+    vsc.stats.notMp4 === 1 && vsc.stats.videoLong === 0, JSON.stringify(vsc.stats));
+  ok('⑤ 这一步 fix() 之前，目录里还没有 mp4', !fs.existsSync(path.join(vleaf, '片段.mp4')));
+
+  const vfx = await compliance.fix(vitems, vsc.rows, ctx());
+  ok('⑤ fix() 真的转出 .mp4', fs.existsSync(path.join(vleaf, '片段.mp4')) && vfx.converted === 1 && vfx.failed === 0,
+    JSON.stringify({ converted: vfx.converted, failed: vfx.failed, exist: fs.existsSync(path.join(vleaf, '片段.mp4')) }));
+  const vOut = await vmod.verifyMp4(path.join(vleaf, '片段.mp4'));
+  ok('⑤ ★ 转出来的东西是**能读的 mp4**（解析产物核对，不看文件名）', vOut.ok === true, JSON.stringify(vOut));
+  ok('⑤ 非 mp4 原文件在转成 mp4 后已被移除（目录里不留两份）', !fs.existsSync(path.join(vleaf, '片段.mov')));
+  const vf = vitems[0].files[0];
+  ok('⑤ ★★ 条目清单里 type 仍然是 video（曾经写死成 image ⇒ 发布时会拿图去发视频）',
+    vf && vf.name === '片段.mp4' && vf.type === 'video', JSON.stringify(vf));
+
+  // 已经有同名 .mp4 时**不许覆盖**（那是另一份素材），另起一个名字
+  const v2leaf = path.join(TMP, 'flat', 'MOV-002+白+1');
+  fs.mkdirSync(v2leaf, { recursive: true });
+  fs.copyFileSync(path.join(vleaf, '片段.mp4'), path.join(v2leaf, '片段.mp4'));   // 先占住这个名字
+  execFileSync(path.join(VENDOR_FF, 'ffmpeg.exe'),
+    ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-f', 'mov', path.join(v2leaf, '片段.mov')],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  const occ = fs.statSync(path.join(v2leaf, '片段.mp4')).size;
+  const v2items = [{
+    id: 'MOV-002+白+1', dir: 'MOV-002+白+1', absDir: v2leaf, sku: 'MOV-002', color: '白',
+    files: [{ name: '片段.mov', size: 0, type: 'video' }]
+  }];
+  const v2sc = await compliance.scan(v2items, ctx());
+  await compliance.fix(v2items, v2sc.rows, ctx());
+  ok('⑤ 目录里已有同名 .mp4 时绝不覆盖，另起 -2 的名字',
+    fs.existsSync(path.join(v2leaf, '片段-2.mp4')) && fs.statSync(path.join(v2leaf, '片段.mp4')).size === occ,
+    fs.readdirSync(v2leaf).join(' '));
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('COMPLIANCE TEST ERROR', e); process.exitCode = 1; });

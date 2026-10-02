@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const wp = require('../util/winpath');
 const imaging = require('./imaging');
+const video = require('./video');
 const store = require('../store');
 
 const MAX_BYTES = () => (store.get('compliance.maxImageMB') || 10) * 1024 * 1024;
@@ -45,7 +46,15 @@ async function scan(items, ctx = {}) {
         const dur = await imaging.videoDurationSec(abs);
         const notMp4 = RULES.videoExtMustBeMp4 && e !== '.mp4';
         if (notMp4) {
-          rows.push({ item: item.id, file: name, type: '视频', issue: `扩展名 ${e}，必须为 .mp4`, action: '需手动转 MP4', status: 'manual', size, duration: dur });
+          // 得物只收 mp4，而这里能**真的转**（内置 ffmpeg：先无损转封装、不兼容再转码）。
+          // 顺序上先判时长：已经超上限的，转成 mp4 照样过不了 —— 别让人白等一次转码。
+          if (dur != null && dur > maxSec) {
+            rows.push({ item: item.id, file: name, type: '视频', issue: `时长 ${dur} 秒，超 ${maxSec} 秒上限（转成 mp4 也过不了）`, action: '只标红不裁剪', status: 'manual', size, duration: dur });
+          } else if (video.status().usable) {
+            rows.push({ item: item.id, file: name, type: '视频', issue: `${e} 不是 .mp4（得物只收 mp4）`, action: '转 MP4', status: 'todo', size, duration: dur });
+          } else {
+            rows.push({ item: item.id, file: name, type: '视频', issue: `${e} 不是 .mp4，且程序里没找到 ffmpeg（转不了）`, action: '需手动转 MP4', status: 'manual', size, duration: dur });
+          }
         } else if (dur == null) {
           rows.push({ item: item.id, file: name, type: '视频', issue: '时长读取失败（moov 缺失或编码不受支持）', action: '人工确认', status: 'manual', size, duration: null });
         } else if (dur > maxSec) {
@@ -112,21 +121,32 @@ async function scan(items, ctx = {}) {
     oversize: rows.filter(r => r.action === '压缩').length,
     scaled: rows.filter(r => r.action === '等比缩放').length,
     tooSmall: rows.filter(r => r.action === '需更换图片').length,
-    notMp4: rows.filter(r => r.action === '需手动转 MP4').length,
-    videoLong: rows.filter(r => r.type === '视频' && r.status === 'manual').length,
+    // 「非 MP4」按**扩展名**数，不按 action 文案：一个 .mov 无论是被标成「转 MP4」、
+    // 「需手动转 MP4」还是「时长超限」，它都属于非 mp4 素材。
+    notMp4: rows.filter(r => r.type === '视频' && wp.ext(r.file) !== '.mp4').length,
+    // 「视频超时」只数**真的超了时长**的。以前是「视频 + manual」全算进来，
+    // 加了「没找到 ffmpeg」这条新的 manual 路径之后那样会算错 —— 报表不能撒谎。
+    videoLong: rows.filter(r => r.type === '视频' && r.duration != null && r.duration > maxSec).length,
     total: rows.length
   };
   log(`扫描完成：${stats.total} 个文件，${stats.todo} 个待处理，${stats.manual} 个需人工定夺`, stats.manual ? 'warn' : 'ok');
   return { rows, stats };
 }
 
-/** 处理后的文件名变了，同步回条目清单，否则下游（取色 / 发布）会拿着旧文件名找不到图 */
-function syncItem(item, row, newName, newSize) {
+/**
+ * 处理后的文件名变了，同步回条目清单，否则下游（取色 / 发布）会拿着旧文件名找不到图。
+ *
+ * ★ type 必须跟着走：这里以前把 `type` 写死成 `'image'` —— 对图片那几个分支没问题，
+ *   但视频转成 mp4 之后若复用它，会把**视频静默改成图片**，发布时按图文走步骤、拿图去发视频。
+ *   现在默认按 `row.type` 推断，也允许调用方显式覆盖。
+ */
+function syncItem(item, row, newName, newSize, type) {
   const list = item.files || [];
   const i = list.findIndex(f => f.name === row.file);
   if (i < 0) return;
   if (newName === null) { list.splice(i, 1); return; }
-  list[i] = Object.assign({}, list[i], { name: newName, size: newSize != null ? newSize : list[i].size, type: 'image' });
+  const kind = type || (row.type === '视频' ? 'video' : 'image');
+  list[i] = Object.assign({}, list[i], { name: newName, size: newSize != null ? newSize : list[i].size, type: kind });
   row.file = newName;
 }
 
@@ -168,6 +188,34 @@ async function fix(items, rows, ctx = {}) {
         // 去掉旧链接后重写同名文件：原目录（硬链接源）不受影响
         row.status = 'done'; row.result = `压缩至 ${wp.humanSize(r.size)}（质量 ${r.quality}）`; converted++;
         syncItem(item, row, row.file, r.size);
+      } else if (row.action === '转 MP4') {
+        // 视频转 mp4：先无损转封装（只换容器，秒级、画质不变），容器/编码不兼容时 video.js 自己转码。
+        // 目录里已经有同名 .mp4 时**绝不覆盖**（那是另一份素材），另起一个名字。
+        const stem = row.file.replace(/\.[^.]+$/, '');
+        let dst = path.join(baseDir, stem + '.mp4');
+        if (path.resolve(dst) !== path.resolve(abs) && await wp.exists(dst)) {
+          let n = 2;
+          while (await wp.exists(path.join(baseDir, `${stem}-${n}.mp4`))) n++;
+          dst = path.join(baseDir, `${stem}-${n}.mp4`);
+        }
+        const tmp = path.join(baseDir, '.__tmp_mp4_' + stem + '.mp4');
+        const rv = await video.toMp4(abs, tmp, {
+          cancelled: cancelled,
+          log: (m, lv) => log(`  ${row.file}：${m}`, lv)
+        });
+        // 去掉旧链接后重写新文件：原目录（硬链接源）不受影响
+        if (path.resolve(dst) !== path.resolve(abs)) {
+          await wp.retry(() => require('fs').promises.unlink(wp.toLong(abs)));
+        }
+        await wp.renameDir(tmp, dst);
+        const szv = await wp.statSafe(dst);
+        row.status = 'done';
+        row.result = rv.mode === 'remux'
+          ? `已转 MP4（无损转封装 · ${rv.codec} · ${rv.duration}s）`
+          : `已转 MP4（转码 H.264 · ${rv.duration}s）`;
+        row.duration = rv.duration;
+        converted++;
+        syncItem(item, row, path.basename(dst), szv ? szv.size : null, 'video');
       } else {
         const dst = path.join(baseDir, row.file.replace(/\.[^.]+$/, '') + '.jpg');
         const tmp = path.join(baseDir, '.__tmp_' + row.file.replace(/\.[^.]+$/, '') + '.jpg');

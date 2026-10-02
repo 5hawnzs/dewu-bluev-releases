@@ -252,6 +252,10 @@ function register() {
     if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'adbPath')) {
       adb.setAdbPath(store.get('publish.adbPath'));
     }
+    // ffmpeg 同理：改完再点「合规检查」，非 mp4 的视频应该立刻从「需手动」变成能自动转
+    if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'ffmpegPath')) {
+      video.setFfmpegPath(store.get('publish.ffmpegPath'));
+    }
     return store.get();
   }));
 

@@ -43,16 +43,18 @@ app.whenReady().then(async () => {
   // ---- 随包内置的外部依赖（adb / 中文输入法 apk）：文件在不在、和来源说明对不对得上 ----
   // 这两样是「新同事装上就能用」的前提，所以放在最前面验，后面的界面断言都建在它之上。
   const adbMod = require(path.join(ROOT, 'src/main/services/adb.js'));
+  const videoMod = require(path.join(ROOT, 'src/main/services/video.js'));
   const VENDOR_ADB = path.join(ROOT, 'vendor', 'adb');
   const VENDOR_KBD = path.join(ROOT, 'vendor', 'adbkeyboard');
+  const VENDOR_FF = path.join(ROOT, 'vendor', 'ffmpeg');
   const md5 = p => require('crypto').createHash('md5').update(fs.readFileSync(p)).digest('hex');
-  const prov = ['adb/adb.exe', 'adb/AdbWinApi.dll', 'adb/AdbWinUsbApi.dll', 'adbkeyboard/ADBKeyboard.apk'].map(rel => {
+  const prov = ['adb/adb.exe', 'adb/AdbWinApi.dll', 'adb/AdbWinUsbApi.dll', 'adbkeyboard/ADBKeyboard.apk', 'ffmpeg/ffmpeg.exe'].map(rel => {
     const p = path.join(ROOT, 'vendor', rel);
     if (!fs.existsSync(p)) return { rel, ok: false, md5: '' };
     const hex = md5(p);
     return { rel, ok: true, md5: hex, from: p };
   });
-  ok('★ 内置 adb 与中文输入法 apk 都在仓库里（这样才谈得上"装上就能用"）',
+  ok('★ 内置 adb / 中文输入法 apk / ffmpeg 都在仓库里（这样才谈得上"装上就能用"）',
     prov.every(x => x.ok), prov.map(x => x.rel + (x.ok ? '✓' : '✗')).join(' '));
   const readmeTxt = fs.readFileSync(path.join(ROOT, 'vendor', 'README.md'), 'utf8');
   ok('★ 每个内置文件的 md5 都能在 vendor/README.md 里对上（二进制与来源说明不许各说各话）',
@@ -61,20 +63,28 @@ app.whenReady().then(async () => {
   ok('★ adb 的 Apache 2.0 许可与署名跟着一起进包（许可要求：附全文 + 保留 NOTICE）',
     fs.existsSync(path.join(VENDOR_ADB, 'LICENSE.txt')) && fs.existsSync(path.join(VENDOR_ADB, 'NOTICE.txt')),
     fs.readdirSync(VENDOR_ADB).join(' '));
+  // ffmpeg 是 GPL-3.0：许可全文必须跟着一起进包（拿不到全文 = 合规说不清）
+  ok('★ ffmpeg 的 GPL-3.0 许可全文跟着一起进包（许可要求：附全文）',
+    fs.existsSync(path.join(VENDOR_FF, 'LICENSE.txt')) && /GNU GENERAL PUBLIC LICENSE/.test(fs.readFileSync(path.join(VENDOR_FF, 'LICENSE.txt'), 'utf8')),
+    fs.readdirSync(VENDOR_FF).join(' '));
   const pkgJson = require(path.join(ROOT, 'package.json'));
   const erTxt = JSON.stringify((pkgJson.build && pkgJson.build.extraResources) || []);
-  ok('★ 打包配置会把 vendor/adb 与 vendor/adbkeyboard 搬进 resources/（否则内置了也进不了安装包）',
-    erTxt.includes('vendor/adb') && erTxt.includes('vendor/adbkeyboard'), erTxt);
+  ok('★ 打包配置会把 vendor/adb、vendor/adbkeyboard、vendor/ffmpeg 搬进 resources/（否则内置了也进不了安装包）',
+    erTxt.includes('vendor/adb') && erTxt.includes('vendor/adbkeyboard') && erTxt.includes('vendor/ffmpeg'), erTxt);
   ok('★ 内置文件不进 asar 的 files 列表（asar 是压缩归档，里面的 exe 不能执行）',
     !((pkgJson.build && pkgJson.build.files) || []).some(f => String(f).includes('vendor')),
     JSON.stringify((pkgJson.build && pkgJson.build.files) || []));
   // 照 index.js 的样子把路径接一次（uicheck 不走 index.js，不接的话界面 vendor 状态永远是空的）
   adbMod.setBundledAdbDir(VENDOR_ADB);
   adbMod.setBundledApkPath(path.join(VENDOR_KBD, 'ADBKeyboard.apk'));
+  videoMod.setBundledFfmpegDir(VENDOR_FF);
   const idxSrc = fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8');
-  ok('★ 主进程启动时确实把这两条路径注了进去（漏接 = 白内置）',
-    /setBundledAdbDir\(/.test(idxSrc) && /setBundledApkPath\(/.test(idxSrc),
-    `setBundledAdbDir=${/setBundledAdbDir\(/.test(idxSrc) ? '有' : '缺'} · setBundledApkPath=${/setBundledApkPath\(/.test(idxSrc) ? '有' : '缺'}`);
+  ok('★ 主进程启动时确实把这些路径注了进去（漏接 = 白内置）',
+    /setBundledAdbDir\(/.test(idxSrc) && /setBundledApkPath\(/.test(idxSrc) && /setBundledFfmpegDir\(/.test(idxSrc),
+    `setBundledAdbDir=${/setBundledAdbDir\(/.test(idxSrc) ? '有' : '缺'} · setBundledApkPath=${/setBundledApkPath\(/.test(idxSrc) ? '有' : '缺'} · setBundledFfmpegDir=${/setBundledFfmpegDir\(/.test(idxSrc) ? '有' : '缺'}`);
+  // ffmpeg 是**真的能执行**才叫内置成功（存着但跑不起来 = 假内置）
+  ok('★ 内置那份 ffmpeg 真能跑起来（不是只把文件放那儿）',
+    videoMod.status().source === 'bundled' && videoMod.status().usable, JSON.stringify(videoMod.status()));
 
   // 播两个品牌：「提示词配置」里那组「选择 / 默认选择」的断言要有行可点。
   // 自检跑在临时 userData 上，碰不到本机的 config.json / auth.json
@@ -662,10 +672,16 @@ app.whenReady().then(async () => {
     document.querySelector('.nav[data-tab="7"]').click();
     await new Promise(r => setTimeout(r, 200));
     const t = document.querySelector('#pane').textContent;
-    return { adbRow: /模拟器驱动 adb/.test(t), imeRow: /中文输入法 ADBKeyboard/.test(t), builtin: /程序内置/.test(t) };
+    return {
+      adbRow: /模拟器驱动 adb/.test(t), imeRow: /中文输入法 ADBKeyboard/.test(t),
+      ffRow: /视频转 MP4/.test(t), builtin: /程序内置/.test(t),
+      ffPathInput: !!document.querySelector('[data-cfg="publish.ffmpegPath"]')
+    };
   })()`);
-  ok('设置页「外部依赖」如实说 adb 与中文输入法都是内置的（不再是「待接入」）',
-    depUi.adbRow && depUi.imeRow && depUi.builtin, JSON.stringify(depUi));
+  ok('设置页「外部依赖」如实说 adb / 中文输入法 / ffmpeg 都是内置的（不再是「待接入」）',
+    depUi.adbRow && depUi.imeRow && depUi.ffRow && depUi.builtin, JSON.stringify(depUi));
+  ok('设置页给了「ffmpeg 路径」入口（手填 > 内置 > PATH 三段解析要能配置）',
+    depUi.ffPathInput, JSON.stringify(depUi));
   ok('设置页把那两个裸输入框换成了「打开文案提示词」入口',
     await win.webContents.executeJavaScript(`(() => {
       document.querySelector('.nav[data-tab="7"]').click();

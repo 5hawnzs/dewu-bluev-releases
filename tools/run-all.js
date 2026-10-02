@@ -8,7 +8,8 @@
  *   smoke          造临时素材跑完整流水线
  *   adbtest        假 adb 验证真实发布通道
  *   pendingtest    发布单被占用 → 整批暂存 → 下次补写
- *   compliancetest 合规边界 + 导出报告
+ *   compliancetest 合规边界 + 导出报告 + 非 mp4 视频自动转 mp4（含 type 不被改成图片）
+ *   videotest      视频转 mp4（内置 ffmpeg 现造样本，真读产物：转封装优先 / 转码兜底 / 失败如实报错不留半成品）
  *   batchtest      多批次并行 / 取消 / 按批次重导出日志
  *   reporttest     「AI 内容报告」导入 → 发布 → 回写
  *   brandtest      品牌权限 + 按品牌统计（未标品牌单列 / 已删除品牌保留）
@@ -57,6 +58,7 @@ const SUITES = [
   ['adbtest', 'node', ['tools/adbtest.js']],
   ['pendingtest', 'node', ['tools/pendingtest.js']],
   ['compliancetest', 'node', ['tools/compliancetest.js']],
+  ['videotest', 'node', ['tools/videotest.js']],
   ['batchtest', 'node', ['tools/batchtest.js']],
   ['reporttest', 'node', ['tools/reporttest.js']],
   ['brandtest', 'node', ['tools/brandtest.js']],

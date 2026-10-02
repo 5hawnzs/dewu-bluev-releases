@@ -439,7 +439,7 @@ TABS[2] = {
         <div class="stat bad"><b>${n(s.oversize)}</b><span>超 10MB 压缩</span></div>
         <div class="stat"><b>${n(s.isolate)}</b><span>隔离到 _rejected</span></div>
       </div>
-      <p class="hint">规则（对齐真机）：图片<b>必须为 JPG</b>、≥<b>${cfg0.minPixels}</b> 像素²（约 42×42）、边长 <b>${cfg0.minSide}~${cfg0.maxSide}</b>${cfg0.autoScale ? '（超限自动等比缩放）' : ''}、≤${cfg0.maxImageMB}MB；视频<b>按扩展名判 .mp4</b> 且 &lt;${cfg0.maxVideoSec} 秒（超时只标红不裁剪）。</p>
+      <p class="hint">规则（对齐真机）：图片<b>必须为 JPG</b>、≥<b>${cfg0.minPixels}</b> 像素²（约 42×42）、边长 <b>${cfg0.minSide}~${cfg0.maxSide}</b>${cfg0.autoScale ? '（超限自动等比缩放）' : ''}、≤${cfg0.maxImageMB}MB；视频<b>必须 .mp4</b>（<code>.mov</code>/<code>.m4v</code> 等会自动转成 mp4）且 &lt;${cfg0.maxVideoSec} 秒（超时只标红不裁剪）。</p>
       ${(c.groups && c.groups.length) ? `<div class="box"><h3>按子文件夹（${c.groups.length} 个）</h3>
         <div class="tw"><table><thead><tr><th>子文件夹</th><th>合格</th><th>可自动</th><th>需人工</th></tr></thead><tbody>
         ${c.groups.map(g => `<tr class="${g.stats.manual ? 'warnrow' : ''}"><td class="mono">${esc(g.name)}</td><td class="num">${n(g.stats.ok)}</td><td class="num">${n(g.stats.todo)}</td><td class="num">${n(g.stats.manual)}</td></tr>`).join('')}
@@ -639,6 +639,25 @@ TABS[6] = {
   }
 };
 
+/**
+ * ffmpeg 那一行照实说**现在到底用的是哪一个**（三段解析：手填 > 内置 > 系统 PATH）。
+ * 不编：取不到状态就说取不到，走 PATH 的明确写「不一定能成」——别让界面骗人。
+ */
+function ffDesc(f) {
+  if (!f) return '状态取不到';
+  if (f.source === 'configured') return `用你指定的：${f.path}`;
+  if (f.source === 'bundled') return '程序内置（装完即用，不用自己找）';
+  if (f.source === 'configured-missing') return `你填的「${f.path}」不存在，且没有内置可用`;
+  return '用系统 PATH 里的 ffmpeg（不确定有没有）';
+}
+function ffBadge(f) {
+  if (!f) return ['warn', '未知'];
+  if (f.source === 'configured') return ['ok', '已指定'];
+  if (f.source === 'bundled') return ['ok', '内置'];
+  if (f.source === 'configured-missing') return ['warn', '不可用'];
+  return ['warn', '走 PATH'];
+}
+
 TABS[7] = {
   title: '设置',
   desc: '路径、文案模型、内容校验、外观、应用更新、外部依赖（品牌与权限已单独成页）',
@@ -651,7 +670,7 @@ TABS[7] = {
       ['HEIC 解码', info.hasHeif ? 'libheif（sharp 预编译）' : '未内置，HEIC 需人工处理', info.hasHeif ? ['ok', '可用'] : ['warn', '不可用']],
       ['发布单读写', 'exceljs', ['ok', '内置']],
       ['视频时长读取', '纯 JS MP4/MOV 解析（moov → mvhd）', ['ok', '内置']],
-      ['视频转码', 'ffmpeg（预留）', ['warn', '待接入']],
+      ['视频转 MP4（得物只收 mp4）', ffDesc(info.ffmpeg), ffBadge(info.ffmpeg)],
       ['模拟器驱动 adb',
         (info.vendor && info.vendor.exists) ? '程序内置（装完即用，不用自己找）' : '没内置：要自己指定 adb.exe 的路径',
         (info.vendor && info.vendor.exists) ? ['ok', '内置'] : ['warn', '需指定']],
@@ -718,6 +737,16 @@ TABS[7] = {
           <thead><tr><th>用途</th><th>依赖</th><th>状态</th></tr></thead>
           <tbody>${dep.map(([a, b, s]) => `<tr><td>${esc(a)}</td><td class="mono">${esc(b)}</td><td>${badge(s[1], s[0])}</td></tr>`).join('')}</tbody>
         </table></div>
+        <div class="row" style="margin-top:10px">
+          <span class="lbl">ffmpeg 路径</span>
+          <input class="inp mono" value="${esc((c.publish || {}).ffmpegPath || '')}" data-cfg="publish.ffmpegPath"
+            placeholder="留空 = 自动（优先用程序内置的，再退系统里的）；只有想强制用某一个时才填完整路径">
+        </div>
+        <p class="hint">用来把 <code>.mov</code> / <code>.m4v</code> 等视频转成 <code>.mp4</code>（得物只收 mp4）。
+          <b>留空就行</b> —— 程序自带一份（GPL-3.0 静态版），装完即用。填了就以你填的为准。
+          填的路径不存在时会自动退回内置那份，并在上表里提醒你。填完<b>立刻生效、不用重启</b>。</p>
+        <p class="hint">转换策略：优先<b>无损转封装</b>（H.264/HEVC 这类 mp4 容器放得下的编码，秒级完成、画质零损失）；
+          转封装放不下（如 ProRes）才<b>转码</b>成 H.264/AAC。转完会校验产物确实是 mp4 才算成功 —— 失败了会如实报错，不会假装转好了。</p>
         <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>
       </div>
       <p class="hint">品牌、账号、以及「谁能用哪些品牌」原先挤在这一页最下面 —— 已经挪到左侧的「<b>品牌与权限</b>」页。</p>`;

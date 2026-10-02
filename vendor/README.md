@@ -7,14 +7,17 @@
 |---|---|---|
 | `vendor/adb/` | `<安装目录>/resources/adb/` | `src/main/index.js` → `adb.setBundledAdbDir()` |
 | `vendor/adbkeyboard/` | `<安装目录>/resources/adbkeyboard/` | `src/main/index.js` → `adb.setBundledApkPath()` |
+| `vendor/ffmpeg/` | `<安装目录>/resources/ffmpeg/` | `src/main/index.js` → `video.setBundledFfmpegDir()` |
 
 **为什么要内置**：以前 adb 要用户自己去模拟器安装目录里翻（`D:\MUMU\MuMuPlayer\nx_main\adb.exe`）
 填进设置里 —— 这是新同事的第一道墙。adb 三件套才 8 MB 出头，内置之后「装上就能用」。
 中文输入法同理：不装它，中文标题/正文根本打不进得物发布页。
+ffmpeg 是为了**把达人给的 `.mov` / `.m4v` / `.avi` / `.webm` / `.mkv` 自动转成 `.mp4`** ——
+得物只收 mp4，以前非 mp4 只能标「需手动转 MP4」让运营自己去开转换器，这是发布链路上最烦的一块手工活。
 
 > ⚠️ 这些二进制**故意进 git**。仓库的 `.gitignore` 一般不许提交二进制（`node_modules`/`dist` 那种几百 MB 的），
 > 但这一份是**每次打包都必须有**的，走「构建时下载」会让没网的机器打不出包。
-> 合计约 9.6 MB，可以接受。
+> adb + 输入法约 9.6 MB、ffmpeg 约 79 MB，合计约 88 MB。
 
 ---
 
@@ -55,7 +58,34 @@
   这是 ADBKeyboard 的正常表现（它本来就是给脚本用的）。所以这一步**只由用户在「检查能不能发布」里点按钮触发**，
   程序绝不自动做。
 
-## 3. 怎么更新到新版本
+## 3. `vendor/ffmpeg/` —— ffmpeg（把非 mp4 视频自动转成 mp4）
+
+| 文件 | 字节 | md5 |
+|---|---|---|
+| `ffmpeg.exe` | 82,797,568 | `25243548be231a3c928cb7a0b6225ae9` |
+| `LICENSE.txt` | 35,147 | `d32239bcb673463ab874e80d47fae504` |
+| `README-ffmpeg-static.txt` | 39,494 | `e8dee073472c6e5e368152b57c8e3417` |
+
+- **版本**：`ffmpeg version 6.1.1-essentials_build-www.gyan.dev`（构建方 = gyan.dev，`--enable-gpl --enable-version3 --enable-static`）
+- **来源**：`ffmpeg-static` 的 release 资产 `b6.1.1/ffmpeg-win32-x64`
+  - 上游：`https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64`
+  - ★ 本次实际下载走的是**国内镜像**：`https://registry.npmmirror.com/-/binary/ffmpeg-static/b6.1.1/ffmpeg-win32-x64.gz`
+    （本机 `github.com:443` 超时下不来；镜像上这个文件的字节数与上游 API 报的 `82,797,568` 完全一致）
+- **许可**：**GPL v3** —— 上游 README 第 5 行就是 `License: GPL v3`；`LICENSE.txt` 是 GPL-3.0 全文（35,147 B）；
+  二进制 `-version` 自己也带着 `--enable-gpl --enable-version3`。
+  - ★★ **当前只按「公司/团队内部装机使用」放进来**（内部使用不构成 GPL 意义上的「分发」）。
+  - ★★ **一旦要对外分发这个安装包**（给客户、代运营、外部合作方），**必须先解决许可**：
+    换成 LGPL 构建（BtbN 的 `ffmpeg-*-lgpl-shared`，动态链接 + 允许用户替换库），或按 GPL 走完整合规（附源码/书面提供）。
+  - ★ 顺带注意：`package.json` 里本项目自称 `MIT` —— **MIT 应用 + GPL 二进制的对外分发组合就是冲突点**，
+    内部自用无所谓，对外发就是问题。
+- **用到的能力**（实测 `-encoders` / `-decoders` / `-formats`）：
+  编码 `libx264` / `libx265` / `aac` / `prores_ks`；解码 `h264` / `hevc`；容器 `mov,mp4,m4a` 与 `matroska/webm` / `avi`。
+- **怎么用**：见 `src/main/services/video.js` —— **先无损转封装**（`-c copy`：只换容器，秒级、画质零损失），
+  容器/编码不兼容时才**转码**（`libx264 -crf 20` + `aac`）。产物还会被复用校验一遍（`ftyp` 品牌 + `moov/mvhd` + 轨道编码）。
+- ★ **不要再额外内置 `ffprobe`**（另外 78.8 MB，等于白烧一倍体积）：
+  读时长用现有的纯 JS `moov → mvhd` 解析就够了（`imaging.videoDurationSec`），实测 MOV 也能读。
+
+## 4. 怎么更新到新版本
 
 ```bash
 # ① 下载官方 platform-tools 并解压
@@ -73,6 +103,24 @@ cd vendor/adb && md5sum adb.exe AdbWinApi.dll AdbWinUsbApi.dll
 # ④ 全量回归（uicheck 会核对这几个文件的哈希与存在性）
 node tools/run-all.js
 ```
+
+换 ffmpeg 版本（当前 `b6.1.1`）：
+
+```bash
+M=https://registry.npmmirror.com/-/binary/ffmpeg-static/b6.1.1
+cd vendor/ffmpeg
+curl -L -o ffmpeg.exe.gz "$M/ffmpeg-win32-x64.gz"   # 28.2 MB；上游是 .github.com/.../ffmpeg-win32-x64（79 MB）
+gzip -d ffmpeg.exe.gz
+curl -L -o LICENSE.txt "$M/win32-x64.LICENSE"       # 必须跟着换：许可全文变了就是合规问题
+curl -L -o README-ffmpeg-static.txt "$M/win32-x64.README"
+
+# 校验：字节数 82,797,568、md5 与上表一致；再确认它真能跑
+./ffmpeg.exe -hide_banner -version | head -1
+# 期望：ffmpeg version 6.1.1-essentials_build-www.gyan.dev
+```
+
+★ 换版本后**必须**重跑 `node tools/run-all.js`：`tools/videotest.js` 会**真的调用一次**内置 ffmpeg 做转换，
+不是只检查文件在不在 —— 「文件在、但 exe 跑不起来」会被它红掉。
 
 ★ 换 adb 版本前先读一遍 `docs/HANDOFF.md` 里那条实测：
 **内置 adb（37.0.1）跟已装的其它 adb 版本（如 MuMu 的 36.0.0）不会互相重启服务** ——
