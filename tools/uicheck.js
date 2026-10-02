@@ -1005,7 +1005,7 @@ app.whenReady().then(async () => {
     // ① 登录页固定浅色：不能只改渲染层 —— 窗口底色也必须跟着浅，否则深色系统下先闪一块近黑
     ok('★ 登录页固定浅色（.gate 子树重声明浅色变量 + 登录门期间窗口底色也用浅色）',
       /\.gate\{[\s\S]{0,60}--bg:#f2f1ed; --panel:#ffffff;/.test(cssSrc)
-      && /const GATE_BG = '#f2f1ed';/.test(winSrc)
+      && /const GATE_BG = '#ffffff';/.test(winSrc)
       && /backgroundColor: locked \? GATE_BG : bg,/.test(winSrc)
       && /win\.setBackgroundColor\(GATE_BG\)/.test(winSrc)
       && /win\.setBackgroundColor\(bgColor\(\)\)/.test(winSrc));
@@ -1077,6 +1077,51 @@ app.whenReady().then(async () => {
     // ⑥ 权限判定不许只看界面：保存走真 IPC（authUpdateUser），不是只改内存
     ok('★ 弹窗保存权限走真 IPC（appApi.authUpdateUser(id, { brands: ids })），不是只改内存',
       /appApi\.authUpdateUser\(id, \{ brands: ids \}\)/.test(A2));
+  }
+
+  // ---- 2026-10-02 第三轮：登录页「白底白字 + 卡片外色块」/ emulator-5554 假序列号 / 视频复用图文 ----
+  {
+    const C3 = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+    const W3 = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
+    const P3 = fs.readFileSync(path.join(ROOT, 'src/main/services/publisher.js'), 'utf8');
+    const A3 = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+    const J3 = fs.readFileSync(path.join(ROOT, 'src/main/jobs.js'), 'utf8');
+    // ★ 负向只看代码行：publisher.js 的注释里正当地写着「绝不许再兜底 emulator-5554」
+    const codeOnly3 = s => s.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+
+    // ① 白底白字的根因：光重声明变量不够 —— body 上的 color:var(--tx) 已经按深色主题
+    //    求过值，后代继承的是那个算完的浅字色。必须在 .gate 上**显式**给 color。
+    ok('★ 登录页 .gate 显式声明了 color:var(--tx)（只重声明变量治不了继承来的白字）',
+      /\.gate\{[\s\S]*?\n  color:var\(--tx\);/.test(C3));
+
+    // ② 卡片外面不许再有底色块：gate 背景与卡片同色（纯白），且窗口＝卡片
+    ok('★ 登录页卡片外不再有色块（gate 背景纯白 + 窗口宽 = 卡片宽 340 + 上下不留呼吸位）',
+      /\.gate\{[^}]*background:#ffffff;/.test(C3)
+      && !/\.gate\{[^}]*background:var\(--bg\)/.test(C3)
+      && /const GATE_WIDTH = 340;/.test(W3)
+      && /const GATE_PAD_Y = 0;/.test(W3)
+      && /const GATE_BG = '#ffffff';/.test(W3));
+
+    // ③ 假序列号兜底必须没了：没选设备时要老实报「还没选设备」，
+    //    不许拿一台不存在的 emulator-5554 去 probe（那会让界面报「你选的设备…没连上」）
+    ok('★ publisher.js 不再兜底假序列号（没选设备就报「还没选设备」）',
+      !/\|\| 'emulator-5554'/.test(codeOnly3(P3))
+      && /const serial = device \|\| c\.device \|\| \(list\[0\] && list\[0\]\.serial\) \|\| '';/.test(P3)
+      && /还没选设备/.test(P3));
+
+    // ④ 界面不许再提示「如 emulator-5554」（那是在让人手抄一个不该记的名字）
+    ok('★ 界面不再提示「如 emulator-5554」（改成引导用「扫描设备」）',
+      !/如 emulator-5554/.test(codeOnly3(A3)));
+
+    // ⑤ 视频没单独配时复用图文 steps（用户实测两者发布位置一样）
+    ok('★ 视频复用图文定位表（videoSteps 为空时不再抛错，直接走 steps）',
+      /const steps = isVideo \? \(vSteps\.length \? vSteps : \(map\.steps \|\| \[\]\)\) : \(map\.steps \|\| \[\]\);/.test(P3)
+      && !/视频条会直接失败/.test(J3));
+
+    // ⑥ 界面不再说「视频未配」（改成「视频复用图文」，免得用户以为还要再抓一次）
+    ok('★ 界面把「视频未配」改成「视频复用图文」',
+      !/视频未配/.test(codeOnly3(A3)) && /视频复用图文/.test(A3));
   }
 
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');

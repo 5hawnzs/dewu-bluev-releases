@@ -43,7 +43,7 @@ function devices() { return (cfg().devices) || []; }
 
 function addDevice({ name, serial }) {
   const list = devices().slice();
-  if (!serial) throw new Error('缺少设备序列号（如 emulator-5554）');
+  if (!serial) throw new Error('缺少设备序列号');
   if (list.some(d => d.serial === serial)) throw new Error('该设备已存在');
   // id 不能只用 Date.now()：连续添加两台会撞同一毫秒，删除时会连坐
   const dev = { id: 'dev' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name || serial, serial };
@@ -141,10 +141,20 @@ function estimate(count, kinds = null) {
 async function connect(device) {
   const c = cfg();
   const list = devices();
-  const serial = device || c.device || (list[0] && list[0].serial) || 'emulator-5554';
+  const map = c.uiMap;
+  const hasMap = !!(map && map.steps && map.steps.length);
+  // ★★ 这里**绝不许**再兜底一个 'emulator-5554'（2026-10-02 删掉）：
+  //    没配设备时就该老实说「还没选设备」。原来那句硬编码兜底会拿一台不存在的设备去 probe，
+  //    界面报出来却是「你选的设备「emulator-5554」没连上」—— 用户以为程序里写死了一台假设备。
+  const serial = device || c.device || (list[0] && list[0].serial) || '';
+  if (!serial) {
+    return {
+      connected: false, mode: 'mock', device: '', probe: null, hasMap,
+      note: '还没选设备：到「设备管理」点「扫描设备」，从列出来的设备里点那一行的「加入并使用」—— 不用手填序列号。'
+    };
+  }
   const p = await adb.probe(serial);
   const ready = !!(p.device && p.tools.uiautomator && p.tools.input && p.appPackage);
-  const map = c.uiMap;
   const notes = p.notes.slice();
   if (ready && !(map && map.steps && map.steps.length)) {
     notes.push('还没配 UI 定位表（「设置 → 高级设置」→「抓取页面结构」→ 导入），配好前不会走真实通道');
@@ -154,7 +164,7 @@ async function connect(device) {
     mode: ready ? 'adb' : 'mock',
     device: serial,
     probe: p,
-    hasMap: !!(map && map.steps && map.steps.length),
+    hasMap,
     note: ready
       ? `设备 ${serial} 在线（${p.resolution || '分辨率未知'}，得物 ${p.appPackage}）` + (map && map.steps ? ' · UI 定位表已就绪' : ' · 待配 UI 定位表')
       : (p.adb ? '设备不满足真实发布条件，已切模拟通道：' + notes.join('；') : '未检测到 adb，已切模拟通道')
@@ -300,12 +310,17 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   }
 
   // 2) 按 UI 定位表走真实界面。
-  //    视频发布页与图文**不是同一套界面**（入口文案、相册页签、编辑页都不同），
-  //    所以视频条必须走 videoSteps；拿图文那套硬套只会点到别的地方去。
-  const steps = isVideo ? (map.videoSteps || []) : (map.steps || []);
-  if (isVideo && !steps.length) {
-    throw new Error('这条是视频，但 UI 定位表里没有 videoSteps —— 得物的视频发布页和图文不是一套界面，不能拿图文步骤硬套。'
-      + '请在得物「发布视频」页点「抓取页面结构」，改好 videoSteps 后再导入 uiMap.json');
+  //    ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的**（入口、相册页签、编辑页同一套），
+  //      所以 videoSteps 没单独配时**直接复用 steps**，不再拦下。
+  //      videoSteps 仍然保留：哪天真机改版、视频那条路跟图文不一样了，单独配一套就能覆盖。
+  const vSteps = map.videoSteps || [];
+  const reuseForVideo = isVideo && !vSteps.length;
+  const steps = isVideo ? (vSteps.length ? vSteps : (map.steps || [])) : (map.steps || []);
+  if (reuseForVideo && steps.length) {
+    log(`${row.dir}：这条是视频，UI 定位表没单独配 videoSteps —— 按「图文那套位置」发（图文与视频位置一样，实测）`, 'info');
+  }
+  if (!steps.length) {
+    throw new Error('UI 定位表是空的 —— 到「设置 → 高级设置」点「抓取页面结构」，把生成的候选表核对后导入，再发。');
   }
 
   const data = {

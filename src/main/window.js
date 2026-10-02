@@ -10,14 +10,18 @@ let saveTimer = null;
 let loginMode = false;        // 登录门模式：窗口收缩成「刚好装下登录卡片」
 let normalGeo = null;         // 进登录门前记住的正常几何，登录成功后原样还原
 
-/* 登录门窗口：宽度 = 卡片 340 + 左右各 20；
-   高度先给个兜底值，渲染层量出卡片实际高度后回调 fitGate() 收紧，避免上下留白 */
-const GATE_WIDTH = 380;
+/* 登录门窗口：宽度 = 卡片宽 340（左右**不留边**）；高度先给兜底值，
+   渲染层量出卡片实际高度后回调 fitGate() 收紧 —— 目标就是「窗口＝卡片」。
+   ★ 2026-10-02 用户第三次反馈「登录框外面还有一块色块」⇒ 不再留呼吸位：
+     卡片以外的每一像素都是多余底色，全部去掉。 */
+const GATE_WIDTH = 340;
 const GATE_HEIGHT = 336;
-const GATE_PAD_Y = 18;        // 卡片上下各留的呼吸位
-// ★ 登录页固定浅色（渲染层 .gate 里也把浅色变量重声明了一遍）⇒ 窗口底色也必须跟着浅，
-//   否则深色系统下会先闪一块近黑再被页面盖住。主界面仍跟随系统主题。
-const GATE_BG = '#f2f1ed';
+const GATE_PAD_Y = 0;         // 卡片外不留呼吸位（留了就露出一圈底色 = 用户说的「色块」）
+// ★ 登录页固定浅色，且窗口＝卡片 ⇒ 窗口底色必须**与卡片同色（纯白）**。
+//   深色系统下若还是近黑，会在卡片四周露出一圈（用户说的「黑边框」）；
+//   浅色下若用米色 #f2f1ed，卡片四周一样会露出一圈（用户说的「色块」）。
+//   主界面仍跟随系统主题（见 bgColor）。
+const GATE_BG = '#ffffff';
 
 /** 主界面窗口底色：跟随系统深色 */
 function bgColor() { return nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed'; }
@@ -44,7 +48,7 @@ function createWindow(locked) {
     title: '得物蓝V 素材发布工具',
     width: start.width,
     height: start.height,
-    minWidth: locked ? 320 : 900,
+    minWidth: locked ? 340 : 900,
     minHeight: locked ? 320 : 600,
     x: start.x,
     y: start.y,
@@ -147,7 +151,7 @@ function setLoginMode(on) {
     normalGeo = { bounds: win.getBounds(), maximized: win.isMaximized() };
     loginMode = true;                     // 先置位：让下面的 unmaximize 不落盘
     if (win.isMaximized()) win.unmaximize();
-    win.setMinimumSize(320, 320);
+    win.setMinimumSize(340, 340);
     win.setResizable(false);
     win.setMaximizable(false);
     win.setBackgroundColor(GATE_BG);      // 登录页固定浅色，窗口底色跟着走

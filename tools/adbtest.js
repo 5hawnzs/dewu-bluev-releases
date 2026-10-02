@@ -1,6 +1,6 @@
 /* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备
    覆盖：设备检查 / dump 解析与定位表 / 未配定位表必失败 / 图文条全流程 / 页面结构变了必失败 /
-        **视频条**（推视频 → 等媒体库索引 → 走 videoSteps；没配 videoSteps 必失败；媒体库一直看不到也必失败）/
+        **视频条**（推视频 → 等媒体库索引 → 走 videoSteps，没配 videoSteps 就复用图文 steps；媒体库一直看不到必失败）/
         **页面不 idle**（自动关动画兜底并还原；兜不住就明确失败；★ 抓不到时绝不返回上一页的残留结构）
    假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
    Windows 的 execFile('adb') 只认 adb.exe，无扩展名的 bash 脚本跑不起来，故改为函数级替身）。 */
@@ -208,17 +208,21 @@ const state = {
     /input tap 162 160/.test(vlog) && /input tap 162 280/.test(vlog) && /input tap 920 2250/.test(vlog) && /input tap 220 1540/.test(vlog));
   ok('⑥ 日志标的是 [视频]', vlogs.some(l => /\[视频\] 发布完成/.test(l)), vlogs.filter(l => /发布完成/.test(l)).join(' | '));
 
-  // 7) 视频条但没配 videoSteps → 直接失败，绝不拿图文那套硬套
+  // 7) 视频条没配 videoSteps → **复用图文 steps**（2026-10-02 用户实测：图文与视频发布位置一样）
   //    注意：store.set 是**深合并**，只写 steps 的话上一份表的 videoSteps 会被留下来，
   //    所以这里显式给 videoSteps: []（真实导入路径里 publish.importMap 也会显式置空）
   store.set({ publish: { uiMap: { package: 'com.shizhuang.duapp', steps: uiMap.steps, videoSteps: [] } } });
   videoState.publish.rows[0].result = '';
   clearCalls();
+  const vstart = vlogs.length;
   const rv2 = await publisher.run(videoState, vctx);
   const vlog2 = calls();
-  ok('⑦ 没配 videoSteps 的视频条直接失败', rv2.rows[0].result === '失败', rv2.rows[0].result + ' / ' + rv2.rows[0].reason);
-  ok('⑦ 失败原因说清缺的是 videoSteps', /videoSteps/.test(rv2.rows[0].reason), rv2.rows[0].reason);
-  ok('⑦ 没有拿图文步骤硬点（推完素材就停住）', !/input tap/.test(vlog2), (vlog2.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
+  ok('⑦ 没配 videoSteps 的视频条**照常发布**（复用图文 steps，不再拦下）',
+    rv2.rows[0].result === '发布成功', rv2.rows[0].result + ' / ' + (rv2.rows[0].reason || ''));
+  ok('⑦ 日志里说清了「这条在用图文那套位置」',
+    vlogs.slice(vstart).some(l => /图文那套位置/.test(l)), vlogs.slice(vstart).join(' | ').slice(0, 220));
+  ok('⑦ 复用的确实是图文那套 steps（真的按 steps 点下去了）',
+    /input tap 162 160/.test(vlog2), (vlog2.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
 
   // 8) 视频推上去了但媒体库一直没索引到 → 明确失败，不许硬点（硬点只会点空）
   fs.writeFileSync(path.join(FDB, 'MEDIA_LAG'), '1');

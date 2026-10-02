@@ -229,9 +229,15 @@ body:not(.locked) .gate{display:none}
   --tx:#1a1a18; --tx2:#5f5e5a; --tx3:#8d8b83;
   --teal:#0f6e56; --teal-bg:#e1f5ee; --amber:#854f0b; --amber-bg:#faeeda;
   --red:#a32d2d; --red-bg:#fcebeb; --gray:#5f5e5a; --gray-bg:#eeece5;
+  /* ★★ 关键：这里必须**显式给 color** —— 光重声明变量是不够的！
+     body 上的 color:var(--tx) 已经按 html.dark 求过一次值（#eaeae7 浅字），
+     后代继承到的是那个**算完的具体颜色**，不是 var() 表达式 ⇒ 卡片里任何
+     没显式设色的文字（例如 .gname「得物蓝V 素材发布工具」）在白底上就是白字。
+     2026-10-02 用户反馈「白底白字」定位到这条。 */
+  color:var(--tx);
   position:fixed;inset:0;z-index:100;
   display:flex;align-items:center;justify-content:center;
-  background:var(--bg);
+  background:#ffffff;   /* 与卡片同色：窗口＝卡片，卡片外面不留任何别的底色 */
   /* 无边框小窗：整块遮罩就是拖拽区，卡片以外的空白也能拖着走 */
   -webkit-app-region:drag;
 }
@@ -241,7 +247,7 @@ body:not(.locked) .gate{display:none}
 .gate .gcard{
   position:relative;
   width:340px;background:var(--panel);
-  border:1px solid var(--bd);border-radius:12px;
+  border-radius:12px;
   padding:24px 26px 20px;
   box-shadow:0 18px 50px rgba(0,0,0,.16);
 }

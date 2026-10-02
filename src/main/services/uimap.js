@@ -61,8 +61,10 @@ function suggest(nodes, pkg) {
   pushStep('搜索货号', 'input', '${sku}', '');
   pushStep('提交发布', 'tapText', '发布', '最后一步的发布按钮');
 
-  // 视频是**另一条 UI 路径**（入口文案、相册里的「视频」页签、编辑页都可能不一样），
-  // 所以单独给一套候选 —— 抓得物「发布视频」页的 dump 时，改这一套，别改 steps。
+  // ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的** ⇒ 平时**不用配这一套**，
+  //   发布时 videoSteps 为空会自动复用 steps（见 publisher.run）。
+  //   这里仍然生成一套候选，只是为了「万一哪天视频那条路和图文不一样」时能单独覆盖：
+  //   真要用，就去得物「发布视频」页抓一次 dump，改这一套，别改 steps。
   const videoSteps = [];
   const vpush = (name, action, value, hint) => videoSteps.push({ name, action, value, hint, unverified: true });
   const ventry = hit('上传视频', '发视频', '视频号')[0];

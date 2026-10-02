@@ -248,8 +248,8 @@ async function dispatch(type, args, ctx) {
         const um = store.get('publish.uiMap') || {};
         const vn = (um.videoSteps || []).length;
         logbus.info(`其中 ${nVideo} 条按「视频」发布（封面用得物推荐的）：${vn
-          ? `videoSteps 已配 ${vn} 步`
-          : '⚠ UI 定位表里还没有 videoSteps —— 请到得物「发布视频」页抓一次结构再导入，否则这几条会直接失败（不会拿图文步骤硬套）'}`);
+          ? `videoSteps 单独配了 ${vn} 步`
+          : '视频复用图文的定位表（图文与视频位置一样，实测）'}`);
       }
       return {
         batch, total: built.publishRows.length, fromReport, generated,
@@ -319,7 +319,7 @@ async function dispatch(type, args, ctx) {
       await fs.promises.writeFile(wp.toLong(xmlFile), xml, 'utf8');
       await fs.promises.writeFile(wp.toLong(mapFile), JSON.stringify(map, null, 2), 'utf8');
       logbus.ok(`已抓取 ${nodes.length} 个节点 → ${path.basename(xmlFile)}`);
-      logbus.warn(`已生成候选定位表 ${path.basename(mapFile)}：steps（图文）与 videoSteps（视频）都是按关键词猜的，改对后再导入`);
+      logbus.warn(`已生成候选定位表 ${path.basename(mapFile)}：steps 是按关键词猜的，改对后再导入（视频默认复用这套，不用单独配）`);
       return { xmlFile, mapFile, nodeCount: nodes.length, steps: map.steps.length, videoSteps: (map.videoSteps || []).length, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
     }
     case 'publish.importMap': {
@@ -343,8 +343,8 @@ async function dispatch(type, args, ctx) {
       if (Array.isArray(prev.recover) && prev.recover.length) uiMap.recover = prev.recover;
       store.set({ publish: { uiMap } });
       logbus.ok(`UI 定位表已导入：图文 ${steps.length} 步 · ${videoSteps.length
-        ? `视频 ${videoSteps.length} 步`
-        : '视频没配（videoSteps）—— 视频条会直接失败，不会拿图文那套硬套'}（来自 ${path.basename(args.file)}）`);
+        ? `视频单独配了 ${videoSteps.length} 步`
+        : '视频复用图文（默认，不用单独配）'}（来自 ${path.basename(args.file)}）`);
       return { steps: steps.length, videoSteps: videoSteps.length, file: args.file };
     }
     case 'publish.setRecover': {

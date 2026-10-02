@@ -18,8 +18,8 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-gate-'));
 app.setPath('userData', TMP);
 app.commandLine.appendSwitch('disable-gpu');
 
-const GATE_MAX_W = 420;     // 登录小窗的宽度上限（卡片 340 + 左右各 20，留点余量）
-const PAD_Y = 18;           // 与 src/main/window.js 的 GATE_PAD_Y 保持一致
+const GATE_MAX_W = 344;     // 登录小窗的宽度上限（现在窗口＝卡片 340，只留渲染取整的余量）
+const PAD_Y = 0;            // 与 src/main/window.js 的 GATE_PAD_Y 保持一致（窗口＝卡片，不留呼吸位）
 
 let bad = 0;
 const ok = (label, cond, extra) => {
@@ -94,6 +94,55 @@ app.whenReady().then(async () => {
   })()`);
   ok('登录页：卡片外没有任何可见元素（标题/× 不许浮在边框外）',
      !!outside && !!outside.out && outside.out.length === 0, JSON.stringify(outside));
+
+  // ★ 2026-10-02 用户第三次反馈「登录框外面还有一块色块」⇒ 窗口必须**恰好等于卡片**：
+  //   宽度差超过 2px 就说明卡片左右又露出了底色（那圈底色就是用户说的「色块」）。
+  const cardW = await js('Math.round(document.querySelector(".gate .gcard").getBoundingClientRect().width)');
+  ok('登录页：窗口宽 = 卡片宽（卡片左右不留边，外面不许露底色）',
+     Math.abs(g.width - cardW) <= 2, '窗' + g.width + ' / 卡' + cardW);
+
+  // ★ 「白底白字」回归：卡片里任何**有文字的可见元素**，前景色与它实际铺在的背景色必须能分辨。
+  //   之前 .gname 从 body 继承了「深色主题算好的浅字色」，白卡片上就是白字（对比度 1.13）。
+  const contrast = await js(`(() => {
+    const card = document.querySelector('.gate .gcard');
+    if (!card) return { err: 'no card' };
+    const rgb = (c) => {
+      const i = c.indexOf('(');
+      if (i < 0) return null;
+      const p = c.slice(i + 1, c.indexOf(')')).split(',').map(s => parseFloat(s));
+      if (!p.length || !isFinite(p[0])) return null;
+      if (p.length >= 4 && p[3] === 0) return null;      // 全透明 = 这里没背景，继续往上找
+      return p;
+    };
+    const lum = (p) => {
+      const f = (v) => { v = v / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(p[0]) + 0.7152 * f(p[1]) + 0.0722 * f(p[2]);
+    };
+    const bgLum = (el) => {
+      let n = el;
+      while (n && n !== document.documentElement) {
+        const p = rgb(getComputedStyle(n).backgroundColor);
+        if (p) return lum(p);
+        n = n.parentElement;
+      }
+      return 1;
+    };
+    const bad = [];
+    for (const el of card.querySelectorAll('*')) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      const txt = (el.childNodes.length === 1 && el.firstChild.nodeType === 3) ? el.textContent.trim() : '';
+      if (!txt) continue;
+      const fp = rgb(getComputedStyle(el).color);
+      if (!fp) continue;
+      const fg = lum(fp), bg = bgLum(el);
+      const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+      if (ratio < 3) bad.push((el.className || el.tagName) + ' ' + txt.slice(0, 14) + ' 对比度 ' + ratio.toFixed(2));
+    }
+    return { bad };
+  })()`);
+  ok('登录页：卡片里没有「前景≈背景」的文字（白底白字回归）',
+     !!contrast && !!contrast.bad && contrast.bad.length === 0, JSON.stringify(contrast));
 
   // 走渲染层自己的流程：填表 + 提交（等同于用户敲完点「登录」）
   await js(`(() => {

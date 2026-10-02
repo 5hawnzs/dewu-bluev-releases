@@ -576,7 +576,8 @@
       看着就像「黑框」；下面那行是 `loginTip` 的出厂账号提示。
       - `styles.css`：在 `.gate` 子树里**重新声明整套浅色变量** ⇒ 登录页固定浅色，主界面继续跟随系统主题。
       - `window.js`：`BrowserWindow.backgroundColor` 是 JS 取色、**不随 CSS 走** ⇒ 必须同步
-        （`GATE_BG = '#f2f1ed'` / `bgColor()`；登录门期间恒浅色，退出登录门按系统切回），否则深色系统下先闪一块近黑。
+        （`GATE_BG` / `bgColor()`；登录门期间恒浅色，退出登录门按系统切回），否则深色系统下先闪一块近黑。
+        ★ 2026-10-02 第三轮把 `GATE_BG` 从米色 `#f2f1ed` 改成**纯白** —— 见下面「窗口＝卡片」那节：底色必须与卡片同色。
       - 出厂账号提示**整条删掉**（不是设 `hidden`）：`index.html` 的 `#lgTip`、`app.js#showGate()` 里那段渲染、
         `auth.js#status()` 的 `defaultHint` 字段 —— **连读取链一起删**（删了界面、字段还回传 = 白删）。
       - ★ 这条也踩到「负向断言不能只看源码」：`logintest` 原来读 `tip()` 的可见性，现换成 `cardText()`，
@@ -632,6 +633,48 @@
    ★ 实测 C2 会被 `logintest` **3 条**一起抓到（按钮没了 → 弹窗打不开 → 权限也就没写成），
    期望值按**实测**补到 3，而不是按我猜的 1。脚本 `D:\work\_e2e\breakverify-20261002b.py`。
 6. ★ **本轮没有打包、也没有推送更新通道**：版本仍是 `1.0.2`（源上正式版就是它），要发给同事就在下一轮打包。
+
+### 2026-10-02 第三轮：登录页「窗口＝卡片」、视频复用图文、删掉假序列号兜底
+
+用户这次报了三件事，其中「登录框外面的色块」是**第三次**反馈 —— 前两次我都在改**颜色**，而他要的是**把它去掉**。
+
+1. **登录页「白底白字」—— 根因是 CSS 自定义属性的求值时机**
+   上一轮把浅色变量在 `.gate` 子树里重声明了一遍，但卡片里的 `.gname`（「得物蓝V 素材发布工具」）**仍看不见**。
+   真窗口实测（读计算色）：`color=rgb(234,234,231)`（浅字）压在 `bg=rgb(255,255,255)` 的白卡片上。
+   原因：`body{color:var(--tx)}` 是**在 body 上按 `html.dark` 求过值**的（`#eaeae7`），
+   后代继承到的是那个**算完的具体颜色**，不是 `var()` 表达式 —— 在 `.gate` 里重声明变量**管不到它**。
+   ⇒ 修法：在 `.gate` 上**显式**写 `color:var(--tx);`。
+   （这也解释了为什么「重声明变量」看着生效了：`.gsub` / `.gfld span` 这些**自己写了 `color:var(--tx3)`** 的元素
+   本来就没事，只有**没写 color** 的元素才中招。）
+
+2. **「登录框外面那圈色块」= 登录小窗本来就比卡片大**
+   实测：窗口 `380×339`、卡片 `{x:20,y:18,w:340,h:302}` ⇒ 卡片四周露出一圈 `#f2f1ed`。
+   （上一轮只是把它从「深色近黑」换成「浅米色」，**那圈东西还在** —— 这就是「三次都没解决」的原因。）
+   ⇒ 修法：`GATE_WIDTH 380→340`、`GATE_PAD_Y 18→0`、`gate` 背景与 `GATE_BG` 都改成**纯白**（与卡片同色）。
+   验收（真窗口实测）：窗口 `340×301`、卡片 `{x:0,y:0,w:340,h:300}`、`gate 背景 = 卡片背景 = rgb(255,255,255)`。
+   新增断言（`gatetest`）：**窗口宽 = 卡片宽**、**卡片里没有「前景≈背景」的文字**（对比度 < 3 即红）。
+
+3. **「检查能不能发布」里的 `emulator-5554` 不是硬编码 —— 那是他自己的模拟器**
+   实测：内置 adb 与 MuMu adb 都看到 `emulator-5554  device`；而 `config.json` 里
+   `publish.device = ""`、`devices = []` ⇒ 走 `adb.probe('')` 的「还没选设备」分支，
+   文案里把**刚扫到的真实设备名**列了出来 ⇒ 用户以为程序里写死了一台假设备。
+   但确实**有一处该删的硬编码**：`publisher.connect()` 的 `|| 'emulator-5554'` 兜底 ——
+   没配设备时它拿这台不存在的设备去 probe，界面报「你选的设备「emulator-5554」没连上」。**已删**，
+   现在没选设备就直接返回「还没选设备：点「扫描设备」…」；提示文案也**明说这个名字是模拟器自己的**。
+   ⚠️ 判「该不该删」时**别只看源码** —— 先跑一次 `adb devices`，否则会把用户自己的设备名当成硬编码。
+
+4. **视频复用图文定位表**（用户实测：图文与视频发布位置一样）
+   `publisher.run` 原来在 `videoSteps` 为空时**直接抛错**（怕拿图文步骤硬套）。改成**空则复用 `steps`**，
+   并打一条「按「图文那套位置」发」；`videoSteps` 保留为可选覆盖。
+   界面 chip「视频未配」→「视频复用图文」；`jobs` 的两处日志同步。
+   ⇒ 用户**只需要抓一次图文发布页**，不用再单独抓视频页。
+
+5. **测试（`768 → 776` 项）**：`adbtest` ⑦ 段口径从「没配 `videoSteps` 必失败」改成
+   「没配就**照常发布**、且真的按 `steps` 点下去」（3 条）；`uicheck` **+6**（源码级，`codeOnly()` 剥注释后判）；
+   `gatetest` **+2**（窗口宽 = 卡片宽 / 无白底白字，真窗口算对比度）。
+6. **定点破坏 8 条**（脚本 `D:\work\_e2e\breakverify-20261002c.py`）：
+   D1 去掉 `.gate` 的显式 `color` / D2 `.gate` 背景改回深色变量 / D3a 呼吸位加回 18 / D3b 窗口宽改回 380 /
+   D4 `connect()` 兜底假序列号 / D5 界面提示「如 emulator-5554」/ D6 视频改回「没配就抛错」/ D7 chip 写回「视频未配」。
 
 ## 5. 待做（按优先级）
 
@@ -748,7 +791,7 @@
   双向验证：去掉这行判断 ⇒ smoke **FAIL ⑧ … 3 个货号：货号 / 26FW-YB160 / UF46FWT75EH1HF6**。
   ⚠️ **已经导坏过的机器要重新导一次商品池**（代码修的是导入行为，不会去改你已有的 pool.json）。
 
-### 视频发布支持（2026-10-01 **代码已实现**；只差真机抓 `videoSteps`）
+### 视频发布支持（2026-10-01 **代码已实现**；★ 2026-10-02 起**默认不用配 `videoSteps`**）
 
 > **已拍板的口径：视频封面用「得物推荐的」** —— 即不点封面区、不上传封面图、不做取帧裁图。
 > 这一条省掉了「视频取帧 / 裁图 / 传封面」整块能力（不用引入 ffmpeg），是最大的一处复杂度节省。
@@ -775,10 +818,13 @@
    图片小、扫得快所以一直没暴露；mp4 几十 MB，发完广播就走 UI 会**稳定**卡在「相册里选不到这条视频」，
    而且看起来像点击步骤配错了。新增 `adb.mediaVisible()` 轮询 `content query --uri content://media/external/video/media`
    直到真能看见，上限 `publish.videoIndexTimeoutSec`（默认 180s），超时**明确失败**而不是硬点。
-3. **`uiMap` 增加 `videoSteps`**（与 `steps` 并列）。视频发布页与图文**不是一套界面**，
-   所以视频条必须走它；**没配就当场失败并说明缺什么**，绝不拿图文那套硬套。
-   `uimap.suggest()` 现在一次生成 `steps` + `videoSteps` 两套候选 + 一条 `videoNote`。
-   ⛔ **`videoSteps` 的具体坐标必须真机抓 dump 才配得出来**（见 `WINDOWS-E2E.md` 第 4 节）。
+3. **`uiMap` 增加 `videoSteps`**（与 `steps` 并列）。
+   ★★ **2026-10-02 用户实测：图文和视频的发布位置是一样的** ⇒ `videoSteps` **平时不用配**：
+   为空时 `publisher.run` **自动复用 `steps`**（并打一条「按图文那套位置发」的日志），界面写的是「视频复用图文」。
+   `videoSteps` 保留为**可选覆盖** —— 哪天真机改版、视频那条路跟图文不一样了，单独抓一次配上就以它为准。
+   `uimap.suggest()` 仍然一次生成 `steps` + `videoSteps` 两套候选 + 一条 `videoNote`。
+   （下面「真机实测卡点」那一节是 **2026-10-01 的历史记录**，其中的坐标值仍然有效；
+   但「必须单独配一套视频步骤」这个前提已被推翻 —— 抓**图文**发布页那一次就够了。）
 4. **节奏参数**：新增 `publish.videoIntervalSec`（默认 90，图文仍是 60）；`estimate()` 与界面预估
    都改成图文「间隔+30s」、视频「间隔+60s」分开算（视频推得久 + 要多等媒体库索引）。
 
@@ -880,7 +926,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
 | 测试 | 覆盖 | 断言数 |
 | --- | --- | --- |
 | `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults`；★ ⑦ **货号颜色校验的「阻断」口径**（查不到货号 / 颜色对不上 / 主色不符 = **都只告警、照常发布**；统计里 `manual` 与 `blocked` 分开算；**旧数据无 `block` 字段时按结论原文回推**）；★ ⑧ **商品池导入跳过 CSV 表头**；★ ⑨ **颜色不匹配 / 主色不符也只告警**（全库只剩「多色漏填」一种会拦） | 39 |
-| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值）；**视频条**（推视频 → 查媒体库 → 走 `videoSteps`；没配 `videoSteps` 必失败；媒体库一直看不到也必失败）；**页面不 idle**（关动画兜底并**还原**、兜不住就明确失败、★ 抓不到时**绝不返回上一页的残留结构**）；★ **内置 adb 三段解析**（留空⇒用内置、手填不被替掉、手填不存在时有内置就退回并**说出来**、全不可用标 `configured-missing`）、★ **内置 adb 真被执行**（假 adb 记下实际被执行的程序路径）、★ **一键装中文输入法**（`install -r`→`ime enable`→`ime set` 三步且顺序正确、失败明确报卡在哪步、没 apk 如实说）、★ **中文输入通道按「设备当前输入法」判定**（没启用 ⇒ 明确失败并说清下一步；纯 ASCII 不受影响；**绝不把中文塞给 `input text`**；启用了 ⇒ 走 `ADB_INPUT_TEXT` 广播；发布行如实标失败而不是假成功）+ 源码反向断言「`c.adbKeyboard` 那种配置说了算的老写法已消失」 | 72 |
+| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值）；**视频条**（推视频 → 查媒体库 → 走 `videoSteps`，没配就复用图文 `steps`、且真的按 `steps` 点下去；媒体库一直看不到必失败）；**页面不 idle**（关动画兜底并**还原**、兜不住就明确失败、★ 抓不到时**绝不返回上一页的残留结构**）；★ **内置 adb 三段解析**（留空⇒用内置、手填不被替掉、手填不存在时有内置就退回并**说出来**、全不可用标 `configured-missing`）、★ **内置 adb 真被执行**（假 adb 记下实际被执行的程序路径）、★ **一键装中文输入法**（`install -r`→`ime enable`→`ime set` 三步且顺序正确、失败明确报卡在哪步、没 apk 如实说）、★ **中文输入通道按「设备当前输入法」判定**（没启用 ⇒ 明确失败并说清下一步；纯 ASCII 不受影响；**绝不把中文塞给 `input text`**；启用了 ⇒ 走 `ADB_INPUT_TEXT` 广播；发布行如实标失败而不是假成功）+ 源码反向断言「`c.adbKeyboard` 那种配置说了算的老写法已消失」 | 72 |
 | `tools/pendingtest.js` | 把发布单 `chmod 0444` 模拟「Excel 被占用」→ 断言整批暂存 → 恢复可写后下次补写；设备增删去重 | 9 |
 | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 绝不把它搬进 `_rejected`；「导出报告」xlsx（汇总+明细）+ csv（带 BOM） | 16 |
 | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
@@ -1079,7 +1125,7 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
 | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
 | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
 | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十五套**测试，共 **768** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十五套**测试，共 **776** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
 | `tools/make-icon.js` | 从源 SVG 生成 `build/icon.ico`（7 个尺寸，每个内嵌 PNG）+ `build/icon.png`；换 logo 只改脚本里的源路径 |
 | `tools/upload-release.js` | 把 exe + 清单文件 + `.blockmap` 传到对象存储的**桶根目录**。清单名按通道定：正式版 `latest.yml`、测试版 `beta.yml`（`channelFile()`）。上传前有**四道闸门**：版本号与 `package.json` 对不上（dist 是旧包）、`dist` 里不是恰好 1 个安装版 exe、`versionGate`（同版本号 / 往回发）、`channelMismatch`（**版本后缀与通道对得上**，见 §2 第 5 条 c）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
 | `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/`（**桶根，不带 `/stable`** —— 两条通道共用同一层，靠清单文件名区分）/ `channel: latest`（只是默认值，用户选测试版后运行时会被覆盖成 `beta`）/ `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |

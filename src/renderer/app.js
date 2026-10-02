@@ -615,7 +615,7 @@ TABS[6] = {
           ${((cfg.uiMap || {}).steps ? '' : (canAdmin() ? '<button class="btn sm" data-act="go:advanced">去「高级设置」配 UI 定位表</button>' : ''))}
           <span class="chip">${mode === 'adb' ? '真实设备通道' : '模拟通道'}</span>
           <span class="chip ${(state.config.publish.uiMap || {}).steps ? '' : 'warn'}">${(state.config.publish.uiMap || {}).steps ? '定位表 ' + state.config.publish.uiMap.steps.length + ' 步' : '定位表未配'}</span>
-          ${(() => { const m = state.config.publish.uiMap || {}; if (!m.steps) return ''; const vn = (m.videoSteps || []).length; return vn ? `<span class="chip">视频 ${vn} 步</span>` : '<span class="chip">视频未配</span>'; })()}
+          ${(() => { const m = state.config.publish.uiMap || {}; if (!m.steps) return ''; const vn = (m.videoSteps || []).length; return vn ? `<span class="chip">视频 ${vn} 步</span>` : '<span class="chip">视频复用图文</span>'; })()}
           <span class="chip">批次 ${esc(pub.batch || '（导出发布单后自动命名）')}</span>
         </div>
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
@@ -765,13 +765,16 @@ TABS[11] = {
         <h3>UI 定位表（真实发布必需）</h3>
         <div class="row">
           <span class="chip ${steps.length ? '' : 'warn'}">${steps.length ? '图文已配 ' + steps.length + ' 步' : '图文未配'}</span>
-          <span class="chip ${vsteps.length ? '' : 'warn'}">${vsteps.length ? '视频已配 ' + vsteps.length + ' 步' : '视频未配'}</span>
+          <span class="chip">${vsteps.length ? '视频单独配了 ' + vsteps.length + ' 步' : '视频复用图文（默认）'}</span>
           <button class="btn sm" data-act="pub:dump">抓取页面结构</button>
           <button class="btn sm" data-act="pub:map">导入 UI 定位表</button>
         </div>
         <p class="hint">得物 App 的发布页结构会随版本变，所以「按钮 / 输入框在哪」做成了可抓取的定位表。
           <b>没配这张表，真实通道会直接拦下</b>（宁可不发，也不瞎点）。做法：设备连上并停在得物发布页 →
           点「抓取页面结构」→ 输出目录里生成一份候选 uiMap.json → 核对后点「导入 UI 定位表」导进来。</p>
+        <p class="hint">★ <b>视频和图文用的是同一套位置</b>（2026-10-02 实测）⇒ 只要抓一次<b>图文</b>发布页就够了，
+          视频会<b>自动复用</b>这套 steps，不用再抓一遍。哪天真机改版、视频那条路跟图文不一样了，
+          再单独抓一次配 videoSteps 覆盖（配了就以它为准）。</p>
       </div>
       <div class="box">
         <h3>失败恢复动作</h3>
@@ -1198,7 +1201,7 @@ function devicesHtml() {
       <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">手动填序列号添加（一般用不到）</summary>
       <div class="row" style="margin-top:8px">
         <input class="inp mono" id="devName" placeholder="账号名，如 主号" style="flex:0 0 160px;min-width:0">
-        <input class="inp mono" id="devSerial" placeholder="序列号，如 emulator-5554" style="flex:0 0 190px;min-width:0">
+        <input class="inp mono" id="devSerial" placeholder="序列号（一般不用填，用上面的「扫描设备」）" style="flex:0 0 190px;min-width:0">
         <button class="btn sm" data-act="pub:addDev">添加设备</button>
       </div>
     </details>
@@ -2277,7 +2280,7 @@ const ACTS = {
   'pub:addDev': async () => {
     const name = (document.getElementById('devName') || {}).value || '';
     const serial = (document.getElementById('devSerial') || {}).value || '';
-    if (!serial.trim()) { toast('请填设备序列号，如 emulator-5554', 'err'); return; }
+    if (!serial.trim()) { toast('这里要先填序列号 —— 更省事的是上面点「扫描设备」，从列表里「加入并使用」', 'err'); return; }
     const r = await appApi.run('publish.addDevice', { name: name.trim(), serial: serial.trim() });
     if (r.ok) { state.config = await appApi.configGet(); toast('已添加设备', 'ok'); }
     renderAll();
