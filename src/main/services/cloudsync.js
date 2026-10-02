@@ -128,13 +128,26 @@ function machineOf(create) {
   return { id, name, org };
 }
 
-function cfgOf() {
+/** 配置里**本机显式填的**值（不兜底、不写回）。留空 ⇒ 跟随内置（见 cfgOf）。 */
+function explicitOf() {
   const c = store.get('cloud') || {};
   return {
+    url: String(c.url || '').trim().replace(/\/+$/, ''),
+    anonKey: String(c.anonKey || '').trim(),
+    org: String(c.org || '').trim()
+  };
+}
+
+function cfgOf() {
+  const c = store.get('cloud') || {};
+  const e = explicitOf();
+  return {
     enabled: !!c.enabled,
-    // ★ 界面上没填（或被清空）时落回内置的组织默认值，这样「装上就能连」，不用每台手填
-    url: String(c.url || CD.url).trim().replace(/\/+$/, ''),
-    anonKey: String(c.anonKey || CD.anonKey).trim(),
+    // ★★ 留空 ⇒ 在这里兜底到内置的组织默认值，**读完就算了、绝不写回配置**。
+    //    这样「装上就能连、各台不用手填」和「以后换项目只要发新包、各台升级自动跟随」同时成立。
+    //    ★ 一定不要把兜底值写回 store：写回＝固化进 config.json，而卸载都不删 ⇒ 新包顶不动它。
+    url: e.url || CD.url,
+    anonKey: e.anonKey || CD.anonKey,
     intervalSec: Number(c.intervalSec) || 30
   };
 }
@@ -274,6 +287,12 @@ function status() {
     enabled: cfg.enabled,
     configured: !!(cfg.url && cfg.anonKey),
     url: cfg.url,
+    // ★★ 界面靠这两个字段如实说「当前实际在用哪个地址、是跟随内置还是本机指定」。
+    //    这是删掉 applyCloudDefaults 之后替代「把值写进配置」的那条不变量：
+    //    显示的是主进程真正在用的值，就不存在「框里空着、后台照推」的错觉。
+    //    （uicheck 里有断言焊住：界面显示的地址 === status().url）
+    urlSource: explicitOf().url ? 'custom' : 'builtin',
+    builtinUrl: CD.url,
     intervalSec: cfg.intervalSec,
     machineId: m.id,
     machineName: m.name,
@@ -337,4 +356,4 @@ function configure() {
   start();
 }
 
-module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, exportConfig, importConfig, stateFile, logFile, dataDir };
+module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, exportConfig, importConfig, explicitOf, stateFile, logFile, dataDir };

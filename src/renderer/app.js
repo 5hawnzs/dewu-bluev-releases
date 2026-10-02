@@ -838,8 +838,8 @@ TABS[11] = {
             <option value="false" ${!cl.enabled ? 'selected' : ''}>关闭（数据不出本机）</option>
           </select>
         </div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">项目地址</span><input class="inp mono" value="${esc(cl.url || '')}" data-cfg="cloud.url" placeholder="https://xxxx.supabase.co"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">anon key</span><input class="inp mono" type="password" value="${esc(cl.anonKey || '')}" data-cfg="cloud.anonKey" placeholder="只填 anon public key"></div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">项目地址</span><input class="inp mono" value="${esc(cl.url || '')}" data-cfg="cloud.url" placeholder="留空 = 跟随内置（见下方「实际在用」）"></div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">anon key</span><input class="inp mono" type="password" value="${esc(cl.anonKey || '')}" data-cfg="cloud.anonKey" placeholder="留空 = 跟随内置；只填 anon public key"></div>
         <div class="row" style="margin-bottom:9px"><span class="lbl">本机名称</span><input class="inp mono" value="${esc(cl.machineName || '')}" data-cfg="cloud.machineName" placeholder="留空 = 用电脑名（看板上用来区分是谁在发）"></div>
         <div class="row">
           <span class="lbl">推送间隔</span>
@@ -852,9 +852,14 @@ TABS[11] = {
           <button class="btn sm" data-act="cloud:imp">导入配置</button>
           <span class="hint">换项目、或给不方便重打包的机器下发凭据时用</span>
         </div>
+        <div id="cloudEff" class="hint">读取中…</div>
         <div id="cloudState" class="hint">读取中…</div>
-        <p class="hint"><b>地址与 anon key 已内置在包里</b>（组织统一配置）：装完就能连，各台机器<b>不用填任何东西</b>，
-          机器名默认用电脑名。要换项目就用上面的「导出 / 导入配置」，或者直接改这两个框（界面上填的优先）。</p>
+        <p class="hint"><b>上面两个框留空 = 跟随内置</b>（组织统一配置，已打进包里）：装完就能连，各台机器<b>不用填任何东西</b>，
+          机器名默认用电脑名。★ 留空的状态下换项目<b>只要发新包</b>——各台一升级就自动跟随新地址
+          （留空不会被写进本机配置，所以新包的内置值顶得住）。</p>
+        <p class="hint">只有要把<b>这一台</b>单独指到别的库（或临时调试）时，才往那两个框里填 —— 填了以填的为准，
+          且<b>只影响这一台</b>；想撤回就把框清空（又回到跟随内置）。做<b>组织级</b>的整体切换请走「发新包」，
+          别逐台手填：各台指向不同项目时，看板上会「少一个人」而且不报错。</p>
         <p class="hint"><b>只上行「发布结果」这一张表</b>：时间 / 机器 / 执行人 / 品牌 / 批次 / 篇号 / 成功或失败 / 原因 / 耗时。
           <b>素材内容、绝对路径、日志原文一概不上行</b>（目录只取最后一段款名）。关着的时候<b>一次都不联网</b>。</p>
         <p class="hint">★ 这里只能填 <b>anon public key</b>（它本来就是设计成公开的，靠数据库的 RLS 策略收口）。
@@ -1001,6 +1006,9 @@ function renderCloudModal() {
       <h3>导出云端配置</h3>
       <p class="hint">把这段发给别的机器：在那台机器的「导入配置」里粘进去就行，不用手填三个框。
         里面是 <b>anon key</b>（公开设计，靠数据库策略收口），<b>不是</b> service_role。</p>
+      <p class="hint">★ 但如果对方那台是<b>「跟随内置」</b>（绝大多数情况），<b>不需要发这个</b>：
+        发新包、让它升级一次就会自动跟随新地址，比粘配置更干净。粘了反而会把地址写死在那台机器上
+        （日后换项目它就不跟着走了，界面上还看不出区别）。只有对方<b>升不了级</b>时才用这段。</p>
       <textarea id="cmText" rows="7" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;border:1px solid var(--line);border-radius:7px">${esc(JSON.stringify({ url: c.url || '', anonKey: c.anonKey || '', org: c.org || '' }, null, 2))}</textarea>
       <div class="row" style="margin-top:10px;justify-content:flex-end">
         <button class="btn sm" data-act="cloud:close">关闭</button>
@@ -1026,6 +1034,24 @@ async function refreshCloudState() {
   state.cloud = s;
   const el = document.querySelector('#cloudState');
   if (el) el.innerHTML = cloudStateHtml(s);
+  // ★★ 「当前实际在用哪个地址」必须**无条件**显示，且用主进程报上来的真值。
+  //    这是删掉 applyCloudDefaults 之后，替代「把值写进配置」的那条不变量：
+  //    界面显示的是真值，就不存在「框里空着、后台照推另一个地址」这种骗人。
+  const eff = document.querySelector('#cloudEff');
+  if (eff) eff.innerHTML = cloudEffHtml(s);
+}
+
+/**
+ * 「实际在用」那一行。
+ * ★ 无条件渲染（未启用 / 未配置也要说清楚在用什么），因为它是「留空＝跟随内置」
+ *   这个语义**唯一的可见出口** —— 理由见 cloudStateHtml 上方与 src/main/store.js 的长注释。
+ */
+function cloudEffHtml(s) {
+  if (!s || !s.url) return `${badge('读不到', 'warn')} 实际在用的云端地址读不出来（接口没连上）`;
+  const how = s.urlSource === 'custom'
+    ? '本机指定（只影响这一台）'
+    : '跟随内置（换项目＝发新包，各台升级后自动跟随）';
+  return `${badge(s.urlSource === 'custom' ? '本机指定' : '跟随内置', 'wait')} 当前实际在用：<code>${esc(s.url)}</code> · 来源：${esc(how)}`;
 }
 
 /**

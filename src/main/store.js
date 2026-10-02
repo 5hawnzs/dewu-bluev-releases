@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const wp = require('./util/winpath');
-const CD = require('./clouddefaults');   // 云端默认值（内置进包）：只有 anon/publishable key
+// ★ 这里原来 require 了 './clouddefaults'（为了把内置值补进配置）—— 已删。
+//   store **不需要也不许**知道内置的云地址：知道了就会有人再把它写回 config.json（＝固化）。
+//   内置值的唯一读点在 src/main/services/cloudsync.js 的 cfgOf()（读时兜底，不写回）。
 
 let cache = null;
 let saveTimer = null;
@@ -77,37 +79,40 @@ function defaults() {
     // 一并接进 userData/logs/update.log —— 「差分下载静默退回全量」只有那里看得见。
     // ★ 它**不违**「数据不出本机」：只写版本号/通道名/字节数，不含素材、品牌、SKU。
     update: { channel: 'stable', log: false },
-    // 云端协作（阶段 1：只上行发布结果给网页看板做聚合，**不参与发布**）。
-    // ★ 地址与 anon key 取 `clouddefaults.js` 里的**内置组织值**：装完就能连，各台机器不用手填。
-    //   内置的是 anon / publishable key（公开设计，靠 RLS 收口），**不是** service_role。
+    // 云端协作（只上行发布结果给网页看板做聚合，**不参与发布**）。
+    // ★★ 出厂这三个键**必须留空**：留空 = 跟随 `clouddefaults.js` 里的内置组织值
+    //    （在 cfgOf() 读取时兜底，**不写回**）。装上就能连，各台机器不用手填。
+    // ★★ **绝不能在这里写 `CD.url`** —— 那会把内置值**固化进 config.json**，而 config.json
+    //    卸载都不删（见本文件第 2 行）⇒ 以后重打包换了内置值，老机器仍连旧地址，界面上还看不出来。
+    //    留空之后「换项目」才有正经通道：发新包 → 各台升级（config.json 里仍是空）→ 自动跟随新内置值。
+    //    ★ 实证：`D:\work\_e2e\_freeze-probe.js`。
+    // ★ 内置的是 anon / publishable key（公开设计，靠 RLS 收口），**不是** service_role。
     // ★ 默认**开启**（多机协作就是要各台都推）；不想上云的机器在这一页关掉开关即可 ——
-    //   enabled=false 时 cloudsync 一次都不会联网。
+    //   enabled=false 时 cloudsync 一次都不会联网。只想改**这一台**就往这两个框里填，填了以填的为准。
     cloud: {
       enabled: true,
-      url: CD.url, anonKey: CD.anonKey, org: CD.org,
+      url: '', anonKey: '', org: '',
       machineId: '', machineName: '', intervalSec: 30
     }
   };
 }
 
 /**
- * 老配置补默认值 / 归一化：升级上来的 config.json 里 `cloud.url` 是空串，
- * 而 mergeDeep 会把空串原样盖住新的默认值（空串不是 undefined）⇒ 不补的话永远连不上。
- * ★ 只在「为空」时补：管理员在界面上**故意改成别的地址**时不会被顶回去。
+ * ★★ 2026-10-02 第六轮：这里原本有个 `applyCloudDefaults(c)`（load 与 set 都调），
+ *    把空的 cloud.url/anonKey/org 补成内置值。它**已整块删除**，别再加回来。
  *
- * ★★ 必须 load() 和 set() **都调用**，理由不是洁癖，是防「界面骗人」：
- *    cloudsync.cfgOf() 对空值本来就会兜底到内置地址 ⇒ 如果只有 load() 归一，
- *    管理员在界面上把地址框清空、看到的是**空白**，而它其实**照样往内置地址推数据**。
- *    把归一化也做在 set() 上，「存下来的」就永远等于「真正在用的」，界面说空就是真空。
- *    （真要停掉上云用那一页的开关，不是清空地址 —— 界面上也是这么写的。）
+ * 为什么删：补空 = 让内置值**固化进 config.json**，于是
+ *   ① 在高级设置页改**任何**一个选项都会把 cloud 整块写盘（saveCfgFromDom 是全页控件值整体提交，
+ *      scheduleSave 又整个 cache 写盘），云地址就此焊死在那台机器上；
+ *   ② config.json 卸载不删 ⇒ 以后重打包换了内置值也顶不动它，而**界面看不出区别**。
+ *     （实测：`D:\work\_e2e\_freeze-probe.js`，见 REFERENCE §T9。）
+ *
+ * 那原来守的「界面骗人」怎么办？—— 换成**更直接的一条**：
+ *   界面必须**如实显示「当前实际在用哪个地址、来源是跟随内置还是本机指定」**
+ *   （`#cloudEff`，数据来自 cloudsync.status() 的 url/urlSource）。
+ *   显示的是真值，就不存在「框里空着、后台照推」的错觉了；不需要靠把值写进配置来对齐。
+ *   ★ 于是语义变干净：**留空 = 跟随内置**（升级新包自动跟随）；**填了 = 只改这一台**。
  */
-function applyCloudDefaults(c) {
-  if (!c.cloud) c.cloud = {};
-  if (!c.cloud.url) c.cloud.url = CD.url;
-  if (!c.cloud.anonKey) c.cloud.anonKey = CD.anonKey;
-  if (!c.cloud.org) c.cloud.org = CD.org;
-  return c;
-}
 
 function mergeDeep(base, patch) {
   if (!patch || typeof patch !== 'object') return base;
@@ -130,7 +135,7 @@ function load() {
     const raw = fs.readFileSync(wp.toLong(file()), 'utf8');
     cache = mergeDeep(cache, JSON.parse(raw));
   } catch (e) { /* 首次启动 */ }
-  applyCloudDefaults(cache);
+  // ★ 这里原来有 `applyCloudDefaults(cache)`（把空的云地址补成内置值）—— 已删，见上方长注释。
   return cache;
 }
 
@@ -142,7 +147,8 @@ function get(key) {
 
 function set(patch) {
   cache = mergeDeep(load(), patch);
-  applyCloudDefaults(cache);   // ★ 与 load() 同一套归一：别让「界面显示空、实际仍在推」同时存在
+  // ★ 这里原来有 `applyCloudDefaults(cache)` —— 已删（它会把内置值固化进 config.json，见上方长注释）。
+  //   现在「留空 = 跟随内置」是**设计上的正常状态**，读的时候由 cloudsync.cfgOf() 兜底。
   scheduleSave();
   return cache;
 }

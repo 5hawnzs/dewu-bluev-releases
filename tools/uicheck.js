@@ -747,12 +747,28 @@ app.whenReady().then(async () => {
     !/paths\.source/.test(srcMain) && !/paths: \{ source\b/.test(srcMain),
     `paths.source=${(srcMain.match(/paths\.source/g) || []).length} · 配置键=${(srcMain.match(/paths: \{ source\b/g) || []).length}`);
   // 而高级设置页里它们都在（而且「文案模型 / 货号颜色 / 外部依赖路径」三块默认是**收起**的）
+  // ★ 自检的 userData 是临时目录 ⇒ 配置里云地址必然是空的（留空＝跟随内置），
+  //   所以「主进程实际在用的地址」可以直接从主进程问出来，再和界面显示的对比。
+  const csNow = require(path.join(ROOT, 'src/main/services/cloudsync.js')).status();
   const advUi = await win.webContents.executeJavaScript(`(async () => {
+    const EXPECT = ${JSON.stringify({ url: csNow.url, src: csNow.urlSource })};
     document.querySelector('.nav[data-tab="11"]').click();
-    await new Promise(r => setTimeout(r, 200));
+    // refreshCloudState 是异步的（要过一次 IPC），别抢在它前面读
+    for (let i = 0; i < 20; i++) {
+      const t = (document.querySelector('#pane #cloudEff') || {}).textContent || '';
+      if (t && !/读取中/.test(t)) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
     const pane = document.querySelector('#pane');
     const has = s => !!pane.querySelector(s);
     const ds = [...pane.querySelectorAll('details.box')];
+    const effEl = pane.querySelector('#cloudEff');
+    const effText = effEl ? (effEl.textContent || '') : '';
+    // ★ 只认「来源：」**后面那一段**：整段里本来就同时有「跟随内置」和「本机指定」两个词
+    //   （前面的徽章 + 后面的说明），拿整段去 test 会**两边都命中** ⇒ 说反了也照样绿（假通过）。
+    const srcSeg = effText.split('来源：')[1] || '';
+    const srcRig = EXPECT.src === 'custom' ? '本机指定' : '跟随内置';
+    const srcWrong = EXPECT.src === 'custom' ? '跟随内置' : '本机指定';
     return {
       adbPath: has('[data-cfg="publish.adbPath"]'), ffPath: has('[data-cfg="publish.ffmpegPath"]'),
       dump: has('[data-act="pub:dump"]'), map: has('[data-act="pub:map"]'),
@@ -761,12 +777,29 @@ app.whenReady().then(async () => {
       mode: has('[data-cfg="verify.mode"]'), conc: has('[data-cfg="copy.concurrency"]'),
       cloud: has('#cloudState') && has('[data-cfg="cloud.url"]') && has('[data-cfg="cloud.anonKey"]')
         && has('[data-act="cloud:exp"]') && has('[data-act="cloud:imp"]'),
+      effPresent: !!effEl, effText: effText.slice(0, 120),
+      effShown: !!EXPECT.url && effText.includes(EXPECT.url),
+      // ★ 来源词必须和主进程报的一致，且**不许出现反面的词**（说反了＝骗人）
+      effSrcMatch: srcSeg.includes(srcRig) && !srcSeg.includes(srcWrong),
+      effSrcShown: /跟随内置|本机指定/.test(effText),
+      srcSeg: srcSeg.slice(0, 60),
+      stateUrl: EXPECT.url, stateSrc: EXPECT.src,
       collapsed: ds.length, openCount: ds.filter(d => d.open).length
     };
   })()`);
   ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作含导出导入）',
     advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map && advUi.recover
       && advUi.llm && advUi.sku && advUi.mode && advUi.conc && advUi.cloud, JSON.stringify(advUi));
+  // ★★ 2026-10-02 第六轮：云端配置改成「留空＝跟随内置」后，删掉了 applyCloudDefaults，
+  //    于是守「界面骗人」的担子全压在这一行上 —— 它必须**无条件**显示主进程真正在用的地址。
+  //    （以前是靠「把内置值写回配置」让框里的值 = 在用的值；那条会固化，已删。）
+  ok('★ 云端协作块里有「当前实际在用」这一行（「留空＝跟随内置」唯一的可见出口）',
+    advUi.effPresent === true, JSON.stringify({ present: advUi.effPresent, text: advUi.effText }));
+  ok('★★ 界面显示的地址 == 主进程真正在用的地址（不许「框里空着、后台照推别处」）',
+    advUi.effShown === true, JSON.stringify({ stateUrl: advUi.stateUrl, text: advUi.effText }));
+  ok('★ 那一行同时说清来源，且**说的和主进程报的一致**（跟随内置 / 本机指定说反了就是骗人）',
+    advUi.effSrcShown === true && advUi.effSrcMatch === true && (advUi.stateSrc === 'builtin' || advUi.stateSrc === 'custom'),
+    JSON.stringify({ src: advUi.stateSrc, seg: advUi.srcSeg, text: advUi.effText }));
   // 五块：文案模型 / 并发路数 / 货号颜色 / 外部依赖路径 / 云端协作（2026-10-02 新增云端协作）
   ok('★ 高级设置里「可选」的五块默认是收起的（折叠区，不占地方）',
     advUi.collapsed === 5 && advUi.openCount === 0, JSON.stringify(advUi));

@@ -13,7 +13,8 @@
  *     7. **失败不抛**：上行挂掉绝不能把发布拖下水；
  *     8. **内置的只能是 anon / publishable key**（service_role / secret 绝不许进包或进客户端）；
  *     9. **导出 / 导入配置要先校验**：地址不合法、或粘进 service_role，都必须拦下；
- *    10. **「存下来的」必须等于「真正在用的」**：清空 url 不许变成「界面空着、后台照推」。
+ *    10. **留空 ⇒ 跟随内置，且绝不写回配置**（写回＝固化进 config.json，而它卸载都不删
+ *        ⇒ 以后重打包换了内置值，老机器仍连旧地址、界面上还看不出来。实测：D:\work\_e2e\_freeze-probe.js）。
  *
  * 用法：node tools/cloudtest.js
  */
@@ -81,18 +82,28 @@ let r = null;
   ok('★ 未启用 ⇒ 一次都不联网（「数据不出本机」不能只是句文案）', calls.length === 0 && r.skipped === '未启用', `联网 ${calls.length} 次 / ${r.skipped}`);
   ok('未启用时 status.enabled 如实为 false（界面不会显示成已连接）', cs.status().enabled === false, JSON.stringify({ enabled: cs.status().enabled }));
 
-  // 地址被清空（或老配置里本来就是空）⇒ 落回内置的组织默认值 —— 这就是「各台机器不用手填」的实现
+  // 留空 ⇒ 读时落回内置的组织默认值 —— 这就是「各台机器不用手填」的实现
   setCfg({ url: '', anonKey: '' });
   const st0 = cs.status();
-  ok('★ 地址/key 为空 ⇒ 落回内置的组织值（升级上来的老配置也能连上）',
+  ok('★ 地址/key 留空 ⇒ 读时落回内置的组织值（装上就能连）',
     st0.configured === true && st0.url === CD.url, st0.url);
-  // ★★ 这两条守的是「界面骗人」：cfgOf 对空值本来就会兜底到内置地址，
-  //    如果只有 load() 做归一，管理员把地址框清空后看到的是**空白**，而数据**照样往内置地址推**。
-  ok('★★ 清空地址后「存下来的」也必须等于在用的（不许界面空着、后台照推内置地址）',
-    store.get('cloud.url') === CD.url, JSON.stringify(store.get('cloud.url')));
+  ok('★ 留空时如实标着「跟随内置」（界面靠它说清实际在用的是哪个地址）',
+    st0.urlSource === 'builtin' && st0.builtinUrl === CD.url,
+    JSON.stringify({ src: st0.urlSource, builtin: st0.builtinUrl }));
+  // ★★ 第六轮：这里原先守的是「清空后『存下来的』也必须等于内置值」（靠 applyCloudDefaults 把值写回）。
+  //    那条断言现在**反过来**了：写回＝固化进 config.json，而 config.json 卸载都不删 ⇒
+  //    以后重打包换了内置值，老机器仍连旧地址，界面上还看不出区别。
+  //    现在守的是「**别写回**」：留空就一直留空，跟随内置由**读取时**兜底。
+  ok('★★ 留空不会被写回配置（写回就固化了，新包再也顶不动它）',
+    store.get('cloud.url') === '' && cs.explicitOf().url === '', JSON.stringify(store.get('cloud.url')));
   setCfg({ url: 'https://mine.supabase.co' });
-  ok('★ 管理员显式填的地址不许被内置值顶回去',
-    store.get('cloud.url') === 'https://mine.supabase.co', store.get('cloud.url'));
+  ok('★ 本机显式填的地址不许被内置值顶回去，且如实标成「本机指定」',
+    store.get('cloud.url') === 'https://mine.supabase.co' && cs.status().urlSource === 'custom',
+    JSON.stringify({ stored: store.get('cloud.url'), src: cs.status().urlSource }));
+  setCfg({ url: '' });
+  ok('★ 把框清空 ⇒ 回到跟随内置（撤回得掉，不会卡在「本机指定」）',
+    store.get('cloud.url') === '' && cs.status().url === CD.url && cs.status().urlSource === 'builtin',
+    JSON.stringify({ stored: store.get('cloud.url'), url: cs.status().url }));
   setCfg({});
 
   console.log('\nB. 增量 + 幂等头 + 分批\n');
@@ -177,10 +188,29 @@ let r = null;
 
   console.log('\nF. 凭据：内置的是 anon，绝不许是 service_role\n');
   const d = store.defaults().cloud;
-  ok('★ 出厂就带好地址与 key（各台机器装完不用手填，机器名默认电脑名）',
-    !!d.url && !!d.anonKey && d.enabled === true, JSON.stringify({ url: d.url, enabled: d.enabled }));
+  ok('★ 出厂**绝不把云地址写进配置**（url/key/org 留空＝跟随内置；写了就会固化，见 store.js 长注释）',
+    d.url === '' && d.anonKey === '' && d.org === '' && d.enabled === true,
+    JSON.stringify({ url: d.url, key: d.anonKey, org: d.org, enabled: d.enabled }));
+  // ★★ 「固化」最容易发生的入口不是有人手填，而是**在高级设置页改任何一个选项**：
+  //    saveCfgFromDom 会把那一页所有 [data-cfg] 控件的值整体提交；scheduleSave 又把整个 cache 写盘。
+  //    所以必须证明「改无关设置」也不会把云地址带进配置（先清空成「跟随内置」的常态，再改无关项）。
+  setCfg({ url: '', anonKey: '', org: '' });
+  store.set({ ui: { theme: 'dark' }, publish: { retry: 1 } });
+  ok('★★ 改无关设置（主题 / 重试次数）也不会把云地址固化进配置',
+    store.get('cloud.url') === '' && store.get('cloud.anonKey') === '' && store.get('cloud.org') === '',
+    JSON.stringify({ url: store.get('cloud.url'), key: store.get('cloud.anonKey'), org: store.get('cloud.org') }));
+  ok('★★ 而且它仍然连得上：留空后 status 如实报出内置地址与「跟随内置」',
+    cs.status().url === CD.url && cs.status().urlSource === 'builtin' && cs.status().configured === true,
+    JSON.stringify({ url: cs.status().url, src: cs.status().urlSource }));
   // ★ 负向断言只看**代码行**：注释里出现 service_role 是好事（那是警告），不该把断言打红
   const codeOnly = s => s.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  // ★★ 结构性负向断言：**配置层不许认识内置凭据**。
+  //    它一旦 require 进来，就一定会有人「顺手把默认值补进去」⇒ 固化 ⇒ 新包顶不动老机器。
+  const storeSrc = codeOnly(fs.readFileSync(path.join(ROOT, 'src/main/store.js'), 'utf8'));
+  ok('★ store 不再 require clouddefaults（不认识内置值 ⇒ 没人能把它写回配置）',
+    !/require\(['"]\.\/clouddefaults['"]\)/.test(storeSrc));
+  ok('★ applyCloudDefaults 已整块删除（它在时会把内置值写回配置，于是新包顶不动老机器）',
+    !/applyCloudDefaults\s*\(/.test(storeSrc));
   const src = codeOnly(fs.readFileSync(path.join(ROOT, 'src/main/services/cloudsync.js'), 'utf8'));
   // ★★ 这条断言本身在 2026-10-02 被改过一次，理由要留档：
   //   原写法是「代码里不许出现 service_role 四个字」。加了「导入配置」后它**必然误报** ——
