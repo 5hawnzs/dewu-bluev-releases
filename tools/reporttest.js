@@ -91,12 +91,12 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
 (async () => {
   store.set({
     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
-    copy: { concurrency: 4, requiredTopic: '#TW男装', extraTopics: 4 },
+    copy: { concurrency: 4, requiredTopic: '#品牌甲', extraTopics: 4 },
     publish: { mock: true, mockIntervalSec: 1, retry: 1 }
   });
 
   // 批次目录：4 个叶子（第 2 个图+视频都有、报告又没标；第 3 个只有视频、报告标「视频」）
-  const batchDir = makeBatch(path.join(TMP, '卡宾', '20260901'), {
+  const batchDir = makeBatch(path.join(TMP, '品牌甲', '20260901'), {
     'UWG460108+本白_1': ['1.jpg', '2.jpg'],
     'UWG460108+本白_2': ['1.jpg', '短片.mp4'],
     'UWG460110+白色_1': ['短片.mp4'],

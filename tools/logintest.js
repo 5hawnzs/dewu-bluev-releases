@@ -224,13 +224,19 @@ app.whenReady().then(async () => {
   ok('不能删掉自己（否则没人能管账号）', selfRemove.ok === false && /不能删自己/.test(selfRemove.error), selfRemove.error);
 
   // ---- ⑦c 品牌注册表 ----
-  const bAdd = await js(`window.api.brandAdd({ name: '卡宾' })`);
+  const bAdd = await js(`window.api.brandAdd({ name: '品牌甲' })`);
   ok('管理员能新增品牌', bAdd.ok === true && /^brd_/.test(bAdd.brand.id), bAdd.error || `${bAdd.brand.name} ${bAdd.brand.id}`);
-  const bDup = await js(`window.api.brandAdd({ name: '卡宾' })`);
+  const bDup = await js(`window.api.brandAdd({ name: '品牌甲' })`);
   ok('重名品牌被拒（同名会让统计合并）', bDup.ok === false && /已经存在/.test(bDup.error), bDup.error);
   const bReserved = await js(`window.api.brandAdd({ name: '未标品牌' })`);
   ok('统计保留名不能当品牌名（否则和「未标品牌」分不开）',
     bReserved.ok === false && /保留名/.test(bReserved.error), bReserved.error);
+
+  // ★ 出厂默认**不预设任何品牌**了 ⇒「多品牌」这个场景必须由测试自己造出来。
+  //   旧版是靠出厂自带的那一个品牌凑到 2 个，等于断言依赖种子数据 —— 种子一改就假红。
+  const bSecond = await js(`window.api.brandAdd({ name: '品牌乙' })`);
+  ok('多品牌场景由测试自己造（不依赖出厂预设品牌）',
+    bSecond.ok === true, bSecond.error || (bSecond.brand && bSecond.brand.name));
 
   const brandId = bAdd.brand.id;
   const bList = await js(`window.api.brandList()`);
@@ -249,10 +255,10 @@ app.whenReady().then(async () => {
   const badAssign = await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { brands: ['brd_不存在'] })`);
   ok('分配一个不存在的品牌会被拒（不静默丢弃）', badAssign.ok === false && /不存在/.test(badAssign.error), badAssign.error);
 
-  const renamed = await js(`window.api.brandUpdate(${JSON.stringify(brandId)}, { name: '卡宾 2026' })`);
+  const renamed = await js(`window.api.brandUpdate(${JSON.stringify(brandId)}, { name: '品牌甲 2026' })`);
   const afterRename = await js(`window.api.authUsers()`);
   ok('品牌改名后已分配的权限还在（权限记的是 id，不是名字）',
-    renamed.ok === true && renamed.brand.name === '卡宾 2026'
+    renamed.ok === true && renamed.brand.name === '品牌甲 2026'
     && afterRename.users.find(u => u.username === MEMBER).brands.includes(brandId),
     `新名=${renamed.brand && renamed.brand.name}`);
 

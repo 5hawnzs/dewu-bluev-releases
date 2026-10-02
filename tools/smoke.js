@@ -37,7 +37,7 @@ function jpgBuf(r, g, b, size = 120) {
 }
 
 // ---- 造素材：多层嵌套 + 扁平命名 混合 ----
-const src = path.join(TMP, '素材', '2026-09-TW男装');
+const src = path.join(TMP, '素材', '2026-09-品牌甲');
 const mk = (rel, name, buf) => {
   const d = path.join(src, rel);
   fs.mkdirSync(d, { recursive: true });
@@ -211,23 +211,23 @@ const ok = (label, cond, extra) => {
       ['#A #B', '#A，#B', '#A, #B', '#A、#B', '#A;#B', '#A|#B'].every(s => copywriter.parseTopics(s).join('|') === '#A|#B'),
       copywriter.parseTopics('#A #B').join('|'));
     ok('⑨ 漏写 # 自动补上；重复话题只留一个',
-      copywriter.parseTopics('TW男装, #男生穿搭, TW男装').join('|') === '#TW男装|#男生穿搭',
-      copywriter.parseTopics('TW男装, #男生穿搭, TW男装').join('|'));
+      copywriter.parseTopics('品牌甲, #男生穿搭, 品牌甲').join('|') === '#品牌甲|#男生穿搭',
+      copywriter.parseTopics('品牌甲, #男生穿搭, 品牌甲').join('|'));
 
-    store.set({ copy: { requiredTopic: '#TW男装, #男生穿搭', extraTopics: 4 } });
+    store.set({ copy: { requiredTopic: '#品牌甲, #男生穿搭', extraTopics: 4 } });
     const plan9 = copywriter.buildPlan([{ id: 'x1', color: '黑' }]);
     const t9 = plan9.rows[0].topics;
     ok('⑨ 两个必带话题都进组合，且固定排在话题最前面',
-      t9[0] === '#TW男装' && t9[1] === '#男生穿搭', JSON.stringify(t9));
+      t9[0] === '#品牌甲' && t9[1] === '#男生穿搭', JSON.stringify(t9));
     ok('⑨ 必带 2 + 额外 4 = 6 超过 5 列 ⇒ 只给 5 个并明确告警（旧版静默丢掉第 6 个）',
       t9.length === 5 && /话题1~话题5/.test(plan9.warning || ''), `${t9.length} 个 · warning=${plan9.warning}`);
 
-    store.set({ copy: { requiredTopic: '#TW男装', extraTopics: 4 } });
+    store.set({ copy: { requiredTopic: '#品牌甲', extraTopics: 4 } });
     const plan9b = copywriter.buildPlan(Array.from({ length: 5 }, (_, i) => ({ id: 'y' + i, color: '黑' })));
     ok('⑨ 没超限就不该告警（否则天天「狼来了」）',
       plan9b.warning === null && plan9b.rows.every(r => r.topics.length === 5), `warning=${plan9b.warning}`);
     ok('⑨ 必带话题在每一篇里都在（不会被轮换挤掉）',
-      plan9b.rows.every(r => r.topics[0] === '#TW男装'), plan9b.rows.map(r => r.topics[0]).join(' '));
+      plan9b.rows.every(r => r.topics[0] === '#品牌甲'), plan9b.rows.map(r => r.topics[0]).join(' '));
   } finally {
     store.set({ copy: cfgBefore });   // 还原配置，别影响后面的断言
   }

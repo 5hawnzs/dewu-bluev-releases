@@ -481,12 +481,12 @@ TABS[3] = {
           <select class="inp" data-cfg="copy.rotateStrategy">${['F01-F10 轮换', '随机'].map(v => `<option ${cfg.rotateStrategy === v ? 'selected' : ''}>${v}</option>`).join('')}</select>
           <span class="lbl">必带话题</span>
           <input class="inp" style="min-width:210px;flex:0 0 auto" value="${esc(cfg.requiredTopic)}" data-cfg="copy.requiredTopic"
-            placeholder="如 #TW男装，#男生穿搭" title="要多个就用空格 / 逗号 / 顿号隔开，没写 # 会自动补上">
+            placeholder="如 #品牌话题，#品类词" title="要多个就用空格 / 逗号 / 顿号隔开，没写 # 会自动补上">
           <span class="lbl">额外话题</span>
           <select class="inp" data-cfg="copy.extraTopics">${[3, 4, 5].map(v => `<option value="${v}" ${cfg.extraTopics === v ? 'selected' : ''}>${v} 个</option>`).join('')}</select>
         </div>
         <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
-          <code>#TW男装, #男生穿搭</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
+          <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
           发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
         <p class="hint">按<b>并发路数均分</b>（不是「15 条/批」切批，尾批会把整体拖慢）：${total} 篇 → ${cfg.concurrency} 路 × ${Math.ceil(total / (cfg.concurrency || 6))} 篇。本地先定死标题格式 / 视角 / 话题组合（代码保证去重），模型只填空。</p>
@@ -1063,10 +1063,10 @@ function devicesHtml() {
       <td><button class="btn sm" data-act="pub:useDev" data-serial="${esc(d.serial)}">选用</button>
           <button class="btn sm" data-act="pub:delDev" data-id="${esc(d.id)}">删除</button></td>
     </tr>`).join('')}</tbody></table></div>`
-    : `<div class="empty">还没有设备。真机是一台模拟器对应一个账号（如 emulator-5554 = UR视频号），在下面添加。</div>`;
+    : `<div class="empty">还没有设备。真机是一台模拟器对应一个账号（如 emulator-5554 = 主号），在下面添加。</div>`;
   return `<div class="box"><h3>设备管理（一个设备 = 一个账号）</h3>${rows}
     <div class="row" style="margin-top:10px">
-      <input class="inp mono" id="devName" placeholder="账号名，如 UR视频号" style="flex:0 0 160px;min-width:0">
+      <input class="inp mono" id="devName" placeholder="账号名，如 主号" style="flex:0 0 160px;min-width:0">
       <input class="inp mono" id="devSerial" placeholder="序列号，如 emulator-5554" style="flex:0 0 190px;min-width:0">
       <button class="btn sm" data-act="pub:addDev">添加设备</button>
       <button class="btn sm" data-act="pub:devStatus">检测在线</button>
@@ -1523,7 +1523,7 @@ function bmEditHtml(id) {
     <div class="mb">
       <label class="mfld"><span>品牌名</span>
         <input class="inp" id="bmName" value="${esc(b.name)}" ${meta ? '' : 'readonly'}
-          placeholder="如 skechers / TW男装 / 卡宾" style="width:100%">
+          placeholder="品牌名" style="width:100%">
       </label>
 
       <label class="mfld"><span>文案生成提示词</span>
@@ -1597,7 +1597,7 @@ function brandsHtml() {
       <h3>品牌管理（管理员）</h3>
       ${rows}
       <div class="acct-toolbar">
-        <input class="inp" id="nbName" placeholder="品牌名，如 TW男装 / skechers" style="min-width:180px">
+        <input class="inp" id="nbName" placeholder="品牌名" style="min-width:180px">
         <input class="inp" id="nbNote" placeholder="备注（可不填）" style="min-width:140px">
         <button class="btn sm primary" data-act="brand:add">新增品牌</button>
       </div>
@@ -1969,7 +1969,7 @@ const ACTS = {
     let r = await appApi.run('report.import', { file: f });
     if (!r.ok && /素材路径/.test(r.error || '')) {
       const d = await appApi.pickDir({
-        title: '这份报告的「素材路径」是空的 —— 请选择这一批的素材目录（D:\\卡宾\\20260901 这种，里面每个叶子文件夹 = 一条内容）'
+        title: '这份报告的「素材路径」是空的 —— 请选择这一批的素材目录（D:\\你的素材目录\\20260901 这种，里面每个叶子文件夹 = 一条内容）'
       });
       if (!d) { toast('已取消：报告里没有素材路径，也没有选素材目录', 'err'); return; }
       r = await appApi.run('report.import', { file: f, dir: d });

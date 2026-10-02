@@ -57,7 +57,7 @@ const ok = (label, cond, extra) => {
 (async () => {
   store.set({
     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
-    copy: { concurrency: 6, requiredTopic: '#TW男装', extraTopics: 4 },
+    copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4 },
     publish: { mock: true, mockIntervalSec: 5, retry: 1 }
   });
 

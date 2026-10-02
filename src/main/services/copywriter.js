@@ -39,7 +39,7 @@ function topicPool() {
   const p = store.get('copy.pool');
   if (Array.isArray(p) && p.length) return p;
   if (p && p.品类) return p.品类;
-  return ['#TW男装', '#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配'];
+  return ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'];
 }
 
 /** 发布单只有「话题1~话题5」五列（见 sheet.COLUMNS）—— 多出来的话题到不了得物 */
@@ -59,7 +59,7 @@ function normTopic(t) {
  * 为什么非要有明确的分隔符：得物的话题字段是「一格一个话题」。
  * 把 `#A #B` 整串写进一格，得物那边会当成**一个不存在的话题**，联想点选必然失败 ——
  * 而失败现场看起来像是「话题选错」，查起来很绕。所以在这里就拆开。
- * ★ 自动补 `#`（写 `TW男装, 男生穿搭` 也能用），并按拆分后的原文去重。
+ * ★ 自动补 `#`（写 `品牌词, 品类词` 也能用），并按拆分后的原文去重。
  */
 function parseTopics(raw) {
   const s = String(raw == null ? '' : raw).trim();
@@ -107,13 +107,17 @@ function topicCombos(count) {
   if (!extra && !combos.length) combos.push(required.slice());
   if (combos.length < count) {
     // 容量不足：跨品类/滑动窗口补足，并允许重复但标记
+    // ★ 报的必须是**补足之前**真能凑出的种数。以前是在 while 之后取 combos.length，
+    //   那个数已经被补到 count 了 —— 于是告警写着「只能凑 5 种组合」（其实只有 1 种），
+    //   看的人会以为「还剩 5 种可用」，等于把容量问题说轻了。
+    const distinct = combos.length;
     let s = 0;
     while (combos.length < count && s < 200) {
       const c = required.concat(pick(rest, extra, s++));
       combos.push(c);
     }
     if (extra > 0) {
-      notes.push(`话题池容量不足：${rest.length} 个可选话题只能凑 ${combos.length} 种组合，${count} 篇会出现重复，建议扩充话题池`);
+      notes.push(`话题池容量不足：${rest.length} 个可选话题只能凑 ${distinct} 种组合，${count} 篇会出现重复，建议扩充话题池`);
     }
   }
   return { combos, warning: notes.length ? notes.join('；') : null };

@@ -76,7 +76,7 @@ const uiMap = {
 
 const state = {
   items: [{ id: '26FW-YB160+冠军白+1', dir: itemDir, absDir: itemDir, sku: '26FW-YB160', color: '冠军白', files: [{ name: '1.jpg', type: 'image' }, { name: '2.jpg', type: 'image' }] }],
-  copyRows: [{ id: '26FW-YB160+冠军白+1', title: '白色的鞋谁懂', body: '这双冠军白真的很百搭', topics: ['#TW男装', '#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活'] }],
+  copyRows: [{ id: '26FW-YB160+冠军白+1', title: '白色的鞋谁懂', body: '这双冠军白真的很百搭', topics: ['#品牌甲', '#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活'] }],
   verify: { rows: [{ id: '26FW-YB160+冠军白+1', conclusion: '通过' }] },
   publish: { rows: [{ seq: 1, id: '26FW-YB160+冠军白+1', dir: '26FW-YB160+冠军白+1', goods: 1, images: 2, startAt: '', status: '排队', result: '', retries: 0, reason: '' }], mode: 'adb', device: '127.0.0.1:5555' }
 };
@@ -110,8 +110,8 @@ const state = {
   ok('按文本定位到节点', !!pub && pub.center.x === 162 && pub.center.y === 160, pub && JSON.stringify(pub.center));
   const sug = uimap.suggest(nodes);
   ok('生成候选定位表', sug.steps.length > 5 && sug.package === 'com.shizhuang.duapp', sug.steps.length + ' 步');
-  const filled = uimap.fill({ value: '${title}｜${topic1}' }, { title: '白色的鞋谁懂', topic1: '#TW男装' });
-  ok('占位符替换', filled.value === '白色的鞋谁懂｜#TW男装', filled.value);
+  const filled = uimap.fill({ value: '${title}｜${topic1}' }, { title: '白色的鞋谁懂', topic1: '#品牌甲' });
+  ok('占位符替换', filled.value === '白色的鞋谁懂｜#品牌甲', filled.value);
 
   // 失败恢复动作：只认真正会被执行的 action，不认识要说清可用值（不静默跳过）
   const rec = uimap.normalizeRecover([
@@ -149,7 +149,7 @@ const state = {
   ok('点击了「发布」按钮', (log.match(/input tap 162 160/g) || []).length >= 1);
   ok('点击了相册/下一步/关联好物', /input tap 162 280/.test(log) && /input tap 920 2250/.test(log) && /input tap 220 1540/.test(log));
   ok('中文标题走 ADBKeyboard 广播', /ADB_INPUT_TEXT --es msg "白色的鞋谁懂"/.test(log));
-  ok('话题也真实输入', /ADB_INPUT_TEXT --es msg "#TW男装"/.test(log));
+  ok('话题也真实输入', /ADB_INPUT_TEXT --es msg "#品牌甲"/.test(log));
   ok('结果标为发布成功', r.rows[0].result === '发布成功', r.rows[0].result);
 
   // 5) 页面结构变了 → 必须失败 + 存截图，绝不能成功

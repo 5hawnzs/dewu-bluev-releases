@@ -13,7 +13,7 @@ function file() { return path.join(app.getPath('userData'), 'config.json'); }
 function defaults() {
   const d = wp.defaultPaths();
   return {
-    projectName: 'TW男装 蓝V',
+    projectName: '蓝V 素材发布',
     paths: { source: d.source, output: d.output, rejected: d.rejected },
     // 品牌注册表：[{ id, name, enabled, note, createdAt }]，增删改与权限判定都在 src/main/brands.js
     // 品牌是跨模块维度（文案 / 发布单 / 发布日志 / 统计 / 账号权限），所以放在顶层而不是 copy 下面
@@ -32,14 +32,14 @@ function defaults() {
     copy: {
       concurrency: 6,
       rotateStrategy: 'F01-F10 轮换',
-      requiredTopic: '#TW男装',
+      requiredTopic: '',              // 出厂留空：不预设任何品牌话题，在「设置 → 文案」里填
       extraTopics: 4,
-      brand: 'TW男装',                 // 【已降级为 legacy】只在首次启动时作为 brands 的迁移种子，界面不再直接编辑
+      brand: '',                       // 【已降级为 legacy】出厂留空：不预设任何品牌；只在旧版本升级时作迁移种子
       defaultBrandId: '',              // 「设置 → 品牌管理」里选的默认品牌（brd_xxx），新建任务时预选
       promptFilter: '',                // 筛选排序提示词
       promptWrite: '',                 // 文案生成提示词
       llm: { enabled: false, endpoint: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.9 },
-      pool: { 品类: ['#TW男装', '#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配'] }
+      pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] }   // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
     },
     // 真机是调接口查得物后台（SKU APIKey），查不到仅告警不阻断
     verify: {

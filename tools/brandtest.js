@@ -55,18 +55,25 @@ const day = n => Date.now() - n * 86400000;
 
 (async () => {
   // ---- ① 注册表 ----
+  // 出厂默认**不预设任何品牌名**（旧版本曾出厂就带一个品牌名 —— 全新安装不该出现别人家的品牌）
+  ok('① 出厂默认不含任何品牌（copy.brand 空 + brands 空）',
+    String(store.get('copy.brand') || '') === '' && brands.list().length === 0,
+    JSON.stringify([store.get('copy.brand'), brands.list().map(b => b.name)]));
+  // 旧版迁移：老配置里单选过一个品牌 ⇒ 首次读到时迁成一条记录（显式造场景，不再靠出厂默认值）
+  store.set({ brands: [], brandsSeeded: false, copy: { brand: '品牌甲' } });
   const migrated = brands.list();
-  ok('① 首次读到品牌时，把旧的单选「品牌」迁成一条记录',
-    migrated.length === 1 && migrated[0].name === 'TW男装', JSON.stringify(migrated.map(b => b.name)));
+  ok('① 旧版单选品牌会在首次读取时迁成一条记录',
+    migrated.length === 1 && migrated[0].name === '品牌甲', JSON.stringify(migrated.map(b => b.name)));
   brands.remove(migrated[0].id);
   ok('① 删空后不会被自动塞回来（靠 brandsSeeded 标记，不是「空数组就补」）', brands.list().length === 0);
+  store.set({ copy: { brand: '' } });   // 还原成出厂值，别影响后面的断言
 
-  const A = brands.add({ name: '卡宾' });
-  const B = brands.add({ name: 'skechers' });
-  const C = brands.add({ name: 'UR' });
+  const A = brands.add({ name: '品牌甲' });
+  const B = brands.add({ name: 'brandx' });
+  const C = brands.add({ name: '品牌丙' });
   ok('① 新增三个品牌', A.ok && B.ok && C.ok);
   ok('① 连续新增不会撞 id', new Set([A.brand.id, B.brand.id, C.brand.id]).size === 3);
-  ok('① 重名被拒（大小写不敏感）', brands.add({ name: 'SKECHERS' }).ok === false, brands.add({ name: 'SKECHERS' }).error);
+  ok('① 重名被拒（大小写不敏感）', brands.add({ name: 'BRANDX' }).ok === false, brands.add({ name: 'BRANDX' }).error);
   ok('① 统计保留名不能当品牌名', brands.add({ name: '未标品牌' }).ok === false, brands.add({ name: '未标品牌' }).error);
   ok('① 空白名被拒', brands.add({ name: '   ' }).ok === false, brands.add({ name: '   ' }).error);
 
@@ -82,10 +89,10 @@ const day = n => Date.now() - n * 86400000;
 
   ok('② 单品牌用户没选 → 自动补（不是报错）', (() => { const r = brands.resolveFor(one, '', { required: true }); return r.ok && r.auto && r.brand.id === A.brand.id; })());
   ok('② 多品牌用户没选 → 报错并列出可选项',
-    (() => { const r = brands.resolveFor(two, '', { required: true }); return !r.ok && /卡宾/.test(r.error) && /skechers/.test(r.error); })(),
+    (() => { const r = brands.resolveFor(two, '', { required: true }); return !r.ok && /品牌甲/.test(r.error) && /brandx/.test(r.error); })(),
     brands.resolveFor(two, '', { required: true }).error);
   ok('② 普通成员不能借别人的品牌 id 越权',
-    (() => { const r = brands.resolveFor(one, B.brand.id, { required: true }); return !r.ok && /没有「skechers」的操作权限/.test(r.error); })(),
+    (() => { const r = brands.resolveFor(one, B.brand.id, { required: true }); return !r.ok && /没有「brandx」的操作权限/.test(r.error); })(),
     brands.resolveFor(one, B.brand.id, { required: true }).error);
   ok('② 管理员用哪个品牌都行', brands.resolveFor(admin, C.brand.id, { required: true }).brand.id === C.brand.id);
   ok('② 「没分配品牌」的提示是去找管理员',
@@ -112,10 +119,10 @@ const day = n => Date.now() - n * 86400000;
   });
   const A2 = brands.add({ name: '临时品牌(待删)' }).brand;
 
-  log(A.brand.id, A.brand.name, actor1, day(1), '发布成功', '卡宾_第一批');
-  log(A.brand.id, A.brand.name, actor1, day(1), '失败', '卡宾_第一批');
-  log(A.brand.id, A.brand.name, actor2, day(2), '发布成功', '卡宾_第二批');
-  log(B.brand.id, B.brand.name, actor2, day(1), '发布成功', 'skechers_第一批');
+  log(A.brand.id, A.brand.name, actor1, day(1), '发布成功', '品牌甲_第一批');
+  log(A.brand.id, A.brand.name, actor1, day(1), '失败', '品牌甲_第一批');
+  log(A.brand.id, A.brand.name, actor2, day(2), '发布成功', '品牌甲_第二批');
+  log(B.brand.id, B.brand.name, actor2, day(1), '发布成功', 'brandx_第一批');
   log(A2.id, A2.name, actor1, day(1), '发布成功', '临时品牌_第一批');   // 品牌一会儿要删掉
   log('', '', actor1, day(3), '发布成功', '历史批次');                  // 2026-10-01 之前的记录：无品牌无执行人
   log('', '', actor1, day(3), '失败', '历史批次');
@@ -123,16 +130,16 @@ const day = n => Date.now() - n * 86400000;
   const all = stats.query({ days: 0 });
   const pick = id => all.brands.find(b => b.id === id);
   ok('③ 发布日志确实带上了品牌与执行人',
-    sheet.readLog().find(e => e.batch === '卡宾_第一批').brandName === '卡宾', '卡宾_第一批');
-  ok('③ 按品牌的条数算对了（卡宾 3 条 / 成功 2 失败 1）',
+    sheet.readLog().find(e => e.batch === '品牌甲_第一批').brandName === '品牌甲', '品牌甲_第一批');
+  ok('③ 按品牌的条数算对了（品牌甲 3 条 / 成功 2 失败 1）',
     pick(A.brand.id).rows === 3 && pick(A.brand.id).ok === 2 && pick(A.brand.id).fail === 1,
     JSON.stringify({ rows: pick(A.brand.id).rows, ok: pick(A.brand.id).ok, fail: pick(A.brand.id).fail }));
 
   // ---- ④ 统计口径 ----
   ok('④ 未标品牌单独一桶，条数是真实的 2（不是 0，也没并进任何品牌）',
     all.untagged.rows === 2, `untagged=${all.untagged.rows}`);
-  ok('④ 未标品牌没有被算进卡宾',
-    pick(A.brand.id).rows === 3 && all.untagged.rows === 2, `卡宾=${pick(A.brand.id).rows} 未标=${all.untagged.rows}`);
+  ok('④ 未标品牌没有被算进品牌甲',
+    pick(A.brand.id).rows === 3 && all.untagged.rows === 2, `品牌甲=${pick(A.brand.id).rows} 未标=${all.untagged.rows}`);
   ok('④ 没有一条记录的品牌是空的却被算进某个品牌（总数对得上）',
     all.totals.rows === 7, `total=${all.totals.rows}`);
 
@@ -144,15 +151,15 @@ const day = n => Date.now() - n * 86400000;
   ok('④ 按品牌筛选只出这一个品牌', byA.brands.length === 1 && byA.brands[0].rows === 3);
 
   const byUser = stats.query({ days: 0, userId: 'u2' });
-  // 张三（u2）名下：卡宾 2 条 + 待删品牌 1 条 + 无品牌的历史记录 2 条 = 5。
+  // 张三（u2）名下：品牌甲 2 条 + 待删品牌 1 条 + 无品牌的历史记录 2 条 = 5。
   // 一开始写成 3，是漏算了历史那两条 —— 断言错了，不是统计错了
   ok('④ 按执行人筛选：张三名下 5 条（含无品牌的历史记录）',
     byUser.totals.rows === 5, `rows=${byUser.totals.rows}`);
 
   const scoped = stats.query({ days: 0, scopeIds: [B.brand.id] });
-  ok('④ 非管理员范围：只看得到 skechers，看不到卡宾、也看不到别的品牌名',
+  ok('④ 非管理员范围：只看得到 brandx，看不到品牌甲、也看不到别的品牌名',
     scoped.brands.length === 1 && scoped.brands[0].id === B.brand.id
-    && !JSON.stringify(scoped).includes('卡宾'),
+    && !JSON.stringify(scoped).includes('品牌甲'),
     `brands=${scoped.brands.map(b => b.name).join('/')}`);
   ok('④ 非管理员范围下未标品牌为空（无法确认归属的不给他看）', scoped.untagged.rows === 0);
 
@@ -190,10 +197,10 @@ const day = n => Date.now() - n * 86400000;
     afterDel.brands.find(b => b.id === A.brand.id).rows === 3);
 
   // ---- ⑤ 执行日志落盘 ----
-  runlog.append({ kind: 'start', jobId: 'j1', label: '自动发布', type: 'publish.run', batch: '卡宾_第一批', brandId: A.brand.id, brandName: A.brand.name, ...actor1 });
-  runlog.append({ kind: 'log', level: 'info', msg: '行 1 发布完成', jobId: 'j1', label: '自动发布', type: 'publish.run', batch: '卡宾_第一批', brandId: A.brand.id, brandName: A.brand.name, ...actor1 });
-  runlog.append({ kind: 'end', ok: true, elapsedSec: 86.6, jobId: 'j1', label: '自动发布', type: 'publish.run', batch: '卡宾_第一批', brandId: A.brand.id, brandName: A.brand.name, ...actor1 });
-  runlog.append({ kind: 'end', ok: false, error: '设备掉线', elapsedSec: 12, jobId: 'j2', label: '自动发布', type: 'publish.run', batch: 'skechers_第一批', brandId: B.brand.id, brandName: B.brand.name, ...actor2 });
+  runlog.append({ kind: 'start', jobId: 'j1', label: '自动发布', type: 'publish.run', batch: '品牌甲_第一批', brandId: A.brand.id, brandName: A.brand.name, ...actor1 });
+  runlog.append({ kind: 'log', level: 'info', msg: '行 1 发布完成', jobId: 'j1', label: '自动发布', type: 'publish.run', batch: '品牌甲_第一批', brandId: A.brand.id, brandName: A.brand.name, ...actor1 });
+  runlog.append({ kind: 'end', ok: true, elapsedSec: 86.6, jobId: 'j1', label: '自动发布', type: 'publish.run', batch: '品牌甲_第一批', brandId: A.brand.id, brandName: A.brand.name, ...actor1 });
+  runlog.append({ kind: 'end', ok: false, error: '设备掉线', elapsedSec: 12, jobId: 'j2', label: '自动发布', type: 'publish.run', batch: 'brandx_第一批', brandId: B.brand.id, brandName: B.brand.name, ...actor2 });
   ok('⑤ 执行日志写进了 run-log.jsonl（不是只在内存里）', fs.existsSync(runlog.file()) && runlog.read().length === 4, runlog.file());
   const rl = runlog.query({ days: 0 });
   ok('⑤ 最新在前', rl[0].jobId === 'j2', rl[0].jobId);
@@ -202,13 +209,13 @@ const day = n => Date.now() - n * 86400000;
     runlog.query({ days: 0, scopeIds: [B.brand.id] }).every(e => e.brandId === B.brand.id)
     && runlog.query({ days: 0, scopeIds: [B.brand.id] }).length === 1);
   ok('⑤ 品牌名是写入时的快照（日后改名也不影响旧日志）',
-    runlog.read().find(e => e.jobId === 'j1').brandName === '卡宾');
+    runlog.read().find(e => e.jobId === 'j1').brandName === '品牌甲');
 
   const withRuns = stats.query({ days: 0 });
   ok('⑤ 统计里带上了任务次数与失败次数', withRuns.totals.runs === 2 && withRuns.totals.runFails === 1,
     `runs=${withRuns.totals.runs} fails=${withRuns.totals.runFails}`);
   ok('⑤ 执行日志里带着品牌 / 执行人 / 说明',
-    withRuns.logs.some(e => e.brandName === '卡宾' && e.displayName === '张三' && /发布完成|完成/.test(e.msg || '')),
+    withRuns.logs.some(e => e.brandName === '品牌甲' && e.displayName === '张三' && /发布完成|完成/.test(e.msg || '')),
     (withRuns.logs[0] || {}).msg);
   ok('⑤ 统计里明确给出日志文件位置与条数', /run-log\.jsonl$/.test(withRuns.sources.runLog.file) && withRuns.sources.runLog.entries === 4);
 
@@ -285,7 +292,7 @@ const day = n => Date.now() - n * 86400000;
   const jobs = require(path.join(base, 'src/main/jobs.js'));
   const copywriter = require(path.join(base, 'src/main/services/copywriter.js'));
 
-  const PW = '你是得物社区的内容运营专家，服务对象是 skechers 品牌蓝V账号。\n一、文案要根据配图内容设计，适配得物种草调性。';
+  const PW = '你是得物社区的内容运营专家，服务对象是 brandx 品牌蓝V账号。\n一、文案要根据配图内容设计，适配得物种草调性。';
   const r9 = brands.update(A.brand.id, { promptWrite: PW, promptFilter: '  \r\n  先按图片清晰度排序\r\n' });
   ok('⑨ 品牌能各带一份自己的提示词，读回来一致',
     r9.ok && r9.brand.promptWrite === PW && r9.brand.promptFilter === '先按图片清晰度排序',

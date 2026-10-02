@@ -161,16 +161,29 @@ app.whenReady().then(async () => {
   `);
 
   // 页签 9 前面单独测过（品牌与权限）；10 是新增的「运行日志」
+  const phs = [];        // 收集各页签真实渲染出来的 placeholder（见下方守卫断言）
   for (const i of [1, 2, 3, 4, 5, 6, 7, 8, 10]) {
     await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('.nav[data-tab="${i}"]'); if (b) b.click(); return true; })()`);
     await new Promise(r => setTimeout(r, 150));
     const info = await win.webContents.executeJavaScript(`(() => {
       const pane = document.querySelector('#pane');
       const h2 = document.querySelector('#head h2');
-      return { size: pane ? pane.innerHTML.length : 0, title: h2 ? h2.textContent : '' };
+      const ph = [...document.querySelectorAll('#pane [placeholder]')].map(e => e.getAttribute('placeholder'));
+      return { size: pane ? pane.innerHTML.length : 0, title: h2 ? h2.textContent : '', ph };
     })()`);
+    phs.push(...(info.ph || []));
     ok(`页签 ${i}「${TABS[i - 1]}」能渲染`, info.size > 20 && info.title === TABS[i - 1], `标题「${info.title}」· ${info.size} 字节`);
   }
+
+  // ---- 界面里不许再出现「别人家的品牌名」 ----
+  // 给「清掉测试数据 + 示例品牌名」立个长期守卫：源码与**真实渲染出来的** placeholder
+  // 都不许再冒出来。placeholder 不属于 textContent，只查页面文本必然漏掉这一批。
+  const BAN = /(斯凯奇|UR视频|UR女人|skechers|卡宾|TW男装|TW女装)/i;
+  const uiSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
+  const srcHit = uiSrc.match(BAN);
+  ok('★ 界面源码里没有举例品牌名（UR / 斯凯奇 / skechers / 卡宾 / TW男装…）', !srcHit, srcHit ? srcHit[0] : '');
+  const phHit = phs.join(' | ').match(BAN);
+  ok(`★ 渲染出来的 placeholder 里没有举例品牌名（查了 ${phs.length} 个输入框）`, !phHit, phHit ? phHit[0] : '');
 
   // ---- 本轮新加的按钮：按各自页签确认挂上了 ----
   const onTab = async (tab, act) => {

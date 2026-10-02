@@ -32,7 +32,7 @@ const state = {
     { id: 'A+白+1', dir: 'A+白+1', sku: 'A', color: '白', files: [{ name: '1.jpg', type: 'image' }] },
     { id: 'B+黑+1', dir: 'B+黑+1', sku: 'B', color: '黑', files: [{ name: '1.jpg', type: 'image' }] }
   ],
-  copyRows: [{ id: 'A+白+1', title: '白色的鞋谁懂', body: '正文', topics: ['#TW男装'] }, { id: 'B+黑+1', title: '黑色百搭', body: '正文', topics: ['#TW男装'] }],
+  copyRows: [{ id: 'A+白+1', title: '白色的鞋谁懂', body: '正文', topics: ['#品牌甲'] }, { id: 'B+黑+1', title: '黑色百搭', body: '正文', topics: ['#品牌甲'] }],
   verify: { rows: [{ id: 'A+白+1', pass: true, conclusion: '颜色匹配' }, { id: 'B+黑+1', pass: true, conclusion: '颜色匹配' }] }
 };
 
@@ -61,8 +61,8 @@ const state = {
   ok('③ 暂存队列已清空', sheet.pendingCount() === 0);
 
   // ④ 设备矩阵（一个设备 = 一个账号）
-  const d1 = publisher.addDevice({ name: 'UR视频号', serial: 'emulator-5554' });
-  publisher.addDevice({ name: '斯凯奇穿搭', serial: 'emulator-5556' });
+  const d1 = publisher.addDevice({ name: '账号甲', serial: 'emulator-5554' });
+  publisher.addDevice({ name: '账号乙', serial: 'emulator-5556' });
   ok('④ 添加设备', publisher.devices().length === 2, JSON.stringify(publisher.devices()));
   let dup = '';
   try { publisher.addDevice({ name: '重复', serial: 'emulator-5554' }); } catch (e) { dup = e.message; }
