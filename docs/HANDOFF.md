@@ -1289,11 +1289,29 @@ T10 26FW-KW02 驼    驼色针织毛衣自带少年感🧶
 
 #### 7. 未做
 
-- **没发版**（`1.0.7` 未打）、**没提交**。
+- **已收口（2026-10-03 第十次会话收尾）**：~~没发版、没提交~~ ⇒ 已提交 `6aa17f3`、已发 `v1.0.6`（见本节末尾「发布」）。
 - **第 ① 条只给了判断与方案，没动界面**（等用户点头再开工）。
 - 「让模型读外网热词」**只有方案，没有抓取链路**。
 - 「标签串」判据仍是启发式的：只求抓住用户实测那类，**判不出来的不报**（宁可不报也不误杀）。
 
+**发布**：`v1.0.6` 已打包并推上**正式通道** —— 产物 `114025736 B`（108.7 MB，比 `1.0.5` 多 `35913 B` ⇒ **无新增内置二进制**；`vendor/` 一个字节没动，仍 adb×3 + `ADBKeyboard.apk` + `ffmpeg.exe`）。
+公网核对 `latest.yml = 1.0.6`、安装包 `HTTP 200 / Content-Length 114025736`、`beta.yml` 未动（仍 `1.0.1-beta.2`）。
+提交 `6aa17f3`（`git ls-remote origin refs/heads/main` 与 `git rev-parse HEAD` 同为该 SHA），31 个文件 / +3790 −132。
+★ **发版范围由用户当场拍板**：工作树里同时压着**并行会话**（`f5978de6`，10-02 18:53~00:52，已停）未提交的
+「云端上行幂等修复（`?on_conflict=` + `Prefer` 两半、批级 409 逐行重发）」与「看板 SDK 内置」，用户选 **main 全量** 一起发。
+★ 本机已装副本 `D:\bluevbeta\dewu-bluev-publisher` **这次没换 asar** —— 打包时它有 **4 个实例正在运行**
+（PID 42680 / 45144 / 46856 / 47068，另有 `adb`），按 §Q「动数据/换 asar 前确认无实例在跑」停在原地；
+应用重启后点「检查更新」即可升到 `1.0.6`（`autoDownload` / `autoInstallOnAppQuit` 恒 `false` ⇒ 不会自己偷偷装）。
+★ **换行符坑（本轮新发现，会伪装成「打包打错了」）**：`core.autocrlf=true` + 本仓换行符混用 ⇒ `git worktree` checkout 时
+把 6 个「我用 Python 写的 LF 文件」（`copywriter` / `copycheck` / `aireport` / `hotwords` / `cloudsync` / `copytest`）转成 CRLF，
+表现为**包内文件与工作区源码 md5 不一致**（`nl-check.py` 实测：去掉 `\r` 后逐字节相同、`git show HEAD:<file>` == 工作区）。
+　⇒ **改用在打包快照上跑全量回归**替代「asar 内 md5 对齐」这条取证：`D:/work/_rel106` 里 17 套 **1036 项全绿**，
+证明包里那份字节行为正常（比 md5 对齐更硬：跑的就是包里的字节）。根治办法（本轮**未做**，留作建议）：
+加 `.gitattributes` 的 `*.js text eol=lf`，让 checkout 不再转换。
+**看板重新部署**：`board-site/`（`index.html` ← `web/board.html`、`vendor/supabase.js` ← `web/vendor/supabase.js`，
+逐字节 `cp`、md5 已核对）推到**同一沙箱** `dcf9a696225c47818c3b56816ae8b19e`；线上真浏览器实测
+`sdkLocal=present`、`已连接 · 4 条`、`rendered=true`、`whoRows=2`，且**请求只落在部署域 + 真库两个 host**
+（无任何 CDN 域名）⇒「零第三方依赖」由行为级证据成立。
 ## 5. 待做（按优先级）
 
 > ①②③④ 已于 2026-09-30 完成，实现位置与回归见下面各条；⑤ 明确**不做**（那条地址只是录屏里的示例后台）。
