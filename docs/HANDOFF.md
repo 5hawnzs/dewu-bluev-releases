@@ -469,7 +469,45 @@
      整目录 51 个文件、updater 缓存（`%LOCALAPPDATA%\dewu-bluev-publisher-updater`）、`D:\卡宾`（46 文件）、
      `%TEMP%\bluev-*`（**818** 个目录 / **2143.1 MB**）、`~/输出/得物`。备份根目录 `D:\_清理备份_20261002-103202\`
      （含 `还原说明.txt`、`删除前-数据摘要.json`、`userdata-完整快照-*`、`旧安装目录-app.asar`）。
-  ⇒ 合计 **671** 项断言（实测：`38+72+9+16+22+32+80+96+67+17+67+65+45+45`，共 **14** 套）。
+   ⇒ 上一轮合计 **671** 项断言（实测：`38+72+9+16+22+32+80+96+67+17+67+65+45+45`，共 **14** 套）。
+- **2026-10-02 非 mp4 视频自动转 mp4（内置 ffmpeg）** —— 背景：达人给的素材里会有 `.mov` / `.m4v` / `.avi` / `.webm` / `.mkv`，
+  而得物**只收 mp4**。以前这类文件在合规检查里只被判「需手动转 MP4」（`manual`），要人工一条条转。
+  现在**程序内置 ffmpeg**，它们会被自动转成 `.mp4`。**这一轮推翻了 §「本程序从不转码视频」那条旧认知**。
+  1. **`vendor/ffmpeg/`（故意进 git，与 adb 同一套约定）**：`ffmpeg.exe` **82,797,568 B**、
+     md5 `25243548be231a3c928cb7a0b6225ae9`，版本 `ffmpeg 6.1.1-essentials_build-www.gyan.dev`
+     （构建方 gyan.dev，`--enable-gpl --enable-version3 --enable-static`，**GPL-3.0**，许可全文随包）。
+     来源 `ffmpeg-static` 的 release 资产 `b6.1.1/ffmpeg-win32-x64`；
+     ★ 上游 `github.com` 在本机**连不上**（timeout），实际走的是国内镜像
+     `registry.npmmirror.com/-/binary/ffmpeg-static/`（字节数与 GitHub 一致）。更新步骤见 `vendor/README.md` §3。
+     > ⚠️ **GPL 的分发边界**：只在自己公司内部装机使用没问题；**若要分发给客户/外部方**，需换 LGPL 共享构建（做法在 `vendor/README.md`）。
+  2. **新增 `src/main/services/video.js`**：三段解析（手填 > 内置 > 系统 PATH，与 adb 同款纯函数 `resolveFfmpegChoice`）；
+     策略 **先无损转封装 `-c copy`（H.264/HEVC 这类 mp4 放得下的编码，秒级、画质零损失）→ 不行再转码 `libx264+aac`**；
+     `verifyMp4()` **解析产物**核对（ftyp 品牌属 mp4 家族 + `moov` 可读 + 视频轨编码在白名单）；
+     任何失败**先删半成品再抛错**；支持取消（含**入口检查**：已取消就不启动转换、不落文件）。
+  3. **`compliance.js`**：非 mp4 → `status:'todo'` / `action:'转 MP4'`（ffmpeg 不可用才维持 `manual`）；
+     **先判时长再决定转不转**（超 600s 的转成 mp4 也过不了，不白转）。
+     ★ **修掉一个会被引爆的隐患**：`syncItem()` 把 `type` **写死成 `'image'`** —— 图片分支无所谓，但视频转 mp4 若复用它，
+     会把**视频静默改成图片**、发布时按图文走步骤、拿图去发视频。改成按 `row.type` 推断 + 允许显式覆盖。
+     · 报表口径：`notMp4` 按**扩展名**数、`videoLong` 只数**真的超了时长**的（加了「没找到 ffmpeg」这条新 manual 路径后，
+       原来的「视频+manual」会算错 —— 报表不能撒谎）。
+  4. **接线**：`index.js` 注入 `video.setBundledFfmpegDir(vendorDir('ffmpeg'))`；`ipc.js` 的 `app:info` 回传 `ffmpeg` 真实状态、
+     `config:set` 里 `publish.ffmpegPath` 改完**立刻生效**（与 adb 同款）；`app.js` 把设置页那行
+     「`ffmpeg（预留）· 待接入`」改成**真实状态**（已指定 / 内置 / 走 PATH / 不可用）+ 手填路径入口 + 策略说明。
+  5. **测试**：新增 `tools/videotest.js`（**31 项**：三段解析全分支、样本用内置 ffmpeg **现造**、每件都**真读产物**）；
+     `compliancetest` 16 → **26** 项（+⑤ 集成段：非 mp4→todo、fix 真转出 mp4、**type 仍是 video**、同名 mp4 不覆盖）；
+     `uicheck` 96 → **99** 项（内置文件 md5 互校含 ffmpeg / GPL 许可全文随包 / `extraResources` 含 `vendor/ffmpeg` /
+     设置页如实显示且给了路径入口 / **内置那份真能跑起来**）；`run-all.js` 登记 `videotest`（现 **15** 套）。
+  6. **双向验证（实测）**：`type` 写死回 `'image'` ⇒ `compliancetest` 26→**25 PASS / 1 FAIL**（报错行打出 `type":"image"`）；
+     非 mp4 退回旧口径 ⇒ 26→**20 PASS / 5 FAIL**；拆掉入口取消检查 ⇒ `videotest` 31→**29 PASS / 2 FAIL**（H1/H2）；
+     三次破坏后源码**逐字节还原**（md5 一致），无残留备份。
+     ★ 造锚点时踩到两条：① 纯子串锚点不唯一 —— `  if (` 是 `    if (` 的**子串**（3 处命中）⇒ 改用**行首锚定**正则；
+     ② 正则里不能用 `$` 收尾 —— 文件是 CRLF，`$`（匹配 `\n` 前）与 `;` 之间还夹着 `\r` ⇒ **0 次命中**。
+  7. **打包与已装副本**：`-c.directories.output=D:/work/_dist4` 出 `win-unpacked`；
+     ★ 已装那份（`D:\bluevbeta\dewu-bluev-publisher`）**原本没有 `resources/ffmpeg/`** ⇒ 除了换 `app.asar`，
+     还必须**把 `resources/ffmpeg/` 整个补上**（原厂 asar 已备份到 `D:\_清理备份_20261002-103202\旧安装目录-app.asar.<时间戳>`）。
+     实测：构建产物与已装副本里的 `ffmpeg.exe` md5 都与 `vendor/` 源**一致**，两处**都真的转换成功**（`remux → avc1`）；
+     启动冒烟 `auth.json` 正常写出、stderr 里**没有**上轮那条 `ERR_INVALID_ARG_TYPE`。
+  ⇒ 本轮合计 **715** 项断言（实测：`38+72+9+26+31+22+32+80+99+67+17+67+65+45+45`，共 **15** 套）。
 
 ## 5. 待做（按优先级）
 
