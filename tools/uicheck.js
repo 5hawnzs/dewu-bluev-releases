@@ -745,15 +745,53 @@ app.whenReady().then(async () => {
       dump: has('[data-act="pub:dump"]'), map: has('[data-act="pub:map"]'),
       recover: has('[data-act="pub:recoverEdit"]'),
       llm: has('[data-cfg="copy.llm.enabled"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
-      mode: has('[data-cfg="verify.mode"]'),
+      mode: has('[data-cfg="verify.mode"]'), conc: has('[data-cfg="copy.concurrency"]'),
       collapsed: ds.length, openCount: ds.filter(d => d.open).length
     };
   })()`);
-  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / SKU 接口 / adb、ffmpeg 路径）',
+  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径）',
     advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map && advUi.recover
-      && advUi.llm && advUi.sku && advUi.mode, JSON.stringify(advUi));
-  ok('★ 高级设置里「可选」的三块默认是收起的（折叠区，不占地方）',
-    advUi.collapsed === 3 && advUi.openCount === 0, JSON.stringify(advUi));
+      && advUi.llm && advUi.sku && advUi.mode && advUi.conc, JSON.stringify(advUi));
+  ok('★ 高级设置里「可选」的四块默认是收起的（折叠区，不占地方）',
+    advUi.collapsed === 4 && advUi.openCount === 0, JSON.stringify(advUi));
+
+  // ★ 2026-10-02（第二轮）：用户点名「并发路数」也挪进高级设置 —— 它是运行参数（撞接口限流的旋钮），
+  //   和「必带话题 / 轮换策略」那种**改产出**的业务内容不是一回事。两件事都要验：
+  //   ① 文案生成页真的没了（负向）；② 高级设置里能改、且真的存进了配置（测完还原，别污染后面的套件）。
+  const concUi = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="3"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const q = () => document.querySelector('[data-cfg="copy.concurrency"]');
+    const daily = !!q();
+    const rotateKept = !!document.querySelector('[data-cfg="copy.rotateStrategy"]');
+    document.querySelector('.nav[data-tab="11"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    const el = q();
+    if (!el) return { daily, rotateKept, found: false };
+    const before = ((await window.api.configGet()).copy || {}).concurrency;
+    const target = before === 5 ? 6 : 5;
+    el.value = String(target);
+    el.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 400));
+    const after = ((await window.api.configGet()).copy || {}).concurrency;
+    // ★ 还原必须**重新取一次**元素：在「高级设置」页存任何一项，saveCfgFromDom 都会把这一页的
+    //   adb / ffmpeg 路径一起收进 patch ⇒ 命中它末尾那段 renderAll ⇒ 手里那个 el 已脱离文档。
+    //   而 saveCfgFromDom 读的是**活的 DOM** ⇒ 往旧节点写值 = 空操作（不是产品缺陷，是测试写法的坑）。
+    //   stale 只作诊断留痕，**不当断言**（免得将来把那段 renderAll 优化掉时误报）。
+    const stale = !document.contains(el);
+    const el2 = q();
+    el2.value = String(before);
+    el2.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 400));
+    const restored = ((await window.api.configGet()).copy || {}).concurrency;
+    return { daily, rotateKept, found: true, before, target, after, stale, restored };
+  })()`);
+  ok('★ 文案生成页不再摆「并发路数」（它是撞限流的旋钮，不是业务参数）',
+    concUi.daily === false, JSON.stringify(concUi));
+  ok('★「高级设置」里能改并发路数，且真的存进了配置（测完已还原成原值）',
+    concUi.found && concUi.after === concUi.target && concUi.restored === concUi.before, JSON.stringify(concUi));
+  ok('★ 但「轮换策略」还留在文案生成页（它改的是产出，用户得看得见）',
+    concUi.rotateKept === true, JSON.stringify(concUi));
   // ★ 存 ffmpeg 路径要真的走得通：主进程 ipc.js 里那段是 `video.setFfmpegPath(...)`，
   //   曾经漏了 `require('./services/video')` ⇒ 一改就 ReferenceError（这条断言就是为它加的）
   const ffSaved = await win.webContents.executeJavaScript(`(async () => {

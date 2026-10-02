@@ -472,13 +472,10 @@ TABS[3] = {
     const cfg = state.config.copy;
     const rows = p.copyRows || [];
     const planRows = rows.length ? rows : p.items.map((it, i) => ({ id: it.id, sku: it.sku, color: it.color, format: '', formatName: '', angle: '', topics: [], status: '' }));
-    const total = p.items.length || 0;
     return `
       <div class="box">
         <h3>批次设置</h3>
         <div class="row">
-          <span class="lbl">并发路数</span>
-          <select class="inp" data-cfg="copy.concurrency">${[4, 5, 6, 7, 8].map(v => `<option value="${v}" ${cfg.concurrency === v ? 'selected' : ''}>${v} 路</option>`).join('')}</select>
           <span class="lbl">轮换策略</span>
           <select class="inp" data-cfg="copy.rotateStrategy">${['F01-F10 轮换', '随机'].map(v => `<option ${cfg.rotateStrategy === v ? 'selected' : ''}>${v}</option>`).join('')}</select>
           <span class="lbl">必带话题</span>
@@ -491,7 +488,8 @@ TABS[3] = {
           <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
           发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
-        <p class="hint">按<b>并发路数均分</b>（不是「15 条/批」切批，尾批会把整体拖慢）：${total} 篇 → ${cfg.concurrency} 路 × ${Math.ceil(total / (cfg.concurrency || 6))} 篇。本地先定死标题格式 / 视角 / 话题组合（代码保证去重），模型只填空。</p>
+        <p class="hint">本地先定死标题格式 / 视角 / 话题组合（代码保证去重），模型只填空。
+          （<b>并发路数</b>是「同时发几路请求」的旋钮，不是内容参数 —— 已收进「高级设置」，出厂 6 路，一般不用动。）</p>
       </div>
       ${batchesHtml('copy.generate', '运行中的批次（AI 文案生成）')}
       ${planRows.length ? `<div class="tw"><table>
@@ -748,7 +746,7 @@ TABS[7] = {
 TABS[11] = {
   title: '高级设置',
   admin: true,
-  desc: '装一次就不再动的配置：UI 定位表、失败恢复动作、文案模型、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
+  desc: '装一次就不再动的配置：UI 定位表、失败恢复动作、文案模型、并发路数、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
@@ -785,6 +783,17 @@ TABS[11] = {
         <div class="row"><span class="lbl">模型</span><input class="inp mono" value="${esc(c.copy.llm.model)}" data-cfg="copy.llm.model"></div>
         <p class="hint">不填也能用：本地模板会把「选择」（标题格式 / 视角 / 话题组合）定死，只让模型填空 —— 没模型时由模板填空，流程一致。</p>`,
         '默认关闭 · 离线模板就够用')}
+      ${advBox('文案生成并发', false,
+        `<div class="row">
+          <span class="lbl">并发路数</span>
+          <select class="inp" data-cfg="copy.concurrency">${[4, 5, 6, 7, 8].map(v => `<option value="${v}" ${c.copy.concurrency === v ? 'selected' : ''}>${v} 路</option>`).join('')}</select>
+        </div>
+        <p class="hint">同时发起几路模型请求。按<b>并发路数均分</b>（不是「15 条/批」切批，尾批会把整体拖慢）${
+          ((state.project || {}).items || []).length
+            ? ` —— 当前 ${state.project.items.length} 篇 → ${c.copy.concurrency} 路 × ${Math.ceil(state.project.items.length / (c.copy.concurrency || 6))} 篇`
+            : ''
+        }。路数越大越快，但<b>撞接口限流的概率也越高</b>；出厂 6 路，一般不用动。</p>`,
+        '影响速度 · 出厂 6 路')}
       ${advBox('货号颜色查询方式', false,
         `<div class="row" style="margin-bottom:9px"><span class="lbl">方式</span>
           <select class="inp" data-cfg="verify.mode">
