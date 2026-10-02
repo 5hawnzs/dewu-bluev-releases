@@ -22,7 +22,6 @@ const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const wp = require('../util/winpath');
-const store = require('../store');
 const logbus = require('../logbus');
 
 /* ---------------- 表头匹配 ---------------- */
@@ -157,13 +156,15 @@ function naturalCompare(a, b) {
   return 0;
 }
 
-/** 把报告里的路径还原成绝对路径：绝对路径直接用，相对路径接在素材根目录后面 */
+/** 把报告里的路径还原成绝对路径。
+ *  ★ 2026-10-02：「设置 → 素材根目录」已删 ⇒ 相对路径**没有参照系了**，一律返回空串，
+ *    由调用方退回「导入时选的这一批素材目录」（opts.dir）。绝不拿某个默认目录硬拼 ——
+ *    拼出来的路径指向哪儿没人知道，只会变成一条莫名其妙的「素材路径不存在」。 */
 function toAbs(p) {
   const s = wp.toDisplay(String(p).trim());
   if (!s) return '';
   if (/^[A-Za-z]:[\\/]/.test(s) || s.startsWith('\\\\') || s.startsWith('/')) return s;
-  const root = store.get('paths.source') || '';
-  return root ? path.join(root, s) : s;
+  return '';
 }
 
 /**
@@ -204,14 +205,14 @@ async function build(report, opts = {}) {
   // 按「素材路径」分组：同一个路径下的叶子只展开一次，避免多行引用同一目录时重复计数。
   // 真机的用法是一份报告的所有数据行都指向同一个批次目录（由第一步整理保证「一条内容 = 一个叶子」）。
   // 报告里没有素材路径时（真机那份样本就是），用 opts.dir —— 也就是「导入时选的这一批素材目录」。
+  // ★ 2026-10-02：相对路径也一样走这里 —— 素材根目录已删，相对路径没有参照系，不能硬拼。
   const groups = new Map();
   for (const row of report.rows) {
-    const raw = row.dir || opts.dir || '';
-    if (!raw) {
+    const abs = toAbs(row.dir || '') || toAbs(opts.dir || '');
+    if (!abs) {
       problems.push({ rowNo: row.rowNo, why: '缺「素材路径」，也没有指定这一批的素材目录' });
       continue;
     }
-    const abs = toAbs(raw);
     if (!groups.has(abs)) groups.set(abs, []);
     groups.get(abs).push(row);
   }

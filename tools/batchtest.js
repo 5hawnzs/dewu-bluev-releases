@@ -56,10 +56,17 @@ const ok = (label, cond, extra) => {
 
 (async () => {
   store.set({
-    paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
+    paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4 },
     publish: { intervalSec: 5, videoIntervalSec: 5, retry: 1 }   // 「演示节奏」开关已删：现在直接给 5 秒间隔
   });
+
+  // ---- ⓪ ★ 2026-10-02：「设置 → 素材根目录」已删 ⇒ 出厂不再预设素材目录 ----
+  //   没显式给、工程里也没存过，必须**明确报错**；不许拿一个默认目录静默凑合，
+  //   更不许把 undefined 一路传下去（那会冒出一句没人看得懂的 path 类型错）。
+  const noDir = await jobs.run('flatten.plan', {});
+  ok('⓪ 没选素材目录时明确报错（不再有出厂默认目录兜底）',
+    noDir.ok === false && /还没选素材目录/.test(noDir.error), noDir.error);
 
   // ---- ① 两个批次同时跑 ----
   const dirA = makeBatch('7月第六批', 3);

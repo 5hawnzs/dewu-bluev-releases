@@ -60,7 +60,7 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
 
 (async () => {
   store.set({
-    paths: { source: TMP, output: path.join(TMP, '输出'), rejected: rejectedDir },
+    paths: { output: path.join(TMP, '输出'), rejected: rejectedDir },
     compliance: { maxImageMB: 10, maxVideoSec: 600, requireJpg: true, minPixels: 1764, minSide: 150, maxSide: 1500, autoScale: true, videoExtMustBeMp4: true }
   });
   const ctx = () => ({ log: () => {}, progress: () => {}, cancelled: () => false });

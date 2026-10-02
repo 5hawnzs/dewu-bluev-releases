@@ -11,7 +11,7 @@ let saveTimer = null;
 function blank() {
   return {
     projectName: store.get('projectName') || '蓝V 项目',
-    sourceDir: store.get('paths.source'),
+    sourceDir: '',                   // ★ 不预填：素材目录每次现场选（「设置 → 素材根目录」已删，2026-10-02）
     flatDir: '',
     updatedAt: 0,
     items: [],        // 素材整理产出的叶子目录条目

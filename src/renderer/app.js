@@ -388,7 +388,7 @@ TABS[1] = {
   ],
   render() {
     const p = state.project;
-    const dir = p.sourceDir || (state.config.paths && state.config.paths.source) || '';
+    const dir = p.sourceDir || '';
     const plan = state.plan;
     const before = plan ? plan.rows.slice(0, 8).map(r => esc(r.from.replace(dir, '').replace(/^[/\\]/, '')) + ` <s>(${r.fileCount} 个文件)</s>`).join('<br>') : '点「生成清单」查看（秒级，只读元数据）';
     const after = plan ? plan.rows.slice(0, 8).map(r => `<b>${esc(r.name)}</b> <s>(${r.fileCount})</s>`).join('<br>') : '—';
@@ -689,7 +689,6 @@ TABS[7] = {
     return `
       <div class="box">
         <h3>路径</h3>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">素材根目录</span><input class="inp mono" value="${esc(c.paths.source)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.source">修改</button></div>
         <div class="row" style="margin-bottom:9px"><span class="lbl">输出目录</span><input class="inp mono" value="${esc(c.paths.output)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.output">修改</button></div>
         <div class="row"><span class="lbl">隔离目录</span><input class="inp mono" value="${esc(c.paths.rejected)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.rejected">修改</button></div>
       </div>
@@ -1897,7 +1896,7 @@ const ACTS = {
   },
 
   'flatten:pick': async () => {
-    const d = await appApi.pickDir({ title: '选择素材根目录' });
+    const d = await appApi.pickDir({ title: '选择素材目录', defaultPath: state.project.sourceDir || '' });
     if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', { sourceDir: d }).then(r => r.ok ? r.result : null); renderAll(); }
   },
   'flatten:plan': async () => {
@@ -1929,7 +1928,7 @@ const ACTS = {
 
   'copy:run': async () => { await runJob('copy.generate'); },
   'copy:pickRun': async () => {
-    const d = await appApi.pickDir({ title: '选择素材目录（一个目录 = 一个批次，可同时跑多个）', defaultPath: state.config.paths.source });
+    const d = await appApi.pickDir({ title: '选择素材目录（一个目录 = 一个批次，可同时跑多个）', defaultPath: state.project.sourceDir || '' });
     if (!d) return;
     const name = d.split(/[\\/]/).filter(Boolean).pop() || '批次';
     const batchId = `${name}_${batchStamp()}`;
@@ -2412,9 +2411,11 @@ const ACTS = {
 
   'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },  'cfg:path': async (el) => {
     const key = el.dataset.key;
-    const d = await appApi.pickDir({ title: '选择目录', defaultPath: state.config.paths.source });
+    const field = key.split('.')[1];
+    // 起点用这个字段**自己的当前值**（原来一律拿「素材根目录」当起点，跟要改的字段没关系）
+    const d = await appApi.pickDir({ title: '选择目录', defaultPath: (state.config.paths && state.config.paths[field]) || '' });
     if (!d) return;
-    await appApi.configSet({ paths: { [key.split('.')[1]]: d } });
+    await appApi.configSet({ paths: { [field]: d } });
     state.config = await appApi.configGet();
     renderAll();
   }

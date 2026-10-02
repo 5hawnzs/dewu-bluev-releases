@@ -182,8 +182,9 @@ function humanSize(b) {
 /** 默认目录：Windows 落在 C:\Users\<你>\素材 这类位置 */
 function defaultPaths() {
   const home = os.homedir();
+  // ★ 2026-10-02：素材位置不再预设 —— 素材目录每次现场选（选择结果存 project.sourceDir），
+  //   出厂不指向任何目录。这里只留「输出目录」与「隔离目录」两个真在用的默认值。
   return {
-    source: path.join(home, '素材'),
     output: path.join(home, '输出', '得物'),
     rejected: path.join(home, '素材', '_rejected')
   };

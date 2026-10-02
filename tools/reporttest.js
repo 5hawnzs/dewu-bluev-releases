@@ -90,7 +90,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
 
 (async () => {
   store.set({
-    paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
+    paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 4, requiredTopic: '#品牌甲', extraTopics: 4 },
     publish: { intervalSec: 1, videoIntervalSec: 1, retry: 1 }   // 「演示节奏」开关已删：现在直接给 1 秒间隔
   });
@@ -238,6 +238,22 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   const noDirGiven = await jobs.run('report.import', { file: noPath });
   ok('⑩ 既不写路径也不选目录 → 明确报错并提示去选目录',
     noDirGiven.ok === false && /素材路径/.test(noDirGiven.error) && /选一下这一批的素材目录/.test(noDirGiven.error), noDirGiven.error);
+
+  // ---- ⑪ ★ 2026-10-02「设置 → 素材根目录」已删：相对路径不再有参照系 ----
+  //   ① 报告里写相对路径 ⇒ 不再拿某个默认目录硬拼，改用「这次导入选的批次目录」；
+  //   ② 只写相对路径、又没选目录 ⇒ 明确报错（绝不拼出一条指向别处的路径）。
+  const relReport = await writeReport(path.join(TMP, '相对路径.xlsx'), COLS, [
+    { 素材路径: '20260901', 好物1_货号: 'UWG460108', 好物1_颜色: '本白' },
+    { 素材路径: '20260901', 好物1_货号: 'UWG460110', 好物1_颜色: '本白' },
+    { 素材路径: '20260901', 好物1_货号: 'UWG460111' },
+    { 素材路径: '20260901', 好物1_货号: 'UWH760085', 好物1_颜色: '黑色条纹' }
+  ]);
+  const relOk = await jobs.run('report.import', { file: relReport, dir: batchDir });
+  ok('⑪ 报告写相对路径 ⇒ 不再拼「素材根目录」，改用这次选的批次目录',
+    relOk.ok === true && relOk.result.total === 4, relOk.error || JSON.stringify(relOk.result && relOk.result.total));
+  const relNoDir = await jobs.run('report.import', { file: relReport });
+  ok('⑪ 相对路径 + 没选目录 ⇒ 明确报错（不拿默认目录硬拼一条指向别处的路径）',
+    relNoDir.ok === false && /缺「素材路径」/.test(relNoDir.error), relNoDir.error);
 
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('REPORT TEST ERROR', e); process.exitCode = 1; });

@@ -304,7 +304,7 @@ function register() {
     const w = win();
     const r = await dialog.showOpenDialog(w, {
       title: (opts && opts.title) || '选择目录',
-      defaultPath: (opts && opts.defaultPath) || store.get('paths.source'),
+      defaultPath: (opts && opts.defaultPath) || undefined,
       properties: ['openDirectory', 'createDirectory', 'dontAddToRecent']
     });
     return r.canceled ? null : r.filePaths[0];

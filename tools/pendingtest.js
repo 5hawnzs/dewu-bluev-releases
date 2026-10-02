@@ -37,7 +37,7 @@ const state = {
 };
 
 (async () => {
-  store.set({ paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
+  store.set({ paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     publish: { devices: [], device: '', intervalSec: 60 } });
 
   // ① 正常导出 + 回写

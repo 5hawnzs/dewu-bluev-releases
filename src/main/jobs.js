@@ -75,17 +75,28 @@ function notify(title, body) {
   } catch (e) { /* 通知不可用不影响主流程 */ }
 }
 
+/**
+ * ★ 2026-10-02：「设置 → 素材根目录」已删 —— 出厂不再预设任何素材位置（素材目录每次现场选，
+ *   结果存在 project.sourceDir）。所以这里不能再拿一个默认目录兜底：没显式给、工程里也没存过，
+ *   就直接说清要干什么。否则 undefined 会被一路交到 readdirSafe，
+ *   冒出来的是一句「The path argument must be of type string」这种没人看得懂的错。
+ */
+function needSourceDir(dir) {
+  if (!dir) throw new Error('还没选素材目录 —— 点「选择目录」选一个再试；导入报告时可以在弹框里选这一批的素材目录');
+  return dir;
+}
+
 async function dispatch(type, args, ctx) {
   const st = () => project.get();
   switch (type) {
     case 'flatten.plan': {
-      const dir = args.sourceDir || st().sourceDir || store.get('paths.source');
+      const dir = needSourceDir(args.sourceDir || st().sourceDir);
       const plan = await flatten.plan(dir, ctx);
       logbus.info(`待整理清单：${plan.total} 个叶子目录 · ${plan.fileTotal} 个文件`);
       return plan;
     }
     case 'flatten.run': {
-      const dir = args.sourceDir || st().sourceDir || store.get('paths.source');
+      const dir = needSourceDir(args.sourceDir || st().sourceDir);
       const res = await flatten.run(dir, store.get('flatten'), ctx);
       if (!res.ok) throw new Error(res.message);
       project.patch({ sourceDir: dir, flatDir: res.flatDir, items: res.items, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: res.items.length, colCount: 26, locked: false, exportedAt: 0 } });
@@ -98,7 +109,7 @@ async function dispatch(type, args, ctx) {
       return { rows, stats };
     }
     case 'compliance.scanParent': {
-      const dir = args.dir || st().sourceDir || store.get('paths.source');
+      const dir = needSourceDir(args.dir || st().sourceDir);
       const r = await compliance.scanParent(dir, ctx);
       project.patch({ compliance: { rows: r.rows, stats: r.stats, groups: r.groups, scannedAt: Date.now() } });
       return { groups: r.groups.map(g => ({ name: g.name, stats: g.stats })), stats: r.stats };

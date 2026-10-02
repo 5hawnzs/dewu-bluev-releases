@@ -723,6 +723,7 @@ app.whenReady().then(async () => {
       adbRow: /模拟器驱动 adb/.test(t), imeRow: /中文输入法 ADBKeyboard/.test(t),
       ffRow: /视频转 MP4/.test(t), builtin: /程序内置/.test(t),
       ffPathInput: !!document.querySelector('[data-cfg="publish.ffmpegPath"]'),
+      srcPathRow: !!document.querySelector('[data-key="paths.source"]'),
       llmRow: !!document.querySelector('[data-cfg="copy.llm.enabled"]'),
       skuRow: !!document.querySelector('[data-cfg="verify.api.endpoint"]'),
       modeRow: !!document.querySelector('[data-cfg="verify.mode"]')
@@ -733,6 +734,18 @@ app.whenReady().then(async () => {
   ok('★ 设置页不再摆「文案模型」「SKU 接口」「货号颜色下拉」（都收进高级设置）',
     !depUi.llmRow && !depUi.skuRow && !depUi.modeRow, JSON.stringify(depUi));
   ok('★ 设置页不再摆「ffmpeg 路径」输入框（内置即用）', depUi.ffPathInput === false, JSON.stringify(depUi));
+  // ★ 2026-10-02（第三轮）：「素材根目录」整项删除 —— 它只是选择框的起点，实际每次都现场选
+  //   （结果存 project.sourceDir）。留着它只会让人以为「素材必须放在这个目录下」。
+  //   负向断言要盯**配置项本身**（data-key="paths.source"），不是看界面上有没有「素材」两个字。
+  ok('★ 设置页不再摆「素材根目录」配置项（整项删除，不是藏起来）', depUi.srcPathRow === false, JSON.stringify(depUi));
+  // 删功能要连**读取链**一起删：控件没了、配置键与读取点还在 = 行为没变（只是看不见了）。
+  // 这里直接扫主进程源码 —— 不许再有 paths.source / paths: { source。
+  const srcMain = ['src/main/store.js', 'src/main/project.js', 'src/main/jobs.js', 'src/main/ipc.js',
+    'src/main/util/winpath.js', 'src/main/services/report.js']
+    .map(f => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
+  ok('★ 主进程与出厂配置里不再有 paths.source（读取链一起删干净）',
+    !/paths\.source/.test(srcMain) && !/paths: \{ source\b/.test(srcMain),
+    `paths.source=${(srcMain.match(/paths\.source/g) || []).length} · 配置键=${(srcMain.match(/paths: \{ source\b/g) || []).length}`);
   // 而高级设置页里它们都在（而且「文案模型 / 货号颜色 / 外部依赖路径」三块默认是**收起**的）
   const advUi = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="11"]').click();

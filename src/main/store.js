@@ -14,7 +14,9 @@ function defaults() {
   const d = wp.defaultPaths();
   return {
     projectName: '蓝V 素材发布',
-    paths: { source: d.source, output: d.output, rejected: d.rejected },
+    // ★ 2026-10-02：素材位置不再预设（整项删除）。素材目录每次现场选，结果存 project.sourceDir。
+    //   老配置里残留的那个键不再被读取，也不影响启动（mergeDeep 会原样留着，无害）。
+    paths: { output: d.output, rejected: d.rejected },
     // 品牌注册表：[{ id, name, enabled, note, createdAt }]，增删改与权限判定都在 src/main/brands.js
     // 品牌是跨模块维度（文案 / 发布单 / 发布日志 / 统计 / 账号权限），所以放在顶层而不是 copy 下面
     brands: [],
