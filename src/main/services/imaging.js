@@ -210,8 +210,41 @@ async function fitWithin(src, dst, maxSide, quality = 90) {
   return { width: w, height: h };
 }
 
-/** 纯 JS 读 MP4/MOV 时长（moov → mvhd），拿不到返回 null，交给人工定夺 */
-async function videoDurationSec(src) {
+/**
+ * 读图 → 等比缩小 → JPEG base64（**不落盘**）。
+ *
+ * 用途：把素材图送给支持看图的模型（文案生成）。不落盘是有意的 ——
+ * 这是临时数据，不该在用户的素材目录里多出一堆 `_ai_tmp.jpg`。
+ * 缩到 maxSide 内是因为一张 4000px 的原图编码后能到几 MB，
+ * 一张图就能把整批请求撑爆（而且模型也不需要那么大）。
+ */
+async function shrinkBase64(src, maxSide = 768, quality = 82) {
+  if (sharp) {
+    const buf = await sharp(src, { failOn: 'none' }).rotate()
+      .resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer();
+    return buf.toString('base64');
+  }
+  // 纯 JS 引擎：解码 → 最近邻缩放 → 编码（和 fitWithin 同一套算法，只是出到内存）
+  const jpeg = require('jpeg-js');
+  const img = await readImage(src);
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+  const rgb = Buffer.alloc(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(img.height - 1, Math.floor(y / scale));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(img.width - 1, Math.floor(x / scale));
+      const si = (sy * img.width + sx) * 4, di = (y * w + x) * 3;
+      rgb[di] = img.data[si]; rgb[di + 1] = img.data[si + 1]; rgb[di + 2] = img.data[si + 2];
+    }
+  }
+  return jpeg.encode({ data: rgb, width: w, height: h }, quality).data.toString('base64');
+}
+
+/** 纯 JS 读 MP4/MOV 时长（moov → mvhd），拿不到返回 null，交给人工定夺 */async function videoDurationSec(src) {
   let fd = null;
   try {
     fd = await fs.promises.open(wp.toLong(src), 'r');
@@ -266,6 +299,7 @@ function findMvhd(buf) {
 module.exports = {
   engineName, hasHeif, init,
   convertToJpg, compressUnder, fitWithin, dominantColor, videoDurationSec, readImage, sizeOf,
+  shrinkBase64,
   // 给 video.js 复用（校验转出来的 mp4 能不能读到时长）—— 同一套解析，别复制第二份
   findMvhd
 };

@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('api', {
 
   themeGet: () => ipcRenderer.invoke('theme:get'),
   themeSet: s => ipcRenderer.invoke('theme:set', s),
+  themeToggle: () => ipcRenderer.invoke('theme:toggle'),
 
   // 云端协作（可选）：状态里不含密钥，密钥只存在于主进程配置
   cloudStatus: () => ipcRenderer.invoke('cloud:status'),

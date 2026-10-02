@@ -13,8 +13,13 @@
  *      云上少几条只是看板不全，绝不能反过来让发布挂掉（和 sheet.appendLog 一个口径）。
  *   3) **只上行结构化结果，不上行素材内容、不上行绝对路径**（dir 只取最后一段目录名）。
  *      日志原文也别上行 —— 行数会爆，且里面有本地路径。
- *   4) **幂等**：靠表上 (machine_id, ts, seq) 唯一索引 + `Prefer: resolution=ignore-duplicates`。
- *      网络重试 / 重复同步不会产生重复行；游标只记录「读到第几行」，丢了最多重推被去重挡掉。
+ *   4) **幂等**：靠表上 (machine_id, ts, seq) 唯一索引，且**两半缺一不可** ——
+ *      URL 上要写 `?on_conflict=machine_id,ts,seq`，头里要写 `Prefer: resolution=ignore-duplicates`。
+ *      ★★ 只写后者是无效的（2026-10-02 实测：裸 POST 重复行 ⇒ 409 + 23505「duplicate key value
+ *      violates unique constraint "publish_log_dedup"」；只有补上 ?on_conflict= 才 201 被静默跳过，
+ *      响应头 `preference-applied` 也会确认 ignore-duplicates 真的生效了）。
+ *      后果不是「多几行」而是**同步永久卡死**：整批 409 ⇒ 抛错 ⇒ 游标不前进 ⇒ 每轮都在同一批上重撞。
+ *      游标只记录「读到第几行」，丢了最多重推被去重挡掉。
  *
  * 为什么用「本机轮询式上行」而不是「网页连本机」：不开端口、不做配对、没有暴露面，
  * 且天然支持多机并发（各推各的，按 machine_id 区分）。这也是另一个项目实测跑通的形态。
@@ -186,8 +191,17 @@ async function importConfig(input) {
     : { ok: false, error: '配置已保存，但连不上：' + t.error };
 }
 
-async function postRows(url, key, rows) {
-  const res = await fetch(url + '/rest/v1/publish_log', {
+/** 幂等的两半：冲突目标列（写进 URL）与 resolution 头。少任何一半都会在重复行上 409。 */
+const CONFLICT_COLS = 'machine_id,ts,seq';
+
+/** 这一条错误是不是「撞唯一键」——只认 409 + 23505，别的错（42P10 没有对应唯一约束、网络断）不许吞 */
+function isDupErr(e) {
+  return !!e && e.status === 409 && /23505|duplicate key/i.test(String(e.detail || e.message || ''));
+}
+
+/** 单次 POST（一次调用 = 一批）。非 2xx 抛错，错误上带 status/detail 供上层分辨。 */
+async function insertRows(url, key, rows) {
+  const res = await fetch(url + '/rest/v1/publish_log?on_conflict=' + CONFLICT_COLS, {
     method: 'POST',
     headers: {
       apikey: key,
@@ -204,7 +218,34 @@ async function postRows(url, key, rows) {
     try { detail = (await res.text()).slice(0, 200); } catch (e) { /* 读不到正文就算了 */ }
     const err = new Error(`HTTP ${res.status}${detail ? ' · ' + detail : ''}`);
     err.status = res.status;
+    err.detail = detail;
     throw err;
+  }
+}
+
+/**
+ * 推一批，返回「这批可以前进多少行」。
+ *
+ * ★★ 正常路径：一次 POST 全进；重复的行由 ignore-duplicates 在服务端静默跳过（游标照常前进）。
+ * ★★ 兜底路径：万一批级 409（唯一冲突）—— 说明服务端没按 on_conflict 去重（索引是后补的、
+ *    或 PostgREST 行为有差异）。这时**逐行重发**：已存在的跳过、新的补上。
+ *    为什么必须兜底而不是直接整批放弃：整批 409 若是被当成失败，上一次同步的 catch 不会推进游标
+ *    ⇒ 每一轮都在同一批上重撞 ⇒ **同步永久卡死**（v1.0.5 实测故障）。
+ *    逐行重发既保住「新的那几行不会丢」，又保证「这一批最终能过」。
+ */
+async function postRows(url, key, rows) {
+  try {
+    await insertRows(url, key, rows);
+    return rows.length;
+  } catch (e) {
+    if (!isDupErr(e)) throw e;          // 不是唯一冲突 ⇒ 照旧失败（退避、不推进游标）
+    let done = 0;
+    for (const row of rows) {
+      try { await insertRows(url, key, [row]); }
+      catch (e2) { if (!isDupErr(e2)) throw e2; }   // 单行也撞唯一键 ⇒ 它本来就在云上，算已上行
+      done++;
+    }
+    return done;
   }
 }
 
@@ -243,8 +284,9 @@ async function syncOnce(opts = {}) {
     for (let i = 0; i < rows.length; i += BATCH) {
       if ((i / BATCH) >= MAX_BATCHES) break;      // 剩下的下一轮再推，不卡住界面
       const chunk = rows.slice(i, i + BATCH);
-      await postRows(cfg.url, cfg.anonKey, chunk);
-      sent += chunk.length;
+      // ★ 用返回的「可前进行数」而不是 chunk.length：唯一冲突走逐行兜底时，两者含义相同（都全过），
+      //   但让计数走同一个来源，将来加别的容错才不会被悄悄绕过。
+      sent += await postRows(cfg.url, cfg.anonKey, chunk);
     }
     st.offset += sent;
     st.uploaded += sent;

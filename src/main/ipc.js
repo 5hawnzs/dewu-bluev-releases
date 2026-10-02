@@ -307,8 +307,28 @@ function register() {
     }
   }));
 
-  ipcMain.handle('theme:get', () => ({ shouldUseDarkColors: nativeTheme.shouldUseDarkColors, themeSource: nativeTheme.themeSource }));
-  ipcMain.handle('theme:set', (_e, source) => { nativeTheme.themeSource = source || 'system'; return nativeTheme.shouldUseDarkColors; });
+  // 主题：只有浅色 / 深色两种（口径见 window.normTheme）。★ 必须**落盘** ——
+  // 只改 nativeTheme 的话下次启动又回到默认值，用户会以为「切了没记住」。
+  ipcMain.handle('theme:get', () => {
+    // ★ 先做一次幂等的归一（把配置里的口径真正套到 nativeTheme 上）。
+    //   只报 themeSource 是不够的：nativeTheme 还是 'system' 时 shouldUseDarkColors 会跟着 Windows 走，
+    //   于是「themeSource=light」和「界面是深色」同时成立 —— 真窗口自检抓到过。
+    winmod.applyStoredTheme();
+    return { shouldUseDarkColors: nativeTheme.shouldUseDarkColors, themeSource: nativeTheme.themeSource };
+  });
+  ipcMain.handle('theme:set', (_e, source) => {
+    const t = winmod.normTheme(source);
+    nativeTheme.themeSource = t;
+    store.set({ ui: { theme: t } });
+    return nativeTheme.shouldUseDarkColors;
+  });
+  // 顶栏那个按钮走这条：切到「另一边」。返回值 = 切完之后是不是深色。
+  ipcMain.handle('theme:toggle', () => {
+    const t = winmod.normTheme(nativeTheme.themeSource) === 'dark' ? 'light' : 'dark';
+    nativeTheme.themeSource = t;
+    store.set({ ui: { theme: t } });
+    return nativeTheme.shouldUseDarkColors;
+  });
 
   ipcMain.handle('job:run', guard((_e, type, args) => jobs.run(type, args || {})));
   ipcMain.handle('job:cancel', guard((_e, type) => jobs.cancel(type)));

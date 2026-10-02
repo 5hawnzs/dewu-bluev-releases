@@ -76,9 +76,22 @@ function kindOf(s) {
   return 'wait';
 }
 
-/* ---------------- 主题 ---------------- */
+/* ---------------- 主题 ----------------
+ * ★ 2026-10-03 用户拍板：app **默认浅色**，切换按钮放在「app 最上面、项目左边」，点一下就切。
+ *   「跟随 Windows 设置」这一档同时取消（只有浅色/深色）。主进程 window.normTheme() 是同一个口径，
+ *   老配置里的 'system' 一样按浅色算 —— 否则会出现「界面浅色、窗口底色深色」这种半深半浅。
+ * ★ 图标不在这里换：两个图标都在 DOM 里（styles.css 按 html.dark 决定显哪个），
+ *   这里只切 class + 同步提示语，就不会出现「图标和实际主题不一致」。
+ */
 function applyTheme(t) {
-  document.documentElement.classList.toggle('dark', !!(t && t.shouldUseDarkColors));
+  const dark = !!(t && t.shouldUseDarkColors);
+  document.documentElement.classList.toggle('dark', dark);
+  const b = document.getElementById('themeBtn');
+  if (b) {
+    b.title = dark ? '当前：深色 —— 点一下切浅色' : '当前：浅色 —— 点一下切深色';
+    b.setAttribute('aria-label', b.title);
+    b.setAttribute('aria-pressed', dark ? 'true' : 'false');
+  }
 }
 
 /* ---------------- 日志 ----------------
@@ -211,8 +224,30 @@ async function runJob(type, args) {
   renderAll();
   return res;
 }
-function jobOf(type) { const l = state.jobs.filter(j => j.type === type); return l.length ? l[l.length - 1] : null; }
-function running(type) { return !!jobOf(type); }
+/**
+ * 文案生成跑完的收尾：把「这批的 AI 内容报告落在哪、有没有要人工看的行」直接摆到人脸上。
+ * 报告是这一步真正要交付的东西（用户 2026-10-02 要求：「在该文件夹生成一个全新的带时间戳的 ai 报告」），
+ * 所以不能只在日志里留一句话就算了 —— 跑完自动打开它所在的位置，并说清有没有要人工复核的行。
+ */
+let lastCopyReport = null;
+async function afterCopy(r) {
+  const x = (r && r.result) || {};
+  lastCopyReport = x.reportFile
+    ? {
+      file: x.reportFile, rows: x.reportRows || 0, flagged: x.reportFlagged || 0,
+      byLevel: x.reportByLevel || {}, gen: x.genSource || '', brand: r.brandName || ''
+    }
+    : null;
+  renderAll();
+  if (!x.reportFile) return;
+  const flag = x.reportFlagged || 0;
+  const name = String(x.reportFile).split(/[\\/]/).pop();
+  toast(`AI 内容报告已生成：${x.reportRows} 行 · ${flag ? `${flag} 行要人工看一眼` : '文案/货号/颜色核对一致'} → ${name}`,
+    flag ? 'warn' : 'ok');
+  await appApi.reveal(x.reportFile);
+}
+
+function jobOf(type) { const l = state.jobs.filter(j => j.type === type); return l.length ? l[l.length - 1] : null; }function running(type) { return !!jobOf(type); }
 function progFor(type) { const j = jobOf(type); return j ? j.progress : null; }
 function batchesOf(type) { return type ? state.jobs.filter(j => j.type === type) : state.jobs.slice(); }
 function secText(s) { const v = Math.max(0, Number(s) || 0); return v < 60 ? v.toFixed(0) + 's' : Math.floor(v / 60) + 'm' + String(Math.round(v % 60)).padStart(2, '0') + 's'; }
@@ -465,7 +500,7 @@ TABS[2] = {
 
 TABS[3] = {
   title: '文案生成',
-  desc: '标题 + 正文 + 5 个话题 · 话题组合去重 · 标题格式轮换',
+  desc: '看图写标题正文 · 话题组合去重 · 跑完落一份带时间戳的 AI 内容报告',
   actions: () => [
     { act: 'copy:prompt', label: '提示词配置' },
     { act: 'copy:pickRun', label: '选择素材目录并启动任务', primary: true },
@@ -491,19 +526,43 @@ TABS[3] = {
         <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
           <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
           发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。
+          <br><b>额外话题从哪来</b>：优先抓<b>品牌提示词里写的 <code>#话题</code></b>（就是提示词里那段「话题列表」），
+          品牌提示词里没有 <code>#</code> 话题才退回内置的通用词 —— 所以想让每条笔记都带上你们家的话题，
+          直接在品牌提示词的「话题列表」里写就行，不用在这里再抄一遍。</p>
+        <p class="hint"><b>正文写成 4~5 行短句</b>：一行一句（8~16 字），按「卖点 → 氛围感 → 上身体验 → 搭配」铺开，
+          行尾少量 emoji（全篇 1~3 个）。<b>行与行之间是真的换行</b>，发到得物就是分行的样子；写成一大段会被「文案核对」列点出来。
+          话题走发布单的「话题1~5」独立格子，所以正文结尾不带 <code>#</code> —— 得物渲染出来的位置一样，
+          但只有格子里的话题才点得动。</p>
+        <p class="hint"><b>重复口径</b>：只看<b>相邻两条</b> —— 标题或正文与<b>上一条完全一样</b>（含 emoji）才会提醒；
+          换个 emoji、换个词就算不同；隔开几条再撞句、或换个品牌复用同一句，都没关系。</p>
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
-        <p class="hint">本地先定死标题格式 / 视角 / 话题组合（代码保证去重），模型只填空。
+        <p class="hint"><b>标题是看图写的</b>：每条素材把前几张实拍图缩到 768px 发给模型，标题里的品类 / 款式特征 / 颜色
+          都来自图里真实看到的（如「雨伞熊高领毛衣灰色慵懒风🧸」），<b>不是拿货号颜色套模板</b>。
+          模型连不上时会<b>直接停下来报错</b>，不会拿本地模板冒充 AI 文案；要先确认接口就点「设置 → 高级设置 → 文案模型 → 接口自检」。
           （<b>并发路数</b>是「同时发几路请求」的旋钮，不是内容参数 —— 已收进「高级设置」，出厂 6 路，一般不用动。）</p>
+        <p class="hint">跑完会在<b>你选的那个素材文件夹</b>里生成一份 <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>：
+          逐行写清 标题 / 正文 / 货号 / 颜色 / 生成来源 / <b>文案核对</b>（自动查出「颜色对不上」「混进货号」「用了模板套话」这类问题）。
+          格式与上游那份「KIDS_AI内容报告」一致 ⇒ <b>核对完可以直接把它当发布单导进来</b>。</p>
+        ${lastCopyReport ? `<div class="hint" style="border:1px solid #E3E0D8;border-radius:6px;padding:8px 10px">
+          最近一次：<b>${esc(lastCopyReport.file.split(/[\\/]/).pop())}</b> · ${n(lastCopyReport.rows)} 行
+          ${lastCopyReport.gen ? ` · 生成来源 ${esc(lastCopyReport.gen)}` : ''}
+          ${lastCopyReport.flagged
+            ? ` · <b>${n(lastCopyReport.flagged)} 行要人工看一眼</b>（要人工看 ${n(lastCopyReport.byLevel.warn)} · 明显有问题 ${n(lastCopyReport.byLevel.bad)}）`
+            : ' · 文案/货号/颜色自动核对<b>全部一致</b>'}
+          <button class="btn sm" data-act="copy:openReport" style="margin-left:8px">打开报告</button>
+        </div>` : ''}
       </div>
       ${batchesHtml('copy.generate', '运行中的批次（AI 文案生成）')}
       ${planRows.length ? `<div class="tw"><table>
-        <thead><tr><th>叶子目录</th><th>货号</th><th>颜色</th><th>标题格式</th><th>叙事视角</th><th>话题组合</th><th>标题</th><th>状态</th></tr></thead>
+        <thead><tr><th>叶子目录</th><th>货号</th><th>颜色</th><th>叙事视角</th><th>话题组合</th><th>标题</th><th>生成来源</th><th>状态</th></tr></thead>
         <tbody>${planRows.slice(0, 40).map(r => `<tr>
           <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku || '')}</td><td>${esc(r.color || '')}</td>
-          <td>${r.format ? esc(r.format + ' ' + (r.formatName || '')) : '—'}</td>
           <td>${r.angle ? esc(r.angle) : '—'}</td>
           <td class="cut">${(r.topics || []).length ? esc(r.topics.join(' ')) : '—'}</td>
-          <td class="cut">${esc(r.title || '—')}</td>
+          <td class="cut" title="${esc(r.title || '')}">${esc(r.title || '—')}</td>
+          <td class="cut">${r.genSource
+            ? badge(r.genSource, r.genSource === '本地模板' || r.genSource === '未生成' ? '需人工处理' : '完成')
+            : '—'}</td>
           <td>${badge(r.status || '待生成', kindOf(r.status || '待生成'))}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">还没有素材，先做「素材整理」。</div>`}`;
@@ -539,7 +598,9 @@ TABS[4] = {
           <td>${badge(r.conclusion, kindOf(r.conclusion))}${r.note ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.note)}</div>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>
       <p class="hint">多了一道保险：<b>用图片实际提出的主色反查目录里填的色名</b>。目录写「冠军白」但图是黑的，立刻就能发现。商品池：${state.info ? state.info.pool.size : 0} 个货号（${esc(state.info ? state.info.pool.source : '')}）。</p>
-      <p class="hint">★ 这一页<b>只提示、不拦发布</b>：颜色对不上时，发布端会按货号搜出来的<b>第一件商品</b>发（详见「模拟器发布」页）。</p>`;
+      <p class="hint">★ 这一页<b>只提示、不拦发布</b>：颜色对不上时，发布端会按货号搜出来的<b>第一件商品</b>发（详见「模拟器发布」页）。</p>
+      <p class="hint">用「AI 内容报告」那一批时：先在「<b>模拟器发布</b>」页点「导入 AI 内容报告」，再回本页点「开始校验」——
+        报告里空着的货号/颜色会先按叶子文件夹名（「货号+颜色」）补齐，再拿去跟商品池比对。</p>`;
   }
 };
 
@@ -579,8 +640,11 @@ TABS[5] = {
 
 TABS[6] = {
   title: '模拟器发布',
-  desc: 'ADB + uiautomator2 驱动得物 App · 间隔可设 1-2 分钟 · 失败可单独重跑',
+  desc: '导入 AI 内容报告 → 选发布间隔 → 开始发布（ADB 驱动得物 App · 失败可单独重跑）',
   actions: () => [
+    // ★ 2026-10-03 用户给的流程：「从模拟器发布的入口导入，选择发布间隔时间，点击开始发布」
+    //   ⇒ 导入入口放到这一页（「发布单」页那个还在，两处都能进，导入的是同一份东西）
+    { act: 'sheet:importReport', label: '导入 AI 内容报告' },
     { act: 'pub:connect', label: '连接模拟器' },
     { act: 'pub:exportLog', label: '重导出日志' },
     { act: 'pub:stop', label: '停止', disabled: !running('publish.run') && !running('publish.rerun') },
@@ -623,7 +687,11 @@ TABS[6] = {
         </div>
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
         <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒（视频 ≈60 秒，还要等媒体库索引）+ 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。缩短间隔要你自己拍板，默认值按实测给的是 60–120 秒（视频默认 90 秒）。</p>
+        <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
+          报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
+          并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
       </div>
+      ${reportBoxHtml()}
       ${probeHtml()}
       ${batchesHtml('', '运行中的批次 / 任务')}
       ${rows.length ? `<div class="tw"><table>
@@ -674,7 +742,7 @@ function ffBadge(f) {
 
 TABS[7] = {
   title: '设置',
-  desc: '路径、内容校验、外观、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」）',
+  desc: '路径、内容校验、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
@@ -721,11 +789,12 @@ TABS[7] = {
       <div class="box">
         <h3>外观</h3>
         <div class="row"><span class="lbl">主题</span>
-          <select class="inp" id="themeSel">
-            <option value="system">跟随 Windows 设置</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
+          <span class="chip">浅色 / 深色 · 默认浅色</span>
+          <span class="hint" style="margin:0">切换按钮在最上面标题栏、<b>「项目」左边</b>，点一下就切</span>
+        </div>
+        <p class="hint">这里原先是个下拉（含「跟随 Windows 设置」）—— 已按用户要求撤掉：<b>只有浅色 / 深色两种</b>，
+          入口搬到顶栏（点一下就行，不用翻设置）。老配置里存的「跟随系统」按<b>浅色</b>算。</p>
+        <div class="row"><span class="lbl">运行环境</span>
           <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
         </div>
       </div>
@@ -785,15 +854,27 @@ TABS[11] = {
         ${recoverHtml()}
         ${state.recoverEdit === null ? '<div class="row" style="margin-top:6px"><button class="btn sm" data-act="pub:recoverEdit">编辑恢复动作</button></div>' : ''}
       </div>
-      ${advBox('文案模型（可选）', false,
+      ${advBox('文案模型', false,
         `<div class="row" style="margin-bottom:9px">
           <span class="lbl">启用</span>
-          <select class="inp" data-cfg="copy.llm.enabled"><option value="true" ${c.copy.llm.enabled ? 'selected' : ''}>调用模型</option><option value="false" ${!c.copy.llm.enabled ? 'selected' : ''}>本地模板（离线）</option></select>
+          <select class="inp" data-cfg="copy.llm.enabled"><option value="true" ${c.copy.llm.enabled ? 'selected' : ''}>调用模型（看图写）</option><option value="false" ${!c.copy.llm.enabled ? 'selected' : ''}>本地模板（离线）</option></select>
+          <span class="lbl">看图</span>
+          <select class="inp" data-cfg="copy.llm.vision"><option value="true" ${c.copy.llm.vision !== false ? 'selected' : ''}>送实拍图</option><option value="false" ${c.copy.llm.vision === false ? 'selected' : ''}>不送图</option></select>
+          <button class="btn sm" data-act="copy:llmtest">接口自检</button>
         </div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">接口地址</span><input class="inp mono" value="${esc(c.copy.llm.endpoint)}" data-cfg="copy.llm.endpoint" placeholder="https://…/v1/chat/completions"></div>
+        <div class="row" style="margin-bottom:9px"><span class="lbl">接口地址</span><input class="inp mono" value="${esc(c.copy.llm.endpoint)}" data-cfg="copy.llm.endpoint" placeholder="留空 = 跟随内置"></div>
         <div class="row" style="margin-bottom:9px"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.copy.llm.apiKey)}" data-cfg="copy.llm.apiKey"></div>
-        <div class="row"><span class="lbl">模型</span><input class="inp mono" value="${esc(c.copy.llm.model)}" data-cfg="copy.llm.model"></div>
-        <p class="hint">不填也能用：本地模板会把「选择」（标题格式 / 视角 / 话题组合）定死，只让模型填空 —— 没模型时由模板填空，流程一致。</p>`,
+        <div class="row" style="margin-bottom:9px"><span class="lbl">模型</span><input class="inp mono" value="${esc(c.copy.llm.model)}" data-cfg="copy.llm.model" placeholder="留空 = 跟随内置"></div>
+        <div class="row">
+          <span class="lbl">每条送图</span>
+          <select class="inp" data-cfg="copy.llm.imageCount">${[1, 2, 3, 4].map(v => `<option value="${v}" ${Number(c.copy.llm.imageCount) === v ? 'selected' : ''}>${v} 张</option>`).join('')}</select>
+          <span class="lbl">单边缩到</span>
+          <select class="inp" data-cfg="copy.llm.imageMaxSide">${[512, 768, 1024, 1568].map(v => `<option value="${v}" ${Number(c.copy.llm.imageMaxSide) === v ? 'selected' : ''}>${v}px</option>`).join('')}</select>
+        </div>
+        <p class="hint"><b>留空 = 跟随内置</b>（地址与模型 id 都随包内置，换服务商发新包就行）—— 这一条只在你<b>填了</b>的时候才覆盖内置值。
+          <b>标题是看图写的</b>：每条素材把前几张实拍图缩到上面那个尺寸发给模型，标题里的品类 / 款式特征 / 颜色都来自图里真实看到的，
+          不是拿货号颜色套模板。★ 模型连不上时<b>会直接停下来报错</b>，不会拿本地模板冒充 AI 文案
+          （要用模板就选「本地模板（离线）」，那时报告里会逐行标出「本地模板」）。</p>`,
         '默认关闭 · 离线模板就够用')}
       ${advBox('文案生成并发', false,
         `<div class="row">
@@ -2079,6 +2160,12 @@ function upPwdHtml(id) {
 
 /* ---------------- 交互 ---------------- */
 const ACTS = {
+  // ★ 顶栏那个主题按钮（浅色 ⇄ 深色）。落盘在主进程做，这样下次启动还是这个。
+  'theme:toggle': async () => {
+    const dark = await appApi.themeToggle();
+    applyTheme({ shouldUseDarkColors: !!dark });
+  },
+
   // ---- 云端协作：推一次 / 试一下 / 下发配置。发布本身不依赖这里的任何一个 ----
   'cloud:exp': async () => {
     const r = await appApi.cloudExport().catch(() => null);
@@ -2193,18 +2280,38 @@ const ACTS = {
     }
   },
 
-  'copy:run': async () => { await runJob('copy.generate'); },
+  'copy:run': async () => {
+    const r = await runJob('copy.generate');
+    if (r.ok) await afterCopy(r);
+  },
   'copy:pickRun': async () => {
     const d = await appApi.pickDir({ title: '选择素材目录（一个目录 = 一个批次，可同时跑多个）', defaultPath: state.project.sourceDir || '' });
     if (!d) return;
     const name = d.split(/[\\/]/).filter(Boolean).pop() || '批次';
     const batchId = `${name}_${batchStamp()}`;
-    await runJob('copy.generate', { sourceDir: d, batchId, label: batchId });
+    const r = await runJob('copy.generate', { sourceDir: d, batchId, label: batchId });
+    if (r.ok) await afterCopy(r);
+  },
+  // 「接口自检」：一次网络往返，把「地址通不通 / 模型名接口认不认 / 这个模型收不收图」说清楚。
+  // ★ 这些事以前只有跑生成时才暴露，而失败还被静默吞成「本地模板」⇒ 用户只看到模板货，
+  //   看不到「其实是接口没连上」。有了这个按钮，出事第一件事就是点它。
+  'copy:llmtest': async () => {
+    const r = await runJob('copy.llmtest');
+    if (!r.ok) return;
+    const x = r.result || {};
+    if (x.enabled === false) { toast(x.note || '模型开关关着', 'warn'); return; }
+    const img = x.image === true ? '支持看图' : (x.image === false ? '不支持看图' : '清单没写收不收图');
+    toast(`接口可用：${x.modelId}（${img}）· ${x.endpointSource}`, x.image === false ? 'warn' : 'ok');
   },
   // 「提示词配置」= 直接开弹窗，不再跳到设置页那两个没人看得懂的输入框
   'copy:prompt': () => {
     if (!state.brandsMeta) { toast('品牌列表还没加载好，稍等一下再点', 'err'); return; }
     openBrandModal('list');
+  },
+  // 打开最近一次那份 AI 内容报告（跑完已经自动弹过一次资源管理器，这里是回看入口）
+  'copy:openReport': async () => {
+    if (!lastCopyReport || !lastCopyReport.file) { toast('还没有生成过报告', 'warn'); return; }
+    await appApi.reveal(lastCopyReport.file);
   },
 
   // ---- 文案提示词弹窗 ----
@@ -2379,8 +2486,17 @@ const ACTS = {
     }
     if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
     const x = r.result;
-    toast(`报告已导入：${x.total} 条待发布（用报告里的标题文案 ${x.fromReport} 条 · 本地生成 ${x.generated} 条${x.blocked ? ` · ${x.blocked} 条暂不发布` : ''}）`, x.blocked ? '' : 'ok');
-    state.tab = 5;
+    // 货号/颜色是**补**过的：补了几条、有没有写回文件、有哪些对不上 —— 一条条如实说，别只报「导入成功」
+    const fx = x.filled || {};
+    const fw = x.fillWrite || {};
+    const part = [];
+    if (fw.updated) part.push(`已按叶子文件夹名补写 ${fw.updated} 条货号/颜色`);
+    else if ((fx.sku || 0) + (fx.color || 0)) part.push(`补出货号/颜色但没能写回文件${fw.busy ? '（报告被占用，关掉 WPS 再导入一次即可）' : ''}`);
+    if ((fx.mismatch || []).length) part.push(`${fx.mismatch.length} 条货号与文件夹名对不上，要人看`);
+    if ((fx.noParse || []).length) part.push(`${fx.noParse.length} 条文件夹名里没有「货号+颜色」`);
+    toast(`报告已导入：${x.total} 条待发布（用报告里的标题文案 ${x.fromReport} 条 · 本地生成 ${x.generated} 条${x.blocked ? ` · ${x.blocked} 条暂不发布` : ''}）`
+      + (part.length ? ' · ' + part.join(' · ') : ''), x.blocked ? '' : 'ok');
+    // ★ 不再强跳「发布单」页：从「模拟器发布」页点的导入，就该留在那一页接着选间隔、开始发布
     renderAll();
   },
 
@@ -2709,6 +2825,10 @@ async function saveCfgFromDom() {
     else v = el.value;
     if (['copy.concurrency', 'copy.extraTopics', 'publish.retry'].includes(key)) v = Number(v);
     if (key.endsWith('.enabled')) v = v === 'true' || v === true;
+    // ★ 这一类是「送图 / 不送图」的开关，值是字符串 'true'/'false'。
+    //   漏了这一步就会把 'false' 存成字符串，而主进程里 `'false' !== false` ⇒ 「不送图」白点。
+    //   （主进程 copywriter.cfgOf 也做了真值兜底 —— 两头都兜，别只靠这一处。）
+    if (key === 'copy.llm.vision') v = v === 'true' || v === true;
     const parts = key.split('.');
     let cur = patch;
     for (let i = 0; i < parts.length - 1; i++) { cur[parts[i]] = cur[parts[i]] || {}; cur = cur[parts[i]]; }
@@ -2741,11 +2861,7 @@ function bindCfgInputs() {
 
 /** 设置页 + 「品牌与权限」页的绑定。两页共用：按 id 找，找不到就跳过（原先有个 early return，会把另一页的绑定一起跳过） */
 function bindSettings() {
-  const sel = $('#themeSel');
-  if (sel) {
-    appApi.themeGet().then(t => { sel.value = t.themeSource || 'system'; });
-    sel.onchange = async () => { await appApi.themeSet(sel.value); };
-  }
+  // 主题那个下拉已删（2026-10-03）：入口搬到顶栏的「themeBtn」，不需要在这里绑。
   // data-cfg 的绑定不在这里了 —— 改成每个页签都绑（见 bindCfgInputs）
   // 「品牌权限」那条下拉工具栏已删（2026-10-02 用户要求）：现在从账号管理表每行右侧的
   // 「配置权限」进弹窗，弹窗自己带状态，不必在这里按「当前选中的账号」重画。

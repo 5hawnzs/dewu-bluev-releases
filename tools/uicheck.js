@@ -237,6 +237,61 @@ app.whenReady().then(async () => {
   ok('页签 11 有「抓取页面结构」「导入 UI 定位表」',
     (await onTab(11, 'pub:dump')) && (await onTab(11, 'pub:map')));
   ok('页签 8 有「查询」（品牌统计）', await onTab(8, 'stats:refresh'));
+  // ★ 2026-10-03 用户给的流程：「从模拟器发布的入口导入，选择发布间隔时间，点击开始发布」
+  //   ⇒ 导入入口必须也能在这一页点到，而且这一页本来就有间隔下拉与开始发布。
+  ok('页签 6 有「导入 AI 内容报告」（从模拟器发布的入口导入）', await onTab(6, 'sheet:importReport'));
+  {
+    const onSix = await win.webContents.executeJavaScript(
+      `!!document.querySelector('[data-cfg="publish.intervalSec"]')`);
+    ok('页签 6 紧挨着就有「发布间隔」下拉（导入完接着选间隔 → 开始发布）', onSix === true);
+    ok('页签 6 的「开始发布」还在', await onTab(6, 'pub:run'));
+  }
+
+  // ---- ★ 主题：app 默认浅色 + 顶栏「项目」左边一点即切（用户 2026-10-03 要求） ----
+  //   为什么不能只查源码里有没有这个按钮：位置错了（塞进设置页）、点了不生效（没走 IPC）、
+  //   切了不落盘（下次启动忘掉）—— 三种都是「看起来做了」。这里全用真窗口真点一遍。
+  const themeDom = await win.webContents.executeJavaScript(`(() => {
+    const btn = document.getElementById('themeBtn');
+    const proj = document.getElementById('chipProj');
+    return {
+      found: !!btn && !!proj,
+      sameParent: !!(btn && proj && btn.parentElement === proj.parentElement),
+      beforeProj: !!(btn && proj && (btn.compareDocumentPosition(proj) & Node.DOCUMENT_POSITION_FOLLOWING) > 0),
+      inTitlebar: !!(btn && btn.closest('.titlebar')),
+      dark: document.documentElement.classList.contains('dark'),
+      title: btn ? btn.title : ''
+    };
+  })()`);
+  ok('★ 主题切换按钮在标题栏、且紧挨在「项目」左边（用户指定的位置）',
+    themeDom.found && themeDom.sameParent && themeDom.beforeProj && themeDom.inTitlebar,
+    JSON.stringify(themeDom));
+  ok('★ app 默认浅色（出厂默认就是 light，老配置里的 system 也按浅色算）',
+    themeDom.dark === false, JSON.stringify({ dark: themeDom.dark, title: themeDom.title }));
+  await win.webContents.executeJavaScript(`document.getElementById('themeBtn').click()`);
+  await new Promise(r => setTimeout(r, 320));
+  const themeDark = await win.webContents.executeJavaScript(`document.documentElement.classList.contains('dark')`);
+  ok('★ 点一下真的切成深色，并且存进了配置（下次启动还是这个）',
+    themeDark === true && store.get('ui.theme') === 'dark',
+    JSON.stringify({ dark: themeDark, saved: store.get('ui.theme') }));
+  await win.webContents.executeJavaScript(`document.getElementById('themeBtn').click()`);
+  await new Promise(r => setTimeout(r, 320));
+  const themeLight = await win.webContents.executeJavaScript(`document.documentElement.classList.contains('dark')`);
+  ok('★ 再点一下切回浅色，也存进了配置',
+    themeLight === false && store.get('ui.theme') === 'light',
+    JSON.stringify({ dark: themeLight, saved: store.get('ui.theme') }));
+
+  // 设置页那个下拉要**整条撤掉**（不是藏起来）：入口只留顶栏那一个，否则两处状态迟早各说各话
+  const appSrcTheme = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
+  ok('★ 设置页「外观 → 主题」下拉已撤（themeSel 一个都不剩，含绑定代码）',
+    !/themeSel/.test(appSrcTheme), (appSrcTheme.match(/themeSel/g) || []).length + ' 处');
+  const winSrc = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
+  ok('★ 主进程的主题口径只有浅色/深色两档（「跟随 Windows 设置」已取消）',
+    /function normTheme\(v\) \{ return v === 'dark' \? 'dark' : 'light'; \}/.test(winSrc)
+    && /function applyStoredTheme\(\)/.test(winSrc));
+  ok('★ 启动时在**建窗口之前**就把主题应用上（窗口底色按它算，晚了会先闪一下）',
+    /winmod\.applyStoredTheme\(\);\r?\n\s*project\.load\(\);/.test(fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8')));
+
+
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
 
   // ---- 左侧「运行日志」页：与底部日志栏**同一份内容**、能筛、能真导出 ----
@@ -773,7 +828,10 @@ app.whenReady().then(async () => {
       adbPath: has('[data-cfg="publish.adbPath"]'), ffPath: has('[data-cfg="publish.ffmpegPath"]'),
       dump: has('[data-act="pub:dump"]'), map: has('[data-act="pub:map"]'),
       recover: has('[data-act="pub:recoverEdit"]'),
-      llm: has('[data-cfg="copy.llm.enabled"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
+      llm: has('[data-cfg="copy.llm.enabled"]'),
+      // ★ 2026-10-02：「看图写」这一整套要能在界面上被看见 / 被关掉 / 被自检
+      vision: has('[data-cfg="copy.llm.vision"]'), imgCount: has('[data-cfg="copy.llm.imageCount"]'),
+      imgSide: has('[data-cfg="copy.llm.imageMaxSide"]'), llmTest: has('[data-act="copy:llmtest"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
       mode: has('[data-cfg="verify.mode"]'), conc: has('[data-cfg="copy.concurrency"]'),
       cloud: has('#cloudState') && has('[data-cfg="cloud.url"]') && has('[data-cfg="cloud.anonKey"]')
         && has('[data-act="cloud:exp"]') && has('[data-act="cloud:imp"]'),
@@ -803,6 +861,25 @@ app.whenReady().then(async () => {
   // 五块：文案模型 / 并发路数 / 货号颜色 / 外部依赖路径 / 云端协作（2026-10-02 新增云端协作）
   ok('★ 高级设置里「可选」的五块默认是收起的（折叠区，不占地方）',
     advUi.collapsed === 5 && advUi.openCount === 0, JSON.stringify(advUi));
+  // ★★ 2026-10-02（本轮）：文案模型这一块必须让人能「看见自己在看图写」——
+  //   看图开关 / 每条几张图 / 缩到多大 / 一个「接口自检」按钮，缺一个都不行。
+  //   （上一版这些事只有跑生成时才暴露，而失败还被静默吞成「本地模板」⇒ 用户只看到模板货。）
+  ok('★ 文案模型块里有「看图」开关 + 送图张数 + 缩放尺寸 + 接口自检按钮',
+    advUi.vision && advUi.imgCount && advUi.imgSide && advUi.llmTest, JSON.stringify(advUi));
+
+  // 「文案生成」页要说清两件事：标题是看图写的、跑完会落一份 AI 内容报告（可反向导入）。
+  // 同时钉住**旧口径已删**：「标题格式轮换」那套壳不再对用户宣传（它就是「像 AI 做的」的来源）。
+  const copyUi = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="3"]').click();
+    await new Promise(r => setTimeout(r, 200));
+    const t = document.querySelector('#pane').textContent;
+    return { picture: /看图写/.test(t), report: /AI内容报告/.test(t), back: /反向|当发布单导进来/.test(t), oldFmt: /标题格式/.test(t) };
+  })()`);
+  ok('★ 「文案生成」页写明了「标题是看图写的」（不是拿货号颜色套模板）', copyUi.picture === true, JSON.stringify(copyUi));
+  ok('★ 「文案生成」页写明了跑完会落一份带时间戳的 AI 内容报告，且能反向导入当发布单',
+    copyUi.report === true && copyUi.back === true, JSON.stringify(copyUi));
+  ok('★ 旧口径「标题格式轮换」不再出现在这一页（F01~F10 已降级为离线模板专用）',
+    copyUi.oldFmt === false, JSON.stringify(copyUi));
 
   // ★ 2026-10-02（第三轮）：云端配置的「下发」—— 导出 / 导入两个动作 + 一个弹窗。
   //   ① 结构：弹窗必须写在 index.html 里，且**在 .app 外面**。

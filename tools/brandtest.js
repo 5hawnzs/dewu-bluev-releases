@@ -313,12 +313,22 @@ const day = n => Date.now() - n * 86400000;
   brands.update(B.brand.id, { promptWrite: '', enabled: true });
 
   // 行为级：system 的拼装。只断言「源码里有这行字」证明不了拼对了，所以把函数抠出来真跑一遍
-  const sys = copywriter.buildSystem(PW, copywriter.FORMATS[0], { angle: '细节质感' });
+  // ★ 2026-10-02 签名变了：第二个参数从「标题格式 F0x」换成「这一篇的 plan（叙事视角/话题）」——
+  //   F01~F10 那套标题壳**不再进模型**（它就是「一看就是 AI 做的」的来源），降级为本地模板专用。
+  const plan9 = { angle: '细节质感', anglePhrase: '走线、包边、五金一处都不糊弄', topics: ['#品牌甲'] };
+  const sys = copywriter.buildSystem(PW, plan9, { vision: true });
   ok('⑨ 品牌模板原文整段出现在 system 开头（不是被丢掉、也不是只取了一行）', sys.indexOf(PW) === 0);
   ok('⑨ 程序追加的输出约束仍在（JSON 字段 / 极限词 / 不要 markdown）—— 漏掉整批解析就崩',
     /只输出 JSON/.test(sys) && /极限词/.test(sys) && /markdown/.test(sys));
+  ok('⑨ 看图写：system 里必须写死「标题只能来自图里看到的」，并禁掉货号与那批套话',
+    /看图写/.test(sys) && /货号/.test(sys) && /细节，真的顶/.test(sys),
+    sys.split('\n').filter(l => /看图写|货号|细节，真的顶/.test(l)).join(' || ').slice(0, 160));
   ok('⑨ 没给品牌模板时回落到内置角色，而不是拼出一个空 system',
-    /文案写手/.test(copywriter.buildSystem('', copywriter.FORMATS[0], { angle: '细节质感' })));
+    /文案写手/.test(copywriter.buildSystem('', plan9, { vision: true })));
+  // vision=false（模型不收图 / 用户关掉看图）：不能再说「看图写」，更不许让模型编造图里才有的细节
+  const sysNo = copywriter.buildSystem(PW, plan9, { vision: false });
+  ok('⑨ 关掉看图时换成「没有图」的说法，不再要求按图写（否则模型会凭空编款式细节）',
+    !/【看图写】/.test(sysNo) && /这次没有图/.test(sysNo) && /不许编造/.test(sysNo));
 
   // 行为级：直接调 generate 也得拦住（不能只有 jobs 那一道防线）
   let gErr = '';

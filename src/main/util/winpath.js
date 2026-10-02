@@ -171,6 +171,18 @@ function stamp(d = new Date()) {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 
+/**
+ * 秒级、带 `T` 的时间戳：`2026-10-02T23-45-01`。
+ * 用在哪：AI 内容报告的文件名（对齐上游那份 `KIDS_AI内容报告_2026-08-26T10-41-02.xlsx`）。
+ * ★ 为什么不用 `stamp()`：那是**分钟**级，同一分钟内跑两个批次会撞名互相覆盖；
+ *   而且文件名里要能一眼看出是哪一天哪一刻，秒级才够。
+ * ★ 为什么冒号换成 `-`：Windows 文件名不许有 `:`。
+ */
+function stampISO(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
 function humanSize(b) {
   if (b == null) return '—';
   if (b < 1024) return b + ' B';
@@ -193,6 +205,6 @@ function defaultPaths() {
 module.exports = {
   isWin, toLong, toDisplay, pathRisk, sameVolume, retry, isFileLockError,
   mkdirp, readdirSafe, statSafe, exists, linkOrCopy, copyFile, renameDir, moveFile,
-  isJunk, ext, isMedia, isVideo, contentKind, stamp, humanSize, defaultPaths,
+  isJunk, ext, isMedia, isVideo, contentKind, stamp, stampISO, humanSize, defaultPaths,
   MEDIA_EXT, VIDEO_EXT
 };

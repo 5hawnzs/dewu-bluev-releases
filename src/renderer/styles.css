@@ -214,6 +214,14 @@ code{font-family:var(--mono);font-size:11.5px;background:var(--panel);border:1px
   padding:3px 9px;cursor:pointer;
 }
 .tbbtn:hover{color:var(--tx);border-color:var(--bd2)}
+/* 主题切换键（顶栏「项目」左边）：圆形、只放一个图标，点一下就切。
+   ★ 两个图标靠 html.dark 决定显哪个 —— 浅色时显月亮（点它去深色），深色时显太阳。
+     不要用 JS 换 innerHTML：那样每次重绘都得记得同步，迟早出现「图标和实际主题不一致」。 */
+.tbbtn.ico{width:24px;height:24px;padding:0;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.tbbtn.ico svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round}
+#themeBtn .i-sun{display:none}
+html.dark #themeBtn .i-moon{display:none}
+html.dark #themeBtn .i-sun{display:block}
 
 /* ---------- 登录门（未登录时盖住整个窗口） ---------- */
 body.locked .app{display:none}

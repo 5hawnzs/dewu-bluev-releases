@@ -43,6 +43,13 @@
   [hidden]{display:none!important}
   .tw{overflow-x:auto}
 </style>
+<!-- ★ 看板自带的 Supabase SDK（同目录 vendor/supabase.js），**刻意不引 CDN**：
+     同事的机器/网络未必连得上 esm.sh，一旦连不上整页就只剩「加载 SDK 失败」，等于看板打不开。
+     来源：https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js
+     版本：@supabase/supabase-js 2.117.2（UMD 构建，文件头挂 `var supabase`）
+     大小：217945 字节 · sha256 59d39487c3589843b410322d8a3d562ce022aba1e5ccb16898ef3fb2a0da2ecd
+     要升级就换这个文件，并同步改上面这行版本/校验和（别只改一处）。 -->
+<script src="./vendor/supabase.js"></script>
 </head>
 <body>
 <header>
@@ -163,12 +170,16 @@ async function connect(){
   localStorage.setItem(LS, JSON.stringify({url, key}));
   conn('wait','连接中…');
   try {
-    const m = await import('https://esm.sh/@supabase/supabase-js@2');
-    sb = m.createClient(url, key, { auth:{ persistSession:false } });
+    // SDK 是同目录的 vendor/supabase.js 用普通 <script> 带进来的（解析期就执行完，比本段更早），
+    // 所以这里**不需要联网**；以前是从 esm.sh 动态 import，CDN 不通整页就废了。
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      throw new Error('自带的 SDK 没加载出来：vendor/supabase.js 缺失、被改名，或被浏览器扩展拦了');
+    }
+    sb = window.supabase.createClient(url, key, { auth:{ persistSession:false } });
   } catch(e){
     conn('bad','连不上');
     $('#setupErr').hidden = false;
-    $('#setupErr').textContent = '加载 Supabase SDK 失败（这一步需要联网）：' + (e && e.message || e);
+    $('#setupErr').textContent = '看板自带的 Supabase SDK 没能用上：' + (e && e.message || e);
     return;
   }
   $('#setupCard').hidden = true;

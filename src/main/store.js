@@ -44,7 +44,16 @@ function defaults() {
       defaultBrandId: '',              // 「设置 → 品牌管理」里选的默认品牌（brd_xxx），新建任务时预选
       promptFilter: '',                // 筛选排序提示词
       promptWrite: '',                 // 文案生成提示词
-      llm: { enabled: false, endpoint: '', apiKey: '', model: 'gpt-4o-mini', temperature: 0.9 },
+      // ★ 2026-10-02：endpoint / model 出厂**留空 = 跟随内置**（src/main/llmdefaults.js，
+      //   读时兜底、**不写回**；和 cloud.url 同一套规矩）—— 用户实测过「配了 key 但地址空着，
+      //   于是每次都静默回退本地模板，界面还显示『已生成』」。model 留空同理：
+      //   真认的 id 由 copywriter.preflight() 按 /models 清单解析（用户填的显示名会 400）。
+      //   vision:false 才是真的不看图；imageCount / imageMaxSide / timeoutSec 是看图的三个旋钮
+      //   （出厂值也在 llmdefaults 里，这里存的是「界面上改过的值」）。
+      llm: {
+        enabled: false, endpoint: '', apiKey: '', model: '', temperature: 0.9,
+        vision: true, imageCount: 2, imageMaxSide: 768, timeoutSec: 90
+      },
       pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] }   // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
     },
     // 真机是调接口查得物后台（SKU APIKey），查不到仅告警不阻断
@@ -71,7 +80,11 @@ function defaults() {
       ffmpegPath: ''
     },
     window: { bounds: null, maximized: false },
-    ui: { theme: 'system' },
+    // ★ 2026-10-03 用户拍板：「app 颜色默认为浅色」。
+    //   「跟随 Windows 设置」这一档**同时取消**（只有浅色 / 深色两种，点顶栏那个按钮切）——
+    //   老配置里存着的 'system' 一律按浅色算（见 window.normTheme），
+    //   否则会出现「界面浅色、窗口底色深色」这种半深半浅。
+    ui: { theme: 'light' },
     // 自动更新的**通道偏好**。★ 只存通道名，**源地址永远编译在包里**（不许运行时改，见
     // src/main/updater.js 文件头铁律 2）；通道名只决定读源上哪个清单文件：正式版 latest.yml / 测试版 beta.yml。
     // 存 stable|beta；非法值由 updater.init() 忽略并落回 stable。

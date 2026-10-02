@@ -43,6 +43,8 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     store.load();
+    // ★ 主题必须先定下来再建窗口：窗口底色 bgColor() 按它算，晚了会先闪一下别的色（见 window.normTheme）
+    winmod.applyStoredTheme();
     project.load();
     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
     // adb：手填路径 > 程序内置（vendor/adb → 打包后 resources/adb）> 系统 PATH。

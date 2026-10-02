@@ -14,6 +14,7 @@ const copywriter = require('./services/copywriter');
 const verify = require('./services/verify');
 const sheet = require('./services/sheet');
 const report = require('./services/report');
+const aireport = require('./services/aireport');
 const publisher = require('./services/publisher');
 const pool = require('./services/pool');
 const runlog = require('./services/runlog');
@@ -44,7 +45,7 @@ const TYPE_LABEL = {
   'flatten.plan': '素材整理 · 生成清单', 'flatten.run': '素材整理',
   'compliance.scan': '合规检查', 'compliance.scanParent': '合规检查 · 父目录',
   'compliance.fix': '合规处理', 'compliance.exportReport': '导出合规报告',
-  'copy.generate': 'AI 文案生成',
+  'copy.generate': 'AI 文案生成', 'copy.llmtest': '文案接口自检',
   'verify.check': '好物货号颜色预检',
   'sheet.export': '导出发布单', 'report.import': '导入 AI 内容报告',
   'publish.run': '自动发布', 'publish.rerun': '发布重跑',
@@ -144,16 +145,76 @@ async function dispatch(type, args, ctx) {
           brandId: ctx.brand.brandId, brandName: ctx.brand.brandName,
           actor: ctx.actor && ctx.actor.username ? ctx.actor.username : '',
           warning: r.warning || '', llm: r.llm || null,
+          genSource: r.genSource || '', modelId: r.modelId || '', endpoint: r.endpoint || '',
           items: items.map(i => ({ id: i.id, dir: i.dir, sku: i.sku, color: i.color, files: i.files.length })),
           rows: r.rows
         }, null, 2), 'utf8');
         logbus.ok(`[${batchId}] 批次完成：${r.rows.length} 篇 → ${wp.toDisplay(file)}`, { batch: batchId });
-        return { batchId, count: r.rows.length, file, warning: r.warning, llm: r.llm };
+
+        // ★ 带时间戳的 AI 内容报告：落在**本批素材文件夹**里（用户 2026-10-02 拍板），
+        //   写不进去才退到批次输出目录，并且会用「如实告警」把换地方这件事说出来。
+        const rep = await aireport.write({
+          dir, fallbackDir: out, batch: batchId,
+          brandName: ctx.brand.brandName, sourceDir: dir,
+          items, rows: r.rows,
+          gen: { modelId: r.modelId, genSource: r.genSource, endpoint: r.endpoint, endpointSource: r.endpointSource, vision: r.vision }
+        });
+        logbus.ok(`[${batchId}] AI 内容报告（${rep.rows} 行）→ ${wp.toDisplay(rep.file)}`, { batch: batchId });
+        if (rep.verify && !rep.verify.ok) logbus.warn(`[${batchId}] 报告自检没通过：${rep.verify.why}`, { batch: batchId });
+        if (rep.flagged) {
+          logbus.warn(`[${batchId}] 报告里 ${rep.flagged} 行的「文案核对」不是「一致」`
+            + `（要人工看 ${rep.byLevel.warn} 行 · 明显有问题 ${rep.byLevel.bad} 行）—— 打开报告按那一列筛一下`, { batch: batchId });
+        } else if (rep.rows) {
+          logbus.ok(`[${batchId}] ${rep.rows} 行的文案/货号/颜色自动核对全部「一致」`, { batch: batchId });
+        }
+        return {
+          batchId, count: r.rows.length, file, warning: r.warning, llm: r.llm,
+          genSource: r.genSource || '', modelId: r.modelId || '', vision: !!r.vision,
+          reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged,
+          reportByLevel: rep.byLevel, reportVerify: rep.verify, reportFallback: rep.fellBack
+        };
       }
       if (!st().items.length) throw new Error('请先做素材整理');
       const r = await copywriter.generate(st().items, ctx);
       project.patch({ copyRows: r.rows });
-      return { count: r.rows.length, warning: r.warning, llm: r.llm };
+      // 一样出一份带时间戳的报告：落点优先用「这一批的素材目录」（工程里存着），没有就落到输出目录
+      const s0 = st();
+      const rep = await aireport.write({
+        dir: s0.sourceDir || '', fallbackDir: store.get('paths.output'),
+        batch: s0.batch || (path.basename(s0.sheet.file || '', '.xlsx')) || '单批',
+        brandName: ctx.brand.brandName, sourceDir: s0.sourceDir || '',
+        items: s0.items, rows: r.rows,
+        gen: { modelId: r.modelId, genSource: r.genSource, endpoint: r.endpoint, endpointSource: r.endpointSource, vision: r.vision }
+      });
+      logbus.ok(`AI 内容报告（${rep.rows} 行）→ ${wp.toDisplay(rep.file)}`);
+      if (rep.flagged) logbus.warn(`报告里 ${rep.flagged} 行的「文案核对」不是「一致」—— 打开报告按那一列筛一下`);
+      return {
+        count: r.rows.length, warning: r.warning, llm: r.llm, genSource: r.genSource || '',
+        reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged, reportByLevel: rep.byLevel
+      };
+    }
+    // 「接口自检」：一次网络往返把「地址通不通 / 模型名接口认不认 / 这个模型收不收图」说清楚。
+    // 为什么要有这个按钮：上一版这些事**全靠生成时才暴露**，而失败还被静默吞成「本地模板」，
+    // 于是用户看到的是一堆模板货，却看不到「其实是接口没连上」。
+    case 'copy.llmtest': {
+      const c = copywriter.cfgOf();
+      if (!c.enabled) {
+        return { ok: true, enabled: false, note: '模型开关关着（当前用本地模板出文案，不是 AI 文案）' };
+      }
+      const pf = await copywriter.preflight(c);
+      if (!pf.ok) throw new Error(`连不上：${pf.why}（接口地址 ${c.endpoint}，来源：${c.endpointSource}）`);
+      const note = pf.image === false
+        ? `模型「${pf.modelId}」的清单里没有 image ⇒ 写文案时不会看图，标题容易「像 AI 批量做的」`
+        : (pf.image === true ? `模型「${pf.modelId}」支持看图 ⇒ 文案会按实拍图写` : `清单没写这个模型收不收图，真发一张试试才知道`);
+      logbus.ok(`接口自检通过：${c.endpoint}（${c.endpointSource}）· 模型 ${pf.modelId} · ${pf.modelHow}`);
+      if (pf.listErr) logbus.warn(`模型清单拉不到（${pf.listErr}），只能按配置的模型名直接发`);
+      logbus.info(note);
+      return {
+        ok: true, enabled: true, endpoint: c.endpoint, endpointSource: c.endpointSource,
+        modelId: pf.modelId, modelName: pf.modelName, modelHow: pf.modelHow,
+        image: pf.image, imageCount: c.imageCount, imageMaxSide: c.imageMaxSide,
+        keySet: !!c.apiKey, listErr: pf.listErr, note
+      };
     }
     case 'compliance.exportReport': {
       const c = st().compliance || {};
@@ -241,6 +302,35 @@ async function dispatch(type, args, ctx) {
       const fromReport = built.copyRows.filter(r => r.from === '报告').length;
       const generated = built.copyRows.filter(r => r.from === '本地生成').length;
       if (generated) logbus.info(`其中 ${fromReport} 条用报告里的标题/文案，${generated} 条报告里是空的、已本地生成`);
+
+      // ★ 2026-10-03 用户口径：「报告里空着的货号 / 颜色，用叶子文件夹名（货号+颜色，以 + 号分隔）补上」。
+      //   内存里已经补好（发布单 / 货号颜色校验 / 发布都用补出来的值），这里再把补出来的**空格子**写回文件，
+      //   好让运营打开报告就能看到「货号 / 颜色」是齐的。
+      //   写不进去（WPS 占着）绝不静默吞 —— 说清「没写回、但发布单里用的是补出来的值」。
+      let fillWrite = { updated: 0, skipped: 0 };
+      if (built.fills.length) {
+        fillWrite = await report.fillGoods(file, built.fills, { sheetName: rep.sheetName });
+        if (fillWrite.updated) {
+          logbus.ok(`报告里空着的货号/颜色已按叶子文件夹名补写 ${fillWrite.updated} 条（只填空格，没动你已填的值）`);
+        } else {
+          logbus.warn(`报告里有 ${built.fills.length} 条货号/颜色是空的，补出来的值没能写回文件：`
+            + `${fillWrite.busy ? '报告正被占用（关掉 WPS 再导入一次即可）' : (fillWrite.error || '原因未知')}`
+            + ' —— 本次发布用的是补出来的值，不影响发布');
+        }
+      }
+      if (built.fills.length) {
+        logbus.info(`报告里 ${built.fills.length} 条空着的货号/颜色已按叶子文件夹名补上：`
+          + `货号 ${built.filled.sku} 个 · 颜色 ${built.filled.color} 个`);
+      }
+      if (built.filled.mismatch.length) {
+        logbus.warn(`有 ${built.filled.mismatch.length} 行的货号与叶子文件夹名对不上（颜色留空不补，请人工核）：`
+          + built.filled.mismatch.slice(0, 3).map(m => `第 ${m.rowNo} 行 报告「${m.report}」vs 目录「${m.leaf}」`).join('；'));
+      }
+      if (built.filled.noParse.length) {
+        logbus.warn(`有 ${built.filled.noParse.length} 行的文件夹名里没有「货号+颜色」（以 + 号分隔），解析不出货号/颜色：`
+          + built.filled.noParse.slice(0, 3).map(m => `第 ${m.rowNo} 行「${m.name}」`).join('；'));
+      }
+
       built.problems.forEach(p => logbus.warn(`第 ${p.rowNo} 行跳过：${p.why}`));
       const nVideo = built.publishRows.filter(r => r.kind === 'video').length;
       logbus.warn(`${built.blocked.length ? built.blocked.length + ' 条暂不发布（内容类型判不了 / 缺对应素材）' : '全部 ' + built.publishRows.length + ' 条可发布'}；发布结果会回写到报告的第 B（实际执行时间）/ C（执行结果）列`);
@@ -254,6 +344,7 @@ async function dispatch(type, args, ctx) {
       return {
         batch, total: built.publishRows.length, fromReport, generated,
         blocked: built.blocked.length, problems: built.problems, notes: built.notes,
+        filled: built.filled, fillWrite,
         reportFile: file, reportSheet: rep.sheetName
       };
     }

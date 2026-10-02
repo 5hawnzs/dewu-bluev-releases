@@ -23,8 +23,26 @@ const GATE_PAD_Y = 0;         // 卡片外不留呼吸位（留了就露出一�
 //   主界面仍跟随系统主题（见 bgColor）。
 const GATE_BG = '#ffffff';
 
-/** 主界面窗口底色：跟随系统深色 */
+/** 主界面窗口底色：按**当前主题**（不是系统主题）—— 见 normTheme */
 function bgColor() { return nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed'; }
+
+/**
+ * 主题口径（2026-10-03 用户拍板）：「app 颜色默认为浅色」，并且「跟随 Windows 设置」这一档取消 ——
+ * 只有浅色 / 深色两种，点一下顶栏那个按钮就切。
+ * ★ 判据只认 'dark'，别的（老配置里的 'system'、空值、写坏的值）**一律当浅色**：
+ *   反过来写（只认 'light'）会让 'system' 落进「既不是浅也不是深」的缝里，
+ *   那就又变回「跟着系统走」了 —— 正是这次要取消的东西。
+ */
+function normTheme(v) { return v === 'dark' ? 'dark' : 'light'; }
+
+/**
+ * 把存下来的主题真正应用上。★ 必须在 createWindow **之前**调 ——
+ * 窗口底色 bgColor() 就是按它算的，晚了会在深色系统上先闪一块近黑（用户要的是「默认浅色」）。
+ */
+function applyStoredTheme() {
+  nativeTheme.themeSource = normTheme(store.get('ui.theme'));
+  return nativeTheme.themeSource;
+}
 
 function createWindow(locked) {
   const b = store.get('window.bounds') || {};
@@ -203,4 +221,4 @@ function clamp(v, lo, hi, dflt) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-module.exports = { createWindow, getWindow, attach, theme, setLoginMode, fitGate, fitToWorkArea };
+module.exports = { createWindow, getWindow, attach, theme, normTheme, applyStoredTheme, setLoginMode, fitGate, fitToWorkArea };

@@ -11,6 +11,7 @@
  *   compliancetest 合规边界 + 导出报告 + 非 mp4 视频自动转 mp4（含 type 不被改成图片）
  *   videotest      视频转 mp4（内置 ffmpeg 现造样本，真读产物：转封装优先 / 转码兜底 / 失败如实报错不留半成品）
  *   batchtest      多批次并行 / 取消 / 按批次重导出日志
+ *   copytest       文案生成（看图写：真发图 / 模型名解析 / 连不上不冒充 + 带时间戳的 AI 内容报告 + 一致性核对）
  *   reporttest     「AI 内容报告」导入 → 发布 → 回写
  *   brandtest      品牌权限 + 按品牌统计（未标品牌单列 / 已删除品牌保留）
  *   uicheck        隐藏窗口加载真实渲染层（10 个页签 + 零控制台报错 + 运行日志页同步/筛选/导出）
@@ -62,6 +63,7 @@ const SUITES = [
   ['compliancetest', 'node', ['tools/compliancetest.js']],
   ['videotest', 'node', ['tools/videotest.js']],
   ['batchtest', 'node', ['tools/batchtest.js']],
+  ['copytest', 'node', ['tools/copytest.js']],
   ['reporttest', 'node', ['tools/reporttest.js']],
   ['brandtest', 'node', ['tools/brandtest.js']],
   ['uicheck', 'electron', ['tools/uicheck.js']],

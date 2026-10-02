@@ -155,5 +155,37 @@ const ok = (label, cond, extra) => {
   const cleared = await jobs.run('publish.setRecover', { steps: [] });
   ok('⑥ 清空恢复动作（失败后只按返回键）', cleared.ok && (store.get('publish.uiMap.recover') || []).length === 0, JSON.stringify(cleared.result));
 
+  // ---- ⑦ ★ 2026-10-03：叶子文件夹名解析（「货号+颜色」，以 + 号分隔） ----
+  //   为什么单独测：第一步素材整理会把原来的层级用连接符接成一个名字（`26FW-YB160+冠军白/1`
+  //   → `26FW-YB160+冠军白_1`），同一分钟跑两次还会再加 `-2`。
+  //   这两个后缀**不是颜色**；不摘掉的话颜色会变成「冠军白_1」，颜色核对 / 商品池比对 /
+  //   报告里填空格全都对不上（用户报的就是这类「货号颜色对不上」）。
+  {
+    const flatten = require(path.join(base, 'src/main/services/flatten.js'));
+    const B = String.fromCharCode(92);
+    const p = (...seg) => 'D:' + B + seg.join(B);
+    const cases = [
+      ['叶子=序号（真实结构）', p('素材', 'TW男装', '20260901', '26FW-YB160+冠军白', '1'), '26FW-YB160', '冠军白', 'plus'],
+      ['叶子=序号 2', p('素材', 'TW男装', '20260901', '26FW-YB160+冠军白', '2'), '26FW-YB160', '冠军白', 'plus'],
+      ['扁平副本名（_序号 不是颜色）', p('素材', 'flat_20261001-0132', '26FW-YB160+冠军白_1'), '26FW-YB160', '冠军白', 'plus'],
+      ['扁平副本 + 去重后缀 -2', p('素材', 'flat_20261001-0132', '26FW-YB160+冠军白_2-2'), '26FW-YB160', '冠军白', 'plus'],
+      ['多字色名', p('素材', 'TW男装', '20260901', 'UWH760085+黑色条纹', '1'), 'UWH760085', '黑色条纹', 'plus'],
+      ['叶子本身就是「货号+颜色」', p('素材', 'TW男装', '20260901', '26FW-YB160+冠军白'), '26FW-YB160', '冠军白', 'plus'],
+      ['老式三层（货号/颜色/序号）', p('素材', 'TW男装', '26FW-CB135', '燕麦色', '1'), '26FW-CB135', '燕麦色', 'split'],
+      ['随手命名的文件夹 → 不许当成货号', p('素材', '品牌甲', '20260901', 'IMG_5253'), 'IMG_5253', '', 'name']
+    ];
+    const got = cases.map(([why, dir]) => Object.assign({ why }, flatten.parseName(dir)));
+    const wrong = got.filter((g, i) => g.sku !== cases[i][2] || g.color !== cases[i][3] || g.how !== cases[i][4]);
+    ok('⑦ 「货号+颜色」按 + 号切、并把扁平副本的 _序号 / -N 摘掉（不许变成「冠军白_1」）',
+      wrong.length === 0, wrong.length ? JSON.stringify(wrong) : got.map(g => `${g.sku}/${g.color}/${g.how}`).join(' | '));
+    ok('⑦ 老式三层 / 随手命名的文件夹不会被当成「货号+颜色」（how 分三档）',
+      flatten.parseName(p('素材', 'TW男装', '26FW-CB135', '燕麦色', '1')).how === 'split'
+      && flatten.parseName(p('素材', '品牌甲', '20260901', 'IMG_5253')).how === 'name'
+      && flatten.parseName(p('素材', '品牌甲', '20260901', 'IMG_5253', '1')).how !== 'plus');
+    ok('⑦ 色名里本来就带数字的不会被误伤（米白2 / 黑色条纹）',
+      flatten.parseName(p('a', '26FW-YB160+米白2')).color === '米白2'
+      && flatten.parseName(p('a', '26FW-YB160+黑色条纹')).color === '黑色条纹');
+  }
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('BATCH TEST ERROR', e); process.exitCode = 1; });

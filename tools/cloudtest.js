@@ -60,15 +60,31 @@ function setCfg(patch) {
 
 // ---- fetch 桩：记录每一次请求，**不允许真的发出去** ----
 let calls = [];
-let mode = 'ok';        // ok | http500 | throw | tableMissing
+let mode = 'ok';        // ok | http500 | throw | tableMissing | dupAll | dupMixed | other409
+let postSeq = 0;        // 当前 mode 下第几次**写**请求（用来演「整批先 409、逐行时新的那几行能进」）
 let lastBody = null;
-// PostgREST 在「表还没建」时返回的真实原文（照抄实测回来的那段，别自己编）
+// PostgREST 的真实回包原文（照抄实测回来的，别自己编）
 const NO_TABLE_BODY = '{"code":"PGRST205","details":null,"hint":"Perhaps you meant the table \'public.app_users\'","message":"Could not find the table \'public.publish_log\' in the schema cache"}';
+// 「撞唯一索引 publish_log_dedup」的真实回包 —— 2026-10-02 对真库重复插入实测所得（HTTP 409）
+const DUP_BODY = '{"code":"23505","details":null,"hint":null,"message":"duplicate key value violates unique constraint \\"publish_log_dedup\\""}';
+// on_conflict 指名的列上没有对应唯一约束时的真实回包（用来验「非唯一冲突不许被当成已存在吞掉」）
+const NO_CONSTRAINT_BODY = '{"code":"42P10","details":null,"hint":null,"message":"there is no unique or exclusion constraint matching the ON CONFLICT specification"}';
 globalThis.fetch = async (url, opts) => {
   calls.push({ url, opts });
   if (mode === 'throw') throw new Error('ECONNREFUSED 连不上');
   if (mode === 'http500') return { ok: false, status: 500, text: async () => 'upstream error' };
   if (mode === 'tableMissing') return { ok: false, status: 404, text: async () => NO_TABLE_BODY };
+  // 服务端**没**按 on_conflict 去重：整批与逐行都撞唯一键
+  if (mode === 'dupAll') { postSeq++; return { ok: false, status: 409, text: async () => DUP_BODY }; }
+  // 409 但**不是**唯一冲突（on_conflict 指的列没有唯一约束）—— 绝不许被当「已存在」放过
+  if (mode === 'other409') { postSeq++; return { ok: false, status: 409, text: async () => NO_CONSTRAINT_BODY }; }
+  // 真实兜底场景：整批 409；逐行时第 1 行确实已在云上（也 409），其余是新行（能进）
+  if (mode === 'dupMixed') {
+    postSeq++;
+    return postSeq <= 2
+      ? { ok: false, status: 409, text: async () => DUP_BODY }
+      : { ok: true, status: 201, text: async () => '' };
+  }
   lastBody = opts.body ? JSON.parse(opts.body) : null;   // GET（test 连接）没有 body
   return { ok: true, status: 201, text: async () => '' };
 };
@@ -114,7 +130,14 @@ let r = null;
   ok('首次同步推 3 条', r.ok && r.uploaded === 3, JSON.stringify(r));
   ok('★ 幂等头必须在（撞唯一键跳过，重试才不会长出重行）',
     /resolution=ignore-duplicates/.test(calls[0].opts.headers.Prefer || ''), calls[0].opts.headers.Prefer);
-  ok('走的是 PostgREST 的插入接口', calls[0].url === 'https://demo.supabase.co/rest/v1/publish_log' && calls[0].opts.method === 'POST', calls[0].url);
+  // ★★ 这行断言在 2026-10-02 改过，理由要留档：原来只查到 /rest/v1/publish_log 为止，
+  //    于是「URL 上忘了写 ?on_conflict=」这个致命疏漏**断不出来** —— Prefer 头那半还写着
+  //    resolution=ignore-duplicates，看上去完全正常。实测：只写 Prefer 而不写 on_conflict，
+  //    服务端根本不去重 ⇒ 重复行整批 409 + 23505（真库实证见 _supa-idem.js 的 A/B/C/D 对照）。
+  //    所以这里把冲突目标一起焊进 URL 断言里。
+  ok('★ 走的是 PostgREST 的插入接口，且冲突目标列写全了（?on_conflict=machine_id,ts,seq）',
+    calls[0].url === 'https://demo.supabase.co/rest/v1/publish_log?on_conflict=machine_id,ts,seq' && calls[0].opts.method === 'POST',
+    calls[0].url);
 
   seed(3, 2);                       // 又发了 2 条
   calls = [];
@@ -126,6 +149,53 @@ let r = null;
   calls = [];
   r = await cs.syncOnce({ force: true });
   ok('★ 超过 200 条会分批（210 = 200 + 10）', calls.length === 2 && r.uploaded === 210, `批数 ${calls.length} / 推了 ${r.uploaded}`);
+
+  console.log('\nB2. 幂等：重复批不许把同步卡死（v1.0.5 实测故障的回归）\n');
+  // ★★ 故障复盘：v1.0.5 的发法是「只带 Prefer: resolution=ignore-duplicates、URL 上不写 ?on_conflict=」
+  //    ⇒ 服务端不去重 ⇒ 重复行整批 409 + 23505 ⇒ postRows 抛错 ⇒ syncOnce 的 catch **不推进游标**
+  //    ⇒ 每一轮都在同一批上重撞 ⇒ 同步永久卡死，而界面只显示「同步失败」四个字。
+  //    修法两处：① URL 补上 on_conflict（上面那条断言焊住）；② 真撞上唯一冲突时**逐行兜底**。
+  //    下面守的是 ② —— 纯结构性断言（「代码里有 on_conflict 这几个字」）证明不了它，必须喂真回包看行为。
+  fs.rmSync(cs.stateFile(), { force: true });
+  fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
+  seed(0, 4);
+  mode = 'dupAll'; postSeq = 0; calls = [];
+  r = await cs.syncOnce({ force: true });
+  ok('★★ 整批唯一冲突不许被判成失败（判失败 ⇒ 游标不动 ⇒ 下一轮同一批再撞 ⇒ 永久卡死）',
+    r.ok === true && r.uploaded === 4, JSON.stringify(r));
+  ok('★ 兜底是逐行重发：1 次整批 + 4 次单行（不是整批一丢了事）',
+    calls.length === 5, `请求 ${calls.length} 次`);
+  ok('★ 每一行都真的单独发过（整批跳过＝丢新行，那正是不能接受的那半）',
+    calls.slice(1).length === 4 && calls.slice(1).every(c => JSON.parse(c.opts.body).length === 1),
+    JSON.stringify(calls.slice(1).map(c => JSON.parse(c.opts.body).length)));
+  const offDup = cs.status().offset;
+  mode = 'ok'; postSeq = 0; calls = [];
+  r = await cs.syncOnce({ force: true });
+  ok('★★ 兜底之后游标真的前进了：再同步一次不联网、不重推（「没卡死」的可测判据）',
+    offDup === 4 && calls.length === 0 && r.ok === true && r.uploaded === 0,
+    `游标 ${offDup} / 再同步联网 ${calls.length} 次 / 重推 ${r.uploaded} 条`);
+
+  // 真实兜底场景：整批里混着「已在云上」与「真正的新行」—— 新的那几行必须补得上去
+  fs.rmSync(cs.stateFile(), { force: true });
+  fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
+  seed(0, 4);
+  mode = 'dupMixed'; postSeq = 0; calls = [];
+  r = await cs.syncOnce({ force: true });
+  ok('★★ 整批 409 里混着新行：逐行补发后新行进得去（整批放弃就会丢这几行）',
+    r.ok === true && r.uploaded === 4 && calls.length === 5,
+    JSON.stringify(r) + ` / 请求 ${calls.length} 次`);
+  ok('★ 混场景下游标照样覆盖整批（已存在的算已上行，新的算已补发）', cs.status().offset === 4, cs.status().offset);
+
+  // 反向：409 但**不是**唯一冲突 —— 绝不许被当成「已存在」吞掉（那会静默丢数据）
+  fs.rmSync(cs.stateFile(), { force: true });
+  fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
+  seed(0, 4);
+  mode = 'other409'; postSeq = 0; calls = [];
+  r = await cs.syncOnce({ force: true });
+  ok('★★ 409 但 code 不是 23505（如 42P10「没有匹配的唯一约束」）⇒ 照旧判失败、游标不动、如实报错',
+    r.ok === false && cs.status().offset === 0 && /42P10|HTTP 409/.test(r.error || ''), JSON.stringify(r));
+  ok('★ 而且它没被逐行兜底偷偷放过去（请求只有整批那一次）', calls.length === 1, `请求 ${calls.length} 次`);
+  mode = 'ok'; postSeq = 0;
 
   console.log('\nC. 脱敏：不许把本机绝对路径带出去\n');
   const row = cs.toRow({ ts: 1, seq: 7, dir: path.join(dir, '款A', 'p7'), reason: 'x'.repeat(400), result: '失败' }, { id: 'm_test', name: '测试机' });

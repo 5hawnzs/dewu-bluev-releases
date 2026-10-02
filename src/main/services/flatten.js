@@ -14,7 +14,35 @@ const store = require('../store');
 
 const NUMERIC = /^\d+$/;
 
-/** 从目录名/路径反推 货号 + 颜色 + 序号 */
+/**
+ * 摘掉「扁平副本」留下的尾巴。
+ * ★ 为什么必须有（2026-10-03 真机命名实测）：第一步素材整理把原来的层级用连接符接成了一个名字
+ *   （`26FW-YB160+冠军白/1` → `26FW-YB160+冠军白_1`），同一分钟跑两次还会再加 `-2`。
+ *   不摘掉的话颜色会被读成「冠军白_1」—— 那不是一个色名，颜色核对、商品池比对、
+ *   发布时选哪个颜色（多色货号）全都对不上。
+ * ★ 只摘「分隔符 + 纯数字」的结尾，所以「冠军白」「黑色条纹」「米白2」都不会被误伤。
+ */
+function stripTail(name) {
+  let head = String(name == null ? '' : name).trim();
+  let seq = '';
+  for (let i = 0; i < 2; i++) {                  // 最多两层：先 `-2`（去重），再 `_1`（序号）
+    const m = head.match(/^(.*?)[_-](\d+)$/);
+    if (!m || !m[1]) break;
+    head = m[1];
+    if (!seq) seq = m[2];
+  }
+  return { head, seq };
+}
+
+/**
+ * 从目录名/路径反推 货号 + 颜色 + 序号。
+ * ★ 多返回一个 `how`，说明这两个值**是怎么来的**：
+ *   'plus'  —— 名字里确实是「货号+颜色」（+ 号分隔）。**只有这一种可以拿去填报告的货号/颜色**。
+ *   'split' —— 老式「货号/颜色/序号」三层。颜色可信，货号要看上一级，不能盲目当货号。
+ *   'guess' / 'name' —— 随手命名的文件夹，解析出来的多半是垃圾（实测
+ *              `…/品牌甲/20260904/IMG_5253/1/` → 货号=20260904 / 颜色=IMG_5253），**不许当真**。
+ * 调用方（report.fillGoodsFromLeaf）按 how 决定用不用。
+ */
 function parseName(dir) {
   const segs = dir.split(/[\\/]+/).filter(Boolean);
   const leaf = segs[segs.length - 1] || '';
@@ -23,21 +51,31 @@ function parseName(dir) {
 
   if (leaf.includes('+')) {
     const parts = leaf.split('+').map(s => s.trim()).filter(Boolean);
-    return { sku: parts[0] || '', color: parts[1] || '', seq: parts[2] || (parts.length > 2 ? parts[2] : '1') };
+    let color = parts[1] || '';
+    let seq = parts[2] || '1';
+    // 只有「货号+颜色」两段时，颜色那段末尾可能挂着扁平副本的序号（`冠军白_1`）——那边不是颜色
+    if (parts.length <= 2 && color) {
+      const st = stripTail(color);
+      if (st.seq) { color = st.head; seq = st.seq; }
+    }
+    return { sku: parts[0] || '', color, seq, how: 'plus' };
   }
   if (NUMERIC.test(leaf)) {
-    // …/26FW-YB160/冠军白/1/
+    // …/26FW-YB160+冠军白/1/ —— 上一层就是「货号+颜色」，同样算 'plus'
     if (parent.includes('+')) {
       const parts = parent.split('+').map(s => s.trim()).filter(Boolean);
-      return { sku: parts[0] || '', color: parts[1] || '', seq: leaf };
+      return { sku: parts[0] || '', color: parts[1] || '', seq: leaf, how: 'plus' };
     }
-    return { sku: grand || parent, color: parent || '', seq: leaf };
+    // …/26FW-YB160/冠军白/1/ —— 老式三层，颜色可信、货号来自再上一层
+    return { sku: grand || parent, color: parent || '', seq: leaf, how: 'split' };
   }
   // …/CK-Y208+流沙金/ 或 …/UF46FWT75EH1HF6/领袖蓝/1/
   if (parent && !NUMERIC.test(parent) && parent !== path.basename(path.dirname(dir))) {
-    return { sku: parent.includes('+') ? parent.split('+')[0] : parent, color: leaf, seq: '1' };
+    return { sku: parent.includes('+') ? parent.split('+')[0] : parent, color: leaf, seq: '1', how: 'guess' };
   }
-  return { sku: leaf, color: '', seq: '1' };
+  // 随手命名的文件夹（`IMG_5253` / `DSCF4233`）：原样当货号，**不做后缀摘除** ——
+  // 摘了反而更糟（`IMG_5253` → `IMG` 信息更少、更像是真的）。how='name' 已经说了「别当真」。
+  return { sku: leaf, color: '', seq: '1', how: 'name' };
 }
 
 /** 目标目录已存在（同分钟重跑）时自动加序号，绝不覆盖 */
@@ -92,7 +130,7 @@ async function plan(sourceDir, ctx = {}) {
       seen.set(name, n);
       name = `${name}-${n}`;
     } else seen.set(name, 1);
-    return { from: l.dir, name, sku: p.sku, color: p.color, seq, files: l.files, fileCount: l.mediaCount };
+    return { from: l.dir, name, sku: p.sku, color: p.color, seq, how: p.how, files: l.files, fileCount: l.mediaCount };
   });
 
   const longRisk = rows.filter(r => wp.pathRisk(path.join(sourceDir, r.name)) === 'long').length;
@@ -177,4 +215,4 @@ async function run(sourceDir, opts, ctx = {}) {
   };
 }
 
-module.exports = { plan, run, parseName };
+module.exports = { plan, run, parseName, stripTail };

@@ -17,6 +17,9 @@
  *      没标时按目录内容推断（只有图 / 只有视频 都无歧义）；只有「图和视频都有、又没标」才判不了，
  *      这时明确标成「校验未通过」并说清原因，绝不猜着发（同一叶子里两种素材都拍是常态）。
  *   7. 回写：实际执行时间(B) / 执行结果(C)；被 WPS 占用时整批暂存，下次先补写
+ *   8. ★ 2026-10-03 用户口径：「报告里空着的货号 / 颜色，用**叶子文件夹名**补上（以 `+` 号为分隔）」。
+ *      叶子文件夹名 = `货号+颜色`（如 `26FW-YB160+冠军白`，见 flatten.parseName）。
+ *      只补空格子、报告里已有的值一个都不动；报告货号与叶子名对不上时**不补**（宁缺勿错）。
  */
 const fs = require('fs');
 const path = require('path');
@@ -183,7 +186,8 @@ async function leavesOf(absDir) {
         rel: r.name,
         files: files.filter(f => f.type !== 'junk'),
         sku: r.sku,
-        color: r.color
+        color: r.color,
+        how: r.how            // 货号/颜色是怎么解析出来的；只有 'plus' 才是「货号+颜色」命名
       };
     })
     .sort((a, b) => naturalCompare(a.name, b.name));
@@ -192,9 +196,45 @@ async function leavesOf(absDir) {
 /* ---------------- 报告 + 素材 → 发布所需的三份数据 ---------------- */
 
 /**
+ * 用**叶子文件夹名**（`货号+颜色`，见 flatten.parseName）补报告里空着的货号 / 颜色。
+ * ★ 三条不许越过的线：
+ *   ① 只补空格子 —— 这份报告是运营的账，已有值一律不动；
+ *   ② 报告写了货号、叶子名写的是**另一个**货号时不补（宁缺勿错），只记一条 mismatch 让人去看；
+ *   ③ 叶子名里没有 `+`（解析不出货号/颜色）时不猜，记进 noParse，由界面点名。
+ */
+function fillGoodsFromLeaf(row, leaf, goods, fills, filled) {
+  // ★ 只认「叶子文件夹名里确实有 `+`」这一种（flatten.parseName 的 how==='plus'）。
+  //   老式三层 / 随手命名的文件夹解析出来的东西**不能当货号**：实测
+  //   `…/品牌甲/20260904/IMG_5253/1/` 会被读成 货号=20260904 / 颜色=IMG_5253。
+  //   宁可空着让人去补，也不往运营的账上写一个假货号。
+  const ok = leaf.how === 'plus';
+  const leafSku = ok ? String(leaf.sku || '').trim() : '';
+  const leafColor = ok ? String(leaf.color || '').trim() : '';
+  if (!goods.length) {
+    if (!leafSku) { filled.noParse.push({ rowNo: row.rowNo, name: leaf.name }); return; }
+    goods.push({ sku: leafSku, color: leafColor });
+    filled.sku++;
+    if (leafColor) filled.color++;
+    fills.push({ rowNo: row.rowNo, sku: leafSku, color: leafColor });
+    return;
+  }
+  const g0 = goods[0];
+  let touched = false;
+  if (!g0.sku && leafSku) { g0.sku = leafSku; filled.sku++; touched = true; }
+  if (!g0.color && leafColor) {
+    if (!g0.sku || g0.sku === leafSku) { g0.color = leafColor; filled.color++; touched = true; }
+    else filled.mismatch.push({ rowNo: row.rowNo, report: g0.sku, leaf: leafSku });
+  }
+  if (!g0.color && !ok) filled.noParse.push({ rowNo: row.rowNo, name: leaf.name });
+  if (touched) fills.push({ rowNo: row.rowNo, sku: g0.sku || '', color: g0.color || '' });
+}
+
+/**
  * 组装 items / copyRows / publishRows
  * opts: { generateCopy: async (items) => [{id,title,body,topics}], batch }
- * 返回 { items, copyRows, publishRows, pairs, blocked, notes }
+ * 返回 { items, copyRows, publishRows, pairs, blocked, problems, notes, fills, filled }
+ *      fills  = 要写回 xlsx 的格子（只含补出来的空格子）
+ *      filled = { sku, color, mismatch, noParse } 统计，供日志/界面如实说明
  */
 async function build(report, opts = {}) {
   const notes = [];
@@ -243,17 +283,22 @@ async function build(report, opts = {}) {
   const copyRows = [];
   const publishRows = [];
   const blocked = [];
+  const fills = [];                                   // 要写回报告文件的格子（只含空格子）
+  const filled = { sku: 0, color: 0, mismatch: [], noParse: [] };
 
   for (const { row, leaf } of pairs) {
     const images = leaf.files.filter(f => f.type === 'image');
     const videos = leaf.files.filter(f => f.type === 'video');
     const id = leaf.rel || leaf.name;
     const goods = row.goods.map(g => ({ sku: g.sku, color: g.color }));
+    fillGoodsFromLeaf(row, leaf, goods, fills, filled);
 
     items.push({
       id, dir: id, absDir: leaf.absDir,
-      sku: (goods[0] && goods[0].sku) || leaf.sku || '',
-      color: (goods[0] && goods[0].color) || '',
+      // 叶子兜底也只在「货号+颜色」命名时才用：随手命名的文件夹（IMG_5253 / 品牌甲）
+      // 解析出来的不是货号，写成货号只会让人以为这条有主了（见 flatten.parseName 的 how）
+      sku: (goods[0] && goods[0].sku) || (leaf.how === 'plus' ? leaf.sku : '') || '',
+      color: (goods[0] && goods[0].color) || (leaf.how === 'plus' ? leaf.color : '') || '',
       goods,
       files: leaf.files.map(f => Object.assign({ size: 0 }, f)),
       fileCount: leaf.files.length,
@@ -316,6 +361,16 @@ async function build(report, opts = {}) {
     });
   }
 
+  // 补出来的货号/颜色：一条条说清楚，别让「补了」和「没补上」都变成沉默
+  if (filled.sku || filled.color) {
+    notes.push(`按叶子文件夹名（货号+颜色）补上了 ${fills.length} 条：货号 ${filled.sku} 个 · 颜色 ${filled.color} 个`);
+  }
+  filled.mismatch.slice(0, 5).forEach(m => notes.push(
+    `第 ${m.rowNo} 行：报告写的货号「${m.report}」与叶子文件夹名里的「${m.leaf}」对不上 —— 颜色留空不补，请人工核一下`));
+  filled.noParse.slice(0, 5).forEach(m => notes.push(
+    `第 ${m.rowNo} 行：「${m.name}」这个文件夹名不是「货号+颜色」（以 + 号分隔），解析不出货号/颜色，没有替它猜`));
+  if (filled.noParse.length > 5) notes.push(`另有 ${filled.noParse.length - 5} 行同样解析不出货号/颜色（见下方文件夹命名）`);
+
   // 空的标题/文案 → 交给 copywriter（只对需要生成的那些跑）
   if (needGen.length && typeof opts.generateCopy === 'function') {
     const sub = items.filter(i => needGen.includes(i.id));
@@ -326,7 +381,46 @@ async function build(report, opts = {}) {
     notes.push(`报告里 ${needGen.length} 条没有标题/文案，已由本地模板生成`);
   }
 
-  return { items, copyRows, publishRows, pairs, blocked, problems, notes };
+  return { items, copyRows, publishRows, pairs, blocked, problems, notes, fills, filled };
+}
+
+/* ---------------- 回写：按叶子文件夹名补出来的货号 / 颜色 ---------------- */
+
+/**
+ * 把「按叶子文件夹名补出来的货号/颜色」写回报告文件。
+ * ★ 只填空格子：调用方给的值在这里再判一次（报告可能在导入后被运营改过）。
+ * ★ 写不进去（WPS 占着 / 文件只读 / 表头缺列）时**如实返回原因**，不静默吞掉；
+ *   也**不占用**「实际执行时间/执行结果」那条暂存队列 —— 两个队列混在一起，
+ *   下次补写时谁也说不清漏的是哪一边。
+ */
+async function fillGoods(file, fills, meta = {}) {
+  const list = (fills || []).filter(f => f && f.rowNo && (f.sku || f.color));
+  if (!file || !list.length) return { updated: 0, skipped: list.length };
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(wp.toLong(file));
+    const ws = wb.getWorksheet(meta.sheetName) || wb.worksheets.find(w => /报告/.test(w.name)) || wb.worksheets[0];
+    const { goods } = mapHeader(ws.getRow(1));
+    const g1 = goods[1] || {};
+    if (g1.sku == null && g1.color == null) {
+      return { updated: 0, skipped: list.length, error: '报告表头里没有「好物1_货号 / 好物1_颜色」列，补不了' };
+    }
+    let updated = 0;
+    const rows = [];
+    for (const f of list) {
+      const row = ws.getRow(Number(f.rowNo));
+      let did = false;
+      if (g1.sku != null && f.sku && !cellText(row.getCell(g1.sku))) { row.getCell(g1.sku).value = f.sku; did = true; }
+      if (g1.color != null && f.color && !cellText(row.getCell(g1.color))) { row.getCell(g1.color).value = f.color; did = true; }
+      if (did) { updated++; rows.push(f.rowNo); }
+    }
+    if (!updated) return { updated: 0, skipped: list.length };
+    await wb.xlsx.writeFile(wp.toLong(file));
+    return { updated, rows, skipped: list.length - updated };
+  } catch (e) {
+    if (wp.isFileLockError(e)) return { updated: 0, skipped: list.length, busy: true, error: e.message };
+    return { updated: 0, skipped: list.length, error: e.message };
+  }
 }
 
 /* ---------------- 回写：实际执行时间 / 执行结果 ---------------- */
@@ -389,5 +483,6 @@ function pendingCount() {
 
 module.exports = {
   readReport, build, mergeResults, leavesOf, naturalCompare, toAbs, norm, pendingCount,
+  fillGoods, fillGoodsFromLeaf,
   FIELDS
 };

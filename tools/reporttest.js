@@ -255,5 +255,69 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   ok('⑪ 相对路径 + 没选目录 ⇒ 明确报错（不拿默认目录硬拼一条指向别处的路径）',
     relNoDir.ok === false && /缺「素材路径」/.test(relNoDir.error), relNoDir.error);
 
+  // ---- ⑫ ★ 2026-10-03 用户口径：报告里空着的货号/颜色 → 用叶子文件夹名（「货号+颜色」，以 + 号分隔）填 ----
+  //   ① 只补空格子，报告里已填的一个都不动；
+  //   ② 报告写的货号与叶子名里的对不上 ⇒ 不补（宁缺勿错），点名让人去看；
+  //   ③ 文件夹名不是「货号+颜色」（随手命名 / 老式三层）⇒ 不猜，点名。
+  const plusDir = makeBatch(path.join(TMP, '品牌甲', '20260902'), {
+    '26FW-YB160+冠军白_1': ['1.jpg'],
+    'UWH760085+黑色条纹_1': ['1.jpg']
+  });
+  const plusFile = await writeReport(path.join(TMP, '待补货号颜色.xlsx'), COLS, [
+    { 素材路径: plusDir, 标题: 't1', 文案: 'b1' },
+    { 素材路径: plusDir, 标题: 't2', 文案: 'b2' }
+  ]);
+  const plusBuilt = await report.build(await report.readReport(plusFile), {});
+  ok('⑫ 报告里货号/颜色空着 ⇒ 按叶子文件夹名「货号+颜色」补上',
+    plusBuilt.fills.length === 2 && plusBuilt.filled.sku === 2 && plusBuilt.filled.color === 2
+    && (plusBuilt.publishRows[0].goodsList[0] || {}).sku === '26FW-YB160'
+    && (plusBuilt.publishRows[0].goodsList[0] || {}).color === '冠军白'
+    && (plusBuilt.publishRows[1].goodsList[0] || {}).color === '黑色条纹',
+    JSON.stringify(plusBuilt.publishRows.map(r => r.goodsList)));
+  ok('⑫ 叶子名末尾的「_序号」不会被当成颜色（冠军白_1 ⇒ 冠军白）',
+    (plusBuilt.items[0].goods[0] || {}).color === '冠军白' && !/_\d+$/.test((plusBuilt.items[0].goods[0] || {}).color),
+    plusBuilt.items.map(i => i.sku + '/' + i.color).join(' | '));
+  ok('⑫ 补了几条会写进说明（不静默补）',
+    /按叶子文件夹名（货号\+颜色）补上了 2 条/.test(plusBuilt.notes.join('')), plusBuilt.notes.join(' | '));
+
+  const plusImport = await jobs.run('report.import', { file: plusFile });
+  ok('⑫ 导入时把补出来的值真写回报告文件（只填空格）',
+    plusImport.ok === true && (plusImport.result.fillWrite || {}).updated === 2,
+    plusImport.error || JSON.stringify(plusImport.result && plusImport.result.fillWrite));
+  const plusBack = await readBack(plusFile);
+  ok('⑫ 写回后报告里「好物1_货号 / 好物1_颜色」真的有值了',
+    plusBack[0]['好物1_货号'] === '26FW-YB160' && plusBack[0]['好物1_颜色'] === '冠军白'
+    && plusBack[1]['好物1_货号'] === 'UWH760085' && plusBack[1]['好物1_颜色'] === '黑色条纹',
+    JSON.stringify(plusBack.map(r => [r['好物1_货号'], r['好物1_颜色']])));
+
+  const keepDir = makeBatch(path.join(TMP, '品牌甲', '20260903'), { '26FW-YB160+冠军白_1': ['1.jpg'] });
+  const keepFile = await writeReport(path.join(TMP, '不能覆盖.xlsx'), COLS, [
+    { 素材路径: keepDir, 好物1_货号: 'X9-KEEP', 好物1_颜色: '深灰' }
+  ]);
+  const keepBuilt = await report.build(await report.readReport(keepFile), {});
+  ok('⑫ 报告里已填的货号/颜色一个都不动（只补空格子）',
+    keepBuilt.fills.length === 0
+    && (keepBuilt.publishRows[0].goodsList[0] || {}).sku === 'X9-KEEP'
+    && (keepBuilt.publishRows[0].goodsList[0] || {}).color === '深灰',
+    JSON.stringify(keepBuilt.publishRows[0].goodsList));
+
+  const mixFile = await writeReport(path.join(TMP, '货号对不上.xlsx'), COLS, [
+    { 素材路径: keepDir, 好物1_货号: 'UWG999999' }
+  ]);
+  const mixBuilt = await report.build(await report.readReport(mixFile), {});
+  ok('⑫ 报告货号与叶子名对不上 ⇒ 颜色留空不补，并说清哪一行对不上',
+    mixBuilt.fills.length === 0 && mixBuilt.filled.mismatch.length === 1
+    && (mixBuilt.publishRows[0].goodsList[0] || {}).color === '' && /对不上/.test(mixBuilt.notes.join('')),
+    JSON.stringify({ fills: mixBuilt.fills.length, mismatch: mixBuilt.filled.mismatch }));
+
+  const plainDir = makeBatch(path.join(TMP, '品牌甲', '20260904'), { 'IMG_5253': ['1.jpg'] });
+  const plainFile = await writeReport(path.join(TMP, '名字里没加号.xlsx'), COLS, [{ 素材路径: plainDir }]);
+  const plainBuilt = await report.build(await report.readReport(plainFile), {});
+  ok('⑫ 文件夹名不是「货号+颜色」⇒ 不猜，明确点名（不往报告里写假货号）',
+    plainBuilt.fills.length === 0 && plainBuilt.filled.noParse.length === 1
+    && plainBuilt.publishRows[0].goodsList.length === 0
+    && /不是「货号\+颜色」/.test(plainBuilt.notes.join('')),
+    JSON.stringify({ fills: plainBuilt.fills.length, noParse: plainBuilt.filled.noParse, notes: plainBuilt.notes }));
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('REPORT TEST ERROR', e); process.exitCode = 1; });

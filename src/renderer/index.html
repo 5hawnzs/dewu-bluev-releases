@@ -23,6 +23,13 @@
     <div class="tb-drag"></div>
     <div class="tb-right">
       <div class="chips">
+        <!-- 主题切换：用户要求「放在 app 最上面、项目左边，点击即可切换浅色/深色」。
+             app 默认浅色；「跟随 Windows 设置」这一档已取消（老配置里的 system 也按浅色算）。
+             图标由 html.dark 决定显哪一个（月亮=可切深色，太阳=可切浅色），见 styles.css -->
+        <button class="tbbtn ico" id="themeBtn" data-act="theme:toggle" title="切换浅色 / 深色">
+          <svg class="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.6A8.6 8.6 0 1 1 9.4 3.6a6.9 6.9 0 0 0 11 11z"/></svg>
+          <svg class="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.1"/><path d="M12 2.2v2.5M12 19.3v2.5M2.2 12h2.5M19.3 12h2.5M5.1 5.1l1.8 1.8M17.1 17.1l1.8 1.8M18.9 5.1l-1.8 1.8M6.9 17.1l-1.8 1.8"/></svg>
+        </button>
         <span class="chip chip-proj" id="chipProj">项目 —</span>
         <!-- 当前品牌：文案生成 / 发布单 / 发布 都归属到它。放在标题栏是为了让人随时看得见，
              不然「忘了选品牌」会变成一条查不到归属的发布记录 -->
