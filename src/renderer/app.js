@@ -62,11 +62,14 @@ function hhmm(ts) {
 function badge(text, kind) { return `<span class="b b-${kind || 'wait'}">${esc(text)}</span>`; }
 
 const STATUS_KIND = {
+  // ★ '模拟成功' 必须显式列出来：kindOf 的兜底规则里有 /成功/ ⇒ 不写会被当成绿「ok」，
+  //   于是模拟演练看起来跟真发出去一模一样（2026-10-03 同一起事故）
+  '模拟成功': 'warn',
   '已生成': 'ok', '通过': 'ok', '发布成功': 'ok', '完成': 'ok', '已隔离': 'warn',
   '需人工处理': 'bad', '需人工确认': 'warn', '词表外，需人工确认': 'warn', '主色不符，需人工确认': 'warn',
   '货号不存在': 'bad', '漏填颜色': 'bad', '失败': 'bad', '校验未通过': 'bad',
   '待发布': 'wait', '排队': 'wait', '生成中': 'run', '上传图片…': 'run', '填标题正文': 'run',
-  '话题联想点选': 'run', '关联好物': 'run', '发布确认': 'run'
+  '填话题': 'run', '关联好物': 'run', '发布确认': 'run'
 };
 function kindOf(s) {
   if (STATUS_KIND[s]) return STATUS_KIND[s];
@@ -769,18 +772,9 @@ TABS[7] = {
         <div class="row" style="margin-bottom:9px"><span class="lbl">输出目录</span><input class="inp mono" value="${esc(c.paths.output)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.output">修改</button></div>
         <div class="row"><span class="lbl">隔离目录</span><input class="inp mono" value="${esc(c.paths.rejected)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.rejected">修改</button></div>
       </div>
-      <div class="box">
-        <h3>外观</h3>
-        <div class="row"><span class="lbl">主题</span>
-          <span class="chip">浅色 / 深色 · 默认浅色</span>
-          <span class="hint" style="margin:0">切换按钮在最上面标题栏、<b>「项目」左边</b>，点一下就切</span>
-        </div>
-        <p class="hint">这里原先是个下拉（含「跟随 Windows 设置」）—— 已按用户要求撤掉：<b>只有浅色 / 深色两种</b>，
-          入口搬到顶栏（点一下就行，不用翻设置）。老配置里存的「跟随系统」按<b>浅色</b>算。</p>
-        <div class="row"><span class="lbl">运行环境</span>
-          <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
-        </div>
-      </div>
+      <!-- ★ 原先这里有一整块「外观」（主题说明 + 运行环境）—— 2026-10-03 按用户要求撤掉：
+           主题入口只留顶栏那一个，设置里再复述一遍纯属重复（两处状态迟早各说各话）；
+           「运行环境」那行没丢，挪到下面「外部依赖」里了。 -->
       ${updateHtml()}
       <div class="box">
         <h3>外部依赖</h3>
@@ -788,6 +782,9 @@ TABS[7] = {
           <thead><tr><th>用途</th><th>依赖</th><th>状态</th></tr></thead>
           <tbody>${dep.map(([a, b, s]) => `<tr><td>${esc(a)}</td><td class="mono">${esc(b)}</td><td>${badge(s[1], s[0])}</td></tr>`).join('')}</tbody>
         </table></div>
+        <div class="row"><span class="lbl">运行环境</span>
+          <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
+        </div>
         <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。
           要手填外部工具的路径（adb / ffmpeg）去「<b>高级设置</b>」页 —— 那两个都是装完即用，正常不用填。</p>
       </div>
@@ -2563,7 +2560,16 @@ const ACTS = {
   },
   // 「去高级设置」：发布页/设置页只剩只读回显时，给管理员一条直达的路
   'go:advanced': () => { state.tab = 11; renderAll(); },
-  'pub:run': async () => { await runJob('publish.run', {}); },
+  'pub:run': async () => {
+    // ★★ 不是真实设备通道就先问一句：模拟通道**不碰设备**，跑完只是演练节奏与回写。
+    //   以前这里默默就跑，用户看到界面一路「发布成功」、模拟器里却毫无动静（2026-10-03 实际发生）。
+    const pub = state.project.publish || {};
+    if ((pub.mode || 'mock') !== 'adb') {
+      const why = pub.connected ? '' : '（设备还没连上：先点上面的「连接模拟器」，再用「检查能不能发布」确认通过）';
+      if (!window.confirm('当前是「模拟通道」—— 不会真的发到得物，只演练发布节奏与结果回写' + why + '。\n\n确定要演练吗？')) return;
+    }
+    await runJob('publish.run', {});
+  },
   'pub:exportLog': async () => {
     const batch = (state.project.publish || {}).batch || '';
     const r = await runJob('publish.exportLog', { batch });

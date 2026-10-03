@@ -284,6 +284,22 @@ app.whenReady().then(async () => {
   const appSrcTheme = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
   ok('★ 设置页「外观 → 主题」下拉已撤（themeSel 一个都不剩，含绑定代码）',
     !/themeSel/.test(appSrcTheme), (appSrcTheme.match(/themeSel/g) || []).length + ' 处');
+  // ★ 2026-10-03 用户原话：「设置里的外观要直接隐藏掉，与最顶上的功能重复了」
+  //   断言必须**读真 DOM**（切到设置页，看真正渲染出来的小标题）—— 源码里没有这个词，
+  //   证明不了界面上没渲染它。并且必须配一条**正向对照**（得能读到「路径」「外部依赖」），
+  //   否则页面万一没渲染，`不含外观` 就成了「空 == 空」的假绿。
+  {
+    await win.webContents.executeJavaScript(`document.querySelector('.nav[data-tab="7"]').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    const setHeads = await win.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#pane h3')].map(h => h.textContent.trim())`);
+    ok('★ 设置页确实渲染出来了（有「路径」「外部依赖」，不是空页面）',
+      setHeads.includes('路径') && setHeads.includes('外部依赖'), JSON.stringify(setHeads));
+    ok('★ 设置页里**不再有**「外观」这一块（用户要求：与顶栏主题按钮重复）',
+      !setHeads.includes('外观'), JSON.stringify(setHeads));
+    ok('★ 但「运行环境」没跟着一起丢（已挪进「外部依赖」）',
+      await win.webContents.executeJavaScript(`/运行环境/.test(document.querySelector('#pane').innerText)`));
+  }
   const winSrc = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
   ok('★ 主进程的主题口径只有浅色/深色两档（「跟随 Windows 设置」已取消）',
     /function normTheme\(v\) \{ return v === 'dark' \? 'dark' : 'light'; \}/.test(winSrc)

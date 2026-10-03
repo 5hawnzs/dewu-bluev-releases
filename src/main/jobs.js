@@ -55,6 +55,23 @@ const TYPE_LABEL = {
 /** 批次级产物目录：每个批次一个文件夹，互不覆盖 */
 function batchDir(batchId) { return path.join(store.get('paths.output'), 'batches', String(batchId).replace(/[<>:"|?*\\/]/g, '_')); }
 
+/**
+ * 「这一批素材实际放在哪个文件夹」—— items 的 absDir 指向哪儿，产物就落在哪儿。
+ *
+ * ★★ 2026-10-03 修一个落点错：「文案生成」的 AI 内容报告原来写死在 `project.sourceDir`
+ *   （每次现场选的那个**原始素材目录**）。可做完「素材整理」之后，这一批条目（items）
+ *   全都在 `flat_<时间戳>/` 里 —— 合规检查、隔离、转 JPG 都是在那一份副本上做的。
+ *   于是：人在整理后的带时间戳文件夹里干活，报告却掉回了还没处理的原始目录。
+ *   ⇒ 落点一律按 **items 实际所在的父目录**算，拿不到才退回调用方给的兜底值。
+ */
+function itemsDir(items, fallback) {
+  const first = (items || []).find(it => it && (it.absDir || it.dir));
+  if (!first) return fallback || '';
+  const abs = String(first.absDir || first.dir);
+  const parent = path.dirname(abs);
+  return (parent && parent !== abs) ? parent : (fallback || '');
+}
+
 function typeIds(type) { return byType.get(type) || new Set(); }
 
 function send(channel, payload) {
@@ -154,7 +171,7 @@ async function dispatch(type, args, ctx) {
         // ★ 带时间戳的 AI 内容报告：落在**本批素材文件夹**里（用户 2026-10-02 拍板），
         //   写不进去才退到批次输出目录，并且会用「如实告警」把换地方这件事说出来。
         const rep = await aireport.write({
-          dir, fallbackDir: out, batch: batchId,
+          dir: itemsDir(items, dir), fallbackDir: out, batch: batchId,
           brandName: ctx.brand.brandName, sourceDir: dir,
           items, rows: r.rows,
           gen: { modelId: r.modelId, genSource: r.genSource, endpoint: r.endpoint, endpointSource: r.endpointSource, vision: r.vision }
@@ -180,7 +197,7 @@ async function dispatch(type, args, ctx) {
       // 一样出一份带时间戳的报告：落点优先用「这一批的素材目录」（工程里存着），没有就落到输出目录
       const s0 = st();
       const rep = await aireport.write({
-        dir: s0.sourceDir || '', fallbackDir: store.get('paths.output'),
+        dir: itemsDir(s0.items) || s0.flatDir || s0.sourceDir || '', fallbackDir: store.get('paths.output'),
         batch: s0.batch || (path.basename(s0.sheet.file || '', '.xlsx')) || '单批',
         brandName: ctx.brand.brandName, sourceDir: s0.sourceDir || '',
         items: s0.items, rows: r.rows,
@@ -289,13 +306,18 @@ async function dispatch(type, args, ctx) {
         items: built.items,
         copyRows: built.copyRows,
         verify: { rows: verifyRows, checkedAt: Date.now(), stats: null },
-        publish: {
+        // ★★ 必须写成 Object.assign(旧 publish, {...})，不许整块替换 ——
+        //   2026-10-03 实测事故：整块替换把 publish.mode / device / probe 一起抹掉了，
+        //   而 publisher.run 读不到 mode 就**默认走模拟通道**（根本不碰设备）。于是用户点了
+        //   「开始发布」，界面一路绿「发布成功」，模拟器里却毫无动静 —— 表现就是「点了没反应」。
+        //   同理不再顺手把 connected 重置成 false：导入一份报告，跟设备连没连上没有任何关系。
+        publish: Object.assign({}, st().publish, {
           rows: built.publishRows,
-          batch, connected: false, running: false, startedAt: 0,
+          batch, running: false, startedAt: 0,
           reportFile: file, reportSheet: rep.sheetName, reportDir: args.dir || (rep.hasDir ? '' : ''),
           // 批次归属定在「导入/导出」这一刻，发布时沿用 —— 中途换品牌不该把这一批的账改掉
           brandId: ctx.brand.brandId, brandName: ctx.brand.brandName
-        }
+        })
       });
 
       logbus.ok(`报告已导入：${built.publishRows.length} 条待发布 · 批次「${batch}」`);
@@ -645,4 +667,4 @@ function list() {
   }));
 }
 
-module.exports = { run, cancel, busy, list, TYPE_LABEL };
+module.exports = { run, cancel, busy, list, TYPE_LABEL, itemsDir };

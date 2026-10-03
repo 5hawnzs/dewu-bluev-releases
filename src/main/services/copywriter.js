@@ -274,7 +274,7 @@ function topicPool(brand, min) {
 /** 发布单只有「话题1~话题5」五列（见 sheet.COLUMNS）—— 多出来的话题到不了得物 */
 const MAX_TOPIC_COLS = 5;
 
-/** 一个话题的规范写法：得物的话题联想要靠 `#关键词` 触发，少了 # 直接点不出来 */
+/** 一个话题的规范写法：统一带 `#` 前缀（2026-10-03 用户拍板：**不做联想点选**，按给的词直接写） */
 function normTopic(t) {
   const s = String(t == null ? '' : t).trim();
   if (!s) return '';

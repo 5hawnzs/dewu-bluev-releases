@@ -105,7 +105,7 @@ function suggest(nodes, pkg) {
   pushStep('填标题', 'input', '${title}', '占位符在运行时替换为生成好的标题');
   pushStep('填正文', 'input', '${body}', '占位符替换为正文');
   for (let i = 1; i <= 5; i++) {
-    pushStep(`话题 ${i}（输入→等联想→点选）`, 'input', '${topic' + i + '}', '得物不认纯文本话题，必须走联想点选');
+    pushStep(`话题 ${i}（直接输入）`, 'input', '${topic' + i + '}', '2026-10-03 用户拍板：话题**不做联想点选** —— 给几个就写几个，不许挂到别的话题上');
   }
   pushStep('关联好物', 'tapText', '关联好物', '');
   pushStep('搜索货号', 'input', '${sku}', '');
@@ -136,7 +136,7 @@ function suggest(nodes, pkg) {
   vpush('填标题', 'input', '${title}', '占位符在运行时替换为生成好的标题');
   vpush('填正文', 'input', '${body}', '占位符替换为正文');
   for (let i = 1; i <= 5; i++) {
-    vpush(`话题 ${i}（输入→等联想→点选）`, 'input', '${topic' + i + '}', '得物不认纯文本话题，必须走联想点选');
+    vpush(`话题 ${i}（直接输入）`, 'input', '${topic' + i + '}', '同图文：不联想，直接写');
   }
   vpush('关联好物', 'tapText', '关联好物', '');
   vpush('搜索货号', 'input', '${sku}', '');

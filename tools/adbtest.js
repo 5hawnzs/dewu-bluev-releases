@@ -111,6 +111,13 @@ const state = {
   ok('按文本定位到节点', !!pub && pub.center.x === 162 && pub.center.y === 160, pub && JSON.stringify(pub.center));
   const sug = uimap.suggest(nodes);
   ok('生成候选定位表', sug.steps.length > 5 && sug.package === 'com.shizhuang.duapp', sug.steps.length + ' 步');
+  // ★ 2026-10-03 用户拍板：话题**不做联想点选**（「我给你多少个你就放多少个」，不许挂到别的话题上）
+  //   ⇒ 图文 + 视频两套候选表里，话题步骤必须**全是纯输入**（不产生任何点击），
+  //     且步骤名里不许出现「联想 / 点选」—— 一旦出现，就说明又打算去点候选了。
+  const topicSteps = sug.steps.concat(sug.videoSteps).filter(s => /话题/.test(s.name));
+  ok('候选定位表：图文+视频的话题都是纯输入、不含联想点选',
+    topicSteps.length === 10 && topicSteps.every(s => s.action === 'input' && !/联想|点选/.test(s.name)),
+    topicSteps.length + ' 步 / action=' + [...new Set(topicSteps.map(s => s.action))].join(',') + ' / 名=' + [...new Set(topicSteps.map(s => s.name))].join('|'));
   const filled = uimap.fill({ value: '${title}｜${topic1}' }, { title: '白色的鞋谁懂', topic1: '#品牌甲' });
   ok('占位符替换', filled.value === '白色的鞋谁懂｜#品牌甲', filled.value);
 

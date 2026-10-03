@@ -21,7 +21,7 @@ const store = require('../store');
 const sheet = require('./sheet');
 const wp = require('../util/winpath');
 
-const STEPS = ['上传图片…', '填标题正文', '话题联想点选', '关联好物', '发布确认'];
+const STEPS = ['上传图片…', '填标题正文', '填话题', '关联好物', '发布确认'];
 
 function cfg() { return store.get('publish') || {}; }
 
@@ -158,7 +158,7 @@ async function connect(device) {
   const notes = p.notes.slice();
   if (ready && !(map && map.steps && map.steps.length)) {
     notes.push('还没配 UI 定位表（「设置 → 高级设置」→「抓取页面结构」→ 导入），配好前不会走真实通道'
-      + '；抓之前先把模拟器停在得物发布页（首页右上角那个相机图标进去那一页）');
+      + '；抓之前先把模拟器停在得物发布页 —— 推荐走底部「我」→ 右上角「主页」→「发布新动态」（3 跳，入口都带文字，稳）；也可以点动态流右上角那个没文字的相机图标（1 跳）');
   }
   return {
     connected: ready,
@@ -409,7 +409,7 @@ async function run(state, ctx = {}) {
   const map = c.uiMap;
 
   if (mode === 'adb' && !(map && map.steps && map.steps.length)) {
-    throw new Error('真实通道需要先配 UI 定位表：把模拟器停在得物发布页（首页右上角相机图标进去那一页），'
+    throw new Error('真实通道需要先配 UI 定位表：把模拟器停在得物发布页 —— 推荐走底部「我」→ 右上角「主页」→「发布新动态」（3 跳，入口都带文字，稳）；也可以点动态流右上角那个没文字的相机图标（1 跳），'
       + '在「设置 → 高级设置」点「抓取页面结构」，改好后导入 uiMap.json');
   }
 
@@ -501,9 +501,12 @@ async function run(state, ctx = {}) {
           await recover(serial, map, ctx).catch(() => {});
         }
       }
-      row.status = success ? '发布成功' : '失败';
-      row.result = success ? '发布成功' : '失败';
-      row.reason = success ? '' : (reason || (mode === 'mock' ? pick(['话题联想未出现候选', '图片上传超时', '好物关联失败', '页面结构变化']) : '未知'));
+      // ★★ 模拟通道**不许冒充真发布**：走模拟时结果记「模拟成功」。
+      //   否则界面 / 台账 / 回写 Excel 全是绿的，而设备上什么都没发生（2026-10-03 实测踩到）。
+      //   「模拟成功」不会被统计成真发布（统计只认「发布成功」），也不会写「审核中」。
+      row.status = success ? (mode === 'adb' ? '发布成功' : '模拟成功') : '失败';
+      row.result = success ? (mode === 'adb' ? '发布成功' : '模拟成功') : '失败';
+      row.reason = success ? '' : (reason || (mode === 'mock' ? pick(['话题没写进去', '图片上传超时', '好物关联失败', '页面结构变化']) : '未知'));
       if (!success) {
         log(`${row.dir} 第 ${attempt} 次失败：${row.reason}`, 'warn');
         if (attempt < maxTry) await sleep(1500, cancelled);

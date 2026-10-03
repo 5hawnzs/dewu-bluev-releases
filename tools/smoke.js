@@ -185,10 +185,12 @@ const ok = (label, cond, extra) => {
       { items: fl.items, copyRows: cp.rows, verify: v2, publish: { rows: pubRows2 } }, ctx());
     const byId = new Map((pr2.rows || []).map(r => [String(r.id), r]));
     ok('⑦ 查不到的货号照常发布（旧版这里会整批静默不发）',
-      [...missIds].every(id => (byId.get(String(id)) || {}).result === '发布成功'),
+      // ★ 断言的是「真跑了、没被拦下」，不是「文案必须叫发布成功」：
+      //   模拟通道下结果是「模拟成功」（2026-10-03 起不再冒充真发布），所以只认「以成功结尾」。
+      [...missIds].every(id => /成功$/.test(String((byId.get(String(id)) || {}).result))),
       [...missIds].map(id => `${id}:${(byId.get(String(id)) || {}).result}`).join(' '));
     ok('⑦ 颜色对不上的货号也照常发布（改前这里会被拦下不发）',
-      [...mismIds].every(id => (byId.get(String(id)) || {}).result === '发布成功'),
+      [...mismIds].every(id => /成功$/.test(String((byId.get(String(id)) || {}).result))),
       [...mismIds].map(id => `${id}:${(byId.get(String(id)) || {}).result}`).join(' '));
   } finally {
     pool.save(poolBefore);   // 还原商品池，别把这份「故意不全」的池留给后面的断言/别的套件

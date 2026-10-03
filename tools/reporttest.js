@@ -166,12 +166,22 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     built.publishRows[3].result === '发布成功', built.publishRows.map(r => r.result || '（待发）').join(' | '));
 
   // ---- ⑦ 端到端：导入 → 发布（mock）→ 回写报告 ----
+  // ★★ 2026-10-03 事故回归：先「连接过设备」（mode=adb），再导入报告 —— 导入**不许**把它抹掉。
+  //   抹掉的后果不是报错，而是 publisher.run 读不到 mode ⇒ **默认走模拟通道**（根本不碰设备），
+  //   而界面/台账/回写全是绿的「发布成功」。用户实测就是「点了开始发布，模拟器里毫无动静」。
+  project.patch({ publish: Object.assign({}, project.get().publish, { mode: 'adb', device: 'emulator-5554' }) });
   const imported = await jobs.run('report.import', { file: repFile });
   ok('⑦ 导入成功并生成发布队列', imported.ok === true && imported.result.total === 4, imported.error || JSON.stringify(imported.result && imported.result.total));
   const st = project.get();
   ok('⑦ 工程状态已替换为这份报告（items / copyRows / verify / publish）',
     st.items.length === 4 && st.copyRows.length === 4 && st.verify.rows.length === 1 && st.publish.rows.length === 4 && st.publish.reportFile === repFile,
     `items ${st.items.length} · copy ${st.copyRows.length} · verify ${st.verify.rows.length} · rows ${st.publish.rows.length}`);
+  ok('⑦ 导入报告不会抹掉设备通道状态（mode / device 还在）',
+    st.publish.mode === 'adb' && st.publish.device === 'emulator-5554',
+    `mode=${st.publish.mode} device=${st.publish.device}`);
+  // ★ 断言完必须把通道状态放回去：publish.run 读的就是它。留着 'adb' 会让下面那条端到端发布
+  //   走真实通道（本套件没有设备 ⇒ 直接抛「需要先配 UI 定位表」），把 4 条无关断言一起带红。
+  project.patch({ publish: Object.assign({}, project.get().publish, { mode: '', device: '' }) });
   ok('⑦ 发布队列里带上了每条的发文类型（图文/视频）',
     st.publish.rows.filter(r => r.kind === 'video').length === 1 && st.publish.rows.filter(r => r.kind === 'image').length === 2
     && st.publish.rows.find(r => r.id === 'UWG460108+本白_2').kind === '',
@@ -191,9 +201,9 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     /校验未通过/.test(undecided['执行结果']) && /内容类型/.test(undecided['执行结果']) && undecided['实际执行时间'] === '',
     undecided['执行结果']);
   ok('⑦ 标了「视频」那条真跑了，B/C 都落字（不再被一票否决）',
-    !!videoPub['实际执行时间'] && /发布成功|失败/.test(videoPub['执行结果']),
+    !!videoPub['实际执行时间'] && /成功|失败/.test(videoPub['执行结果']),
     `${videoPub['实际执行时间']} / ${videoPub['执行结果']}`);
-  ok('⑦ 真正发布的那行 B/C 都落字了', !!genRow['实际执行时间'] && /发布成功|失败/.test(genRow['执行结果']),
+  ok('⑦ 真正发布的那行 B/C 都落字了', !!genRow['实际执行时间'] && /成功|失败/.test(genRow['执行结果']),
     `${genRow['实际执行时间']} / ${genRow['执行结果']}`);
   ok('⑦ 报告里本来就「发布成功」的行没被覆盖', doneRow['执行结果'] === '发布成功' && doneRow['实际执行时间'] === '2026-09-01 10:00:00',
     `${doneRow['实际执行时间']} / ${doneRow['执行结果']}`);
@@ -318,6 +328,20 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     && plainBuilt.publishRows[0].goodsList.length === 0
     && /不是「货号\+颜色」/.test(plainBuilt.notes.join('')),
     JSON.stringify({ fills: plainBuilt.fills.length, noParse: plainBuilt.filled.noParse, notes: plainBuilt.notes }));
+
+  // ---- ⑬ 报告落点：跟着 items 走，不跟着「每次现场选的源目录」走 ----
+  //   ★ 为什么单列一条：落点错了**不会报错**，文件会安安静静掉进另一个文件夹，
+  //     人在整理后的带时间戳目录里干活，报告却回到还没处理的原始目录（2026-10-03 用户实测）。
+  const flatDir = path.join(TMP, 'flat_20261003-0000');
+  const srcDir = path.join(TMP, '原始素材');
+  ok('⑬ 报告落点 = items 实际所在的父目录（不是原始素材目录）',
+    jobs.itemsDir([{ absDir: path.join(flatDir, 'A+白_1') }], srcDir) === flatDir,
+    jobs.itemsDir([{ absDir: path.join(flatDir, 'A+白_1') }], srcDir));
+  ok('⑬ 一条 items 都没有时才退回调用方给的兜底值',
+    jobs.itemsDir([], srcDir) === srcDir, jobs.itemsDir([], srcDir));
+  ok('⑬ items 只有相对名字（dir）时按它的父目录算',
+    jobs.itemsDir([{ dir: 'flat_x/A+白_1' }], srcDir) === 'flat_x',
+    jobs.itemsDir([{ dir: 'flat_x/A+白_1' }], srcDir));
 
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('REPORT TEST ERROR', e); process.exitCode = 1; });
