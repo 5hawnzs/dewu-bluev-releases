@@ -103,6 +103,41 @@ function parseName(dir) {
   return { sku: leaf, color: '', seq: '1', how: 'name' };
 }
 
+/**
+ * 用**叶子文件夹名**把一条工程条目的 货号/颜色 重新识别一遍（自愈；**不改** parseName 的语义）。
+ *
+ * ★ 为什么必须有（2026-10-04 用户第二次报「货号里还是批次目录名 0901_2」）：
+ *   `project.json` 里的 items 是**素材整理那一次**算好、之后一直沿用的 —— 文案生成 / 出报告 /
+ *   发布都只读它，**不会再回文件夹看第二眼**。实测该工程里两条存着
+ *   `sku:'0901_2' / color:'3261163003'`（旧版把批次目录当货号、真货号当颜色），
+ *   而同一份 `absDir`（扁平副本 `…\flat_20261002-2329\3261163003_1`）用现在的 parseName
+ *   读出来是 `sku:'3261163003' / color:''`。报告的好物列直接取 `it.sku/it.color`
+ *   ⇒ 一直错，而且**重跑文案生成也照样错**（文案生成不重算这两个字段）。
+ *   按文件夹名重读一次就对了，不必重跑素材整理。
+ *
+ * ★ 取名字的顺序：`absDir`（扁平副本的绝对路径，最权威）→ `dir`。
+ *   **绝不拿 `id` 去解析** —— 旧版 items 的 id 是「+连接的显示名」（`3261163003+1`），
+ *   拿它当路径解析会把 `1` 读成颜色。
+ * ★ 只认 'plus' / 'sku' 两种 how（其余解析出来是垃圾，见 parseName）；别的 how 原样返回、一个字不改。
+ * ★ 颜色额外一条线：**颜色名一定带汉字**（煤黑色01 / 酒红色74）。解析出来的颜色里一个汉字都没有
+ *   （`1` / `3261163003`）就不可能是色名 ⇒ 当空，按「没填颜色」走（宁缺勿错，不静默瞎猜）。
+ *   how='sku' 时原本就填着带汉字的颜色（人工补过）⇒ 保留不动，不自作主张抹掉。
+ */
+function refineItem(it) {
+  if (!it || typeof it !== 'object') return it;
+  const src = String(it.absDir || it.dir || '').trim();
+  if (!src) return it;
+  const p = parseName(src);
+  if (p.how !== 'plus' && p.how !== 'sku') return it;
+  const sku = String(p.sku || '').trim();
+  const color = p.how === 'plus'
+    ? (hasCJK(p.color) ? String(p.color).trim() : '')
+    : (hasCJK(it.color) ? String(it.color).trim() : '');
+  if (String(it.sku == null ? '' : it.sku).trim() === sku
+    && String(it.color == null ? '' : it.color).trim() === color) return it;   // 没变就原样返回（引用不变）
+  return Object.assign({}, it, { sku, color });
+}
+
 /** 目标目录已存在（同分钟重跑）时自动加序号，绝不覆盖 */
 async function uniqueDir(parent, name) {
   let target = path.join(parent, name);
@@ -240,4 +275,4 @@ async function run(sourceDir, opts, ctx = {}) {
   };
 }
 
-module.exports = { plan, run, parseName, stripTail };
+module.exports = { plan, run, parseName, stripTail, refineItem };

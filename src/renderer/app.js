@@ -505,6 +505,25 @@ TABS[2] = {
   }
 };
 
+/**
+ * 这一条到底带哪些话题（渲染「话题组合」那一列用）。
+ * ★★ 2026-10-03 用户拍板「话题并进文案、一个话题一行」之后，`topics` 在生成的产物里是**空的**
+ *   （话题在 `body` 末尾）⇒ 这一列必须**从正文末尾认回来**再显示。
+ *   不认的话整列恒为「—」，看着就像「这条没带话题」—— 而「话题没带上」正是用户最在意的那件事。
+ * ★ 只认**末尾**连续的话题行（与 copycheck.bodyWithoutTrailingTopics / copywriter 同一套字符口径）。
+ */
+const TOPIC_LINE_RE = /^\s*#[^\s#，。！？、：；,.;:!?()（）\[\]【】"'“”‘’…—\-]+\s*$/;
+function topicsShown(r) {
+  if (((r && r.topics) || []).length) return r.topics;
+  const ls = String((r && r.body) || '').split(/\r?\n/);
+  const out = [];
+  while (ls.length && (!ls[ls.length - 1].trim() || TOPIC_LINE_RE.test(ls[ls.length - 1]))) {
+    if (TOPIC_LINE_RE.test(ls[ls.length - 1])) out.unshift(ls[ls.length - 1].trim());
+    ls.pop();
+  }
+  return out;
+}
+
 TABS[3] = {
   title: '文案生成',
   desc: '看图写标题正文 · 话题组合去重 · 跑完落一份带时间戳的 AI 内容报告',
@@ -553,12 +572,17 @@ TABS[3] = {
         </div>` : ''}
       </div>
       ${batchesHtml('copy.generate', '运行中的批次（AI 文案生成）')}
+      <!-- ★ 2026-10-04 用户要求：这张表**不摆「货号 / 颜色」两列** ——
+           理由（原话）：「反正 AI 内容报告会显示具体货号和颜色，这里就不展示了」。
+           报告那一列是逐行核对过的权威值；这里再摆一份只会让人对着两个来源猜哪个对
+           （实测这一版就踩过：表里两者来自工程状态、报告来自同一处但出错时口径不一致）。
+           少两列不影响任何动作 —— 发布走的是报告（导入那一步），不是这张预览表。 -->
       ${planRows.length ? `<div class="tw"><table>
-        <thead><tr><th>叶子目录</th><th>货号</th><th>颜色</th><th>叙事视角</th><th>话题组合</th><th>标题</th><th>生成来源</th><th>状态</th></tr></thead>
+        <thead><tr><th>叶子目录</th><th>叙事视角</th><th>话题组合</th><th>标题</th><th>生成来源</th><th>状态</th></tr></thead>
         <tbody>${planRows.slice(0, 40).map(r => `<tr>
-          <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku || '')}</td><td>${esc(r.color || '')}</td>
+          <td class="mono">${esc(r.id)}</td>
           <td>${r.angle ? esc(r.angle) : '—'}</td>
-          <td class="cut">${(r.topics || []).length ? esc(r.topics.join(' ')) : '—'}</td>
+          <td class="cut">${topicsShown(r).length ? esc(topicsShown(r).join(' ')) : '—'}</td>
           <td class="cut" title="${esc(r.title || '')}">${esc(r.title || '—')}</td>
           <td class="cut">${r.genSource
             ? badge(r.genSource, r.genSource === '本地模板' || r.genSource === '未生成' ? '需人工处理' : '完成')
@@ -1916,14 +1940,16 @@ const HELP = {
     html: () => `
       <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
         <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
-        发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。</p>
+        每条笔记最多带 <b>5 个话题</b>（原来发布单的「话题1~话题5」五个格子，上限没变）——
+        「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。</p>
       <p class="hint"><b>额外话题从哪来</b>：优先抓<b>品牌提示词里写的 <code>#话题</code></b>（就是提示词里那段「话题列表」），
         品牌提示词里没有 <code>#</code> 话题才退回内置的通用词 —— 所以想让每条笔记都带上你们家的话题，
         直接在品牌提示词的「话题列表」里写就行，不用在这里再抄一遍。</p>
       <p class="hint"><b>正文写成 4~5 行短句</b>：一行一句（8~16 字），按「卖点 → 氛围感 → 上身体验 → 搭配」铺开，
         行尾少量 emoji（全篇 1~3 个）。<b>行与行之间是真的换行</b>，发到得物就是分行的样子；写成一大段会被「文案核对」列点出来。
-        话题走发布单的「话题1~5」独立格子，所以正文结尾不带 <code>#</code> —— 得物渲染出来的位置一样，
-        但只有格子里的话题才点得动。</p>
+        正文结尾由程序<b>追加</b>这条要带的话题：<b>一个话题单独一行、连 <code>#</code> 一起写</b>
+        （原来「话题1~5」那几个，现在跟着文案一起走 —— AI内容报告里没有话题列，只留在格子里的话反向导入会丢）。
+        想改话题就直接改文案末尾那几行。</p>
       <p class="hint"><b>重复口径</b>：只看<b>相邻两条</b> —— 标题或正文与<b>上一条完全一样</b>（含 emoji）才会提醒；
         换个 emoji、换个词就算不同；隔开几条再撞句、或换个品牌复用同一句，都没关系。</p>
       <p class="hint"><b>标题是看图写的</b>：每条素材把前几张实拍图缩到 768px 发给模型，标题里的品类 / 款式特征 / 颜色

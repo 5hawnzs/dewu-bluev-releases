@@ -23,6 +23,18 @@ const GATE_PAD_Y = 0;         // 卡片外不留呼吸位（留了就露出一�
 //   主界面仍跟随系统主题（见 bgColor）。
 const GATE_BG = '#ffffff';
 
+/* 主窗口最小尺寸（★ 2026-10-03 实测定的数，不是拍的）：
+   宽度：品牌统计页那张表需要 660px，加上侧栏 186px 与内容区左右边距 88px = 934。
+        实测窗口 940 时表格不横滚、930 起开始横滚 ⇒ 取 960 留余量。
+   高度：侧栏在 520 高就不需要滚动；640 让内容区第一屏还能多露出一块面板。
+   ★★ 这个值**必须 > 900**：styles.css 里原本有条 @media (max-width:900px) 会把侧栏翻到顶上，
+      而旧 minWidth 恰好也是 900 ⇒ 窗口一缩到最小就正好命中，侧栏跳上去（用户 2026-10-03 反馈）。
+      那条断点已删，但**改小这个值之前务必先读 styles.css 末尾那段警告**。
+   ★ 两处引用（createWindow 与 setLoginMode）都用这两个常量 —— 以前是各写一次 900/600，
+     改一处漏一处就会「登录一次之后最小尺寸又变回去」。 */
+const MAIN_MIN_W = 960;
+const MAIN_MIN_H = 640;
+
 /** 主界面窗口底色：按**当前主题**（不是系统主题）—— 见 normTheme */
 function bgColor() { return nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed'; }
 
@@ -51,8 +63,10 @@ function createWindow(locked) {
   // 开场就是小窗时也必须先把它记下来，否则登录成功后 setLoginMode(false) 没有还原目标，
   // 窗口会一直卡在 380 宽的小尺寸上（这条被 gateflow 的行为测试抓到过）。
   const normal = {
-    width: clamp(b.width, 980, 2400, 1280),
-    height: clamp(b.height, 640, 1600, 820)
+    // 下限跟随 MAIN_MIN_W（原来写死 980）：否则用户拖到 960 关掉再开会被悄悄抬回 980
+    // ——「我明明缩过，怎么又变大了」。高度的 640 与 MAIN_MIN_H 本来就是同一个数。
+    width: clamp(b.width, MAIN_MIN_W, 2400, 1280),
+    height: clamp(b.height, MAIN_MIN_H, 1600, 820)
   };
   if (b.x != null) normal.x = b.x;
   if (b.y != null) normal.y = b.y;
@@ -66,8 +80,8 @@ function createWindow(locked) {
     title: '得物蓝V 素材发布工具',
     width: start.width,
     height: start.height,
-    minWidth: locked ? 340 : 900,
-    minHeight: locked ? 320 : 600,
+    minWidth: locked ? 340 : MAIN_MIN_W,
+    minHeight: locked ? 320 : MAIN_MIN_H,
     x: start.x,
     y: start.y,
     resizable: !locked,           // 登录门是个「刚好装下卡片」的小窗，不允许拉伸
@@ -180,7 +194,7 @@ function setLoginMode(on) {
     win.setBackgroundColor(bgColor());    // 回主界面：底色交还给系统主题
     win.setResizable(true);
     win.setMaximizable(true);
-    win.setMinimumSize(900, 600);
+    win.setMinimumSize(MAIN_MIN_W, MAIN_MIN_H);
     const g = normalGeo;
     normalGeo = null;
     if (g) {
@@ -221,4 +235,9 @@ function clamp(v, lo, hi, dflt) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-module.exports = { createWindow, getWindow, attach, theme, normTheme, applyStoredTheme, setLoginMode, fitGate, fitToWorkArea };
+// MAIN_MIN 导出给自检用：断言「窗口缩到最小尺寸时侧栏仍在左侧」必须拿这个真值，
+// 不能在测试里另写一个数字（两处各写一份 = 改了一处测试就假绿）。
+module.exports = {
+  createWindow, getWindow, attach, theme, normTheme, applyStoredTheme, setLoginMode, fitGate, fitToWorkArea,
+  MAIN_MIN: { w: MAIN_MIN_W, h: MAIN_MIN_H }
+};

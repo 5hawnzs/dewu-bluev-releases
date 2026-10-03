@@ -1055,6 +1055,35 @@ app.whenReady().then(async () => {
   ok('★ 旧口径「标题格式轮换」不再出现在这一页（F01~F10 已降级为离线模板专用）',
     copyUi.oldFmt === false, JSON.stringify(copyUi));
 
+  // ★ 2026-10-04 用户要求：文案生成页那张表**不摆「货号 / 颜色」两列**
+  //   原话：「反正 AI 内容报告会显示具体货号和颜色，这里就不展示了」。
+  //   正负两面都要钉住：两列真的没了（负向）+ 其余四列还在（正向对照，别把孩子跟洗澡水一起倒）。
+  {
+    const keepItems = project.get().items;
+    const keepCopy = project.get().copyRows;
+    project.patch({
+      copyRows: [],
+      items: [
+        { id: '3261163003+1', absDir: 'D:\\素材\\flat_20261002-2329\\3261163003_1', sku: '0901_2', color: '3261163003', files: [] },
+        { id: '3261132007+煤黑色01+1', absDir: 'D:\\素材\\flat_20261002-2329\\3261132007+煤黑色01_1', sku: '3261132007', color: '煤黑色01', files: [] }
+      ]
+    });
+    const cols = await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.nav[data-tab="3"]').click();
+      await new Promise(r => setTimeout(r, 200));
+      const t = document.querySelector('#pane table');
+      return { heads: t ? Array.from(t.querySelectorAll('thead th')).map(x => x.textContent.trim()) : [],
+               cells: t ? t.querySelectorAll('tbody tr td').length : 0 };
+    })()`);
+    ok('★ 文案生成页的表格不再摆「货号 / 颜色」两列（理由：报告里会写清具体货号与颜色）',
+      cols.heads.length > 0 && !cols.heads.includes('货号') && !cols.heads.includes('颜色'), JSON.stringify(cols.heads));
+    ok('★ 但「叶子目录 / 标题 / 生成来源 / 状态」还在（少两列 ≠ 少一半）',
+      ['叶子目录', '标题', '生成来源', '状态'].every(h => cols.heads.includes(h)), JSON.stringify(cols.heads));
+    ok('★ 表头列数与单元格数自洽（删列时最容易把 thead/tbody 删得不一样多 ⇒ 整张表错位）',
+      cols.cells === cols.heads.length * 2, `表头 ${cols.heads.length} 列 · 2 行共 ${cols.cells} 个单元格`);
+    project.patch({ items: keepItems, copyRows: keepCopy });
+  }
+
   // ★ 2026-10-02（第三轮）：云端配置的「下发」—— 导出 / 导入两个动作 + 一个弹窗。
   //   ① 结构：弹窗必须写在 index.html 里，且**在 .app 外面**。
   //      （2026-10-02 真踩过：塞进 #pane 会被 overflow 裁掉，底部按钮点不到；
@@ -1587,6 +1616,126 @@ app.whenReady().then(async () => {
     });
     ok('★ 已删功能的名字不再出现在用户可见文案里（失败恢复动作 / 失败重试 / 重试次数 / 演示节奏）',
       hits.length === 0, hits.join(' | ') || '无');
+  }
+
+  // ---- 2026-10-03（第十二次会话）：窗口最小尺寸 / 侧栏永远在左侧 ----
+  //   用户原话：「目录始终固定在左侧，不能因窗口变小就放到上面。并且限制窗口的最小尺寸」。
+  //   ★ 实测根因（不是猜的）：styles.css 原来有条
+  //       @media (max-width:900px){ .body{flex-direction:column} .side{…flex-direction:row…} }
+  //     会把侧栏翻到顶上横排；而主窗口的 minWidth **恰好也是 900** ⇒ 窗口一缩到最小就正好命中，
+  //     用户每次拖到底都会看到侧栏跳上去。实测：窗口 940 侧栏还竖着，930 起翻。
+  //   ★ 这组断言盯的是「用户把窗口拖到最小」这个**真实动作**，不是盯源码里有没有某行字。
+  {
+    const sleep5 = ms => new Promise(r => setTimeout(r, ms));
+    const winMod = require(path.join(ROOT, 'src/main/window.js'));
+    const MIN = winMod.MAIN_MIN;
+    ok('★ window.js 导出了主窗口最小尺寸（自检拿真值，不在测试里另写一份数字）',
+      !!(MIN && MIN.w > 0 && MIN.h > 0), JSON.stringify(MIN));
+    ok('★ 最小宽度留得下侧栏(186) + 内容区左右边距(88)',
+      !!MIN && MIN.w > 274, MIN ? (MIN.w + ' > 274') : '缺');
+
+    // ① 源码级：不许再存在「把侧栏改成横排」的媒体查询
+    const C5 = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+    const cssNoComment = C5.replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '));
+    const mediaBlocks = cssNoComment.match(/@media[^{]*\{[\s\S]*?\n\}/g) || [];
+    const flip = mediaBlocks.filter(b => /\.side\b[\s\S]{0,240}?flex-direction\s*:\s*row/.test(b));
+    ok('★ styles.css 里没有「窄屏把侧栏改成横排」的媒体查询（用户：目录永远在左侧）',
+      flip.length === 0,
+      flip.length ? flip[0].slice(0, 90).replace(/\s+/g, ' ') : `共 ${mediaBlocks.length} 个媒体查询块，无侧栏横排`);
+
+    // ② 源码级：最小尺寸两处走同一个常量（以前 createWindow 和 setLoginMode 各写一份 900/600，
+    //    改一处漏一处就会「登录一次之后最小尺寸又变回去」）
+    const winSrc5 = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
+    const winCode5 = winSrc5.split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    ok('★ 两处最小尺寸都走 MAIN_MIN_* 常量、没有写死的数字',
+      /minWidth:\s*locked\s*\?\s*340\s*:\s*MAIN_MIN_W/.test(winCode5)
+      && /setMinimumSize\(MAIN_MIN_W,\s*MAIN_MIN_H\)/.test(winCode5)
+      && !/minWidth:\s*locked\s*\?\s*340\s*:\s*\d/.test(winCode5),
+      `MAIN_MIN_* 出现 ${(winCode5.match(/MAIN_MIN_[WH]/g) || []).length} 次`);
+
+    // ③ 让「品牌统计」页真的渲染出那张宽表 —— 空数据下它只有空态，量不到宽度等于没测（假绿）
+    const savedStats = await win.webContents.executeJavaScript('JSON.stringify(state.stats)');
+    await win.webContents.executeJavaScript(`(function(){
+      // ★ 桩必须与真实**同形态**（形状照抄 src/main/services/stats.js 的 return）：
+      //   少一个字段就会让渲染层抛异常 —— 第一版只写了 totals/brands/untagged，缺 range，
+      //   于是 app.js 读 s.range.label 直接崩，把「渲染层零控制台报错」那条绊红了。
+      //   空数组是合法的（logsShown=0），不能省字段。
+      state.stats = {
+        generatedAt: Date.now(),
+        range: { days: 7, label: '最近 7 天', fromTs: 0, from: '2026-09-27', to: '2026-10-03' },
+        sources: {
+          publishLog: { file: 'C:/tmp/publish-log.jsonl', entries: 3, entriesInRange: 3, size: 512 },
+          runLog: { file: 'C:/tmp/run-log.jsonl', entries: 1, size: 128 }
+        },
+        totals: { rows: 3, ok: 3, fail: 0, other: 0, batches: 2, runs: 1, runFails: 0,
+                  filtered: false, consideredInRange: 3, totalInLog: 3 },
+        logsShown: 0, logsTotal: 0,
+        brands: [{ id: 'b1', name: '自检品牌甲', rows: 2, ok: 2, fail: 0, other: 0, batches: 1,
+                   lastDay: '2026-10-03', byDay: [{ date: '2026-10-03', rows: 2, ok: 2, fail: 0, other: 0 }],
+                   users: [{ displayName: '自检执行人', rows: 2 }], enabled: true, orphan: false }],
+        untagged: { id: '__none__', name: '未标品牌', rows: 1, ok: 1, fail: 0, other: 0, batches: 1,
+                    lastDay: '2026-10-03', byDay: [], users: [], enabled: true, orphan: false },
+        orphans: [], daily: [], users: [], logs: [], notes: []
+      };
+    })()`);
+
+    try {
+      // 把窗口缩到应用允许的最小尺寸 —— 这就是「用户把窗口拖到底」
+      win.setSize(MIN.w, MIN.h);
+      await sleep5(420);
+
+      const geo = JSON.parse(await win.webContents.executeJavaScript(`(function(){
+        var s=document.querySelector('#side'), m=document.querySelector('.main'), b=document.querySelector('.body');
+        var rs=s.getBoundingClientRect(), rm=m.getBoundingClientRect();
+        return JSON.stringify({
+          vw: window.innerWidth, vh: window.innerHeight,
+          sideFlex: getComputedStyle(s).flexDirection,
+          bodyDir: getComputedStyle(b).flexDirection,
+          sideX: Math.round(rs.x), sideY: Math.round(rs.y), sideW: Math.round(rs.width), sideH: Math.round(rs.height),
+          mainX: Math.round(rm.x), mainY: Math.round(rm.y), mainH: Math.round(rm.height)
+        });
+      })()`));
+      ok('★ 缩到最小尺寸后侧栏仍是**竖排**（不是横排贴到顶上）—— 正是用户反馈的那一幕',
+        geo.sideFlex === 'column' && geo.bodyDir === 'row', JSON.stringify(geo));
+      // 「并排」的判据：侧栏贴左(sideX=0)、主区紧贴侧栏右边(mainX=sideW)、两者**顶部对齐**。
+      //   堆叠时主区会从最左边开始（mainX=0），这条就红了。
+      // ★ 两个自己绊自己的写法，都实测踩过，别再写回去：
+      //   ① 「主区比侧栏高」—— 并排时两者本来就等高（实测 sideH=mainH=429）；
+      //   ② 「主区顶到 y=0」—— 上面还有自绘标题栏，实测 mainY=38 就是它。
+      ok('★ 缩到最小尺寸后侧栏仍在**左侧**、内容区在它右边（不是上下堆叠）',
+        geo.sideX === 0 && geo.mainX >= geo.sideW - 1 && geo.sideW >= 180
+        && Math.abs(geo.sideY - geo.mainY) <= 1,
+        `sideX=${geo.sideX} sideY=${geo.sideY} sideW=${geo.sideW} mainX=${geo.mainX} mainY=${geo.mainY}`);
+
+      // ④ 最小尺寸够不够用：11 个页签挨个切一遍，看有没有横向溢出 / 表格横滚
+      const navs5 = JSON.parse(await win.webContents.executeJavaScript(
+        "JSON.stringify([].slice.call(document.querySelectorAll('.nav')).filter(function(b){return !b.hidden}).map(function(b){return b.getAttribute('data-tab')}))"));
+      let worstTab = '-', worstOver = 0, worstTbl = 0, tblTab = '-';
+      for (const t of navs5) {
+        await win.webContents.executeJavaScript(`document.querySelector('.nav[data-tab="${t}"]').click();`);
+        await sleep5(80);
+        const m = JSON.parse(await win.webContents.executeJavaScript(`(function(){
+          var p=document.querySelector('#pane');
+          var tws=[].slice.call(p.querySelectorAll('.tw')), mx=0;
+          tws.forEach(function(x){ mx=Math.max(mx,x.scrollWidth-x.clientWidth); });
+          return JSON.stringify({ paneOver: p.scrollWidth-p.clientWidth, tblOver: mx });
+        })()`));
+        if (m.paneOver > worstOver) { worstOver = m.paneOver; worstTab = 'tab' + t; }
+        if (m.tblOver > worstTbl) { worstTbl = m.tblOver; tblTab = 'tab' + t; }
+      }
+      ok('★ 最小尺寸下没有页签横向溢出（内容不会被裁掉）',
+        worstOver === 0, `最大 ${worstOver}px @ ${worstTab}（切了 ${navs5.length} 个页签）`);
+      ok('★ 最小尺寸下表格都不横向滚动 ——「960」这个数的来源（品牌统计页那张表要 660px）',
+        worstTbl === 0, `最大表横滚 ${worstTbl}px @ ${tblTab}`);
+    } finally {
+      // ★ 还原：窗口尺寸 + 假 stats + 回到第 1 页。不还原 ⇒ 后面的断言全建在被改过的界面上。
+      win.setSize(1280, 820);
+      await win.webContents.executeJavaScript(`(function(){
+        state.stats = ${savedStats};
+        state.tab = 1; renderAll();
+      })()`);
+      await sleep5(220);
+    }
   }
 
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');

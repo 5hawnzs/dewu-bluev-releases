@@ -348,7 +348,7 @@ function startServer() {
     store.set({ copy: cfgB });
   }
 
-  /* ---- ② 正文尾巴上模型自己加的 #话题要摘掉（话题另有 5 个独立格子） ---- */
+  /* ---- ② 正文尾巴上模型自己加的 #话题要摘掉（程序另外按计划追加，见 ②b） ---- */
   const st1 = copywriter.stripTrailingTopics('燕麦色毛衣上身干净舒服，配牛仔刚刚好。#品牌甲', ['#品牌甲']);
   ok('② 同一行尾巴上的 #话题 被摘掉（实测模型就是这么写的）', st1.body === '燕麦色毛衣上身干净舒服，配牛仔刚刚好。', JSON.stringify(st1.body));
   const st2 = copywriter.stripTrailingTopics('正文第一句。\n正文第二句。\n\n#品牌甲 #男生穿搭\n', ['#品牌甲']);
@@ -356,6 +356,42 @@ function startServer() {
     st2.body === '正文第一句。\n正文第二句。' && /正文第一句/.test(st2.body), JSON.stringify(st2.body));
   const st3 = copywriter.stripTrailingTopics('这件衣服背后有个 #小故事，讲给你听。', ['#品牌甲']);
   ok('② 正文中间的 # 不许误删（只认「结尾」）', st3.body === '这件衣服背后有个 #小故事，讲给你听。' && !st3.changed, JSON.stringify(st3.body));
+
+  /* ---- ②b ★★ 话题并进文案：一个话题单独一行、连 `#` 一起写（2026-10-03 用户拍板） ----
+     用户原话：「你直接在文案那里每个话题单独一行，复制 #abcde 整个过去就行了」。
+     ★ 为什么非并进**文案本体**不可：`AI内容报告` 表里**没有话题列**，`report.js` 反向导入时
+       一律读回 `topics: []` ⇒ 只留在 `row.topics` 里的话，真机发布时定位表「话题1~5」五步全是空占位符、
+       整段跳过 —— 2026-10-03 实测第一条零话题，就是这么来的。 */
+  ok('②b ★ 话题并进文案：一个话题单独一行，且都带 #（没带 # 的自动补上）',
+    copywriter.appendTopics('面料软糯，\n日常一穿就对🌿', ['#TW男装', '男装', '#新品'])
+      === '面料软糯，\n日常一穿就对🌿\n#TW男装\n#男装\n#新品',
+    JSON.stringify(copywriter.appendTopics('面料软糯，\n日常一穿就对🌿', ['#TW男装', '男装', '#新品'])));
+  ok('②b ★ 没有话题时正文一个字符都不动（不许凭空多一个换行）',
+    copywriter.appendTopics('就一行正文', []) === '就一行正文'
+    && copywriter.appendTopics('甲', null) === '甲'
+    && copywriter.appendTopics('甲', []) === '甲',
+    JSON.stringify([copywriter.appendTopics('甲', []), copywriter.appendTopics('甲', null)]));
+  ok('②b 正文末尾的空行/空格先收干净再追加话题（正文尾巴上带一串空白会被话题顶出一行空行）',
+    copywriter.appendTopics('甲\n\n  ', ['#A']) === '甲\n#A',
+    JSON.stringify(copywriter.appendTopics('甲\n\n  ', ['#A'])));
+
+  // ★ 反向对照：文案末尾多了 5 行话题之后，「文案核对」列**不许**把它算进正文行数。
+  //   不算的话 4~5 行正文 + 5 行话题 = 9~10 行 ⇒ 每条都判「正文只写了 9 行」，整列全黄 = 没人看。
+  const withTopics = '面料摸上去软糯，\n宽松版型上身不挑人，\n颜色低调但很显气色，\n日常通勤随手一穿就对🌿\n#TW男装\n#男装\n#新品\n#秋季穿搭\n#质感生活';
+  const chkTopic = copycheck.check({ title: '燕麦色通勤穿搭✨', body: withTopics }, { goods: [{ sku: 'S30', color: '燕麦色' }] });
+  ok('②b ★ 话题行不参与正文行数/字数统计（不然 4 行正文 + 5 行话题 ⇒ 每条都被判「9 行」，整列全黄）',
+    !/正文只写了/.test(chkTopic.text) && !/正文 \d+ 字/.test(chkTopic.text), chkTopic.text);
+  ok('②b 剔话题只认「末尾整行是话题」，正文中间的 # 不许误伤',
+    copycheck.bodyWithoutTrailingTopics('这条有个 #小故事，讲给你听。\n#TW男装') === '这条有个 #小故事，讲给你听。'
+    && copycheck.bodyWithoutTrailingTopics('甲\n\n#A\n') === '甲'
+    && copycheck.bodyWithoutTrailingTopics('甲\n#A #B') === '甲',
+    JSON.stringify([copycheck.bodyWithoutTrailingTopics('这条有个 #小故事，讲给你听。\n#TW男装'),
+      copycheck.bodyWithoutTrailingTopics('甲\n\n#A\n')]));
+  // ★ 对照：真的只写了 1 行正文时**必须**照样报出来（上面那条只证明「话题行不算」，这条证明「判据还活着」）
+  const chkShort = copycheck.check({ title: '燕麦色通勤穿搭✨', body: '就一句话的正文。\n#TW男装\n#男装\n#新品\n#秋季穿搭\n#质感生活' },
+    { goods: [{ sku: 'S30', color: '燕麦色' }] });
+  ok('②b ★ 反向对照：正文真的只有 1 行时仍然要报「只写了 1 行」（上一条不是靠「永远不报」蒙过去的）',
+    /正文只写了 1 行/.test(chkShort.text), chkShort.text);
 
   /* ---- ③ 看图写：真发图 ----
      这一条是整轮的核心 —— 断言「发给模型的请求里有没有图」，而不是「源码里有没有 image_url 这几个字」。 */
@@ -393,6 +429,43 @@ function startServer() {
     /看图写/.test(one.messages[0].content) && /货号/.test(one.messages[0].content) && /细节，真的顶/.test(one.messages[0].content));
   ok('③ ★ 模型名被换成了接口清单里真认的 id（配置写的是显示名，实测会 400）',
     one.model === 'deepseek-flash', `发出去的 model = ${one.model}`);
+
+  /* ---- ③d ★★ 端到端：跑完一批，落盘的文案末尾**真的**带着这条按计划选好的那几个话题 ----
+     钉两件事（都是真机踩过的坑）：
+       ① 话题在**文案本体**里 —— 报告没有话题列，只留在 row.topics 里等于没带（第一条零话题就是这么来的）；
+       ② `row.topics` 已清空 —— 不清空，发布时定位表「话题1~5」五步会**再写一遍**，页面上话题出现两次。 */
+  // ★ 取「这一行」的请求：并发 3 路时 `gen[0]` **不一定是第 0 行**（实测吃过这个亏 ——
+  //   拿 gen[0] 的计划去比 row[0] 的正文，5 个话题里有 2 个对不上，看着像功能坏了）。
+  //   所以按**货号**把这一行的请求捞出来。
+  const askText = se => {
+    const c = se.messages[1] && se.messages[1].content;
+    if (Array.isArray(c)) { const t = c.find(x => x && x.type === 'text'); return t ? t.text : ''; }
+    return String(c == null ? '' : c);
+  };
+  let e2eRow = null;
+  try { e2eRow = JSON.parse(fs.readFileSync(path.join(TMP, '输出', 'batches', '十月第一批', 'copy.json'), 'utf8')).rows[0]; }
+  catch (e) { e2eRow = null; }
+  //   ★ 落盘的 plan row 里**没有 sku 字段**（只有 `id`，形如 `26FW-CB122+燕麦色+1`）⇒ 货号从 id 的第一段取。
+  const e2eSku = String((e2eRow && e2eRow.id) || '').split('+')[0];
+  const e2eAsk = gen.map(askText).find(a => e2eSku && a.indexOf('"货号":"' + e2eSku + '"') >= 0) || '';
+  let plannedT = [];
+  try { plannedT = JSON.parse(e2eAsk)['已选话题'] || []; } catch (e) { plannedT = []; }
+  ok('③d 前置：这一批每条计划带 5 个话题，而且真的发给了模型（不然下面的对照没有比较对象）',
+    plannedT.length === 5, JSON.stringify(plannedT));
+  const e2eBody = String((e2eRow && e2eRow.body) || '');
+  const e2eLines = e2eBody.split('\n');
+  ok('③d ★★ 落盘的文案末尾真的带着话题：一个话题单独一行、每个都带 #、跟计划的一字不差',
+    plannedT.length === 5 && e2eLines.length >= 6
+    && JSON.stringify(e2eLines.slice(-5)) === JSON.stringify(plannedT),
+    JSON.stringify(e2eLines.slice(-5)) + ' vs 计划 ' + JSON.stringify(plannedT));
+  ok('③d ★★ row.topics 已清空（话题只在文案里出现一次；不清空就会被「话题1~5」五步再写一遍）',
+    !!e2eRow && Array.isArray(e2eRow.topics) && e2eRow.topics.length === 0,
+    JSON.stringify(e2eRow && e2eRow.topics));
+  const modelLines = String(reply.body).split('\n');
+  ok('③d ★ 话题是**追加在正文末尾**，正文那几行原样保留（不是把正文挤掉、也没有多出空行）',
+    e2eLines.length === modelLines.length + plannedT.length
+    && JSON.stringify(e2eLines.slice(0, modelLines.length)) === JSON.stringify(modelLines),
+    `${e2eLines.length} 行 = 正文 ${modelLines.length} + 话题 ${plannedT.length}`);
 
   /* ---- ③b 标题 = 「产品词 + 热门词」的词包（2026-10-03 用户投诉后加）----
      用户原话：「你这个标题就是纯描述产品是什么，我要的是产品+热门词」，
@@ -488,8 +561,8 @@ function startServer() {
     /4~5 行/.test(sys) && /一行一句短句/.test(sys) && /真的换行/.test(sys));
   ok('③c ★ system 里写明「相邻两条别写得一模一样」（换一个 emoji 就算不同）',
     /相邻两条别写得一模一样/.test(sys) && /只换一个 emoji/.test(sys));
-  ok('③c ★ system 里写明正文结尾不带 #话题（话题走发布单的独立格子）',
-    /正文结尾不要带任何 #话题/.test(sys) && /话题1~5/.test(sys));
+  ok('③c ★ system 里写明正文结尾不带 #话题（话题由程序统一追加到**文案末尾**，2026-10-03 用户拍板改口径）',
+    /正文结尾不要带任何 #话题/.test(sys) && /追加到文案末尾/.test(sys));
   ok('③c ★ 每行 user 的形状示例写明「颜色用本行的、别照抄示例」（示例写死颜色模型会照抄）',
     asks.length === 3 && asks.every(a => /别照抄里面的单品与颜色/.test(a)),
     asks.filter(a => !/别照抄里面的单品与颜色/.test(a)).length + ' 条漏了');
@@ -628,18 +701,31 @@ function startServer() {
     [2, 3, 4].every(r => c3(r)[gc - 1] === '本地模板'), c3(2)[gc - 1]);
   // ★ 同一条正文格式规则**不能对模板放松**：模型侧要 4~5 行，本地模板也必须 4~5 行，
   //   否则「关掉模型」的产物会被自己的核对判成「没分行」，用户看到一整列黄。
+  //   ★ 2026-10-03 起正文末尾多了程序追加的话题行 ⇒ 数行数前先按同一口径剔掉（见 copycheck.bodyWithoutTrailingTopics）。
   let tplBody = '';
   try {
     const cj = JSON.parse(fs.readFileSync(path.join(TMP, '输出', 'batches', '模板批', 'copy.json'), 'utf8'));
     tplBody = String(cj.rows[0].body || '');
   } catch (e) { /* 读不到就看下面那条断言红 */ }
-  const tplLines = tplBody.split(/\r?\n/).map(x => x.trim()).filter(Boolean).length;
+  const tplCore = copycheck.bodyWithoutTrailingTopics(tplBody);
+  const tplLines = tplCore.split(/\r?\n/).map(x => x.trim()).filter(Boolean).length;
   const tplChk = copycheck.check({ title: '燕麦色通勤穿搭✨', body: tplBody }, { goods: [{ sku: 'S30', color: '燕麦色' }] });
   ok('⑦ ★ 本地模板的正文也是 4~5 行（同一套格式，不对模板放松）',
     tplLines >= copycheck.BODY_LINES_MIN && tplLines <= copycheck.BODY_LINES_MAX,
-    tplLines + ' 行 · ' + JSON.stringify(tplBody.slice(0, 40)));
+    tplLines + ' 行 · ' + JSON.stringify(tplCore.slice(0, 40)));
   ok('⑦ ★ 本地模板的正文自己过一遍核对，不许被判「行数不对 / 没 emoji」',
     !/正文只写了/.test(tplChk.text) && !/正文没有 emoji/.test(tplChk.text), tplChk.text);
+  // ★★ 两条路一条口径：关掉模型（本地模板）也得把话题并进文案末尾 —— 只改 AI 那条就是漏改。
+  //   这里用**往返对照**（把正文 + 认回来的话题行重新拼一遍，必须与落盘的一字不差），不写死话题个数。
+  const tplAll = String(tplBody).split('\n');
+  const tplTopicLines = [];
+  while (tplAll.length && (/^\s*#[^\s#]+$/.test(tplAll[tplAll.length - 1]) || !tplAll[tplAll.length - 1].trim())) {
+    if (/^\s*#[^\s#]+$/.test(tplAll[tplAll.length - 1])) tplTopicLines.unshift(tplAll[tplAll.length - 1].trim());
+    tplAll.pop();
+  }
+  ok('⑦ ★★ 本地模板这条路也照样把话题并进文案末尾（一个话题一行、连 # 一起写）',
+    tplTopicLines.length >= 1 && copywriter.appendTopics(tplCore, tplTopicLines) === tplBody,
+    tplTopicLines.join(' ') || '(末尾没有话题行)');
 
   /* ---- ⑧ 网关不收图 ⇒ 自动退回纯文字，并且**如实改口**（不再说自己在看图） ---- */
   // 并发固定 1 路：这条测的是「第一条撞墙 → 之后都不带图」，多路并发时几条请求会同时飞出去、

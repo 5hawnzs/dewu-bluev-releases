@@ -249,6 +249,28 @@ function declaredColorsIn(title) {
 }
 
 /**
+ * 话题行的样式：整行只有 `#话题`（可以在一行里连着好几个）。
+ * ★ 判据与 `copywriter.stripTrailingTopics` **同一套**：`#` + 汉字/字母/数字，**遇到标点就停**
+ *   （写成「`#` 后面直到空白」会把「#小故事，讲给你听。」整段当成话题）。
+ */
+const TOPIC_LINE = /^\s*(#[^\s#，。！？、：；,.;:!?()（）\[\]【】"'“”‘’…—\-]+\s*)+$/;
+
+/**
+ * 把**文案末尾由程序追加的话题行**剔掉，只留正文。
+ *
+ * ★★ 为什么要这一步（2026-10-03 用户拍板「话题并进文案、一个话题一行」之后）：正文的
+ *   「4~5 行 / 字数 / 单行长度 / emoji 个数」四条判据数的都是**模型写的正文**；
+ *   话题是程序按计划追加的样板，一起数进去 ⇒ 每条都变成 9~10 行，**整列全黄**，
+ *   这一列就没人看了（「全黄 = 没人看」见下面 BODY_LINES_SOFT_MAX 的注释）。
+ * ★ 只剔**末尾**的：正文中间出现 `#` 是正常的（「这条有个 #小故事」），不许误伤。
+ */
+function bodyWithoutTrailingTopics(body) {
+  const lines = String(body == null ? '' : body).split(/\r?\n/);
+  while (lines.length && (!lines[lines.length - 1].trim() || TOPIC_LINE.test(lines[lines.length - 1]))) lines.pop();
+  return lines.join('\n');
+}
+
+/**
  * 核对一条文案。
  * @param {{title:string, body:string}} row
  * @param {{goods?:Array<{sku:string,color:string}>, imageColor?:string, from?:string}} opts
@@ -287,8 +309,11 @@ function check(row, opts = {}) {
   //   ★★ 2026-10-03：用户拿官号实发笔记来定正文格式 ——「4-5 行，每段简单描述卖点/氛围感/感受等
   //     + 少量 emoji，最后加入话题。每行均需换行」。所以「行数」比「字数」更能说明问题：
   //     字数够但挤成一行，发到得物就是一整段（用户投诉的正是这个）。
-  const bl = textLen(body);
-  const lines = body.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  // ★★ 2026-10-03：话题已并进文案末尾（一个话题一行）⇒ 这四条判据一律用**剔掉话题行**的正文，
+  //   否则 4~5 行正文 + 5 行话题 = 9~10 行，整列全黄（见 bodyWithoutTrailingTopics）。
+  const bodyCore = bodyWithoutTrailingTopics(body);
+  const bl = textLen(bodyCore);
+  const lines = bodyCore.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   if (bl && (bl < BODY_MIN || bl > BODY_MAX)) add('warn', `正文 ${bl} 字，超出 ${BODY_MIN}~${BODY_MAX} 字`);
   if (lines.length && (lines.length < BODY_LINES_MIN || lines.length > BODY_LINES_SOFT_MAX)) {
     add('warn', `正文只写了 ${lines.length} 行（要求 ${BODY_LINES_MIN}~${BODY_LINES_MAX} 行：一行一句短句，行与行之间真的换行）`);
@@ -297,7 +322,7 @@ function check(row, opts = {}) {
   if (longest > BODY_LINE_MAX) {
     add('warn', `正文有一行 ${longest} 字，太长了（一行写一句短句，建议不超过 20 字）`);
   }
-  const be = emojiCount(body);
+  const be = emojiCount(bodyCore);
   if (bl && !be) add('warn', '正文没有 emoji');
   else if (be > BODY_EMOJI_MAX) add('warn', `正文有 ${be} 个 emoji，偏多（建议 1~3 个，放在行尾）`);
 
@@ -388,6 +413,10 @@ function checkBatch(rows) {
     const b = String(y == null ? '' : y).trim();
     return !!a && a === b;
   };
+  // ★★ 2026-10-03：正文末尾那几行话题是**程序按计划追加的、每条都不一样** ⇒ 必须剔掉再比。
+  //   不剔的话「两条正文一模一样、只是话题组合不同」会被判成「不同」，这条判据就**静默失效**了
+  //   （实测：copytest ⑤b 当场变红 —— 那才是对的，是代码该改，不是断言该改）。
+  const coreBody = r => bodyWithoutTrailingTopics((r || {}).body);
   return list.map((cur, i) => {
     const out = [];
     if (i === 0) return out;
@@ -395,7 +424,7 @@ function checkBatch(rows) {
     if (same(prev.title, cur && cur.title)) {
       out.push('标题与上一条一字不差（换一个 emoji 或换一句就行；连续两条完全一样容易被平台判重复内容）');
     }
-    if (same(prev.body, cur && cur.body)) {
+    if (same(coreBody(prev), coreBody(cur))) {
       out.push('正文与上一条一字不差（同上：换个 emoji 或换一句话）');
     }
     return out;
@@ -404,6 +433,7 @@ function checkBatch(rows) {
 
 module.exports = {
   check, checkBatch, colorWordsIn, declaredColorsIn, textLen, hasEmoji, stripEmoji, emojiCount,
+  bodyWithoutTrailingTopics,
   BANNED, GARMENTS, DESCRIPTORS, DESCRIPTOR_MAX, COLOR_TAIL_SKIP,
   PASTE_SYMBOLS, LINKERS, prefixWords, PASTE_MIN_LEN, looksLikeWordPaste,
   TITLE_MAX, BODY_MIN, BODY_MAX,

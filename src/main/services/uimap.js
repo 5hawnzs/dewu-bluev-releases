@@ -332,6 +332,30 @@ function condOk(step, data) {
 }
 
 /**
+ * 条件**为什么**没成立（只给运行日志用，返回 '' = 条件其实成立）。
+ *
+ * ★★ 为什么不能图省事写成「写了 when 就报 when 空」：2026-10-04 真机日志里出现过
+ *    `跳过「好物1 · 没填颜色就选第 1 格」（占位符 goods1Sku 是空的）` —— 而那一行**明明填了货号**，
+ *    真正的原因是被 `whenNot:'goods1Color'` 拦下的（有颜色 ⇒ 不走「退化成选第 1 格」这条退路）。
+ *    报错点名一个**已经满足**的条件，等于把人往反方向带（我就是照这条日志去查了一圈空货号）。
+ *    ⇒ 必须点名**真正没成立**的那一半，并写清是哪一种条件（when / whenNot）。
+ * ★ 两个字段同时写时，按 condOk 的判定顺序取**第一个**不成立的 —— 与 condOk 必须一致，
+ *   否则会出现「condOk 判不成立、condWhy 说不出为什么」的自相矛盾（那种情况返回兜底文案）。
+ */
+function condWhy(step, data) {
+  const d = data || {};
+  const val = k => String(d[k] == null ? '' : d[k]).trim();
+  const keys = v => String(v || '').split(',').map(x => x.trim()).filter(Boolean);
+  for (const k of keys(step && step.when)) {
+    if (!val(k)) return `when：占位符 ${k} 是空的`;
+  }
+  for (const k of keys(step && step.whenNot)) {
+    if (val(k)) return `whenNot：占位符 ${k} 不是空的（值为「${val(k)}」）`;
+  }
+  return '';
+}
+
+/**
  * ★★ 屏幕守卫（whenOn / whenNotOn）—— 2026-10-03 真机实测的产物。
  *
  * 为什么要有第二套条件：`when / whenNot` 判的是**数据**（这一行填没填货号），而真机上还有
@@ -516,7 +540,7 @@ function cardOf(nodes, hit, cardId) {
 
 module.exports = {
   parseNodes, findNode, findNodes, cardOf, countOf, parsePoints, MAX_TAP_COUNT, suggest, fill,
-  normalizeSteps, STEP_ACTIONS, normalizeCond, condOk, COND_KEYS,
+  normalizeSteps, STEP_ACTIONS, normalizeCond, condOk, condWhy, COND_KEYS,
   SCREEN_KEYS, normalizeScreenCond, screenCondOk,
   DEWU, isDewuFocus, isPublishScreen
 };

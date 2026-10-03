@@ -216,6 +216,39 @@ const ok = (label, cond, extra) => {
     ok('⑦ 色名里本来就带数字的不会被误伤（米白2 / 黑色条纹）',
       flatten.parseName(p('a', '26FW-YB160+米白2')).color === '米白2'
       && flatten.parseName(p('a', '26FW-YB160+黑色条纹')).color === '黑色条纹');
+
+    // ---- ⑦b ★★ 2026-10-04：**工程状态自愈**（flatten.refineItem）----
+    //   为什么单独测：`project.json` 里的 items 是素材整理那一次算好、之后一直沿用的 ——
+    //   文案生成 / 出报告 / 发布都只读它。旧版（把批次目录当货号那个版本）存下来的
+    //   `sku:'0901_2' / color:'3261163003'` 就**一直躺在工程状态里**，报告的好物列直接取它，
+    //   于是一直错，而且**重跑文案生成也修不好**（文案生成不重算这两个字段）。
+    //   真机取证：E:\bluev_beta 那份工程的 items[9] 就是这两条错值。
+    const stale = flatten.refineItem({
+      id: '3261163003+1', dir: '3261163003+1',
+      absDir: p('素材', 'flat_20261002-2329', '3261163003_1'), sku: '0901_2', color: '3261163003'
+    });
+    ok('⑦b ★★ 存量工程状态自愈：sku=0901_2 / color=3261163003 ⇒ 按扁平副本名改成 3261163003 / 空',
+      stale.sku === '3261163003' && stale.color === '', JSON.stringify(stale));
+
+    const already = {
+      id: '3261132007+煤黑色01+1',
+      absDir: p('素材', 'flat_20261002-2329', '3261132007+煤黑色01_1'),
+      sku: '3261132007', color: '煤黑色01'
+    };
+    ok('⑦b 已经对的条目**连接口都不换**（引用不变）—— 否则每跑一次 patch 都白广播一遍',
+      flatten.refineItem(already) === already);
+
+    ok('⑦b how=sku（叶子名里根本没颜色）时：人工补过的带汉字颜色保留、纯 ASCII 的「颜色」清掉',
+      flatten.refineItem({ absDir: p('素材', 'f', '3261163003_1'), sku: '', color: '煤黑色01' }).color === '煤黑色01'
+      && flatten.refineItem({ absDir: p('素材', 'f', '3261163003_1'), sku: '', color: '3261163003' }).color === '');
+
+    const untrusted = { absDir: p('素材', '品牌甲', '20260901', 'IMG_5253', '1'), sku: 'X9', color: 'Y8' };
+    ok('⑦b 解析不可信（随手命名 / 相机名）的条目**一个字不改**（宁可留着让人补，也不写假货号）',
+      flatten.refineItem(untrusted) === untrusted);
+
+    const onlyId = { id: '3261163003+1', sku: '0901_2', color: '3261163003' };
+    ok('⑦b 只有 id、没有路径时原样不动 —— 旧版 id 是「+连接的显示名」，拿它当路径会把 `1` 读成颜色',
+      flatten.refineItem(onlyId) === onlyId);
   }
 
   console.log('\nTMP: ' + TMP);

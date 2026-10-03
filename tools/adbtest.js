@@ -227,6 +227,39 @@ const state = {
   ].map(([st, dt, want]) => uimap.condOk(st, dt) === want);
   ok('条件步骤：condOk 真值表 14 组全对（含多键/两字段同写）', truth.every(Boolean), truth.join(','));
 
+  // ★★ 4b-2) 2026-10-04：**跳过原因必须点名真正没成立的那一半**。
+  //   真机日志里曾写着「跳过「好物1 · 没填颜色就选第 1 格」（占位符 goods1Sku 是空的）」，
+  //   而那一行明明填了货号（被 whenNot 的颜色拦下的）—— 报错点名一个**已经满足**的条件，
+  //   等于把人往反方向带。这里把「条件不成立 ⇒ condWhy 必须能说出是谁」钉死。
+  {
+    const w1 = uimap.condWhy({ when: 'goods1Sku', whenNot: 'goods1Color' }, { goods1Sku: '3261132007', goods1Color: '煤黑色01' });
+    ok('★ 跳过原因：whenNot 拦下时点的是 whenNot（不许点那个已经填了的 when）',
+      /whenNot/.test(w1) && /goods1Color/.test(w1) && !/goods1Sku/.test(w1), w1);
+    const w2 = uimap.condWhy({ when: 'goods2Sku' }, { goods2Sku: '' });
+    ok('★ 跳过原因：when 拦下时点的是 when',
+      /when：/.test(w2) && /goods2Sku/.test(w2), w2);
+    const w3 = uimap.condWhy({ whenNot: 'goods3Sku,goods3Color' }, { goods3Sku: '', goods3Color: '' });
+    ok('★ 条件其实成立时 condWhy 不许乱说话（返回空串）', w3 === '', JSON.stringify(w3));
+    const expectOk = [{ when: 'a' }, { whenNot: 'a' }, {}, { when: 'a,b' }, { when: 'a', whenNot: 'b' }];
+    const dt = [{ a: 'x' }, { a: '' }, { a: 'x', b: '' }, { a: 'x', b: 'y' }];
+    let bad = 0;
+    for (const st of expectOk) for (const d of dt) {
+      const isOk = uimap.condOk(st, d);
+      const why = uimap.condWhy(st, d);
+      if (isOk === (why !== '')) bad++;   // 「成立」与「说得出原因」必须互为反面
+    }
+    ok('★ condWhy 与 condOk 互为反面（5 种条件 × 4 种数据 = 20 组：成立⇔说不出原因，不成立⇔一定说得出来）',
+      bad === 0, `不一致 ${bad} 组 / 共 ${expectOk.length * dt.length} 组`);
+
+    // ★ 光在 uimap 里写好 condWhy 不算修好 —— **publisher 那行日志真的用上它**才算。
+    //   （负向断言只看代码行：注释里就写着那句旧文案，不先 codeOnly 会被自己的注释骗过。）
+    const co = s => s.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    const pubCode = co(fs.readFileSync(path.join(base, 'src', 'main', 'services', 'publisher.js'), 'utf8'));
+    ok('★ 跳过日志真的走了 condWhy，且旧那句「有 when 就报 when 空」已不在代码里',
+      /uimap\.condWhy\(step, data\)/.test(pubCode) && !/step\.when\s*\?\s*`占位符/.test(pubCode),
+      pubCode.split(/\r?\n/).filter(l => /condWhy/.test(l)).map(x => x.trim())[0] || '(没找到 condWhy 调用)');
+  }
+
   const norm = uimap.normalizeSteps([
     { name: 'a', action: 'tapText', value: '发布', when: 'goods2Sku' },
     { name: 'b', action: 'input', value: '${goods1Color}', whenNot: 'goods1Color' }

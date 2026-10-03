@@ -650,7 +650,10 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     //   是一整段 ⇒ 空着不跳过会把搜索页打开却不选商品，后面每一步全崩。
     //   跳过必须**说出来**：静默少点一步，真机上表现为「下一条莫名失败」，最难查。
     if (!uimap.condOk(step, data)) {
-      const why = step.when ? `占位符 ${step.when} 是空的` : `占位符 ${step.whenNot} 不是空的`;
+      // ★★ 必须点名**真正没成立**的那一半（uimap.condWhy），不能「写了 when 就报 when 空」：
+      //    实测这条日志写过「占位符 goods1Sku 是空的」，而那一行明明填了货号 ——
+      //    真因是 whenNot（颜色有值）。报错点名一个已经满足的条件，等于把人往反方向带。
+      const why = uimap.condWhy(step, data) || '条件不成立（when / whenNot）';
       log(`${row.dir}：跳过「${step.name || step.value}」（${why}）`, 'info');
       continue;
     }

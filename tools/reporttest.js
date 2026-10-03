@@ -389,5 +389,58 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
       diff.length === 0, diff.map(r => r.id).join(' | ') || '（全部一致）');
   }
 
+  // ---- ⑮ ★★ 工程状态自愈：旧工程里存下的「批次目录名当货号」必须被纠正 ----
+  //   为什么单独测（2026-10-04 用户**第二次**报「货号里还是批次目录名 0901_2」）：
+  //   `project.json` 的 items 是素材整理那一次算好的，之后一直沿用 —— 文案生成 / 出报告 / 发布
+  //   都只读它，谁都不会回文件夹看第二眼。旧版存下的 `sku:'0901_2' / color:'3261163003'`
+  //   就一直躺在工程状态里，报告的好物列直接取它 ⇒ 一直错，**重跑文案生成也修不好**。
+  //   真机取证：E:\bluev_beta 那份工程的 items[9]/items[13] 就是这两条错值。
+  {
+    const flat = path.join(TMP, 'bluev_beta', 'flat_20261002-2329');
+    const stale = {
+      projectName: '还原真机现场', sourceDir: path.join(TMP, 'bluev_beta', '0901_2'), flatDir: flat,
+      updatedAt: 0,
+      items: [
+        // 真机 project.json 里就是这样两条：id 是「+连接的显示名」，sku/color 是旧版算出来的错值
+        { id: '3261163003+1', dir: '3261163003+1', absDir: path.join(flat, '3261163003_1'), sku: '0901_2', color: '3261163003' },
+        { id: '3261132007+煤黑色01+1', dir: '3261132007+煤黑色01+1', absDir: path.join(flat, '3261132007+煤黑色01_1'), sku: '3261132007', color: '煤黑色01' },
+        { id: 'IMG_5253', dir: 'IMG_5253', absDir: path.join(TMP, '品牌甲', '20260901', 'IMG_5253'), sku: '20260901', color: 'IMG_5253' }
+      ],
+      publish: { rows: [] }
+    };
+    fs.writeFileSync(path.join(TMP, 'project.json'), JSON.stringify(stale), 'utf8');
+    project.load();
+    const g = project.get().items;
+    ok('⑮ ★★ 旧工程一打开就自愈：sku=0901_2 / color=3261163003 ⇒ 3261163003 / 空（不必重跑素材整理）',
+      g[0].sku === '3261163003' && g[0].color === '', JSON.stringify(g[0]));
+    ok('⑮ 已经对的条目原样保留（货号 + 颜色 一起带过来，不许被弄掉）',
+      g[1].sku === '3261132007' && g[1].color === '煤黑色01', JSON.stringify(g[1]));
+    ok('⑮ 解析不可信的条目一个字不改（宁可留着让人补，也不把假货号写进运营的账）',
+      g[2].sku === '20260901' && g[2].color === 'IMG_5253', JSON.stringify(g[2]));
+
+    // 「程序已经开着、工程状态却是旧的」这一路：patch 也得过一遍自愈。
+    project.patch({ items: [{ id: '3261163003+1', absDir: path.join(flat, '3261163003_1'), sku: '0901_2', color: '3261163003' }] });
+    ok('⑮ 运行中写进来的旧状态也会被 patch 这一步纠正（不是只在开场 load 修一次）',
+      project.get().items[0].sku === '3261163003' && project.get().items[0].color === '',
+      JSON.stringify(project.get().items[0]));
+
+    // ★ 闭环：自愈后的工程状态**真的**写进了 AI 内容报告的好物列（用户看的就是这一列）
+    const aireport = require(path.join(base, 'src/main/services/aireport.js'));
+    const rp = await aireport.write({
+      dir: TMP, fallbackDir: TMP, batch: '自愈回归', brandName: 'TW男装',
+      sourceDir: path.join(TMP, 'bluev_beta', '0901_2'),
+      items: project.get().items, rows: []
+    });
+    const wbx = new ExcelJS.Workbook();
+    await wbx.xlsx.readFile(rp.file);
+    const wsx = wbx.getWorksheet('AI 内容报告');
+    const hx = (wsx.getRow(1).values || []).slice(1).map(String);
+    const iSku = hx.indexOf('好物1_货号') + 1, iCol = hx.indexOf('好物1_颜色') + 1;
+    const rowSku = String((wsx.getRow(2).values || [])[iSku] == null ? '' : (wsx.getRow(2).values || [])[iSku]);
+    const rowCol = String((wsx.getRow(2).values || [])[iCol] == null ? '' : (wsx.getRow(2).values || [])[iCol]);
+    ok('⑮ ★★ 闭环：报告「好物1_货号」不再是 0901_2（批次目录名），而是真货号 3261163003',
+      rowSku === '3261163003' && !/0901_2/.test(rowSku), `货号=${rowSku} 颜色=${rowCol}`);
+  }
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('REPORT TEST ERROR', e); process.exitCode = 1; });

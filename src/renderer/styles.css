@@ -376,10 +376,15 @@ body:not(.locked) .gate{display:none}
 .lxw .lxx:hover{color:var(--red)}
 .lxlock{opacity:.72}
 
-@media (max-width:900px){
-  .body{flex-direction:column}
-  .side{width:100%;flex:0 0 auto;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--bd)}
-  .side .grp{display:none}
-  .nav{width:auto;flex:0 0 auto;white-space:nowrap}
-  .two{grid-template-columns:1fr}
-}
+/* ---------- 窄屏适配：**没有**「侧栏横排」这一档（有意删掉的，别加回来） ----------
+   ★ 2026-10-03 用户要求：「目录始终固定在左侧，不能因窗口变小就放到上面」。
+     这里原来有一条
+       @media (max-width:900px){ .body{flex-direction:column} .side{width:100%;flex-direction:row} … }
+     把侧栏翻到顶上横排；而主窗口的 minWidth 恰好**也是 900** ⇒ 窗口一缩到最小就正好命中
+     （实测：窗口 940 侧栏还竖着，930 起翻上去）。用户每次拖到底都会看到侧栏跳上去。
+   ⇒ 整块删掉。主窗口最小尺寸见 src/main/window.js 的 MAIN_MIN（960×640），比这条断点宽，
+     所以这套窄屏适配本来就是死代码。
+   ★ 若以后要调小 MAIN_MIN.w，必须重新想这两件事：
+     ① 侧栏要不要横排（用户明确说过不要）；
+     ② .two（「素材整理」页的「整理前 / 整理后」两列）在窄屏要不要变单列。
+     另：品牌统计页那张表需要 660px 宽，窗口窄于 934 它就会横向滚动。 */

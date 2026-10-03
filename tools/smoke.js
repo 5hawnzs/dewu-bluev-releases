@@ -103,7 +103,16 @@ const ok = (label, cond, extra) => {
   const cp = await copywriter.generate(fl.items, ctx());
   ok('③ 生成条数', cp.rows.length === 5);
   ok('③ 标题格式轮换去重', new Set(cp.rows.map(r => r.format)).size === Math.min(5, 10), cp.rows.map(r => r.format).join(','));
-  ok('③ 话题组合去重', new Set(cp.rows.map(r => r.topics.join('|'))).size === cp.rows.length);
+  // ★ 2026-10-03 用户拍板：话题**并进正文**（一个话题单独一行、连 # 一起写），`row.topics` 随之清空。
+  //   ⇒ 「组合去重」得看正文末尾那几行，不能再读 row.topics（那里恒为空，见下面那条新断言）。
+  const topicLines = (r) => String(r.body || '').split('\n').map(x => x.trim()).filter(x => /^#/.test(x));
+  ok('③ 话题组合去重', new Set(cp.rows.map(r => topicLines(r).join('|'))).size === cp.rows.length,
+    cp.rows.map(r => topicLines(r).length).join(','));
+  // ★ 同时钉住两件**会互相打架**的事：话题必须在正文里（否则发布出去零话题），
+  //   而 row.topics 必须为空（否则发布时定位表的「话题1~5」五步会再写一遍 ⇒ 同一条话题出现两次）。
+  ok('③ ★ 话题已并进正文（每条都有），且 row.topics 已清空（不重复走「话题1~5」那五步）',
+    cp.rows.every(r => topicLines(r).length > 0) && cp.rows.every(r => (r.topics || []).length === 0),
+    cp.rows[0] ? JSON.stringify(String(cp.rows[0].body).split('\n').slice(-5)) : '');
   ok('③ 标题不为空', cp.rows.every(r => r.title && r.body));
 
   // ④ 货号颜色校验

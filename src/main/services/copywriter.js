@@ -510,7 +510,7 @@ ${hotwords.promptBlock()}
   宽松版型上身不挑人，
   颜色低调但很显气色，
   日常通勤随手一穿就对🌿
-话题由程序另外写进发布单的「话题1~5」（必带话题 + 品牌提示词里写的那些），所以正文结尾不要带任何 #话题。
+话题（必带话题 + 品牌提示词里写的那些）由程序统一追加到文案末尾、一个话题单独一行，所以正文结尾不要带任何 #话题。
 不要输出 markdown 代码块。
 （上面品牌提示词里若自己写了标题格式清单，以**品牌提示词**的为准。）`;
 }
@@ -575,11 +575,11 @@ async function callLLM(item, plan, brandPrompt, opt = {}) {
 }
 
 /**
- * 正文结尾模型自己加的 `#话题` 去掉。
- * 为什么非去不可：话题是发布单里「话题1~5」五个**独立格子**，得物那边一格一个；
- * 而品牌提示词常写着「结尾从话题列表里挑 5 个」，模型就顺手在正文尾巴上再写一遍 ——
- * 于是同一个话题出现两次，正文里那串还是**点不动的死文本**。实测三张样本里两张都是这样
- * （`…套上刚好。#TW男装`）。
+ * 正文结尾模型自己加的 `#话题` 去掉 —— 只负责**摘掉**，写回是 `appendTopics` 的事（两步别混）。
+ * 为什么非去不可：品牌提示词常写着「结尾从话题列表里挑 5 个」，模型就顺手在正文尾巴上再写一遍；
+ * 而它挑的那几个**跟程序按计划选的对不上**（必带话题可能漏、额外话题可能重）。
+ * 话题由 `appendTopics` 按计划统一追加 ⇒ 留着模型那串就是同一个话题出现两次。
+ * 实测三张样本里两张都是这样（`…套上刚好。#TW男装`）。
  */
 function stripTrailingTopics(body, topics) {
   const before = String(body == null ? '' : body);
@@ -606,6 +606,25 @@ function stripTrailingTopics(body, topics) {
   }
   const s = lines.join('\n');
   return { body: s, changed: s !== before, stripped: before.length - s.length, hasTopics: (topics || []).length > 0 };
+}
+
+/**
+ * 把这条的**话题并进文案**：一个话题单独一行，连 `#` 一起写进去。
+ *
+ * ★★ 2026-10-03 用户拍板（原话：「你直接在文案那里每个话题单独一行，复制 `#abcde` 整个过去就行了」）。
+ *   必须写进**文案本体**，不能只留在 `row.topics` 里 —— 后者在真实流程里是**断的**：
+ *   生成 → 导出 `AI内容报告`（表里**没有话题列**）→ 导入 ⇒ `report.js` 一律读回 `topics: []`，
+ *   于是发布时定位表的「话题1~5」五步全是空占位符、整段跳过，真机跑出来就是**第一条零话题**。
+ *   写进文案，就跟着「文案」那一列走，导来导去话题都在。
+ * ★ 为什么「一个话题一行」而不是挤一行：得物正文本来就是**多行输入框**（正文本身要求 4~5 行），
+ *   话题挤在一行会跟正文粘成一串，读着像写坏了。
+ * ★ 空话题数组 ⇒ 原样返回，不做任何拼接（`= 0` 个话题时正文一个字符都不许多）。
+ */
+function appendTopics(body, topics) {
+  const core = String(body == null ? '' : body).replace(/[\s\u3000]+$/, '');
+  const list = (topics || []).map(normTopic).filter(Boolean);
+  if (!list.length) return core;
+  return core + '\n' + list.join('\n');
 }
 
 /**
@@ -682,7 +701,7 @@ async function generate(items, ctx = {}) {
   log(`并发 ${concurrency} 路 · 每路 ${Math.ceil(plan.rows.length / concurrency)} 篇（按路数均分，不留尾批）`, 'info');
 
   const out = new Map();
-  let done = 0, failed = 0, visionOff = 0, topicStripped = 0, noImage = 0, firstErr = '';
+  let done = 0, failed = 0, visionOff = 0, topicStripped = 0, topicAppended = 0, noImage = 0, firstErr = '';
   // 视频抽帧的账：成功几条、失败几条（失败原因取第一条；逐条的结果都写进了报告的「生成来源」）
   let frameUsed = 0, frameFail = 0, frameErr = '';
 
@@ -736,13 +755,16 @@ async function generate(items, ctx = {}) {
       if (!firstErr) firstErr = why;
       log(`${row.id} 生成失败：${why}`, 'warn');
       out.set(row.id, Object.assign({}, row, {
-        title: '', body: '', status: '未生成', genSource: '未生成', genNote: why
+        title: '', body: '', status: '未生成', genSource: '未生成', genNote: why,
+        // 没生成出正文 ⇒ 也没有话题可并（话题是跟着文案走的）
+        topics: []
       }));
       done++;
       progress({ done, total: plan.rows.length, label: row.id });
       return;
     }
-    // 正文尾巴上的 #话题 去掉（话题另有独立格子，重复那串在得物里点不动）
+    // ① 正文尾巴上模型自己写的 #话题 先摘掉（它挑的跟程序按计划选的对不上，会重复）
+    // ② 再把**程序按计划选好的**话题追加到文案末尾 —— 一个话题单独一行（用户 2026-10-03 拍板，见 appendTopics）
     let body = text.body;
     if (!llmOn) {
       body = text.body;
@@ -750,8 +772,14 @@ async function generate(items, ctx = {}) {
       const st = stripTrailingTopics(text.body, row.topics);
       if (st.changed) { topicStripped++; body = st.body; }
     }
+    body = appendTopics(body, row.topics);
+    if (row.topics && row.topics.length) topicAppended++;
     out.set(row.id, Object.assign({}, row, {
       title: text.title, body, status: '已生成',
+      // ★★ 话题已经并进 `body`（见 appendTopics）⇒ 这里必须**清空** topics。
+      //   留着它，发布时定位表的「话题1~5」五步会**再写一遍** ⇒ 同一条内容话题出现两次。
+      //   清空后那五步自动跳过（占位符是空的），走的还是原来那条已测过的路。
+      topics: [],
       // 逐条如实标来源：这条到底看没看图（模型不收图 / 这条没图 都要分得清）
       genSource: llmOn
         ? (vision
@@ -776,9 +804,15 @@ async function generate(items, ctx = {}) {
     }
   }));
 
-  const rows = plan.rows.map(r => out.get(r.id) || Object.assign({}, r, localFill({ color: '' }, r), {
-    status: '已生成', genSource: llmOn ? 'AI（中断，未取到结果）' : '本地模板'
-  }));
+  // 中断/取消时没跑到的那几行也按**同一条口径**收尾：话题并进文案 + 清空 topics。
+  // ★ 别省这一步：同一批里若「跑到的行话题在文案里、没跑到的行话题在 topics 里」，
+  //   发布时有的行写成正文、有的行走「话题1~5」五步 —— 事后看日志根本分不清是哪种。
+  const rows = plan.rows.map(r => out.get(r.id) || (() => {
+    const m = Object.assign({}, r, localFill({ color: '' }, r), {
+      status: '已生成', genSource: llmOn ? 'AI（中断，未取到结果）' : '本地模板'
+    });
+    return Object.assign(m, { body: appendTopics(m.body, m.topics), topics: [] });
+  })());
   const okCount = rows.filter(r => r.status === '已生成').length;
   if (llmOn && failed && !okCount) {
     // 带上**第一条的原始原因**：只说「一条都没生成出来」等于没说，
@@ -789,14 +823,15 @@ async function generate(items, ctx = {}) {
   if (frameUsed) log(`${frameUsed} 条素材只有视频 ⇒ 已从视频里抽帧送去（每条最多 ${cfg.videoFrames} 帧，本机抽、不落素材目录）`, 'info');
   if (frameFail) log(`有 ${frameFail} 条视频没能抽出可用帧（${frameErr || '原因不明'}）⇒ 那几条标题只能按货号/颜色写`, 'warn');
   if (noImage && vision) log(`有 ${noImage} 条没能给出可用的图（没有实拍图，或视频里没抽出帧）⇒ 那几条标题只能按货号/颜色写`, 'warn');
-  if (topicStripped) log(`${topicStripped} 条的正文结尾模型自己带了 #话题，已去掉（话题另有「话题1~5」独立格子）`, 'info');
+  if (topicStripped) log(`${topicStripped} 条的正文结尾模型自己带了 #话题，已去掉（话题由程序按计划追加到文案末尾）`, 'info');
+  if (topicAppended) log(`${topicAppended} 条已把话题并进文案末尾（一个话题单独一行，连 # 一起写）`, 'info');
   log(`文案生成完成：${rows.length} 篇${llmOn ? '' : '（本地模板，不是 AI 文案）'}`, llmOn ? 'ok' : 'warn');
   return {
     rows, warning: plan.warning, llm: llmOn,
     genSource: llmOn ? (vision ? 'AI 看图' : 'AI 文字') : '本地模板',
     modelId: pf ? pf.modelId : '', modelHow: pf ? pf.modelHow : '',
     endpoint: cfg.endpoint, endpointSource: cfg.endpointSource,
-    vision, failed, visionOff, topicStripped, noImage, frameUsed, frameFail
+    vision, failed, visionOff, topicStripped, topicAppended, noImage, frameUsed, frameFail
   };
 }
 
@@ -806,5 +841,5 @@ module.exports = {
   // 接口自检与配置（界面「接口自检」按钮 / 测试都要直接调，别在别处再复制一份）
   cfgOf, urlsOf, preflight, listModels, pickModel, imageCapability, normModel,
   // 看图与正文清理
-  imagePartsOf, stripTrailingTopics, extractJson, unescapeNewlines
+  imagePartsOf, stripTrailingTopics, appendTopics, extractJson, unescapeNewlines
 };
