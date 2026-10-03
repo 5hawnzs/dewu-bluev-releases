@@ -1535,6 +1535,41 @@ T10 26FW-KW02 驼    驼色针织毛衣自带少年感🧶
    包内那份只剩 `name/version/description/main/author/license/private/dependencies/optionalDependencies`。
    换成**可见证据**（`locales/` 恰好 2 个 pak）；同理「包内 `package.json` 与源码 md5 一致」也不成立，**必须把它从逐字节比对里排除**。
 
+#### 10. 发布（v1.0.10，2026-10-04 第九轮）
+
+★ **发版范围**：提交 `7feb508`（本会话四项修复）+ 其中一并带入的**另一路会话已交付**的「侧栏固定 + 窗口最小尺寸」。
+那一块（`window.js` / `styles.css`）的断言与本会话的断言**同落在 `tools/uicheck.js` 里，文件粒度切不开**，故合并在一个提交；
+归属已写进提交信息，免得后人以为包里被投毒。
+
+| 项 | 实测值 |
+|---|---|
+| 提交 | `7feb508`（16 文件 / +621 −48）+ `37159d3`（`package.json` 1.0.9 → 1.0.10）；★ `git ls-remote origin refs/heads/main` == `git rev-parse HEAD` == `37159d3e6b6ac8f6252171bab70894d3d748ebae` |
+| 打包 | 干净 `git worktree` 快照 `D:/work/_rel110`（detached @ `37159d3`）+ `node_modules` 目录联接；`electron-builder --win --x64 --publish never`（23 秒） |
+| 产物 | `得物蓝V素材发布工具-1.0.10-x64-win.exe` = **107049330 B**（1.0.9 = 107047080 B，**+2250 B**，与新增代码量相称） |
+| 包内核对 | ★ 遍历整个 asar（`listPackage` 2517 条目、**真读到 2154 个文件 / 50725137 字节**，363 个目录条目）—— 包内 `package.json` version = `1.0.10`；正向：`gapSecFor` / `secOr` / `连续发布` / `refineItem` / `healItems` / `condWhy` / `MAIN_MIN_W` / `MAIN_MIN_H` / `function appendTopics(` 全部命中；反向（防删过头）`logLineHtml` / `update:check` / `copy:prompt` / `MAIN_MIN:` 仍在；`dist/win-unpacked/locales/` 恰好 `en-US.pak` + `zh-CN.pak`；4 个关键文件与仓库源码**按 LF 归一逐字节一致** |
+| 快照回归 | ★ 在**打包用的同一份字节**上跑 `tools/run-all.js` ⇒ **17 套 1299 项全绿**（1 分 59 秒） |
+| 公网核对 | `latest.yml` = **`1.0.10`**、size = `107049330`、sha512 `U+RpGFrzqTnq5QBo1jZL0znbsQiclvEmolUhOEK824SrOJmCqT17s9mKZYPknXGpYyaLqn6OsXkzuCRXMpUQBw==`（与本机快照复算**逐字节一致**）；安装包 **HTTP 200 / Content-Length 107049330**；`beta.yml` **未动**（仍 `1.0.1-beta.2`） |
+| 本机已装副本 | 用户**未要求**换，故**没动**。`D:\bluevbeta\dewu-bluev-publisher` 那份仍是 10-03 23:06 构建的 1.0.9，**内容是旧的**（没有本版修复）—— 它点「检查更新」能收到 1.0.10（版号已涨，这是我这次特意涨版号的直接原因） |
+| 归档 | 主仓 `dist/` 里 1.0.9 三件（107047080 B）已**挪**到 `D:\work\_dist-archive\1.0.9\`；`dist/` 现**恰好 1 个 exe** |
+| 看板 | 本次**没改** `web/` ⇒ 不用重新部署 |
+
+★ **为什么必须涨版号（不拿 1.0.9 覆盖）**：① `upload-release.js` 的版本闸门直接拦同号覆盖；
+② 更关键 —— electron-updater 按版号比较，同号覆盖后已装 1.0.9 的人会判「已是最新」、**永远收不到**这次的修复
+（10-03 那版已经踩过一次：两个二进制共用一个 1.0.9）；③ 版本号 / exe 文件名 / `latest.yml` 三者必须一致。
+
+★ **仍未做**（下一版）：① 「连续发布」第 2 条起卡死 —— 提交发布后 App 停在非主线屏（个人主页 / 相册页 / 动态详情页），
+定位表第 1 步点不到，缺一步「回主线」守卫；② 好物搜索框只填了货号，未拼「货号+颜色」。
+
+★ **本轮踩到的三个「假红 / 假通过」写法**（留档，与 §8/§9 同类）：
+
+1. **假通过（同一个坑第三次踩）**：`asar.extractFile` 传**正斜杠**路径 ⇒ 全部抛错、`read = 1` / `bytes = 506`，
+   而顶层 `package.json` 照样读得到 ⇒ 看着像「读到一个文件」，脚本还会一路 `PASS 包内版本号`。
+   本次判据写成 `read>=15 && bytes>300000` 才拦住（`listPackage()` 返回的是**反斜杠开头**的路径）。
+2. **假红**：拿全文搜 `max-width:900px` 判「那条把侧栏翻顶的媒体查询删没删」⇒ **命中**，
+   因为 `styles.css` 里那条断点**正写在注释里当说明**。必须先剥 `/* … */` 再搜（本次剥完 = 0 命中）。
+3. **判据位置错**：断言 `locales/` 在 **asar 里** ⇒ 必然查空。`electronLanguages` 裁剪的是
+   `appOutDir/locales/`，**在 asar 外面**（`dist/win-unpacked/locales/`），包内清单里根本没有这条。
+
 ### 从录屏里挑出的「可抄项」（尚未做，按建议顺序）
 
 | # | 真机怎么做 | 我们现在 | 建议 | 成本 |
