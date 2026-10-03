@@ -1506,6 +1506,35 @@ T10 26FW-KW02 驼    驼色针织毛衣自带少年感🧶
 1. `asar.extractFile` 传**正斜杠**路径 ⇒ 全部抛错，`read = 1`、`bytes = 505`，而脚本仍会一路「PASS 包内版本号」往下跑 —— 看着像通过。改成反斜杠路径后 `read = 2153`。判据必须**同时断言「真读到几个」**（`read>=15 && bytes>300000`）。
 2. 拿**全文搜字符串**判「词库有没有混进材质词」⇒ **假红**：`hotwords.js` 第 25 行的注释里**正写着那张禁词表**（「**材质与参数类**（鹅绒、充绒量、加厚、防风防水、羊毛含量……）不进来」）。改成**把包里那份抠出来真跑** `ALL_WORDS` 才是有效判据（跑完 64 个词、越界 0）。
 
+#### 9. 发布（v1.0.9，2026-10-03 第八轮）
+
+★ **发版范围由用户当场选定「全量」** —— 本版把工作区里**两路会话**的全部未提交改动一起带上
+（本会话的提速 + 另一路已交付的视频抽帧 / 非管理员隐藏更新 / 安装包瘦身），不是「只推本会话这一条」。
+★ `index.html` 两路都改过（本会话的热词库挪位、删发布单页签 + 另一路的标题栏版本号 chip），
+**同一文件无法在文件粒度切分**，二者都在本版里。
+
+| 项 | 实测值 |
+|---|---|
+| 提交 | `2b6710d`（27 文件 / +2538 −407，含新增 `src/main/services/frame.js`）；★ `git ls-remote origin refs/heads/main` == `git rev-parse HEAD` == `2b6710d83dcbe6cb8a298a15d9457dddb3e4ff29` |
+| 打包 | 干净 `git worktree` 快照 `D:/work/_rel109`（detached @ `2b6710d`）+ `node_modules` 目录联接；`electron-builder --win --x64 --publish never` |
+| 产物 | `得物蓝V素材发布工具-1.0.9-x64-win.exe` = **107047201 B**（1.0.8 = 114024197 B，**−6976996 B ≈ −6.7 MB**）；★ 变小是**安装包瘦身生效**的可见证据：`dist/win-unpacked/locales/` 从多语言降到**恰好 2 个 pak**（`en-US.pak` / `zh-CN.pak`） |
+| 包内核对 | **25/25 通过**：包内 `package.json` version = `1.0.9`（★ 其 `build` 字段被 electron-builder **剥离**，属预期）；★ 遍历整个 asar（`listPackage` 2517 条目、**真读到 2154 个文件 / 50686441 字节**）—— ①本会话提速四件全在（`tapXY` 9 / `tapSeq` 5 / `parsePoints` 4 / `preferAnimOff` 7）；②屏幕守卫与草稿箱出口在（`whenOn` 13 / `whenNotOn` 8 / `iv_draft_title` 3 / `fl_publish` 4）；③另一路两块在（`src\main\services\frame.js` 条目在、`appVer` 5）；④**临时文件 0**（`publisher.js.bak` / `uimap.js.bilclean` / `.bak-speed` / `bak-before-animoff` 各 0；asar 清单无 `.bak`/`.bilclean` 条目）；⑤**代码里（非注释）硬编码设备串 0**；⑥包内 6 个关键文件与快照源码**逐字节一致**（去 CRLF 差异，实测 6/6） |
+| 快照回归 | ★ 在**打包用的同一份字节**上跑 `tools/run-all.js` ⇒ **17 套 1218 项全绿**（1 分 55 秒） |
+| 公网核对 | `latest.yml` = **`1.0.9`**、size = `107047201`、sha512 `GNZECY4T…`（与本地快照逐字节一致）；安装包 **HTTP 200 / Content-Length 107047201**；`beta.yml` **未动**（仍 `1.0.1-beta.2`） |
+| 本机已装副本 | `D:\bluevbeta\dewu-bluev-publisher` 当前包内版本 = `1.0.8`（`app.asar` mtime 11:25:52）；★ `tasklist` 实测 **4 个实例正在运行** ⇒ 按 §Q 规矩**没换 asar**。关掉应用后点「检查更新」即可升到 1.0.9 |
+| 看板 | 本次**没改** `web/` ⇒ 不用重新部署 |
+| 归档 | 主仓 `dist/` 里另一路 17:23 打的 1.0.8 包（107031655 B）已**挪**到 `D:\work\_dist-archive\1.0.8-by-other-202610031723\`（不删，避免下次发版误传旧包） |
+
+★ **本轮踩到并已修掉的两个「假红 / 断言写错」写法**（留档）：
+
+1. **假红（与 §8 第 2 条同类）**：拿全文搜 `emulator-5554` 判「有没有硬编码兜底」⇒ 命中 **8 处全是注释**
+   （`publisher.js:84/145/147/586`、`adb.js:607`、`jobs.js:385`、`app.js:1493/2769`），
+   其中 `publisher.js:586` 那行注释**正写着「此前是 '127.0.0.1:5555'，再前是 'emulator-5554'」**——注释里那张禁词表把判据带红了。
+   改成 `codeOnly()`（剔整行注释 + 行尾注释 + `*` 块注释行）后再搜 ⇒ **代码里 0 处**，判据才有效。
+2. **断言写错**：对包内 `package.json` 断言 `build.electronLanguages` ⇒ 必然 FAIL —— electron-builder **会重写并剥离 `build` 字段**，
+   包内那份只剩 `name/version/description/main/author/license/private/dependencies/optionalDependencies`。
+   换成**可见证据**（`locales/` 恰好 2 个 pak）；同理「包内 `package.json` 与源码 md5 一致」也不成立，**必须把它从逐字节比对里排除**。
+
 ### 从录屏里挑出的「可抄项」（尚未做，按建议顺序）
 
 | # | 真机怎么做 | 我们现在 | 建议 | 成本 |
