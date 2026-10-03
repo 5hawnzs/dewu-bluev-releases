@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld('api', {
 
   configGet: key => ipcRenderer.invoke('config:get', key),
   configSet: patch => ipcRenderer.invoke('config:set', patch),
+  // 标题热词库：get 所有人可用；save / reset 主进程侧 guardAdmin（改的是全员口径）
+  hotwordsGet: () => ipcRenderer.invoke('hotwords:get'),
+  hotwordsSave: (groups, opts) => ipcRenderer.invoke('hotwords:save', groups, opts),
+  hotwordsReset: () => ipcRenderer.invoke('hotwords:reset'),
   projectGet: () => ipcRenderer.invoke('project:get'),
   logHistory: () => ipcRenderer.invoke('log:history'),
   logExport: payload => ipcRenderer.invoke('log:export', payload),

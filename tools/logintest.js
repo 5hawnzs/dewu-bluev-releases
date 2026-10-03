@@ -161,14 +161,47 @@ app.whenReady().then(async () => {
     }
     return titles;
   })()`);
-  ok('登录后 11 个页签都能渲染（页签数是数出来的，不是写死的）',
-    tabs.length === 11 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+  ok('登录后 12 个页签都能渲染（页签数是数出来的，不是写死的）',
+    tabs.length === 12 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
   ok('第 9 个页签是「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
     tabs[8] === '品牌与权限', tabs[8] || '(没有)');
   ok('第 10 个页签是「运行日志」（归在左侧「执行」组里；内容和底部日志栏同一份）',
     tabs[9] === '运行日志', tabs[9] || '(没有)');
   ok('第 11 个页签是「高级设置」（管理员可见；装一次就不再动的配置都在这里）',
     tabs[10] === '高级设置', tabs[10] || '(没有)');
+  ok('第 12 个页签是「热词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
+    tabs[11] === '热词库', tabs[11] || '(没有)');
+
+  // ---- ④a 页签 12「热词库」：**管理员**可编辑（真读 DOM，不是看源码）----
+  const lexAdm = await js(`(async () => {
+    document.querySelector('.nav[data-tab="12"]').click();
+    const pane = document.querySelector('#pane');
+    for (let k = 0; k < 30 && !pane.querySelector('#lxg-风格'); k++) await new Promise(r => setTimeout(r, 100));
+    const h3 = [...pane.querySelectorAll('.box h3')].map(e => e.textContent);
+    const lockedBox = document.querySelector('.lxlock');
+    const saveBtn = document.querySelector('[data-act="lex:save"]');
+    const resetBtn = document.querySelector('[data-act="lex:reset"]');
+    return {
+      editable: h3.filter(t => /^(风格|氛围|色感|场景|人群|季节|情绪)（/.test(t)).length,
+      lockBox: h3.findIndex(t => t.indexOf('收尾') >= 0 && t.indexOf('锁定') >= 0),
+      inputs: pane.querySelectorAll('[data-lx-in]').length,
+      delBtns: pane.querySelectorAll('[data-lx-del]').length,
+      lockedCtrls: lockedBox ? lockedBox.querySelectorAll('input,button').length : -1,
+      saveDisabled: !!saveBtn && saveBtn.disabled === true,
+      resetDisabled: !!resetBtn && resetBtn.disabled === true,
+      redlines: /三条红线/.test(pane.textContent)
+    };
+  })()`);
+  ok('★ 管理员进「热词库」：7 个可编辑组，每组一个加词框、每个词一个删词按钮',
+    lexAdm.editable === 7 && lexAdm.inputs === 7 && lexAdm.delBtns === 52,
+    `组=${lexAdm.editable} 加词框=${lexAdm.inputs} 删词按钮=${lexAdm.delBtns}`);
+  ok('★ 「收尾」组确实锁着：那一块里一个输入框 / 按钮都没有（7 组之外就它）',
+    lexAdm.lockBox >= 0 && lexAdm.lockedCtrls === 0, `锁定块控件数=${lexAdm.lockedCtrls}`);
+  ok('★ 管理员看到的是**可用**的「保存 / 恢复内置」（不是灰的）',
+    lexAdm.saveDisabled === false && lexAdm.resetDisabled === false,
+    JSON.stringify({ save: lexAdm.saveDisabled, reset: lexAdm.resetDisabled }));
+  ok('★ 热词库页常驻三条红线提示', lexAdm.redlines === true);
+
 
   // ---- ⑤ 口令存储与「记住登录」落盘 ----
   const authFile = path.join(TMP, 'auth.json');
@@ -222,6 +255,38 @@ app.whenReady().then(async () => {
   ok('★ 普通成员看不到「高级设置」页签（连图标都不占位）', advHide.hidden === true, JSON.stringify(advHide));
   ok('★ 普通成员就算硬点第 11 个页签也进不去（会被拉回«素材整理»）',
     advHide.title === '素材整理', advHide.title);
+
+  // ---- ⑦a-3「热词库」：所有人都能**看**，但改只有管理员能做（而且拦在主进程，不是前端藏按钮）----
+  const lexMem = await js(`(async () => {
+    const btn = document.querySelector('.nav[data-tab="12"]');
+    const visible = !!btn && btn.hidden !== true && getComputedStyle(btn).display !== 'none';
+    btn.click();
+    const pane = document.querySelector('#pane');
+    for (let k = 0; k < 30 && !pane.querySelector('#lxg-风格'); k++) await new Promise(r => setTimeout(r, 100));
+    const saveBtn = document.querySelector('[data-act="lex:save"]');
+    return {
+      visible,
+      title: __t.title(),
+      groupsShown: !!pane.querySelector('#lxg-风格'),
+      inputs: pane.querySelectorAll('[data-lx-in]').length,
+      delBtns: pane.querySelectorAll('[data-lx-del]').length,
+      saveDisabled: !!saveBtn && saveBtn.disabled === true,
+      readonlyChip: /只读/.test(pane.textContent)
+    };
+  })()`);
+  ok('★ 普通成员**看得见**「热词库」（不是管理员专属 —— 标题从哪些词里挑，谁都能看）',
+    lexMem.visible === true && lexMem.title === '热词库', lexMem.title);
+  ok('★ 但普通成员进来是只读：没有加词框、没有删词按钮、保存是灰的',
+    lexMem.groupsShown && lexMem.inputs === 0 && lexMem.delBtns === 0 && lexMem.saveDisabled === true,
+    JSON.stringify(lexMem));
+  ok('★ 只读时把原因写在页面上（改词库要管理员）', lexMem.readonlyChip === true);
+  const memLexSave = await js(`window.api.hotwordsSave([{ key: '风格', words: ['简约百搭'] }])`);
+  ok('★ 普通成员绕过界面直接调通道也改不了（主进程 guardAdmin 拦下）',
+    memLexSave.ok === false && /只有管理员/.test(memLexSave.error), memLexSave.error);
+  const memLexReset = await js(`window.api.hotwordsReset()`);
+  ok('★ 普通成员也不能「恢复内置」（同样主进程侧拦下）',
+    memLexReset.ok === false && /只有管理员/.test(memLexReset.error), memLexReset.error);
+
 
   // ---- ⑦b 品牌是管理员专属：普通成员连注册表都改不了 ----
   const memberBrandAdd = await js(`window.api.brandAdd({ name: '成员偷加的品牌' })`);

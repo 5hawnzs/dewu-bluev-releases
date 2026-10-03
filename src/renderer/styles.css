@@ -367,6 +367,13 @@ body:not(.locked) .gate{display:none}
 .mnote{font-size:11.5px;color:var(--tx3);margin:6px 0 0}
 .mnote.warn{color:var(--amber)}
 
+/* ---------- 热词库页（页签 12） ---------- */
+.lxwords{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.lxw{display:inline-flex;align-items:center;gap:4px;padding-right:5px}
+.lxw .lxx{border:0;background:transparent;color:var(--tx3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;border-radius:50%}
+.lxw .lxx:hover{color:var(--red)}
+.lxlock{opacity:.72}
+
 @media (max-width:900px){
   .body{flex-direction:column}
   .side{width:100%;flex:0 0 auto;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--bd)}

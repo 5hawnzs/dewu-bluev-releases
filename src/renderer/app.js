@@ -36,7 +36,11 @@ const state = {
   logExport: null,    // 上一次导出结果 { file, jsonFile, count }，用来给「打开 / 定位」按钮指路
   logExportErr: '',   // 上一次导出的失败原因（失败要说出来，不能只在 toast 里一闪而过）
   devStatus: null,    // 「扫描设备」逐台结果 { serial: {...} }，null = 还没扫过
-  devFound: null      // 「扫描设备」时 adb 认到的**全部**设备（含还没加进列表的），null = 还没扫过
+  devFound: null,     // 「扫描设备」时 adb 认到的**全部**设备（含还没加进列表的），null = 还没扫过
+  lex: null,          // 热词库快照（主进程 hotwords:get 的返回）；null = 还没读到
+  lexBusy: false,
+  lexTried: false,    // 读失败过就不再自动重试（否则 render → load → render 会打转）
+  lexDirty: false     // 界面上改了但还没点「保存」
 };
 
 /* ---------------- 工具 ---------------- */
@@ -1304,6 +1308,169 @@ TABS[8] = {
   }
 };
 
+/* ---------------- ⑫ 热词库（单开一屏） ----------------
+ * ★ 为什么单开一屏：它是**低频维护**（想加几个词才来一次），而「生成文案」是**高频动作** ——
+ *   混一屏既容易误触生成，跑生成时又被词表挡路。（这条口径 2026-10-03 之前就定了。）
+ * ★ 可编辑的是 **7 组词**（风格 / 氛围 / 色感 / 场景 / 人群 / 季节 / 情绪）。
+ *   「收尾」组这一版**锁定**（用户拍板：先不放开）；T01~T10 **句式骨架一律不可编辑** ——
+ *   骨架是**语法**（连接字在第几位、收尾在末尾），改坏会直接产出病句，而判据只能事后告警、拦不住。
+ * ★★ 「改了到底吃不吃得到」：词库的读法已经全部改成**现取**（`hotwords.currentGroups()` /
+ *   `copycheck.prefixWords()`），所以**保存完下一次生成就用新词，不用重启**。
+ *   ★ 但「关掉模型 / 离线」走的是本地模板 `FORMATS`（F01~F10），那条路**本来就不读词库** ——
+ *     别把「本地模板没变」当成词库没生效。
+ * ★ 红线只在**主进程**判（`hotwords.sanitizeWords`）—— 一份正则。渲染层不许多抄一份（抄了迟早两边不一样），
+ *   所以「加一个词」是拿 `dryRun` 先去主进程预检、通过了才真的进界面列表。
+ */
+function lexStatusHtml() {
+  const L = state.lex;
+  if (!L) return '';
+  const adm = !!(state.auth && state.auth.isAdmin);
+  const win = L.updatedAt ? Date.parse(L.updatedAt) : 0;
+  const src = L.isCustom ? `已自定义${win ? '（' + fmtDate(win) + '）' : ''}` : '内置出厂词库';
+  return `<div class="row" id="lxStatusRow">
+      <span class="chip ${L.isCustom ? 'warn' : 'run'}">${esc(src)}</span>
+      <span class="chip">全库 ${L.wordTotal} 词 · ${L.groups.length} 组</span>
+      ${state.lexDirty ? '<span class="chip warn">有未保存的改动</span>' : ''}
+      ${adm ? '' : '<span class="chip warn">只读 —— 改词库要管理员（改的是全员的生成口径）</span>'}
+    </div>`;
+}
+
+function lexGroupHtml(g) {
+  const adm = !!(state.auth && state.auth.isAdmin);
+  const chips = g.words.map(w =>
+    `<span class="chip lxw">${esc(w)}${adm ? `<button class="lxx" data-lx-del="${esc(g.key)}" data-lx-w="${esc(w)}" title="删掉这个词">×</button>` : ''}</span>`
+  ).join('');
+  return `<div class="box" id="lxg-${esc(g.key)}">
+    <h3>${esc(g.key)}（${g.words.length} 词）</h3>
+    <div class="lxwords">${chips || '<span class="hint">（空的 —— 这一组不会给模型任何词）</span>'}</div>
+    ${adm ? `<div class="row" style="margin-top:9px">
+      <input class="inp" data-lx-in="${esc(g.key)}" maxlength="24" placeholder="加一个词，回车即可">
+      <button class="btn sm" data-lx-add="${esc(g.key)}">添加</button>
+    </div>` : ''}
+  </div>`;
+}
+
+TABS[12] = {
+  title: '热词库',
+  desc: '标题「产品词 + 热门词」用的词库 · 改完下一次生成就生效（不用重启）· 材质与极限词有红线挡着',
+  actions: () => {
+    const adm = !!(state.auth && state.auth.isAdmin);
+    return [
+      { act: 'lex:reset', label: '恢复内置', disabled: !adm || !state.lex },
+      { act: 'lex:save', label: '保存', primary: true, disabled: !adm || !state.lex }
+    ];
+  },
+  render() {
+    const L = state.lex;
+    if (!L) return '<div class="box"><h3>热词库</h3><p class="hint">正在读取…</p></div>';
+    const editables = L.groups.filter(g => !g.locked);
+    const lockeds = L.groups.filter(g => g.locked);
+    return `
+      <div id="lxStatus">${lexStatusHtml()}</div>
+      <div class="box">
+        <h3>这个库是怎么被用到的</h3>
+        <p class="hint">每生成一条标题，程序把下面这些词交给模型挑（提示词里那段「【标题热词库】」就是它），
+          并按行轮换 10 种<b>句式骨架</b>（T01~T10）。所以<b>你在这里改的词，下一次生成就会用上，不用重启</b>。</p>
+        <p class="hint">★ 例外：<b>关掉模型 / 离线</b>时走的是程序自带的本地模板（F01~F10），
+          那条路<b>本来就不读词库</b> —— 那种情况下改了也不会变，别当成「没生效」。</p>
+      </div>
+      <div class="box">
+        <h3>三条红线（进不去的词会当场告诉你原因）</h3>
+        <p class="hint">${L.redlines.map(s => '· ' + esc(s)).join('<br>')}</p>
+      </div>
+      ${editables.map(lexGroupHtml).join('')}
+      ${lockeds.map(g => `<div class="box lxlock">
+        <h3>${esc(g.key)}（${g.words.length} 词）· 已锁定，不可编辑</h3>
+        <div class="lxwords">${g.words.map(w => `<span class="chip lxw">${esc(w)}</span>`).join('')}</div>
+        <p class="hint">「收尾」组这一版<b>锁定</b>（你要求先不放开）。它<b>照样参与生成</b>（词照给模型），
+          只是不给编辑。要放开跟我说一声就行。</p>
+      </div>`).join('')}
+      <div class="box">
+        <h3>10 种句式骨架（T01~T10）· 不可编辑</h3>
+        <div class="tw"><table>
+          <thead><tr><th>编号</th><th>名称</th><th>结构</th><th>形状示例</th></tr></thead>
+          <tbody>${L.styles.map(s => `<tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${esc(s.formula)}</td><td class="mono">${esc(s.sample)}</td></tr>`).join('')}</tbody>
+        </table></div>
+        <p class="hint">骨架是<b>语法</b>（连接字在第几位、收尾在末尾）—— 改坏会直接产出病句 / 标签串，
+          而判据只能事后告警、拦不住，所以锁死在程序里。上面那些<b>词</b>才是你可以随便换的。</p>
+        <p class="hint">点「<b>恢复内置</b>」＝丢弃你在这一页做的全部增删改，回到程序自带的那份词库。</p>
+      </div>`;
+  }
+};
+
+/** 进「热词库」页时读一次（`lexTried` 防读失败后在 render → load → render 里打转） */
+async function loadLexicon() {
+  if (state.lexBusy) return;
+  state.lexBusy = true;
+  const r = await appApi.hotwordsGet().catch(() => null);
+  state.lexBusy = false;
+  if (!r || !r.ok) {
+    state.lexTried = true;
+    toast('读不到词库：' + ((r && r.error) || '主进程没回应'), 'err');
+  } else {
+    state.lex = r;
+  }
+  if (state.tab === 12) renderAll();
+}
+
+/** 只重画某一组 —— 整页重画会把别的输入框（可能正在打字）重置回旧值（品牌弹窗踩过同一个坑） */
+function paintLexGroup(key) {
+  const L = state.lex;
+  if (!L) return;
+  const g = L.groups.find(x => x.key === key);
+  const box = $('#lxg-' + key);
+  if (!g || !box) { renderAll(); return; }
+  box.outerHTML = lexGroupHtml(g);
+  bindLexicon();
+  const st = $('#lxStatus');
+  if (st) st.innerHTML = lexStatusHtml();
+}
+
+function bindLexicon() {
+  const adm = !!(state.auth && state.auth.isAdmin);
+  if (!adm || !state.lex) return;
+  const pane = $('#pane');
+  pane.querySelectorAll('[data-lx-del]').forEach(b => {
+    b.onclick = () => {
+      const g = state.lex.groups.find(x => x.key === b.dataset.lxDel);
+      if (!g) return;
+      g.words = g.words.filter(w => w !== b.dataset.lxW);
+      state.lexDirty = true;
+      paintLexGroup(b.dataset.lxDel);
+    };
+  });
+  pane.querySelectorAll('[data-lx-in]').forEach(inp => {
+    const key = inp.dataset.lxIn;
+    const go = () => addLexWord(key, inp);
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+    const btn = pane.querySelector(`[data-lx-add="${key}"]`);
+    if (btn) btn.onclick = go;
+  });
+}
+
+async function addLexWord(key, inp) {
+  const L = state.lex;
+  if (!L) return;
+  const w = String(inp.value || '').trim();
+  if (!w) return;
+  const g = L.groups.find(x => x.key === key);
+  if (!g) return;
+  if (g.words.indexOf(w) >= 0) { toast('「' + w + '」已经在库里了', 'err'); return; }
+  // ★ 红线只在主进程判：拿整份库 + 这个词去 dryRun 预检，通过了才真的进界面列表
+  const payload = L.groups.map(x => ({ key: x.key, words: x.key === key ? x.words.concat([w]) : x.words.slice() }));
+  inp.disabled = true;
+  const r = await appApi.hotwordsSave(payload, { dryRun: true }).catch(() => null);
+  inp.disabled = false;
+  if (!r || !r.ok) { toast('主进程没回应，这次没加进去', 'err'); return; }
+  if (r.rejected.length) { toast('「' + r.rejected[0].word + '」不能进库：' + r.rejected[0].why, 'err'); return; }
+  g.words.push(w);
+  state.lexDirty = true;
+  paintLexGroup(key);
+  const ni = $('#pane').querySelector(`[data-lx-in="${key}"]`);
+  if (ni) { ni.value = ''; ni.focus(); }
+}
+
+
 /* ---------------- ⑨ 品牌与权限 ---------------- */
 /*
  * 为什么从「设置」里拆出来单独成页：
@@ -1537,6 +1704,11 @@ function renderAll() {
   if (state.tab === 11) refreshCloudState();
   // 运行日志页：行是渲染后单独铺的（而且要保住筛选框的光标，不能整页重画）
   if (state.tab === 10) bindLogPane();
+  // 热词库页：绑定增删改；第一次进这一页自动读一次
+  if (state.tab === 12) {
+    bindLexicon();
+    if (!state.lex && !state.lexBusy && !state.lexTried) loadLexicon();
+  }
   if (state.tab === 8) {
     bindStats();
     // 第一次进这个页签自动读一次；statsTried 防止查询失败时无限重试（那只会在 render→load→render 里打转）
@@ -2128,6 +2300,33 @@ const ACTS = {
     openCloudModal('export');
   },
   'cloud:imp': () => openCloudModal('import'),
+  // ---- 热词库（左侧第 12 页）----
+  // ★ 改的是**全员**的生成口径，真正拦住的是主进程那两个 guardAdmin（这里只是把话说清楚）。
+  'lex:save': async () => {
+    const L = state.lex;
+    if (!L) return;
+    const r = await appApi.hotwordsSave(L.groups.map(g => ({ key: g.key, words: g.words.slice() }))).catch(() => null);
+    if (!r || !r.ok) { toast((r && r.error) || '保存失败', 'err'); return; }
+    state.lex = r.library;
+    state.lexDirty = false;
+    if (r.rejected.length) {
+      toast(`有 ${r.rejected.length} 个词没进库：` + r.rejected.map(x => `「${x.word}」${x.why}`).join('；'), 'err');
+    } else if (r.warnings.length) {
+      toast('已保存，但有要留意的地方：' + r.warnings.join('；'), 'err');
+    } else {
+      toast('词库已保存 —— 下一次生成标题就会用新词（不用重启）');
+    }
+    renderAll();
+  },
+  'lex:reset': async () => {
+    if (!window.confirm('恢复内置词库？\n\n你在这一页做的增删改会全部丢弃，回到程序自带的那 8 组词。')) return;
+    const r = await appApi.hotwordsReset().catch(() => null);
+    if (!r || !r.ok) { toast((r && r.error) || '恢复失败', 'err'); return; }
+    state.lex = r.library;
+    state.lexDirty = false;
+    toast('已恢复内置词库');
+    renderAll();
+  },
   'cloud:close': () => closeCloudModal(),
   'cloud:copy': async () => {
     const t = document.querySelector('#cmText');

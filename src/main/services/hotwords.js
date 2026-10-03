@@ -1,4 +1,5 @@
 'use strict';
+const store = require('../store');   // 用户版词库存 config.json（copy.hotwords）；本文件持有出厂基线
 /**
  * 标题「产品词 × 热门词」用的内置词包。
  *
@@ -108,18 +109,192 @@ const STYLES = [
   { code: 'T10', name: '单品+自带+人群感', formula: '单品 + 「自带」 + 「人群」组词', sample: '{色}羽绒服自带少年感' }
 ];
 
-/** 全部热词（`{色}` 模板原样保留，比对时另有 `HOT_RE`） */
-const ALL_WORDS = GROUPS.reduce((a, g) => a.concat(g.words), []);
-
 /** 第 i 行该用哪种标题格式（轮换；`copy.rotateStrategy='随机'` 时由上层决定顺序，这里只按序取） */
 function styleOf(i) {
   const n = Number(i) || 0;
   return STYLES[((n % STYLES.length) + STYLES.length) % STYLES.length];
 }
 
+/* ============================ 可编辑词库 ============================
+ * ★★ 2026-10-03（用户拍板开工）：「热词库」单开一屏，能增删改、能恢复内置。
+ *
+ * 三层，各有各的边界，**别混**：
+ *   ① `GROUPS`（上面）＝**出厂基线**。本文件是它的**唯一**来源；`config.json` 里没存过就永远用它。
+ *      ⇒ 于是「恢复内置」＝把 `copy.hotwords` 置回 `null`，不需要再抄一份内置词到别处。
+ *   ② `copy.hotwords` ＝**用户版**，只存**可编辑组**。读的时候**按组名合并**：
+ *      某组在用户版里有 ⇒ 用用户版；没有 ⇒ 用基线。这样以后代码里加组 / 改组，老数据也不会错位。
+ *   ③ `STYLES`（T01~T10 句式骨架）＝**语法**，任何情况下**不可编辑**（改坏会直接产出病句，
+ *      而判据只能事后告警、拦不住）。
+ *
+ * ★★ 读法必须是**函数**（`currentGroups()` / `allWords()`）而不是常量 —— 常量在 `require` 时只算一次，
+ *    界面改完**不重启就不生效**，而界面看起来一切正常 ⇒ 这种「改了没反应」最难查。
+ * ★★ 「收尾」组这一版**锁定**（用户 2026-10-03：先不放开编辑）—— 它仍参与生成（词照给），
+ *    只是不出现在编辑界面里。
+ */
+
+/** 界面上可编辑的组（顺序即界面顺序） */
+const EDITABLE_GROUPS = ['风格', '氛围', '色感', '场景', '人群', '季节', '情绪'];
+
+/** 锁定的组：参与生成，但不给编辑 */
+const LOCKED_GROUPS = ['收尾'];
+
+/** 红线 1：材质 / 参数类 —— 这是「这件衣服的客观事实」，必须图里看得见或货号有写，词库给不了 */
+const FORBIDDEN_SPEC_RE = /鹅绒|鸭绒|充绒|含绒量|克重|加厚|防风|防水|羊毛|羊绒|德绒|石墨烯|摇粒绒|白鸭绒|质检|含量|参数|纯棉|全棉|真丝|冰丝|莱赛尔|莫代尔/;
+
+/**
+ * 红线 2：极限词（广告法不让写）；与 copywriter 的 system 提示词同一口径。
+ * ★ 别写成 `/第一/` —— 实测会把内置词「入冬第一件」拦下来（它是「入冬的第一件外套」，不是极限表达）。
+ *   红线必须**先放过自己的基线**，所以这里只拦真正带断言性的说法，
+ *   并且有 `baselineViolations()` 做常驻自检（基线一踩红线，测试就红）。
+ */
+const FORBIDDEN_AD_RE = /最|顶级|极致|国家级|世界级|绝对|唯一|百分百|100%|第一名|全网第一|销量第一|第一品牌|首屈一指|史上|空前|绝无仅有/;
+
+/** 红线 3：别的平台名 */
+const FORBIDDEN_PLATFORM_RE = /淘宝|天猫|京东|拼多多|抖音|快手|小红书|唯品会|得物/;
+
+/** 三条红线的人话说明（界面与告警共用一份，别在渲染层再抄一遍） */
+const REDLINES = [
+  '材质 / 参数词不许进（鹅绒、充绒量、加厚、防风防水…）—— 那是这件衣服的客观事实，必须图里看得见或货号有写，词库给不了，写出来等于造假',
+  '极限词、别的平台名不许进（最 / 第一 / 顶级 / 淘宝 / 抖音…）',
+  '{色} 是占位符，留着它这组词才会跟着**本行给的颜色**走；删光就写死颜色了'
+];
+
+/** 用户版（`config.json` 的 `copy.hotwords`）；没存过 / 结构不对 ⇒ 返回 null（＝用基线） */
+function savedGroups() {
+  try {
+    const v = store.get('copy.hotwords');
+    return (v && Array.isArray(v.groups)) ? v.groups : null;
+  } catch (e) { return null; }   // 读不到就当没改过，绝不让生成因它报错
+}
+
+/** 当前生效的词库（用户版 ∪ 基线，按组名合并；锁定组永远取基线）。**每次现取** */
+function currentGroups() {
+  const saved = savedGroups();
+  const byKey = {};
+  if (saved) for (const g of saved) if (g && g.key) byKey[String(g.key)] = g;
+  return GROUPS.map(bg => {
+    if (LOCKED_GROUPS.indexOf(bg.key) >= 0) {
+      return { key: bg.key, words: bg.words.slice(), locked: true };
+    }
+    const sg = byKey[bg.key];
+    if (sg && Array.isArray(sg.words)) {
+      return { key: bg.key, words: sg.words.map(w => String(w)).slice(), locked: false };
+    }
+    return { key: bg.key, words: bg.words.slice(), locked: false };
+  });
+}
+
+/** 当前全部热词（`{色}` 模板原样保留）。★ 函数，不是常量 —— 见文件头 */
+function allWords() {
+  return currentGroups().reduce((a, g) => a.concat(g.words), []);
+}
+
+/** 用户版是否**真的**与基线不同（只是存过一份一模一样的副本 ⇒ 不算改过，界面不该显示「已修改」） */
+function isCustom() {
+  const saved = savedGroups();
+  if (!saved) return false;
+  const map = {};
+  for (const g of saved) if (g && g.key) map[String(g.key)] = g.words;
+  return EDITABLE_GROUPS.some(k => {
+    const b = GROUPS.find(x => x.key === k);
+    const u = map[k];
+    if (!b) return false;
+    if (!Array.isArray(u)) return true;
+    const bu = b.words;
+    return u.length !== bu.length || bu.some((w, i) => w !== String(u[i]));
+  });
+}
+
+/**
+ * ★★ 常驻自检：**出厂基线里不许有任何一个词踩自己的红线**。
+ *   （实测踩过：红线 2 原本写成 `/第一/`，把内置词「入冬第一件」拦了 —— 于是用户一进界面
+ *    什么都没改，先在预检里收到一条「极限词」告警。红线与基线必须互相自洽。）
+ */
+function baselineViolations() {
+  return sanitizeWords(GROUPS.reduce((a, g) => a.concat(g.words), [])).rejected;
+}
+
+/** 逐词过三条红线 + 去重；返回 `{words, rejected:[{word,why}]}` */
+function sanitizeWords(words) {
+  const out = [], rejected = [], seen = {};
+  for (const raw of (words || [])) {
+    const w = String(raw == null ? '' : raw).trim();
+    if (!w) continue;
+    if (w.length > 24) { rejected.push({ word: w, why: '太长（超过 24 字，标题装不下）' }); continue; }
+    if (/[\r\n]/.test(w)) { rejected.push({ word: w.replace(/[\r\n]/g, ' '), why: '不许带换行' }); continue; }
+    if (FORBIDDEN_SPEC_RE.test(w)) { rejected.push({ word: w, why: '材质 / 参数词（红线 1）' }); continue; }
+    if (FORBIDDEN_AD_RE.test(w)) { rejected.push({ word: w, why: '极限词（红线 2）' }); continue; }
+    if (FORBIDDEN_PLATFORM_RE.test(w)) { rejected.push({ word: w, why: '别的平台名（红线 3）' }); continue; }
+    if (seen[w]) continue;
+    seen[w] = 1;
+    out.push(w);
+  }
+  return { words: out, rejected };
+}
+
+/**
+ * 校验一份「用户版词库」提交（界面点保存 / 加词预检都走这里）。
+ * 入参 `[{key, words:[...]}, ...]`；返回 `{groups, rejected, warnings}`。
+ * ★ `groups` 里**只含可编辑组** —— 锁定组（收尾）与 T01~T10 骨架**绝不落盘**，
+ *   这样将来解锁 / 改骨架都不会被老数据顶住。
+ */
+function sanitizeLibrary(input) {
+  const rejected = [], warnings = [], groups = [];
+  const arr = Array.isArray(input) ? input : ((input && Array.isArray(input.groups)) ? input.groups : []);
+  const byKey = {};
+  for (const g of arr) if (g && g.key) byKey[String(g.key)] = g;
+  for (const key of EDITABLE_GROUPS) {
+    const src = byKey[key];
+    // ★★ 缺失 ⇒ **沿用基线**（不是清空）——渲染层少传一个组不该把那组词悄悄清掉；
+    //   真要清空，得显式传 `words: []`（那时才给告警）。
+    const base = GROUPS.find(g => g.key === key);
+    const r = src ? sanitizeWords(src.words) : { words: (base ? base.words.slice() : []), rejected: [] };
+    for (const x of r.rejected) rejected.push({ group: key, word: x.word, why: x.why });
+    if (!r.words.length) warnings.push(`「${key}」组是空的 —— 这一组将不给模型任何词`);
+    if (key === '色感' && r.words.length && !r.words.some(w => w.indexOf('{色}') >= 0)) {
+      warnings.push('「色感」组里已经没有 {色} 占位词 —— 颜色不会再跟着本行颜色走（会写死）');
+    }
+    groups.push({ key, words: r.words });
+  }
+  return { groups, rejected, warnings };
+}
+
+/** 保存用户版（只落可编辑组）。`dryRun` 只校验不写盘（界面「加一个词」的预检用） */
+function saveLibrary(input, opts) {
+  const r = sanitizeLibrary(input);
+  const dry = !!(opts && opts.dryRun);
+  if (!dry) { store.set({ copy: { hotwords: { groups: r.groups, updatedAt: new Date().toISOString() } } }); }
+  return { ok: true, dryRun: dry, rejected: r.rejected, warnings: r.warnings, library: libraryView() };
+}
+
+/** 恢复内置：置回 null（不需要把内置词抄一遍） */
+function resetLibrary() {
+  store.set({ copy: { hotwords: null } });
+  return { ok: true, library: libraryView() };
+}
+
+/** 给界面用的一次性快照（含只读的骨架与红线文案，避免渲染层再抄一份） */
+function libraryView() {
+  const saved = store.get('copy.hotwords');
+  return {
+    ok: true,
+    groups: currentGroups(),
+    baseline: GROUPS.map(g => ({ key: g.key, words: g.words.slice(), locked: LOCKED_GROUPS.indexOf(g.key) >= 0 })),
+    editable: EDITABLE_GROUPS.slice(),
+    locked: LOCKED_GROUPS.slice(),
+    styles: STYLES.map(s => ({ code: s.code, name: s.name, formula: s.formula, sample: s.sample })),
+    redlines: REDLINES.slice(),
+    isCustom: isCustom(),
+    updatedAt: (saved && saved.updatedAt) || '',
+    wordTotal: allWords().length
+  };
+}
+
 /** 热词库 + 句式清单，拼进 system 用。 */
 function promptBlock() {
-  const lib = GROUPS.map(g => `· ${g.key}：${g.words.join(' / ')}`).join('\n');
+  // ★★ 2026-10-03：改读 `currentGroups()`（每次现取）—— 词库现在可在「热词库」页编辑，
+  //    继续读常量 `GROUPS` 会让界面上改的内容**永远不生效**，而且不报错、最难查。
+  const lib = currentGroups().map(g => `· ${g.key}：${g.words.join(' / ')}`).join('\n');
   const styles = STYLES.map(s => `${s.code} ${s.name} —— ${s.formula}（形状示例：${s.sample}）`).join('\n');
   return `【标题热词库】按「角色」分好组了，挑一个本行用得上的：
 ${lib}
@@ -137,4 +312,12 @@ ${styles}
    **颜色也要换成本行的颜色** —— 本行颜色「酒红」就写「酒红调慵懒风」，不许照抄示例里的「灰」/「蓝」。`;
 }
 
-module.exports = { GROUPS, STYLES, ALL_WORDS, styleOf, promptBlock };
+module.exports = {
+  // 出厂基线 + 骨架（骨架不可编辑）
+  GROUPS, STYLES, styleOf, promptBlock,
+  // 可编辑词库（★ 都是函数 / 现取，别在调用方缓存成常量）
+  EDITABLE_GROUPS, LOCKED_GROUPS, REDLINES,
+  currentGroups, allWords, isCustom,
+  sanitizeWords, sanitizeLibrary, saveLibrary, resetLibrary, libraryView,
+  baselineViolations
+};

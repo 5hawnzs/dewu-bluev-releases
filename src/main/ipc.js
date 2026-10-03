@@ -12,6 +12,7 @@ const imaging = require('./services/imaging');
 const video = require('./services/video');   // ★ 不许漏：config:set 里改 ffmpeg 路径要立刻生效（漏了＝ReferenceError，接口直接报错）
 const cloudsync = require('./services/cloudsync');   // 云端协作（可选）：只上行发布结果，发布核心不依赖它
 const pool = require('./services/pool');
+const hotwords = require('./services/hotwords');   // 标题热词库（读写 + 红线校验都在它里面）
 const stats = require('./services/stats');
 const adb = require('./services/adb');
 const updater = require('./updater');
@@ -250,6 +251,14 @@ function register() {
     if (patch && patch.cloud) cloudsync.configure();
     return store.get();
   }));
+
+  // ---- 标题热词库（左侧「热词库」页）----
+  // ★ 读：所有登录用户（标题到底从哪些词里挑，谁都能看，免得「词库黑箱」）；
+  // ★ 写：**只有管理员** —— 改的是**全员**的生成口径（一个词错一版，整批标题一起漂），
+  //   与「高级设置」同类。藏按钮只是不添乱，真正拦住的是下面这两个 guardAdmin。
+  ipcMain.handle('hotwords:get', guard(() => hotwords.libraryView()));
+  ipcMain.handle('hotwords:save', guardAdmin((_e, groups, opts) => hotwords.saveLibrary(groups, opts)));
+  ipcMain.handle('hotwords:reset', guardAdmin(() => hotwords.resetLibrary()));
 
   // ---- 云端协作（阶段 1）----
   // ★ 一律 guardAdmin：地址与 anon key 是整台机器共用的凭据，普通成员不该看、更不该改。

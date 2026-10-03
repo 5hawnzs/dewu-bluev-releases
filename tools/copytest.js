@@ -417,8 +417,8 @@ function startServer() {
   //   那些是这件衣服的客观事实，得图里看得见或货号有写；词库里给了就等于教模型造假。
   const SPEC_RE = /鹅绒|鸭绒|充绒|含绒量|克重|加厚|防风|防水|羊毛|羊绒|德绒|石墨烯|摇粒绒|白鸭绒|质检|含量|参数/;
   ok('③b ★ 热词库不含「材质 / 参数」类词（图里看不出来，写出来就是造假）',
-    hotwords.ALL_WORDS.every(w => !SPEC_RE.test(w)),
-    hotwords.ALL_WORDS.filter(w => SPEC_RE.test(w)).join('、') || '无');
+    hotwords.allWords().every(w => !SPEC_RE.test(w)),
+    hotwords.allWords().filter(w => SPEC_RE.test(w)).join('、') || '无');
   ok('③b 热词库按角色分组，每个角色都有词',
     hotwords.GROUPS.every(g => Array.isArray(g.words) && g.words.length > 0 && !!g.key),
     hotwords.GROUPS.map(g => `${g.key}:${g.words.length}`).join(' '));
@@ -744,6 +744,84 @@ function startServer() {
   ok('⑩ 「不送图」写的是字符串 "false" 也认（界面上存下来就是字符串）',
     copywriter.cfgOf().vision === true
     && (store.set({ copy: { llm: { vision: 'false' } } }), copywriter.cfgOf().vision === false));
+
+  /* ---- ⑬ 可编辑词库：改了到底吃不吃得到（2026-10-03 新增功能）----
+     ★ 这组断言的核心**不是**「源码里有 currentGroups 这行字」，而是**行为**：
+       把词写进配置 ⇒ 模型看到的那段提示词里真出现它；★ 且**事后判据**也同步（最容易漏的一处）；
+       「恢复内置」⇒ 真的回到基线。反向验证时逐条拆，见 REFERENCE §AA4。 */
+  const NEWW = '测试词ZZZ';
+  const baseWordCount = hotwords.allWords().length;
+  ok('⑬ 出厂基线 8 组 / 64 词（含锁定的收尾组）',
+    baseWordCount === 64 && hotwords.currentGroups().length === 8, baseWordCount + ' 词');
+  ok('⑬ ★ 出厂基线不许踩自己的红线（红线改宽、基线加词，这一条都会红 —— 实测踩过「入冬第一件」被 /第一/ 拦下）',
+    hotwords.baselineViolations().length === 0, JSON.stringify(hotwords.baselineViolations()));
+  ok('⑬ 出厂 copy.hotwords 是 null（不预置业务数据；「留空 = 用内置基线」）',
+    store.defaults().copy.hotwords === null);
+  ok('⑬ 没改过时 isCustom()=false，全库不含测试词',
+    hotwords.isCustom() === false && hotwords.allWords().indexOf(NEWW) < 0);
+  ok('⑬ 收尾组在库里、标了 locked（照样参与生成，只是不给编辑）', (() => {
+    const g = hotwords.currentGroups().find(x => x.key === '收尾');
+    return !!g && g.locked === true && g.words.length === 12;
+  })(), JSON.stringify((hotwords.currentGroups().find(x => x.key === '收尾') || {}).words || []).slice(0, 40));
+  ok('⑬ 可编辑组正好 7 组，且不含收尾',
+    hotwords.EDITABLE_GROUPS.length === 7 && hotwords.EDITABLE_GROUPS.indexOf('收尾') < 0,
+    hotwords.EDITABLE_GROUPS.join('/'));
+  ok('⑬ T01~T10 骨架一个不少、都是有 code 的对象（骨架不许被做成可编辑）',
+    hotwords.STYLES.length === 10 && hotwords.STYLES.every(s => !!s.code && !!s.sample));
+  ok('⑬ 出厂基线里没有材质 / 参数词（与 ③b 同一口径，这里再钉一次）',
+    hotwords.allWords().every(w => !SPEC_RE.test(w)),
+    hotwords.allWords().filter(w => SPEC_RE.test(w)).join('、') || '无');
+
+  const curLib = hotwords.currentGroups().map(g => ({ key: g.key, words: g.words.slice() }));
+  curLib.find(g => g.key === '风格').words.push(NEWW);
+  const lexDry = hotwords.sanitizeLibrary(curLib);
+  ok('⑬ 合法新词通过红线校验', lexDry.rejected.length === 0, JSON.stringify(lexDry.rejected));
+  hotwords.saveLibrary(curLib);
+  ok('⑬ ★ 保存后 isCustom()=true、全库 65 词',
+    hotwords.isCustom() === true && hotwords.allWords().length === baseWordCount + 1,
+    hotwords.allWords().length + ' 词');
+  ok('⑬ ★★ 提示词（模型实际看到的那一段）里真出现了新词 —— 不是「源码里写了这行字」',
+    hotwords.promptBlock().indexOf(NEWW) >= 0);
+  ok('⑬ ★★ 事后判据同步：copycheck.prefixWords() 里真出现了新词（这处最容易漏改）',
+    copycheck.prefixWords().indexOf(NEWW) >= 0, copycheck.prefixWords().length + ' 个前缀热词');
+  ok('⑬ ★★ 行为级：拿「新词开头 + 单品结尾」的标题喂判据，必须被判成标签串',
+    copycheck.looksLikeWordPaste(NEWW + '羽绒服') === true);
+  ok('⑬ 正向对照：正常成句的标题不被误判', copycheck.looksLikeWordPaste('羽绒服才是过冬的答案') === false);
+
+  const lexRej = hotwords.sanitizeLibrary([{ key: '风格', words: ['简约百搭', '鹅绒', '顶级', '淘宝'] }]);
+  ok('⑬ 红线：材质 / 极限 / 别的平台名一律被拒，合法词保留',
+    lexRej.rejected.length === 3 && lexRej.groups.find(g => g.key === '风格').words.join() === '简约百搭',
+    JSON.stringify(lexRej.rejected.map(x => x.word)));
+  ok('⑬ ★ 缺失的组＝沿用基线（渲染层少传一个组，不许把那组词悄悄清掉）',
+    hotwords.sanitizeLibrary([{ key: '风格', words: ['简约百搭'] }]).groups.find(g => g.key === '氛围').words.length === 8);
+  ok('⑬ ★ 收尾组与 T01~T10 骨架**不落盘**（保存下来的东西里连「收尾」都不该出现）',
+    JSON.stringify(store.get('copy.hotwords')).indexOf('收尾') < 0);
+  ok('⑬ {色} 占位被删光时给出告警（那时颜色就不会跟着本行颜色走了）',
+    hotwords.sanitizeLibrary([{ key: '色感', words: ['高级感'] }]).warnings.some(s => s.indexOf('{色}') >= 0));
+
+  /* ---- ⑭ 本地模板那条路**本来就不读词库** ----
+     ★ 不钉住的话，将来会有人把「关掉模型后标题没变」报成「词库没生效」的 bug。
+       这里趁着词库还带着测试词，跑一条**关模型**的批次，标题里必须**不含**它。 */
+  store.set({ copy: { llm: { enabled: false } } });
+  const lxLocal = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '词库本地批', label: '词库本地批' });
+  let lxLocalTitles = [];
+  try {
+    const lc = JSON.parse(fs.readFileSync(path.join(TMP, '输出', 'batches', '词库本地批', 'copy.json'), 'utf8'));
+    lxLocalTitles = (lc.rows || []).map(r => String(r.title || ''));
+  } catch (e) { /* 读不到就空数组 ⇒ 下面会红 */ }
+  ok('⑭ ★ 关掉模型走本地模板时，标题里不含词库新词（＝这条路不读词库，不是「没生效」）',
+    lxLocalTitles.length > 0 && lxLocalTitles.every(t => t.indexOf(NEWW) < 0),
+    lxLocalTitles.length + ' 条：' + lxLocalTitles.slice(0, 2).join(' | '));
+
+  /* ---- ⑮ 恢复内置 ---- */
+  hotwords.resetLibrary();
+  ok('⑮ 恢复内置后 isCustom()=false、全库回到 64 词',
+    hotwords.isCustom() === false && hotwords.allWords().length === 64, hotwords.allWords().length + ' 词');
+  ok('⑮ 恢复内置后提示词里的测试词消失', hotwords.promptBlock().indexOf(NEWW) < 0);
+  ok('⑮ 恢复内置后判据里的测试词也消失', copycheck.prefixWords().indexOf(NEWW) < 0);
+  ok('⑮ ★ 恢复内置写回的是 null，不是「和基线一样的一份副本」（否则以后改基线顶不动老机器）',
+    store.get('copy.hotwords') === null, JSON.stringify(store.get('copy.hotwords')));
+
 
   srv.close();
   srvRef = null;

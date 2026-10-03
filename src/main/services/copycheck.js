@@ -179,11 +179,20 @@ const PASTE_SEP = /[，。、；：！？,.;:!?\s—～~·•/]/;
 /** 「前缀热词」= 这些组里的词贴在标题最前面，最容易变成标签串 */
 const PREFIX_GROUPS = ['风格', '氛围', '色感', '人群', '情绪', '季节', '场景'];
 
-/** 拆出来的前缀热词（`{色}` 模板留着没意义，剔掉） */
-const PREFIX_WORDS = hotwords.GROUPS
-  .filter(g => PREFIX_GROUPS.indexOf(g.key) >= 0)
-  .reduce((a, g) => a.concat(g.words.filter(w => w.indexOf('{色}') < 0)), [])
-  .sort((a, b) => b.length - a.length);
+/**
+ * 拆出来的前缀热词（`{色}` 模板留着没意义，剔掉）。
+ *
+ * ★★ 2026-10-03：从「模块加载期算好的常量」改成**函数**。词库现在可在「热词库」页编辑，
+ *   常量只在 `require` 时算一次 ⇒ 改完词库**不重启就不生效**：标题用了用户新加的词，
+ *   这里还拿旧表去判 ⇒ **误报「像标签串」或漏报**，且界面全绿。所以改成每次现取。
+ * ★ 末尾那个按词长倒序的 `sort` **只为了输出稳定好排查**（调用方是 `.some()`，顺序不影响判定结果）。
+ */
+function prefixWords() {
+  return hotwords.currentGroups()
+    .filter(g => PREFIX_GROUPS.indexOf(g.key) >= 0)
+    .reduce((a, g) => a.concat(g.words.filter(w => w.indexOf('{色}') < 0)), [])
+    .sort((a, b) => b.length - a.length);
+}
 
 /** 太短的标题（如「学院风夹克」5 字）本来就是正常名词短语，不判标签串 */
 const PASTE_MIN_LEN = 6;
@@ -203,7 +212,7 @@ function looksLikeWordPaste(title) {
   const t = stripEmoji(String(title == null ? '' : title)).trim();
   if (!t) return false;
   if (textLen(t) < PASTE_MIN_LEN) return false;
-  if (!PREFIX_WORDS.some(w => t.startsWith(w))) return false;
+  if (!prefixWords().some(w => t.startsWith(w))) return false;
   if (!GARMENTS.some(g => t.endsWith(g))) return false;
   if (LINKERS.some(c => t.includes(c))) return false;
   if (PASTE_SEP.test(t)) return false;
@@ -396,7 +405,7 @@ function checkBatch(rows) {
 module.exports = {
   check, checkBatch, colorWordsIn, declaredColorsIn, textLen, hasEmoji, stripEmoji, emojiCount,
   BANNED, GARMENTS, DESCRIPTORS, DESCRIPTOR_MAX, COLOR_TAIL_SKIP,
-  PASTE_SYMBOLS, LINKERS, PREFIX_WORDS, PASTE_MIN_LEN, looksLikeWordPaste,
+  PASTE_SYMBOLS, LINKERS, prefixWords, PASTE_MIN_LEN, looksLikeWordPaste,
   TITLE_MAX, BODY_MIN, BODY_MAX,
   BODY_LINES_MIN, BODY_LINES_MAX, BODY_LINES_SOFT_MAX, BODY_LINE_MAX, BODY_EMOJI_MAX
 };

@@ -54,7 +54,11 @@ function defaults() {
         enabled: false, endpoint: '', apiKey: '', model: '', temperature: 0.9,
         vision: true, imageCount: 2, imageMaxSide: 768, timeoutSec: 90
       },
-      pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] }   // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
+      pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] },  // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
+      // ★★ 标题热词库的用户版（「热词库」页保存的）。**出厂必须是 null** —— 不许预置业务数据：
+      //   null = 用 hotwords.js 里的内置基线；存了 = 用户改过的版本（按组名合并，见 currentGroups）。
+      //   「恢复内置」＝置回 null。收尾组与 T01~T10 骨架**不落这里**（它们不可编辑）。
+      hotwords: null
     },
     // 真机是调接口查得物后台（SKU APIKey），查不到仅告警不阻断
     verify: {
