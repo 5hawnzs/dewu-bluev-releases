@@ -633,14 +633,20 @@ TABS[6] = {
     const sh = state.project.sheet || {};   // 发布单 xlsx（原「发布单」页那一行挪到这儿）
     const mode = pub.mode || 'mock';
     const rows = pub.rows || [];
-    // 与主进程 publisher.estimate 同一口径：图文「间隔+30s」、视频「间隔+60s」（视频推得久，还要等媒体库索引）
+    // ★★ 当前生效的发布间隔秒数。**0 是合法值**（连续发布：发完一条直接发下一条），
+    //   所以这里不能写 `cfg.intervalSec || 60` —— 那样 0 会被兜成 60，
+    //   用户明明选了「连续发布」，界面却按 60 秒算/显示（而主进程那边是按 0 跑的）。
+    const ivRaw = Number(cfg.intervalSec);
+    const ivNow = (cfg.intervalSec === '' || cfg.intervalSec === null || cfg.intervalSec === undefined
+      || !Number.isFinite(ivRaw)) ? 60 : ivRaw;
+    // ★ 与主进程 publisher.estimate 同一口径（gapSecFor）：图文「间隔+30s」、视频「间隔+60s」
+    //   （视频推得久，还要等媒体库索引）。
+    //   视频间隔只在 >0 时单独生效；0 的含义是「跟随主间隔」，与主间隔的 0 = 连续不是一回事。
+    const vRaw = Number(cfg.videoIntervalSec);
+    const vSec = Number.isFinite(vRaw) && vRaw > 0 ? vRaw : ivNow;
     const est = Math.round(rows.reduce((a, r) => {
       const isV = r.kind === 'video';
-      // ★ 与主进程 publisher.estimate 同一口径（原先这里取的是 intervalMin/MaxSec 的平均，
-      //   而真跑的是 intervalSec —— 两个数不一样，界面上的「预计」会偏）。
-      const iv = cfg.intervalSec || cfg.intervalMinSec || 60;
-      const gap = isV ? (cfg.videoIntervalSec || Math.round(iv * 1.5)) : iv;
-      return a + gap + (isV ? 60 : 30);
+      return a + (isV ? vSec : ivNow) + (isV ? 60 : 30);
     }, 0) / 60);
     const okCount = rows.filter(r => r.result === '发布成功').length;
     return `
@@ -660,11 +666,14 @@ TABS[6] = {
         <div class="row" style="margin-top:10px">
           <span class="lbl">发布间隔</span>
           <select class="inp" data-cfg="publish.intervalSec">
-            ${[30, 60, 90, 120].map(v => `<option value="${v}" ${Number(cfg.intervalSec || 60) === v ? 'selected' : ''}>固定 ${v} 秒</option>`).join('')}
+            <option value="0" ${ivNow === 0 ? 'selected' : ''}>连续发布 · 发完一条直接发下一条</option>
+            ${[30, 60, 90, 120].map(v => `<option value="${v}" ${ivNow === v ? 'selected' : ''}>固定 ${v} 秒</option>`).join('')}
           </select>
           <!-- ★ 2026-10-03 用户要求：发布失败不重试 ⇒「失败重试 N 次」这个下拉与 publish.retry 配置整项删除。
                失败只影响那一条（写「发布失败，原因xxx」），要再发一次就点行尾的「重跑」——那是人点的新任务。 -->
         </div>
+        ${ivNow === 0 ? '<p class="hint" style="margin-top:6px">★ 已选 <b>连续发布</b>：上一条发完直接发下一条，中间<b>不再等待</b>。'
+          + '注意单条本身仍要花 ≈30 秒（视频 ≈60 秒）—— 那是设备上的真实耗时（推素材 / 上传 / 填内容），不是间隔。</p>' : ''}
         <div class="row" style="margin-top:10px">
           <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
           ${((cfg.uiMap || {}).steps ? '' : (canAdmin() ? '<button class="btn sm" data-act="go:advanced">去「高级设置」配 UI 定位表</button>' : ''))}
@@ -674,7 +683,9 @@ TABS[6] = {
           <span class="chip">批次 ${esc(pub.batch || '（导出发布单后自动命名）')}</span>
         </div>
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
-        <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒（视频 ≈60 秒，还要等媒体库索引）+ 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。缩短间隔要你自己拍板，默认值按实测给的是 60–120 秒（视频默认 90 秒）。</p>
+        <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒（视频 ≈60 秒，还要等媒体库索引）${ivNow === 0
+          ? '。<b>当前是连续发布，两条之间不再叠加等待</b> —— 上面的预计就是设备真实耗时本身，不是"等待"堆出来的。'
+          : ' + 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。间隔多长你自己拍板；视频想单独放宽，在配置里设 videoIntervalSec，不设就跟主间隔。'}</p>
         <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
           报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
           并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
@@ -1491,14 +1502,18 @@ function devicesHtml() {
     </tr>`).join('')}</tbody></table></div>`
     : `<div class="empty">还没有设备。点下面「扫描设备」—— 模拟器开着的话它会直接列出来，点一下「加入并使用」就行。</div>`;
   // 还没加进列表的那些：直接给「加入并使用」——用户不必知道 emulator-5554 这种名字
-  const fresh = (found || []).filter(f => !f.configured);
+  // ★ 2026-10-03：同一个模拟器会被 adb 在多个端口上各报一次（16384 / 5555 / 7555）。
+  //   重复的（dupOf 非空的）不再单列 —— 否则用户会以为自己开了两台、不知道该选哪个。
+  const fresh = (found || []).filter(f => !f.configured && !f.dupOf);
   const freshBox = fresh.length ? `
     <div style="margin-top:10px">
       <div class="hint" style="margin:0 0 6px">adb 现在认到这些设备（还没加进来）：</div>
       <div class="tw"><table>
         <thead><tr><th>序列号</th><th>状态</th><th></th></tr></thead>
         <tbody>${fresh.map(f => `<tr>
-          <td class="mono">${esc(f.serial)}</td>
+          <td class="mono">${esc(f.serial)}${(f.aliases && f.aliases.length)
+            ? `<div class="hint" style="margin:2px 0 0">这台还出现在 ${esc(f.aliases.join(' / '))} —— 同一个模拟器的其它端口，不用管</div>`
+            : ''}</td>
           <td>${f.online ? badge('在线', 'ok') : badge(f.state || '离线', 'wait')}</td>
           <td><button class="btn sm primary" data-act="pub:useFound" data-serial="${esc(f.serial)}"${f.online ? '' : ' disabled'}>加入并使用</button></td>
         </tr>`).join('')}</tbody></table></div>
@@ -2756,12 +2771,16 @@ const ACTS = {
       (r.result.devices || []).forEach(d => { map[d.serial] = d; });
       state.devStatus = map;
       state.devFound = r.result.found || [];
-      const online = state.devFound.filter(d => d.online).length;
-      const fresh = state.devFound.filter(d => !d.configured).length;
-      toast(state.devFound.length
-        ? `adb 认到 ${state.devFound.length} 台设备，${online} 台在线${fresh ? `（其中 ${fresh} 台还没加进来，可直接「加入并使用」）` : ''}`
+      // ★ 同一个模拟器在多个端口上会被 adb 各报一次，去重后才是「几台设备」
+      const uniq = state.devFound.filter(d => !d.dupOf);
+      const online = uniq.filter(d => d.online).length;
+      const fresh = uniq.filter(d => !d.configured).length;
+      const dupN = state.devFound.length - uniq.length;
+      toast(uniq.length
+        ? `adb 认到 ${uniq.length} 台设备，${online} 台在线${fresh ? `（其中 ${fresh} 台还没加进来，可直接「加入并使用」）` : ''}`
+          + (dupN ? `；另有 ${dupN} 个序列号是同一台设备的其它端口，已合并` : '')
         : 'adb 现在一台设备都没认到：先把模拟器启动起来，并确认它开了「ADB 调试」',
-      state.devFound.length ? (online ? 'ok' : '') : 'err');
+      uniq.length ? (online ? 'ok' : '') : 'err');
     }
     renderAll();
   },
@@ -2989,7 +3008,10 @@ async function saveCfgFromDom() {
     if (el.type === 'checkbox') v = el.checked;
     else if (el.dataset.preset === 'interval') { const [a, b] = el.value.split('-'); patch.publish = Object.assign({}, patch.publish, { intervalMinSec: +a, intervalMaxSec: +b }); return; }
     else v = el.value;
-    if (['copy.concurrency', 'copy.extraTopics'].includes(key)) v = Number(v);
+    // ★ publish.intervalSec 必须在里面：它的值是字符串（"0" 也是 truthy），
+    //   存成字符串再走到主进程，加法/比较的地方就会出怪事；而且 "0" 看起来"有值"、
+    //   实际含义是「连续发布」，一定要落成数字 0。
+    if (['copy.concurrency', 'copy.extraTopics', 'publish.intervalSec'].includes(key)) v = Number(v);
     if (key.endsWith('.enabled')) v = v === 'true' || v === true;
     // ★ 这一类是「送图 / 不送图」的开关，值是字符串 'true'/'false'。
     //   漏了这一步就会把 'false' 存成字符串，而主进程里 `'false' !== false` ⇒ 「不送图」白点。

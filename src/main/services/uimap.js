@@ -266,7 +266,7 @@ function fill(step, data) {
 //     所以它只适合版式固定、且下一步能立刻发现异常的格子；动态结果（相册格子 / 颜色卡片 /
 //     商品结果图）**必须**继续用 tapId / tapCardText。要保险就给这一步配 whenOn 屏幕守卫
 //     （守卫本身要抓一次屏，但一屏抓一次，仍比每步都抓便宜）。
-const STEP_ACTIONS = ['tapText', 'tapId', 'tapDesc', 'tapCardText', 'tapXY', 'input', 'wait', 'back', 'screenshot'];
+const STEP_ACTIONS = ['tapText', 'tapId', 'tapDesc', 'tapCardText', 'tapXY', 'input', 'wait', 'waitId', 'back', 'screenshot'];
 
 /**
  * ★ 条件步骤（when / whenNot）—— 2026-10-03 加。
@@ -402,6 +402,23 @@ function normalizeSteps(input, label = 'steps') {
       const ms = Number(step.value);
       if (!Number.isFinite(ms) || ms < 0) throw new Error(`${at}（wait）的 value 要写毫秒数，例如 1500`);
       return Object.assign({}, step, { value: ms }, cond, scr);
+    }
+    // ★★ waitId（2026-10-03 真机实测加）：等到**某一块（resource-id）出现**再往下走。
+    //   专门用在「两屏之间的转场」上（得物「相册 → 图片编辑页」是异步转场）：
+    //   · 只靠 wait（写死毫秒）⇒ 少了会白点下一步（干跑实测卡死在这里），多了白等；
+    //   · 只靠 whenOn 守卫 ⇒ 它判的是「抓的那一刻」，转场没完时这一步会被整步跳过。
+    //   ⇒ 这一步**等到真的出现**才继续；等不到就硬失败并点名等的是什么，绝不硬点。
+    if (action === 'waitId') {
+      const value = String(step.value == null ? '' : step.value).trim();
+      if (!value) {
+        throw new Error(`${at}（waitId）的 value 要写要等的 resource-id，`
+          + `例如 com.shizhuang.duapp:id/edit_panel`);
+      }
+      const tmo = (step.timeout == null || step.timeout === '') ? 10000 : Number(step.timeout);
+      if (!Number.isFinite(tmo) || tmo <= 0) {
+        throw new Error(`${at}（waitId）的 timeout 要写毫秒数（> 0），不写默认 10000`);
+      }
+      return Object.assign({}, step, { value, timeout: tmo }, cond, scr);
     }
     // ★ tapXY：value 必须是 'x,y'（多个点用 ; 分隔）。在**导入时**就挡住空坐标 ——
     //   跑到真机上才发现坐标是空的，等于白点一轮（还可能点到别的界面去）。

@@ -160,12 +160,49 @@ const state = {
   const log = calls();
   ok('真实通道跑完 1 条', r.mode === 'adb' && r.total === 1, `成功 ${r.okCount}/${r.total}`);
   ok('推图 2 张', (log.match(/push /g) || []).length === 2, (log.match(/push .*/g) || []).join(' | '));
-  ok('触发媒体扫描', /MEDIA_SCANNER_SCAN_FILE/.test(log));
+  ok('触发媒体扫描（写进 MediaStore：content call --method scan_file）',
+    /content call --uri content:\/\/media\/external\/file --method scan_file/.test(log));
   ok('点击了「发布」按钮', (log.match(/input tap 162 160/g) || []).length >= 1);
   ok('点击了相册/下一步/关联好物', /input tap 162 280/.test(log) && /input tap 920 2250/.test(log) && /input tap 220 1540/.test(log));
   ok('中文标题走 ADBKeyboard 广播', /ADB_INPUT_TEXT --es msg "白色的鞋谁懂"/.test(log));
   ok('话题也真实输入', /ADB_INPUT_TEXT --es msg "#品牌甲"/.test(log));
   ok('结果标为发布成功', r.rows[0].result === '发布成功', r.rows[0].result);
+
+  // ★★ 2026-10-03 真机事故回归：`state.publish.uiMap` 必须**优先于**配置里的定位表。
+  //   事故经过：publisher 里写的是 `const map = c.uiMap;`（**只读配置**）——
+  //   而 tools/pubsim.js（真机干跑）以为自己传进来的「**已剔除『提交发布』那一步**」的 uiMap
+  //   会被用上，实际被**静默忽略** ⇒ 干跑把「提交发布」**真点了** ⇒ 账号上真的发出去了 2 条内容
+  //   （个人主页动态列表里实测出现「干跑不发布·图文标题」，用户手动删除）。
+  //   ⇒ 必须**行为级**验证（抠出去真跑），不能只看源码里有没有那行字 ——
+  //     那样注释里写一句就假绿，而这正是这次漏掉的原因。
+  //     A) 不传 ⇒ 用配置里的表（正常跑完，作正向对照）
+  //     B) 传一张「一跑就必然报错」的表 ⇒ **必须**按它报错；不报错 = 又被静默忽略了
+  {
+    // 重置 result/status：上面第 4 节已经把同一批行跑成「发布成功」，
+    // 而 run 会跳过 result === '发布成功' 的行 ⇒ 不重置的话 A/B 都不会执行任何步骤，B 会假绿。
+    const mkSt = () => {
+      const st = JSON.parse(JSON.stringify(state));
+      st.publish.rows[0].result = '';
+      st.publish.rows[0].status = '排队';
+      return st;
+    };
+    store.set({ publish: { uiMap: { package: 'com.shizhuang.duapp',
+      steps: [{ name: '配置里的步', action: 'wait', value: '1' }] } } });
+    // ★ 注意：runReal 抛的异常会被 run 的 try/catch **吞掉**并写成行结果
+    //   （row.result='失败'、row.reason=错误消息）⇒ 判据必须看**行的结果**，不是看调用有没有抛错。
+    const rA = await publisher.run(mkSt(), ctx);
+    ok('A) 不传 state.publish.uiMap → 用配置里的定位表（配置表是正常步骤 ⇒ 这行发布成功）',
+      !!rA.rows[0] && rA.rows[0].result === '发布成功', rA.rows[0] && rA.rows[0].result);
+
+    const stB = mkSt();
+    stB.publish.uiMap = { package: 'com.shizhuang.duapp',
+      steps: [{ name: '覆盖表里的坏步', action: 'tapXY', value: '这不是坐标' }] };
+    const rB = await publisher.run(stB, ctx);
+    const whyB = (rB.rows[0] && rB.rows[0].reason) || '';
+    ok('★★ B) 传了 state.publish.uiMap → 必须用它（覆盖表的坏步骤当场判失败；跑成「发布成功」就是又被静默忽略了）',
+      /坐标解析不出来/.test(whyB), whyB || '（这行没失败 —— 说明用的还是配置表，正是 2026-10-03 误发内容的原因）');
+    store.set({ publish: { uiMap } });
+  }
 
   // 4b) ★ 2026-10-03：条件步骤（when / whenNot）+「好物1~3 货号/颜色」占位符
   //     为什么要**行为级**测：这两件事任意一件挂了，真机上的表现都是「静默少做一步」
@@ -499,9 +536,12 @@ const state = {
   ok('⑥ 视频条跑通（走 videoSteps）', rv.total === 1 && rv.okCount === 1, `成功 ${rv.okCount}/${rv.total}`);
   ok('⑥ 推的是视频文件（只推 1 个，不是图片）',
     (vlog.match(/push /g) || []).length === 1 && /push .*短片\.mp4/.test(vlog), (vlog.match(/push .*/g) || []).join(' | '));
-  ok('⑥ 推完真的去查了媒体库（content query）',
+  ok('⑥ ★ 推完真的写进媒体库了（content call … scan_file —— 得物相册读的就是这张表）',
+    /content call --uri content:\/\/media\/external\/file --method scan_file/.test(vlog),
+    (vlog.match(/content call.*/g) || []).join(' | ') || '（一次都没调）');
+  ok('⑥ 推完还确认了「真能看见」（content query）',
     /content query --uri content:\/\/media\/external\/video\/media/.test(vlog));
-  ok('⑥ 媒体库等待被记进日志', vlogs.some(l => /已索引到视频/.test(l)), vlogs.filter(l => /索引/.test(l)).join(' | '));
+  ok('⑥ 进库确认被记进日志', vlogs.some(l => /确认写进媒体库/.test(l)), vlogs.filter(l => /媒体库/.test(l)).join(' | '));
   ok('⑥ videoSteps 的点击真的执行了（不是图文那 4 步）',
     /input tap 162 160/.test(vlog) && /input tap 162 280/.test(vlog) && /input tap 920 2250/.test(vlog) && /input tap 220 1540/.test(vlog));
   ok('⑥ 日志标的是 [视频]', vlogs.some(l => /\[视频\] 发布完成/.test(l)), vlogs.filter(l => /发布完成/.test(l)).join(' | '));
@@ -530,8 +570,8 @@ const state = {
   const rv3 = await publisher.run(videoState, vctx);
   const vlog3 = calls();
   fs.unlinkSync(path.join(FDB, 'MEDIA_LAG'));
-  ok('⑧ 媒体库一直看不到 → 失败，不硬点',
-    rv3.rows[0].result === '失败' && /媒体库还没索引到/.test(rv3.rows[0].reason), rv3.rows[0].reason);
+  ok('⑧ 一直写不进库 → 失败，不硬点',
+    rv3.rows[0].result === '失败' && /没能写进媒体库/.test(rv3.rows[0].reason), rv3.rows[0].reason);
   ok('⑧ 等不到就一步界面都没点', !/input tap/.test(vlog3), (vlog3.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
 
   // 8b) ★★ 2026-10-03：「模拟器正停在得物发布页」是**发布前的正常状态**，
@@ -1325,6 +1365,229 @@ const state = {
     Object.keys(ctx23e.animOffSteps).length === 0 && n23e === 1,
     '缓存=' + JSON.stringify(ctx23e.animOffSteps) + ' dump 次数=' + n23e);
   fs.writeFileSync(FAKE_WINDOW, win23bak);
+
+  // ==========================================================================
+  // ㉔ 2026-10-03 ★★ 得物相册读的就是 MediaStore —— 「推了却选不到 / 点它弹
+  //     『暂不支持的视频格式』」的真根因是：素材根本没进库
+  //
+  //    真机实测（127.0.0.1:16384 / MuMu 12 / Android 12，全部可复算）：
+  //    · adb push 一个 mp4 到 /sdcard/DCIM/Camera，它【不在 MediaStore 里】
+  //      ⇒ 得物相册里【看不到】它（第 1 格还是旧内容，格子上的时长标记和库里对得上）；
+  //    · 用 `content call --uri content://media/external/file --method scan_file --arg <全路径>`
+  //      把它索引进库（返回 content://media/external_primary/video/media/N）
+  //      ⇒ 冷启动得物打开相册，它【立刻出现在第 1 格】；
+  //    · 库里指向「文件已删」的**僵尸记录**会显示成一个【黑缩略图的格子】，
+  //      点它必弹 Toast「暂不支持的视频格式」—— 得物去解码时文件已不存在；
+  //    · 而旧代码发的那两条广播（MEDIA_SCANNER_SCAN_FILE / MEDIA_MOUNTED）在这台设备上
+  //      **没有任何接收者** ⇒ 这就是「视频已推到设备，但等了 182.9s 媒体库还没索引到」的真根因。
+  //    ⇒ 现在：推完必须 `mediaScan()` 真写库 + `mediaVisible()` 确认进库（默认 20s）。
+  // ==========================================================================
+  {
+    const adbM = require(path.join(base, 'src/main/services/adb.js'));
+
+    // --- B1) filesMissing 本身的行为（先自证，别让「恒为 EXISTS」把后面全喂成假绿）---
+    const PROBE_OK = '/sdcard/DCIM/Camera/probe_exists.mp4';
+    const PROBE_NO = '/sdcard/DCIM/Camera/probe_never_pushed.mp4';
+    await adbM.push('127.0.0.1:5555', path.join(itemDir, '1.jpg'), PROBE_OK);
+    const fm1 = await adbM.filesMissing('127.0.0.1:5555', [PROBE_OK]);
+    ok('㉔ filesMissing：真推过的文件 → 报「在」（missing 为空）',
+      fm1.missing.length === 0 && !fm1.error, JSON.stringify(fm1));
+    const fm2 = await adbM.filesMissing('127.0.0.1:5555', [PROBE_NO]);
+    ok('㉔ filesMissing：没推过的文件 → 报「缺失」（不许假装存在）',
+      fm2.missing.length === 1 && fm2.missing[0] === PROBE_NO, JSON.stringify(fm2));
+    const fm3 = await adbM.filesMissing('127.0.0.1:5555', [PROBE_OK, PROBE_NO]);
+    ok('㉔ filesMissing：混着问 → 只把真缺的那个报出来（顺序不乱）',
+      fm3.missing.length === 1 && fm3.missing[0] === PROBE_NO, JSON.stringify(fm3));
+
+    // --- B2) ★★ mediaScan 本身：必须是 content call（广播在这台设备上没人收），
+    //     而且 --arg 要给 /storage/emulated/0/... 全路径
+    const PROBE_MEDIA = '/sdcard/DCIM/Camera/probe_media.mp4';
+    await adbM.push('127.0.0.1:5555', path.join(itemDir, '1.jpg'), PROBE_MEDIA);
+    clearCalls();
+    const sc1 = await adbM.mediaScan('127.0.0.1:5555', PROBE_MEDIA);
+    const scLog = calls();
+    ok('㉔ ★★ mediaScan 走 content call --method scan_file（真机上唯一有效的写法）',
+      sc1.ok === true && /content call --uri content:\/\/media\/external\/file --method scan_file/.test(scLog),
+      'ok=' + sc1.ok + ' how=' + sc1.how + ' / ' + (scLog.match(/content call.*/g) || []).join(' | '));
+    ok('㉔ ★★ 扫的必须是 /storage/emulated/0/... 全路径（传 /sdcard/... 真机会拿到空 STREAM）',
+      /--arg '\/storage\/emulated\/0\/DCIM\/Camera\/probe_media\.mp4'/.test(scLog),
+      (scLog.match(/--arg.*/g) || []).join(' | '));
+    ok('㉔ ★ 不许再发那两条没人接收的广播（以前就是它们害得白等 180 秒）',
+      !/MEDIA_SCANNER_SCAN_FILE|MEDIA_MOUNTED/.test(scLog),
+      (scLog.match(/am broadcast.*/g) || []).join(' | ') || '（没发广播）');
+
+    // --- B2b) mediaVisible 要**两张表一起查**：图文发的是图片，只查 video 会把图文判成失败
+    clearCalls();
+    await adbM.mediaVisible('127.0.0.1:5555', [PROBE_MEDIA], { timeoutMs: 1500, pollMs: 300 });
+    const mvLog = calls();
+    ok('㉔ ★ mediaVisible 同时查 video 与 images 两张表（只查 video 会漏判图文）',
+      /content:\/\/media\/external\/video\/media/.test(mvLog) && /content:\/\/media\/external\/images\/media/.test(mvLog),
+      (mvLog.match(/content query.*/g) || []).join(' | '));
+
+    // --- B3) 真代码：默认（索引超时=0）也要写库 + 确认进库 ---
+    store.set({ publish: { uiMap: videoMap, videoIndexTimeoutSec: 0 } });
+    videoState.publish.rows[0].result = '';
+    videoState.publish.rows[0].status = '排队';
+    clearCalls();
+    const r24 = await publisher.run(videoState, vctx);
+    const c24 = calls();
+    ok('㉔ ★★ 默认就会写库并确认进库（得物读 MediaStore，这一步不能省）',
+      /content call --uri content:\/\/media\/external\/file --method scan_file/.test(c24)
+      && /content query --uri content:\/\/media/.test(c24),
+      (c24.match(/content (call|query).*/g) || []).join(' | ') || '（一次都没做）');
+    ok('㉔ 进库确认过了 ⇒ 这条真的发出去了（不是被「等不到索引」拦下）',
+      r24.rows[0].result === '发布成功', r24.rows[0].result + ' / ' + (r24.rows[0].reason || ''));
+
+    // --- B4) ★ 扫描没生效（SCAN_FAIL）⇒ 必须如实失败，绝不硬点界面 ---
+    //  ★ 必须换一个**从没进过库**的文件名：同一个路径在前面 B3 里已经进过库，
+    //    mediaVisible 会立刻看到那条旧记录，这条用例就成假绿了（第一版就是这么写错的）。
+    const SCANFAIL = path.join(FDB, 'SCAN_FAIL');
+    const bakFiles24 = videoItem.files;
+    videoItem.files = [{ name: '短片2.mp4', type: 'video' }];
+    fs.writeFileSync(path.join(itemDir2, '短片2.mp4'), Buffer.from('fake video bytes'));
+    fs.writeFileSync(SCANFAIL, '1');
+    store.set({ publish: { uiMap: videoMap, videoIndexTimeoutSec: 1 } });
+    videoState.publish.rows[0].result = '';
+    videoState.publish.rows[0].status = '排队';
+    clearCalls();
+    const r24c = await publisher.run(videoState, vctx);
+    const c24c = calls();
+    fs.unlinkSync(SCANFAIL);
+    ok('㉔ ★ 扫不进库 ⇒ 如实失败（不许硬点界面，硬点只会点空）',
+      r24c.rows[0].result === '失败' && /没能写进媒体库/.test(r24c.rows[0].reason), r24c.rows[0].reason);
+    ok('㉔ 扫不进库时一步界面都没点', !/input tap/.test(c24c),
+      (c24c.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
+    videoItem.files = bakFiles24;
+
+    // --- B5) 间隔：视频跟随用户设置，不再偷偷放宽到 90 / ×1.5 ---
+    store.set({ publish: { intervalSec: 60, videoIntervalSec: 0 } });
+    const e24a = publisher.estimate(0, { image: 0, video: 30 });
+    ok('㉔ 视频间隔跟随用户设置：30 条 ×(60 间隔 + 60 单条) = 60 分钟',
+      e24a.minutes === 60, '预估=' + e24a.minutes + ' 分钟（' + e24a.seconds + ' 秒）');
+    store.set({ publish: { videoIntervalSec: 90 } });
+    const e24b = publisher.estimate(0, { image: 0, video: 30 });
+    ok('㉔ 对照：显式给视频间隔 90 ⇒ 仍按 90 算 = 75 分钟（用户当初看到的就是这个数）',
+      e24b.minutes === 75, '预估=' + e24b.minutes + ' 分钟（' + e24b.seconds + ' 秒）');
+    store.set({ publish: { videoIntervalSec: 0 } });
+  }
+
+  // ==========================================================================
+  // ㉕ 2026-10-03 ★ 一个模拟器被 adb 报成「多台设备」时，要按设备身份合并
+  //
+  //    真机（MuMu 12 / 127.0.0.1:16384）实测：`adb devices` 同时列出
+  //    127.0.0.1:16384 / 127.0.0.1:5555 / 127.0.0.1:7555 三行，三者
+  //    `settings get secure android_id` 全是 927145746ae845d6、/proc/uptime 也一致
+  //    ⇒ 明明只开了一个模拟器，界面却显示两个序列号。
+  // ==========================================================================
+  {
+    const MULTI = path.join(FDB, 'MULTI_PORT');
+    const NOID = path.join(FDB, 'NO_ANDROID_ID');
+
+    // --- B1) 没开多端口：就一台，不该产生任何 dupOf ---
+    const base25 = await publisher.scanDevices();
+    ok('㉕ 只有一台时：不该标任何重复',
+      base25.length >= 1 && base25.every(d => !d.dupOf),
+      JSON.stringify(base25.map(d => d.serial + (d.dupOf ? '→' + d.dupOf : ''))));
+
+    // --- B2) 开多端口：三行应是同一台 ⇒ 只留一个主串，另两个标 dupOf ---
+    fs.writeFileSync(MULTI, '1');
+    const list25 = await publisher.scanDevices();
+    const mains = list25.filter(d => !d.dupOf);
+    const dups = list25.filter(d => d.dupOf);
+    ok('㉕ 同一台设备在 3 个端口上被报 3 次 ⇒ 只留 1 个主串',
+      list25.length === 3 && mains.length === 1 && dups.length === 2,
+      '总=' + list25.length + ' 主=' + mains.length + ' 重复=' + dups.length
+      + ' / ' + JSON.stringify(list25.map(d => d.serial + (d.dupOf ? '→' + d.dupOf : ''))));
+    ok('㉕ 被合并掉的两个都指向同一个主串',
+      dups.every(d => d.dupOf === mains[0].serial), JSON.stringify(dups.map(d => d.dupOf)));
+    ok('㉕ 主串上带出「这台还出现在哪些端口」（界面要能解释清楚）',
+      mains[0].aliases && mains[0].aliases.length === 2, JSON.stringify(mains[0].aliases));
+    ok('㉕ 重复的那些自己不带 aliases（免得界面上重复解释）',
+      dups.every(d => !d.aliases || !d.aliases.length), JSON.stringify(dups.map(d => d.aliases)));
+
+    // --- B3) ★ 负向：读不到 android_id 时【不许】瞎合并（宁可多列，也不能把两台真设备并成一台）---
+    fs.writeFileSync(NOID, '1');
+    const noid25 = await publisher.scanDevices();
+    ok('㉕ ★ 负向：身份读不到 ⇒ 一台都不合并（不许瞎合并成一台）',
+      noid25.length === 3 && noid25.every(d => !d.dupOf),
+      '总=' + noid25.length + ' 重复=' + noid25.filter(d => d.dupOf).length);
+
+    fs.unlinkSync(NOID);
+    fs.unlinkSync(MULTI);
+  }
+
+  // ==========================================================================
+  // ㉖ ★ 发布间隔的「连续发布」档（2026-10-03 用户要求）：0 = 上一条发完直接发下一条
+  //    典型坑：0 是真值语义上的"合法值"，却恰好是 falsy ⇒ `c.intervalSec || 60` 会把它吃掉。
+  //    表现是用户选了「连续发布」却仍然等满 60 秒，且界面上显示的也是 60 秒 —— 查不出原因。
+  // ==========================================================================
+  {
+    // --- C1) 取值：0 与字符串 '0' 都必须原样是 0（界面写回来的是字符串）---
+    const g0 = publisher.gapSecFor('image', { intervalSec: 0 });
+    const g0s = publisher.gapSecFor('image', { intervalSec: '0' });
+    const gDef = publisher.gapSecFor('image', {});
+    const g60 = publisher.gapSecFor('image', { intervalSec: 60, intervalMinSec: 60 });
+    ok('㉖ 图文间隔：配 0 ⇒ 0 秒（连续发布，不许被兜成 60）', g0 === 0, String(g0));
+    ok('㉖ 图文间隔：字符串 "0" 也必须是 0（界面写回来的是字符串）', g0s === 0, String(g0s));
+    ok('㉖ 图文间隔：没配过才用 60 兜底', gDef === 60, String(gDef));
+    ok('㉖ 图文间隔：配 60 仍是 60（别把正常档改坏）', g60 === 60, String(g60));
+
+    // --- C2) ★ 视频那一项的 0 = 「跟随主间隔」，跟主间隔的 0 = 连续不是一回事 ---
+    const v0 = publisher.gapSecFor('video', { intervalSec: 60, videoIntervalSec: 0 });
+    const v30 = publisher.gapSecFor('video', { intervalSec: 60, videoIntervalSec: 30 });
+    const vFollow = publisher.gapSecFor('video', { intervalSec: 0, videoIntervalSec: 0 });
+    ok('㉖ ★ 视频：videoIntervalSec=0 的含义是「跟随主间隔」⇒ 主间隔 60 时必须还是 60（不是 0）',
+      v0 === 60, String(v0));
+    ok('㉖ 视频：单独放宽（>0）才生效', v30 === 30, String(v30));
+    ok('㉖ 视频：主间隔设成 0（连续）时跟随 ⇒ 视频也连续', vFollow === 0, String(vFollow));
+
+    // --- C3) 端到端：真跑两条。连续档不许出现"等 N 秒"；固定档必须出现（正向对照）---
+    const mk2 = () => ({
+      items: [1, 2].map(k => ({
+        id: 'r' + k, dir: itemDir, absDir: itemDir, sku: '26FW-YB160', color: '冠军白',
+        files: [{ name: '1.jpg', type: 'image' }, { name: '2.jpg', type: 'image' }]
+      })),
+      copyRows: [1, 2].map(k => ({ id: 'r' + k, title: '标题' + k, body: '正文' + k, topics: ['#品牌甲'] })),
+      verify: { rows: [] },
+      publish: {
+        rows: [1, 2].map(k => ({ seq: k, id: 'r' + k, dir: 'r' + k, goods: 1, images: 2, startAt: '', status: '排队', result: '', reason: '' })),
+        mode: 'adb', device: '127.0.0.1:5555'
+      }
+    });
+    const run2 = async (sec) => {
+      store.set({ publish: { uiMap, intervalSec: sec } });
+      clearCalls();
+      const lg = [];
+      const t0 = Date.now();
+      const r = await publisher.run(mk2(), { log: (m, l) => lg.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
+      return { lg, ms: Date.now() - t0, r };
+    };
+
+    const cont = await run2(0);
+    const fixed = await run2(1);
+    const waitedCont = cont.lg.filter(l => /按 \d+ 秒间隔/.test(l));
+    const waitedFixed = fixed.lg.filter(l => /按 \d+ 秒间隔/.test(l));
+    ok('㉖ 端到端：连续档两条都发出来了', cont.r.okCount === 2, cont.r.okCount + '/' + cont.r.total);
+    ok('㉖ ★ 连续档：日志里不许出现「按 N 秒间隔」', waitedCont.length === 0, waitedCont.join(' | ') || '（一条都没有）');
+    ok('㉖ 连续档：日志要写明「连续发布：不等间隔」（免得看着像卡住）',
+      cont.lg.some(l => /连续发布/.test(l)), cont.lg.filter(l => /连续发布/.test(l))[0] || '（没写）');
+    ok('㉖ ★ 正向对照：固定 1 秒档【必须】出现「按 1 秒间隔」—— 否则上面那条是空==空的假绿',
+      waitedFixed.length >= 1, waitedFixed.join(' | ') || '（没有 ⇒ 说明上面那条断言根本不成立）');
+    ok('㉖ 行为级：连续档两条的总耗时明显少于固定 1 秒档（真的少等了，不只是改了日志）',
+      fixed.ms - cont.ms >= 500, `连续 ${cont.ms}ms / 固定 ${fixed.ms}ms（差 ${fixed.ms - cont.ms}ms）`);
+
+    // --- C4) 源码级：读取端不许再出现 `intervalSec ||` 这种会把 0 吃掉的写法 ---
+    const pubSrc = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
+    const jobSrc = codeOnly(fs.readFileSync(path.join(base, 'src/main/jobs.js'), 'utf8'));
+    const shSrc = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/sheet.js'), 'utf8'));
+    ok('㉖ 源码级：publisher / jobs / sheet 里都不再有 `intervalSec || …` 的取值（0 会被吃掉）',
+      !/intervalSec \|\|/.test(pubSrc) && !/intervalSec \|\|/.test(jobSrc) && !/intervalSec \|\|/.test(shSrc),
+      JSON.stringify({
+        pub: (pubSrc.match(/intervalSec \|\|/g) || []).length,
+        jobs: (jobSrc.match(/intervalSec \|\|/g) || []).length,
+        sheet: (shSrc.match(/intervalSec \|\|/g) || []).length
+      }));
+  }
 
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));

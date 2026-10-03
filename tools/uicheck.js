@@ -699,6 +699,50 @@ app.whenReady().then(async () => {
       gated && !bare, 'gated=' + gated + ' bare=' + bare);
   }
 
+  // ---- 发布间隔的「连续发布」档（0 秒）----
+  // 用户要求：发完一条直接开始发第二条。界面上必须真能选到这一档；
+  // 而且配成 0 之后**选中的就得是它**（0 是 falsy，很容易在选中判断里被 `|| 60` 兜回 60 秒）。
+  const ivSel = await win.webContents.executeJavaScript(`(async () => {
+    const prev = state.config.publish.intervalSec;
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const goto6 = async () => { document.querySelector('.nav[data-tab="6"]').click(); await wait(200); };
+    const read = () => {
+      const sel = document.querySelector('#pane select[data-cfg="publish.intervalSec"]');
+      if (!sel) return null;
+      const o = sel.options[sel.selectedIndex];
+      const pane = document.querySelector('#pane');
+      return { values: [...sel.options].map(x => x.value), picked: sel.value,
+               text: o ? o.textContent : '', paneText: pane ? pane.textContent : '' };
+    };
+    await goto6();
+    state.config.publish.intervalSec = 60; renderAll(); await goto6();
+    const as60 = read();
+    state.config.publish.intervalSec = 0; renderAll(); await goto6();
+    const as0 = read();
+    state.config.publish.intervalSec = prev; renderAll();
+    return { as60, as0 };
+  })()`);
+  ok('界面：发布间隔里有「连续发布」这一档（value=0）',
+    !!ivSel && !!ivSel.as0 && Array.isArray(ivSel.as0.values) && ivSel.as0.values.includes('0'),
+    JSON.stringify(ivSel && ivSel.as0 && ivSel.as0.values));
+  ok('★ 界面：配 0 时选中的就是「连续发布」（没有被兜成 60 秒）',
+    !!ivSel && !!ivSel.as0 && ivSel.as0.picked === '0',
+    JSON.stringify(ivSel && ivSel.as0 && { picked: ivSel.as0.picked, text: ivSel.as0.text }));
+  ok('★ 正向对照：配 60 时选中的是「固定 60 秒」（证明上面那条不是恒真）',
+    !!ivSel && !!ivSel.as60 && ivSel.as60.picked === '60',
+    JSON.stringify(ivSel && ivSel.as60 && { picked: ivSel.as60.picked, text: ivSel.as60.text }));
+
+  // ★ 界面自洽：选了「连续发布」，页面上那句「93% 的时间是在等间隔」就必须消失 ——
+  //   否则界面一边说"不等了"、一边说"大部分时间都在等"，等于骗人。
+  const hintCont = (ivSel && ivSel.as0 && ivSel.as0.paneText) || '';
+  const hintFix = (ivSel && ivSel.as60 && ivSel.as60.paneText) || '';
+  ok('★ 界面自洽：连续发布档下，提示换成"不再叠加等待"，且不再出现「93% 的时间是在等间隔」',
+    hintCont.includes('不再叠加等待') && !hintCont.includes('93% 的时间是在等间隔'),
+    JSON.stringify({ hasNew: hintCont.includes('不再叠加等待'), hasOld: hintCont.includes('93% 的时间是在等间隔') }));
+  ok('★ 正向对照：固定档那句「93% 的时间是在等间隔」照旧在（证明上面那条不是"整页没渲染"造成的）',
+    hintFix.includes('93% 的时间是在等间隔') && !hintFix.includes('不再叠加等待'),
+    JSON.stringify({ hasOld: hintFix.includes('93% 的时间是在等间隔'), hasNew: hintFix.includes('不再叠加等待') }));
+
   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
   // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动
   const modal = await win.webContents.executeJavaScript(`

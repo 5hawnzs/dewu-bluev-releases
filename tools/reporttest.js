@@ -366,5 +366,28 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     jobs.itemsDir([{ dir: 'flat_x/A+白_1' }], srcDir) === 'flat_x',
     jobs.itemsDir([{ dir: 'flat_x/A+白_1' }], srcDir));
 
+  // ⑭ 2026-10-03 ★ copyRows 必须带上 sku / color
+  //    文案生成页的「货号 / 颜色」两列读的就是 copyRows（app.js：`rows.length ? rows : …`）。
+  //    以前构造 copyRows 时只给了 { id, title, body, topics, status, from }，
+  //    没带 sku/color ⇒ 那两列恒为空，看着像「这条没解析出货号」，其实 items 里早就有值。
+  {
+    const noSku = built.copyRows.filter(r => !r.sku);
+    ok('⑭ copyRows 每条都要带 sku（文案生成页的「货号」列读的就是它）',
+      built.copyRows.length > 0 && noSku.length === 0,
+      built.copyRows.map(r => r.id + '→sku=' + (r.sku || '空')).join(' | '));
+    ok('⑭ 「货号+颜色」命名的那些，颜色也要一起带过来',
+      built.copyRows.some(r => r.color),
+      built.copyRows.map(r => r.id + '→color=' + (r.color || '空')).join(' | '));
+    // 交叉核对：同一条在 items 与 copyRows 里的货号/颜色必须对得上（不许一边有一边空）
+    const byId = new Map(built.items.map(i => [i.id, i]));
+    const diff = built.copyRows.filter(r => {
+      const it = byId.get(r.id);
+      return it && (String(it.sku || '') !== String(r.sku || '')
+        || String(it.color || '') !== String(r.color || ''));
+    });
+    ok('⑭ copyRows 与 items 的货号/颜色必须一致（不许一边有一边空）',
+      diff.length === 0, diff.map(r => r.id).join(' | ') || '（全部一致）');
+  }
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('REPORT TEST ERROR', e); process.exitCode = 1; });

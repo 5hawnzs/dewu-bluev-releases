@@ -37,6 +37,36 @@ function sleep(ms, cancelled, onTick) {
   });
 }
 
+/**
+ * 取第一个「真正配过」的秒数，都没有就用最后一个兜底值。
+ * ★★ 为什么不能用 `c.intervalSec || c.intervalMinSec || 60`：
+ *    **0 是合法值**（0 = 连续发布，上一条发完直接发下一条），而 `0 || 60` 把它当成「没配」
+ *    ⇒ 用户在界面选了「连续发布」却仍然等 60 秒，且界面上查不出原因。
+ * ★ 顺带把字符串统一成数字：界面写回来的是字符串（`"0"`/`"60"`），
+ *   `"60" * 1000` 侥幸对，但 `a + gap` 那种加法会退化成字符串拼接（预计耗时就算错了）。
+ */
+function secOr(...vals) {
+  for (const v of vals) {
+    if (v === '' || v === null || v === undefined) continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
+}
+
+/**
+ * 这一条发完、下一条开始之前要等多少秒。
+ * - 图文：用界面上的「发布间隔」（0 = 连续发布）。
+ * - 视频：`videoIntervalSec` **> 0 才生效**（单独放宽），否则跟随主间隔 ——
+ *   0 在视频这一项里的含义是「跟随」，不是「连续」，别混。
+ */
+function gapSecFor(kind, c) {
+  const base = secOr(c.intervalSec, c.intervalMinSec, 60);
+  if (kind !== 'video') return base;
+  const v = Number(c.videoIntervalSec);
+  return Number.isFinite(v) && v > 0 ? v : base;
+}
+
 /* ---------------- 设备（一个设备 = 一个账号） ---------------- */
 
 function devices() { return (cfg().devices) || []; }
@@ -86,11 +116,44 @@ async function listDevices() {
 async function scanDevices() {
   const conf = devices();
   const raw = await adb.devices();
+
+  // ★ 2026-10-03 实测：MuMu 12 会把**同一台模拟器**同时暴露在 16384 / 5555 / 7555 三个端口上，
+  //   `adb devices` 里就是三行，界面上看着像「我明明只开了一个，怎么有两个序列号」。
+  //   判据（同一实例，实测三端口完全一致）：`settings get secure android_id` 相同
+  //   （本机 = 927145746ae845d6），`/proc/uptime` 也一致。
+  //   ⇒ 这里用 android_id 当身份，把同一身份的多个串合并成一台，只留一个主串。
+  //   读不到 android_id 的一律**不合并**（宁可多列，也不瞎合并成一台）。
+  const idOf = {};
+  await Promise.all(raw.filter(d => d.state === 'device').map(async d => {
+    try {
+      const r = await adb.shell(d.serial, 'settings get secure android_id', { timeout: 8000 });
+      const v = String((r && r.stdout) || '').trim();
+      if (/^[0-9a-f]{8,}$/i.test(v)) idOf[d.serial] = v;
+    } catch (e) { /* 读不到就当它是独立的一台 */ }
+  }));
+
+  const byId = {};
+  Object.keys(idOf).forEach(s => { (byId[idOf[s]] = byId[idOf[s]] || []).push(s); });
+  const dupOf = {};
+  const curSel = String((cfg().device) || '').trim();
+  Object.keys(byId).forEach(k => {
+    const ss = byId[k];
+    if (ss.length < 2) return;
+    // 主串优先级：已经加进列表的 > 当前正在用的 > 第一个
+    const main = ss.find(s => conf.some(x => x.serial === s))
+      || (curSel && ss.find(s => s === curSel))
+      || ss[0];
+    ss.forEach(s => { if (s !== main) dupOf[s] = main; });
+  });
+
   return raw.map(d => {
     const c = conf.find(x => x.serial === d.serial);
+    const main = dupOf[d.serial] || '';
     return {
       serial: d.serial, state: d.state, online: d.state === 'device',
-      configured: !!c, id: (c && c.id) || '', name: (c && c.name) || ''
+      configured: !!c, id: (c && c.id) || '', name: (c && c.name) || '',
+      dupOf: main,   // 非空 = 这台跟主串是**同一台设备**，界面上不再单列
+      aliases: main ? [] : Object.keys(dupOf).filter(s => dupOf[s] === d.serial)
     };
   });
 }
@@ -125,8 +188,11 @@ function estimate(count, kinds = null) {
     const isV = kind === 'video';
     // ★ 这里原来有一支 `c.mock ? 5 秒` 的「演示节奏」——2026-10-02 按用户要求删掉：
     //   它是个纯演示开关，却会让**真实发布**也用 5 秒间隔。现在只按真实配置算。
-    const avg = isV ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
-      : (c.intervalSec || c.intervalMinSec || 60);
+    // ★ 2026-10-03：视频间隔【跟随用户在界面上设的那个】，不再自作主张放宽到 90 秒 ——
+    //   用户设 60 秒却跑出 90 秒，界面上还查不到原因（设置页根本没有「视频间隔」这一项）。
+    //   真需要单独放宽时，显式配置 videoIntervalSec 即可（>0 才生效）。
+    // ★ 与真实发布同一个取法（gapSecFor）：0 = 连续发布 ⇒ 预估里也不该加那 60 秒。
+    const avg = gapSecFor(isV ? 'video' : 'image', c);
     return avg + (isV ? 60 : 30);
   };
   const nImg = kinds ? (Number(kinds.image) || 0) : count;
@@ -391,6 +457,28 @@ async function runStep(serial, step, data, ctx) {
     case 'wait':
       await sleep(Math.max(0, Number(step.value) || 1000));
       return;
+    case 'waitId': {
+      // ★★ 2026-10-03 真机实测加：等到**某一块出现**再往下走（两屏之间的转场）。
+      //   图文干跑实测卡死点：得物「相册 → 图片编辑页」是异步转场，紧接着点「下一步」会白点，
+      //   而报错会指向**后面**找 etTitle 那一步（离真正原因很远，最难查的那类）。
+      //   这里等不到就硬失败并点名等的是什么 —— 绝不硬点（硬点只会点到别的屏上）。
+      const wantId = String(step.value || '').trim();
+      if (!wantId) throw new Error('这一步（waitId）没写要等的 resource-id');
+      const tmo = Math.max(1000, Number(step.timeout) || 10000);
+      const t0 = Date.now();
+      for (;;) {
+        const d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff });
+        if (d.ok && uimap.parseNodes(d.xml).some(n => String(n.id) === wantId)) return;
+        const waited = Date.now() - t0;
+        if (waited >= tmo) {
+          throw new Error(`等了 ${(waited / 1000).toFixed(1)}s 也没等到「${wantId}」出现`
+            + (d.ok ? '' : `（连界面结构都抓不到：${d.why}）`)
+            + ' —— 要么前一屏那一下没点动，要么得物改版了。不硬点下一步。');
+        }
+        if (ctx && ctx.log) ctx.log(`等「${wantId}」出现…（已等 ${Math.round(waited / 1000)}s）`, 'info');
+        await sleep(400);
+      }
+    }
     case 'back':
       await adb.keyevent(serial, 4);
       return;
@@ -452,41 +540,65 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   const mediaWord = isVideo ? '视频' : '图';
   row.kind = kind;
 
-  // 1) 推素材 + 触发媒体扫描（不推，得物相册里根本看不到）
+  // 1) 推素材 + 把素材**写进媒体库**（不写库，得物相册里根本看不到这条）
   const media = (item.files || []).filter(f => f.type === (isVideo ? 'video' : 'image'));
   if (!media.length) throw new Error(`这条按「${isVideo ? '视频' : '图文'}」发，但没有可推的${mediaWord}片文件`);
-  const remoteDir = '/sdcard/DCIM/Camera';
+  // ★★ 2026-10-03（第三十四轮）：素材推到**本工具专属目录**，并在推之前把它清空。
+  //   为什么：得物相册读 MediaStore，而相册页顶部的「所有照片」是个**聚合**视图 —— 设备上
+  //   所有目录的素材都混在里面，「点前 N 格」就只是「碰巧对」（上一条的素材、系统截图、
+  //   僵尸记录都会把次序顶歪）。推到专属目录之后，得物相册下拉里会多出一个独立相册
+  //   （真机实测：新建 DCIM/Camera/bluevtst 推 2 张 ⇒ 下拉里出现「bluevtst 2」，选中后
+  //   页面里只有这 2 格），定位表再切到这个相册 ⇒ 这一屏上**只有本条要发的素材**，
+  //   于是「全选」就是名副其实的全选。
+  //   ★ 只换目录不清空是不够的：目录里会累着上一条的素材，相册里照样混在一起。
+  const remoteDir = '/sdcard/DCIM/Camera/bluev';
   const remotes = [];
+
+  // ★ 清空必须在 push **之前**：push 完再清会把这一条刚推的也一起清掉。
+  row.status = '清相册';
+  if (ctx.onRow) ctx.onRow(row);
+  const cl = await adb.clearMediaDir(serial, remoteDir);
+  if (!cl.ok) {
+    throw new Error(`没能清干净设备上的专属相册（${remoteDir}）：${cl.error || '未知原因'}`
+      + ' —— 不清干净的话上一条的素材会留在相册里，选素材那一步会点到上一条的图。'
+      + '（这一步不许跳过：跳过的表现是「内容看着发成功了，配图却是上一条的」，最难查。）');
+  }
+  if (cl.removed) log(`${row.dir}：专属相册已清空，删掉上一条留下的 ${cl.removed} 个素材`, 'info');
+
   for (const f of media) {
     const abs = path.join(item.absDir || item.dir, f.name);
     const remote = `${remoteDir}/${String(f.name).replace(/[^\w.\-+]/g, '_')}`;
     const r = await adb.push(serial, abs, remote);
     if (!r.ok) throw new Error(`推${mediaWord}片失败 ${f.name}：${(r.stderr || '').trim()}`);
-    await adb.mediaScan(serial, remote);
+    const sc = await adb.mediaScan(serial, remote);
+    if (!sc.ok) log(`${row.dir}：${f.name} 的媒体扫描没做成功（试了 ${sc.how}）——下面用「进库确认」兜底`, 'warn');
     remotes.push(remote);
   }
-  log(`${row.dir}：已推 ${media.length} 个${mediaWord}片并触发媒体扫描`, 'info');
 
-  // 视频体积大，媒体库索引比图片慢得多：广播发完相册里往往还没有它 → 必须等到真能看见再往下走。
-  // 否则会稳定卡在「相册里选不到这条视频」，而且看起来像点击步骤配错了，很难查。
-  if (isVideo) {
-    const sec = Number(c.videoIndexTimeoutSec) > 0 ? Number(c.videoIndexTimeoutSec) : 180;
-    row.status = '等媒体库索引';
-    if (ctx.onRow) ctx.onRow(row);
-    const w = await adb.mediaVisible(serial, remotes, {
-      timeoutMs: sec * 1000,
-      onTick: s => { row.status = `等媒体库索引 ${s}s`; if (ctx.onRow) ctx.onRow(row); }
-    });
-    if (!w.ok) {
-      // ★ 实测（2026-10-01，MuMu 12 / Android 12）：这台设备上媒体扫描广播**不生效**，
-      //   所以「把超时调大」是一条必然失败的建议 —— 不要写进提示里，那是给用户假期待。
-      throw new Error(`视频已推到设备，但等了 ${w.waited}s 媒体库还没索引到（所以得物相册里选不到它）`
-        + (w.error ? `：${w.error}` : '')
-        + '；★ 这台模拟器上「媒体扫描广播」是不生效的（MEDIA_MOUNTED 被系统拒、'
-        + 'MEDIA_SCANNER_SCAN_FILE 发了也不收录），**只有重启模拟器**系统才会把新文件收进相册。');
-    }
-    log(`${row.dir}：媒体库已索引到视频（等待 ${w.waited}s）`, 'info');
+  // ★★ 2026-10-03 真机实测（127.0.0.1:16384 / MuMu 12 / Android 12，全部可复算）：
+  //  **得物相册读的就是 MediaStore**。三条证据：
+  //   · adb push 一个 mp4 到 /sdcard/DCIM/Camera，它【不在 MediaStore】⇒ 得物相册里【看不到】它
+  //     （相册第 1 格仍是旧内容，格子上的时长标记和库里完全对得上）；
+  //   · 用 `content call --uri content://media/external/file --method scan_file --arg <全路径>`
+  //     把它索引进库（返回 content://media/external_primary/video/media/N）⇒ 冷启动得物打开相册，
+  //     它**立刻出现在第 1 格**（实测那条 00:15 就是刚推的）；
+  //   · 库里指向「文件已删」的**僵尸记录**，会在相册里显示成一个【黑缩略图的格子】，
+  //     点它必弹 Toast「暂不支持的视频格式」—— 得物去解码时文件已不存在。
+  //  ⇒ 所以推完必须**确认真的进库了**再往下走。以前那条路（发两条广播）在这台设备上
+  //    没有任何接收者，这才是「视频已推到设备，但等了 182.9s 媒体库还没索引到」的真根因。
+  //  ★ 图文同样要走这条：图片不进库，得物相册里一样看不到它。
+  row.status = '写媒体库';
+  if (ctx.onRow) ctx.onRow(row);
+  const sec = Number(c.videoIndexTimeoutSec) > 0 ? Number(c.videoIndexTimeoutSec) : 20;
+  const w = await adb.mediaVisible(serial, remotes, {
+    timeoutMs: sec * 1000,
+    onTick: s => { row.status = `写媒体库确认 ${s}s`; if (ctx.onRow) ctx.onRow(row); }
+  });
+  if (!w.ok) {
+    throw new Error(`${mediaWord}片已推到设备，但没能写进媒体库（得物相册里看不到它）：等了 ${w.waited}s`
+      + (w.error ? `，${w.error}` : ''));
   }
+  log(`${row.dir}：已推 ${media.length} 个${mediaWord}片，并确认写进媒体库（${w.waited}s）`, 'info');
 
   // 2) 按 UI 定位表走真实界面。
   //    ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的**（入口、相册页签、编辑页同一套），
@@ -514,6 +626,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     //   与 copywriter.imagePartsOf 同一判据：只看 type==='image'（视频不算图）。
     //   读不到清单时是 0 ⇒ 用到 ${imageCount} 的那一步会**当场报错**，不会默默按 1 张发。
     imageCount: (item.files || []).filter(f => f && f.type === 'image').length,
+    // ★ 定位表里「切到本工具专属相册」那一步用：得物相册下拉里的相册名 = 设备上的目录名。
+    albumName: remoteDir.split('/').filter(Boolean).pop(),
     videoCount: (item.files || []).filter(f => f && f.type === 'video').length
   };
   (copyRow && copyRow.topics || []).forEach((t, i) => { data['topic' + (i + 1)] = t; });
@@ -589,7 +703,13 @@ async function run(state, ctx = {}) {
   if (mode === 'adb' && !serial) {
     throw new Error('还没选设备：先点「扫描设备」，把模拟器加入列表并点「选用」，再开始发布。');
   }
-  const map = c.uiMap;
+  // ★★ 2026-10-03 事故修复（真机实测误发 2 条内容）：这里原来是 `const map = c.uiMap;` —— **只读配置**。
+  //   而 tools/pubsim.js（真机干跑）以为自己传进来的 `state.publish.uiMap`（**已剔除「提交发布」那一步**）
+  //   会被用上，其实被**静默忽略** ⇒ 干跑「不点提交」的意图完全失效 ⇒ **提交被真点了，内容真的发出去了**
+  //   （账号个人主页动态列表里实测出现 2 条「干跑不发布·图文标题」，用户手动删除）。
+  //   ⇒ 让这个参数名副其实：调用方给了就用调用方的，没给才退回配置。
+  //   （真机发布路径 src/main/jobs.js **不传** state.publish.uiMap ⇒ 行为与以前一字不差。）
+  const map = (state.publish && state.publish.uiMap) || c.uiMap;
 
   if (mode === 'adb' && !(map && map.steps && map.steps.length)) {
     throw new Error('真实通道需要先配 UI 定位表：把模拟器停在得物发布页 —— 推荐走底部「我」→ 右上角「主页」→「发布新动态」（3 跳，入口都带文字，稳）；也可以点动态流右上角那个没文字的相机图标（1 跳），'
@@ -598,7 +718,7 @@ async function run(state, ctx = {}) {
 
   const rows = (state.publish && state.publish.rows && state.publish.rows.length)
     ? state.publish.rows
-    : sheet.buildRows(state, { intervalSec: c.intervalSec || c.intervalMinSec || 60 })
+    : sheet.buildRows(state, { intervalSec: gapSecFor('image', c) })
       .map((r, i) => ({ seq: i + 1, id: state.items[i] ? state.items[i].id : String(i + 1), dir: r[1], goods: 1, images: 0, startAt: '', status: '排队', result: '', reason: '' }));
   // 批次名跟着日志走：「重导出日志」要能按批次导出（真机日志行里也带批次）
   const batch = (state.publish && state.publish.batch) || `批${wp.stamp()}`;
@@ -651,14 +771,21 @@ async function run(state, ctx = {}) {
     }
 
     if (done > 0) {
-      // 真机是固定间隔（默认 60 秒），带倒计时；视频单条更慢，间隔单独放宽
+      // 真机是固定间隔（默认 60 秒），带倒计时；视频单条更慢，间隔单独放宽。
+      // ★ 2026-10-03 用户要求：加「连续发布」档（间隔 = 0）—— 上一条发完直接开始下一条。
+      //   取值走 gapSecFor（**不能**写 `|| 60`，否则 0 会被吃掉、选了「连续」还是等一分钟）。
       const video = rowKind(row, item) === 'video';
-      const wait = video ? (c.videoIntervalSec || Math.round((c.intervalSec || c.intervalMinSec || 60) * 1.5))
-        : (c.intervalSec || c.intervalMinSec || 60);
-      log(`按 ${wait} 秒间隔，${wait}s 后执行`, 'info');
-      if (!await sleep(wait * 1000, cancelled, left => {
-        progress({ done, total: todo.length, label: `${left}s 后执行`, waitLeft: left });
-      })) break;
+      const wait = gapSecFor(video ? 'video' : 'image', c);
+      if (wait > 0) {
+        log(`按 ${wait} 秒间隔，${wait}s 后执行`, 'info');
+        if (!await sleep(wait * 1000, cancelled, left => {
+          progress({ done, total: todo.length, label: `${left}s 后执行`, waitLeft: left });
+        })) break;
+      } else {
+        // 连续发布：不 sleep，直接进下一条。进度里明确写出来，免得看起来像"卡住没动"。
+        log('连续发布：不等间隔，直接开始下一条', 'info');
+        progress({ done, total: todo.length, label: `连续发布（已发 ${done} 条，直接发下一条）`, waitLeft: 0 });
+      }
     }
 
     // ★★ 2026-10-03 用户要求：**发布失败不重试**。原来这里是 `maxTry = (c.retry||2)+1` 的循环，
@@ -735,5 +862,8 @@ module.exports = {
   // 一键装上内置的中文输入法（装 + 启用 + 设为当前输入法）—— 实现与「为什么必须三步」见 adb.js
   installIme: adb.installKeyboard,
   imeComponent: adb.adbKeyboardIme,
-  devices, listDevices, scanDevices, addDevice, removeDevice
+  devices, listDevices, scanDevices, addDevice, removeDevice,
+  // ★ 间隔取值（0 = 连续发布）。导出是为了让测试能直接断言「配 0 就是 0 秒」，
+  //   而不是靠"跑一遍看看会不会等"去猜 —— 那种断言在假 adb 上很容易假绿。
+  gapSecFor, secOr
 };

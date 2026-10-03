@@ -251,7 +251,9 @@ async function dispatch(type, args, ctx) {
       const s = st();
       if (!s.items.length) throw new Error('没有可导出的素材');
       const pc = store.get('publish') || {};
-      const intervalSec = pc.intervalSec || pc.intervalMinSec || 60;
+      // ★ 0 是合法值（连续发布）⇒ 不能写 `pc.intervalSec || ...`，否则发布单里
+      //   「期待发布时间」会按 60 秒排开，和真实执行时刻对不上。
+      const intervalSec = publisher.gapSecFor('image', pc);
       const r = await sheet.exportSheet(s, Object.assign({ intervalSec }, args || {}));
       // 导出发布单会重建 publish.rows，必须把上一批的「Excel 行号」按 id 带过来：
       // 从「AI 内容报告」导进来的行靠 reportRow 才能把发布结果回写进原报告，

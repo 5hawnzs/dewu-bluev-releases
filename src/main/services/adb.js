@@ -114,25 +114,115 @@ async function push(serial, local, remote) {
   return execAdb(withS(serial, ['push', local, remote]), { timeout: 120000 });
 }
 
+/** /sdcard/... 与 /storage/emulated/0/... 是同一处，但 MediaStore 的 _data 记的是后者 */
+function toMediaPath(p) {
+  return String(p || '').replace(/^\/sdcard\//, '/storage/emulated/0/');
+}
+
 /**
- * 推完素材触发媒体扫描，否则得物相册里看不到。
+ * 把刚推上去的素材**真正写进 MediaStore** —— 这是「得物相册里能不能看到它」的唯一条件。
  *
- * ★★ 实测（2026-10-01，MuMu 12 / Android 12，900×1600）：**这一对广播都不生效**。
- *   · `MEDIA_MOUNTED` 已是受保护广播 ⇒ `SecurityException: Permission Denial:
- *     not allowed to send broadcast android.intent.action.MEDIA_MOUNTED from uid=2000(shell)`；
- *   · `MEDIA_SCANNER_SCAN_FILE` 能发出去（`Broadcast completed: result=0`）但**没有接收者**：
- *     发完等 20 秒，MediaStore 里依然查不到那个文件（不是慢，是没人处理）；
- *   · 直接 `content insert` 写 MediaStore 也没权限（shell 不在 media_rw 组）。
- *   ⇒ ★ **只有重启模拟器**（系统重扫）才会把新文件收进相册。
- *   （图片看起来"能进库"，是因为系统自己的 idle 扫描补上了小文件，跟这两条广播无关。）
+ * ★★ 2026-10-03 真机实测更正（127.0.0.1:16384 / MuMu 12 / Android 12，全部可复算）：
+ *   以前这里发两条广播（MEDIA_SCANNER_SCAN_FILE / MEDIA_MOUNTED）—— 在这台设备上**完全无效**：
+ *     · MEDIA_MOUNTED 是受保护广播，shell 发会被拒（Permission Denial ... from uid=2000(shell)）
+ *     · MEDIA_SCANNER_SCAN_FILE 发得出去（result=0）但**没有接收者** ⇒ 文件永远不进库
+ *   这就是以前「视频已推到设备，但等了 182.9s 媒体库还没索引到」的**真根因**。
+ *   有效做法（两条都实测通过；优先级：单文件精准 → 整卷兜底）：
+ *     a) content call --uri content://media/external/file --method scan_file --arg <绝对路径>
+ *        成功返回 Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/N}]
+ *     b) content call --uri content://media --method scan_volume --arg external_primary
+ *        返回 Bundle[{}]，整卷重扫（秒级）
+ *   ★ `--arg` 必须给 /storage/emulated/0/... 全路径；传 /sdcard/... 会拿到空 STREAM（实测）。
  *
- *   所以调用方**必须**用 `mediaVisible()` 等「真的能看见」再往下走，等不到就明确失败 ——
- *   这里"发完就当成功"会在几步之后变成「相册里选不到素材」，极难查。
- *   这两条广播保留着：换设备/换系统版本可能仍然有效，成本只是一次 shell 调用。
+ * 返回 { ok, how, raw }；ok=false 时把两种方式的原始输出都带回去 —— 不假装扫成功。
  */
 async function mediaScan(serial, remoteFile) {
-  await shell(serial, `am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://${remoteFile}`);
-  return shell(serial, `am broadcast -a android.intent.action.MEDIA_MOUNTED -d file://${remoteFile.split('/').slice(0, -1).join('/')}`);
+  const abs = toMediaPath(remoteFile);
+  let raw = '';
+  if (abs) {
+    const r = await shell(serial, `content call --uri content://media/external/file --method scan_file --arg '${abs}'`, { timeout: 30000 });
+    raw = `${r.stdout || ''}${r.stderr || ''}`;
+    if (r.ok && /content:\/\/media\//.test(raw)) return { ok: true, how: 'scan_file', raw };
+  }
+  const r2 = await shell(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 60000 });
+  raw += `${r2.stdout || ''}${r2.stderr || ''}`;
+  return { ok: r2.ok, how: abs ? 'scan_file→scan_volume' : 'scan_volume', raw };
+}
+
+/**
+ * 「推的素材真落到设备上了吗」的落地确认（**诊断用**，主流程不再走这条）。
+ *
+ * ★ 2026-10-03 更正：得物相册读的是 MediaStore，所以发布前的判据是
+ *   `mediaScan()` 写库 + `mediaVisible()` 确认进库（见 publisher.js）。
+ *   本函数保留作诊断：把「推都没推上去」和「推上去了但没进库」两种失败分开。
+ *
+ * 返回 { missing: [缺失的文件], error: '' }。
+ * 查不动（命令失败 / 回读条数对不上）时把所有文件都算缺失并带回原因 —— **不假装存在**。
+ */
+async function filesMissing(serial, remoteFiles) {
+  const want = (Array.isArray(remoteFiles) ? remoteFiles : [remoteFiles]).filter(Boolean);
+  if (!want.length) return { missing: [], error: '' };
+  // 一个文件吐一个词（EXISTS / MISSING），顺序跟 want 一致 —— 不解析 ls 的输出格式，免得被本地化坑到
+  const cmd = want.map(p => `[ -f '${p}' ] && echo EXISTS || echo MISSING`).join('; ');
+  const r = await shell(serial, cmd, { timeout: 30000 });
+  if (!r.ok) {
+    return { missing: want.slice(), error: String(r.stderr || '').trim() || '落地确认执行失败' };
+  }
+  const flags = String(r.stdout || '').split(/\s+/).filter(s => s === 'EXISTS' || s === 'MISSING');
+  if (flags.length !== want.length) {
+    return { missing: want.slice(), error: `落地确认没查清（要查 ${want.length} 个，回了 ${flags.length} 个）` };
+  }
+  return { missing: want.filter((p, i) => flags[i] === 'MISSING'), error: '' };
+}
+
+/**
+ * 把这个「专属相册目录」清空（媒体库记录 + 物理文件一起）。
+ *
+ * ★★ 2026-10-03 真机实测（127.0.0.1:16384 / MuMu 12 / Android 12）：
+ *   得物相册读的就是 MediaStore ⇒「上一条的素材不许出现在这一条里」这件事必须做两半：
+ *     a) 素材推到本工具**专属目录**（得物相册下拉里会变成独立相册，见 publisher 的 remoteDir）；
+ *     b) 推新素材**之前**把这个目录清干净。
+ *   只做 a 不做 b ⇒ 目录里累着上一条的素材，相册里照样混在一起（选图那步会选到上一条的图）。
+ *
+ * ★ 为什么按 _id 删、不按路径 where：
+ *   `content delete --where "_data='/storage/...'"` 里的引号会被 `adb shell` 吃掉，实测报
+ *   `Invalid token storage`；换成 relative_path 也一样（引号同样会被吃）。
+ *   **按 _id 删完全不需要引号**：content delete --uri content://media/external/video/media/153
+ *   实测：删掉记录的同时**物理文件也一起消失** —— 正是我们要的。只删文件不删记录会留下
+ *   僵尸记录，得物相册里显示成黑格子，点它必弹「暂不支持的视频格式」。
+ *
+ * ★ 查不动时返回 ok:false 并把原因带回去 —— 不假装清干净了。清不干净是**静默错误**：
+ *   选图步点前 N 格会点到上一条的图，发出去才发现。
+ *
+ * 返回 { ok, removed, files, error }
+ */
+async function clearMediaDir(serial, remoteDir) {
+  const dir = toMediaPath(remoteDir).replace(/\/+$/, '') + '/';
+  const hit = [];
+  let error = '';
+  for (const t of ['video', 'images']) {
+    const r = await shell(serial,
+      'content query --uri content://media/external/' + t + '/media --projection _id:_data', { timeout: 30000 });
+    if (!r.ok) { error = String(r.stderr || '').trim() || ('content query(' + t + ') 执行失败'); continue; }
+    for (const line of String(r.stdout || '').split(/\r?\n/)) {
+      const m = /_id=(\d+),\s*_data=(.+?)\s*$/.exec(line);
+      if (!m) continue;
+      if (m[2].indexOf(dir) !== 0) continue;
+      hit.push({ table: t, id: m[1], file: m[2] });
+    }
+  }
+  if (error) return { ok: false, removed: 0, files: hit.map(h => h.file), error };
+
+  let removed = 0;
+  for (const h of hit) {
+    const r = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
+    if (r.ok) removed++;
+    else if (!error) error = String(r.stderr || '').trim() || ('content delete(' + h.id + ') 执行失败');
+  }
+  // 兜底：库里没记录、磁盘上还躺着的（上次删库失败留下的那种）
+  await shell(serial, "rm -f '" + dir + "'* 2>/dev/null; mkdir -p '" + dir + "'", { timeout: 30000 });
+  if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error };
+  return { ok: true, removed: removed, files: hit.map(h => h.file), error: '' };
 }
 
 async function screencap(serial, outFile) {
@@ -142,28 +232,30 @@ async function screencap(serial, outFile) {
 }
 
 /**
- * 媒体库里能不能看见这几个文件（= 得物相册里有没有）。
+ * 媒体库里能不能看见这几个文件（= 得物相册里有没有它）。
  *
- * 为什么非要有这一条：推完文件只发一条 MEDIA_SCANNER_SCAN_FILE 广播，**索引是异步的**。
- * 图片小、扫得快，所以一直没暴露；视频几十 MB，广播一发就去点相册 → 稳定「相册里选不到这条视频」，
- * 而且看起来像是点击步骤配错了，很难查。所以视频推完必须**等到真能看见**再往下走。
+ * ★★ 2026-10-03 实测：得物相册**就是**读 MediaStore —— 同一条 mp4，没进库时相册里看不到，
+ *   `scan_file` 索引进库后冷启动得物打开相册，它立刻出现在第 1 格。所以这一条是**硬判据**：
+ *   `mediaScan()` 写完库必须在这里等到「真能看见」，否则得物那边根本选不到这条素材。
+ * ★ 两张表一起查（video + images）：图文发的是图片，老版本只查 video 表会把图文判成失败。
  *
  * 查不动这条命令时返回 ok:false 并把原始输出带回去 —— 不假装看到、也不假装没看到。
  * 返回 { ok, waited(秒), rows, error }
  */
-async function mediaVisible(serial, remoteFiles, { timeoutMs = 120000, pollMs = 2000, onTick } = {}) {
+async function mediaVisible(serial, remoteFiles, { timeoutMs = 20000, pollMs = 800, onTick } = {}) {
   const want = (Array.isArray(remoteFiles) ? remoteFiles : [remoteFiles]).filter(Boolean);
   if (!want.length) return { ok: true, waited: 0, rows: '' };
-  // /sdcard 与 /storage/emulated/0 是同一个地方，但 MediaStore 的 _data 记的是后者
-  const asMedia = p => String(p).replace(/^\/sdcard\//, '/storage/emulated/0/');
   const t0 = Date.now();
   let rows = '';
   let lastErr = '';
   for (;;) {
-    const r = await shell(serial, 'content query --uri content://media/external/video/media --projection _data', { timeout: 20000 });
+    // 一条 shell 里查两张表，省一次往返
+    const r = await shell(serial,
+      'content query --uri content://media/external/video/media --projection _data; '
+      + 'content query --uri content://media/external/images/media --projection _data', { timeout: 20000 });
     rows = String(r.stdout || '');
     lastErr = String(r.stderr || '').trim();
-    if (r.ok && want.every(p => rows.includes(asMedia(p)) || rows.includes(p))) {
+    if (r.ok && want.every(p => rows.includes(toMediaPath(p)) || rows.includes(p))) {
       return { ok: true, waited: +((Date.now() - t0) / 1000).toFixed(1), rows };
     }
     const waited = Date.now() - t0;
@@ -716,7 +808,7 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, screencap,
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, filesMissing, screencap,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,

@@ -43,6 +43,9 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     store.load();
+    // ★★ 配置迁移必须**说出来**（不许静默改用户配置）：旧版把 90/180 写进 config.json，
+    //    1.0.9 的默认值虽已改成 0，但 mergeDeep 顶不动老值 ⇒ 这里做一次性归零并如实告知。
+    for (const m of store.takeMigrations()) logbus.warn(m);
     // ★ 主题必须先定下来再建窗口：窗口底色 bgColor() 按它算，晚了会先闪一下别的色（见 window.normTheme）
     winmod.applyStoredTheme();
     project.load();

@@ -10,6 +10,7 @@ const wp = require('./util/winpath');
 
 let cache = null;
 let saveTimer = null;
+let migrations = [];   // 见 migrateLegacyPublishIntervals：本次启动做了哪些迁移（人话）
 
 function file() { return path.join(app.getPath('userData'), 'config.json'); }
 
@@ -74,11 +75,18 @@ function defaults() {
       adbPath: '',
       device: '',                      // 选中的设备 serial（多设备矩阵）
       devices: [],                     // [{id, name, serial}] 一个设备 = 一个账号
-      intervalSec: 60,                 // 真机是固定 1 分钟间隔，带倒计时
+      intervalSec: 60,                 // 60 = 固定 1 分钟间隔，带倒计时；**0 = 连续发布**（发完一条直接发下一条）
+      // ★ 2026-10-03 用户要求加「连续发布」档 ⇒ intervalSec 允许为 0。
+      //   读取端一律走 publisher 的 secOr/gapSecFor（**不能**再写 `intervalSec || 60`，
+      //   否则 0 被兜成 60 ⇒ 界面选了「连续」却还是等一分钟）。
       intervalMinSec: 60,
       intervalMaxSec: 60,
-      videoIntervalSec: 90,            // 视频单条更慢（push 抖动大 + 上传久 + 还要等媒体库索引），间隔单独放宽
-      videoIndexTimeoutSec: 180,       // 视频推上去后等「相册真的能看到」的上限；超时直接失败报出来，不硬点
+      // ★ 2026-10-03：0 = 跟用户在界面上设的那个间隔一致（不再偷偷放宽到 90 秒）。
+      //   要单独放宽视频间隔就显式填一个 >0 的秒数。
+      videoIntervalSec: 0,
+      // ★ 2026-10-03：0 = 不等 MediaStore（默认）。实测得物相册不读 MediaStore（见 publisher.js），
+      //   等它纯属白等。哪天得物改了实现，把这里设成正数（秒）就退回「等索引」的旧行为。
+      videoIndexTimeoutSec: 0,
       // ★ 2026-10-03 用户要求：发布失败**不重试** ⇒ 出厂的 `retry: 2` 整项删除。
       //   老配置里就算还留着 retry，也没人读了（读取点已随重试循环一起删）。
       // ffmpeg 可执行文件。空 = 自动（优先内置、再退系统 PATH）。与 adbPath 同一套三段解析，
@@ -144,6 +152,45 @@ function mergeDeep(base, patch) {
   return out;
 }
 
+/**
+ * ★★ 2026-10-03 一次性迁移：把**旧版本的出厂默认值**从 config.json 里抹掉。
+ *
+ * 为什么必须做（这不是"锦上添花"，是不做就白改）：
+ *   这两个键的出厂默认值在 1.0.9 从 `videoIntervalSec: 90 / videoIndexTimeoutSec: 180`
+ *   改成了 `0 / 0`（0 = 视频间隔跟随用户设的那个；0 = 不等 MediaStore）。
+ *   但 config.json（userData 下、**卸载都不删**）里**已经写着 90 和 180** —— 那是旧版本
+ *   启动时把 defaults 写进去的。而 store 是 mergeDeep：**只会覆盖、没有删键能力**
+ *   ⇒ 光把 defaults 改成 0，对**任何老用户都不生效**，他自己也没法改（设置页里根本没有
+ *   这两项）。实测证据（1.0.9 源码 + 真机干跑）：视频条仍然照样「等了 182s 媒体库还没索引到」，
+ *   与用户报的故障 ① 一字不差。
+ *
+ * 判据为什么敢这么写：值**恰好等于**旧出厂默认（90 / 180）⇒ 认定"用户从没碰过它"。
+ *   理由是设置页里没有这两个旋钮，用户没有任何正常办法把值改成恰好 90 / 180；
+ *   而任何**别的**值（比如 120、60）一律原样保留 —— 不替用户做决定。
+ *
+ * 迁移只发生一次：归 0 之后写回配置，下次启动不再匹配。
+ * 返回值是"做了什么"的人话清单，由 src/main/index.js 启动时写进日志（**必须说出来**，
+ * 不许静默改用户配置）。
+ */
+function migrateLegacyPublishIntervals(c) {
+  const p = c && c.publish;
+  if (!p) return [];
+  const done = [];
+  if (Number(p.videoIntervalSec) === 90) {
+    p.videoIntervalSec = 0;
+    done.push('视频间隔：旧的 90 秒出厂默认已归零 —— 现在跟随你在界面上设的间隔（要单独放宽就显式填一个秒数）');
+  }
+  if (Number(p.videoIndexTimeoutSec) === 180) {
+    p.videoIndexTimeoutSec = 0;
+    done.push('视频索引等待：旧的 180 秒出厂默认已归零 —— 实测得物相册不读 MediaStore，等它纯属白等'
+      + '（哪天得物改了实现，把它显式填回正数即可退回旧行为）');
+  }
+  return done;
+}
+
+/** 本次启动做过的迁移（人话），读一次就清空 —— 给 src/main/index.js 打印用 */
+function takeMigrations() { const m = migrations; migrations = []; return m; }
+
 function load() {
   if (cache) return cache;
   cache = defaults();
@@ -152,6 +199,10 @@ function load() {
     cache = mergeDeep(cache, JSON.parse(raw));
   } catch (e) { /* 首次启动 */ }
   // ★ 这里原来有 `applyCloudDefaults(cache)`（把空的云地址补成内置值）—— 已删，见上方长注释。
+  // ★★ 2026-10-03：旧出厂默认值迁移必须在这里做 —— mergeDeep 只覆盖不删键，
+  //    defaults 改成 0 对老 config.json 里写死的 90/180 无效（见 migrateLegacyPublishIntervals）。
+  const moved = migrateLegacyPublishIntervals(cache);
+  if (moved.length) { migrations = moved; scheduleSave(); }
   return cache;
 }
 
@@ -182,4 +233,4 @@ function scheduleSave() {
   }, 250);
 }
 
-module.exports = { get, set, load, defaults, file };
+module.exports = { get, set, load, defaults, file, migrateLegacyPublishIntervals, takeMigrations };

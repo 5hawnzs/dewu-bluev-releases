@@ -25,6 +25,10 @@
  *                       文件里写什么 activity 就是什么；写成 '-' 就假装这一行**读不到**。
  *                       文件不存在时默认给「得物发布页」，这样既有用例不受影响。
  *                       用途：验「抓取页面结构」会先说清停在哪一屏、停在别的 App 上会拦下来。
+ *   （2026-10-03 起）落地确认 `[ -f 'x' ]` 的回答 = 「这个文件有没有被真实 push 过」，
+ *                     用来测「推完当场确认文件在不在」这条新路径。
+ *   MULTI_PORT        —— `adb devices` 把同一台设备按 16384 / 5555 / 7555 报三次（真机 MuMu 12 原样）。
+ *   NO_ANDROID_ID     —— android_id 读不出来（测「读不到身份就不许合并」）。
  *   NO_DEWU_TOP     —— `dumpsys activity top` 返回一份**不含得物**的层级（其它 App 的）。
  *                       用途：验「uiautomator 与 dumpsys 都没抓到」时的报错文案。
  *
@@ -57,9 +61,16 @@ function makeFakeAdb(dir) {
 
   const read = (p, fallback) => { try { return fs.readFileSync(p); } catch (e) { return fallback; } };
 
-  // 「设备上已经推送过去的文件」：真实 push 到哪个远端路径就记哪个，
-  // 供 content query（媒体库）回包用 —— 这样「等媒体库索引」那段逻辑才是真的被测到。
+  // 「设备上已经推送过去的文件」：真实 push 到哪个远端路径就记哪个。
   const pushed = [];
+  // ★ 2026-10-03 新增：「真的进了媒体库」的文件。
+  //   真机上 push ≠ 进库 —— 必须再调 `content call ... scan_file/scan_volume` 才会进
+  //   （实测：不调的话得物相册里根本看不到这个文件）。所以 content query 只回 scanned、
+  //   不回 pushed —— 否则「扫描没生效」这种情况永远测不出来（恒绿）。
+  const scanned = [];
+  // 现场开关 SCAN_FAIL：假装媒体扫描**没生效**（scan_file 回空 STREAM、scan_volume 不回填）
+  //   —— 用来验「扫描失败时必须靠进库确认兜底，且最终如实失败」。
+  const SCAN_FAIL = path.join(dir, 'SCAN_FAIL');
 
   // 设备上的「文件」：只需模拟 dump 用到的那个路径。
   // 关键语义（真机实测）：uiautomator dump **成功才写文件**；失败时目标文件一字不动。
@@ -76,6 +87,14 @@ function makeFakeAdb(dir) {
   // ★ 为什么一定要有这个开关：中文输入能不能成功**只取决于设备的当前输入法**，
   //   跟「apk 有没有打进安装包」是两件事（见 adb.js#inputText 的注释）。
   const IME_AUTO = 'com.android.adbkeyboard/.AdbIME';
+  // ★ 2026-10-03 设备身份：真机实测 MuMu 12 会把**同一台模拟器**在 16384 / 5555 / 7555
+  //   三个端口上各报一次，三者 `settings get secure android_id` 完全相同（本机 927145746ae845d6）、
+  //   /proc/uptime 也一致 ⇒ 是同一台。下面两个开关用来验「设备列表按身份去重」：
+  //   MULTI_PORT     —— `adb devices` 返回同一台设备的三个端口
+  //   NO_ANDROID_ID  —— android_id 读不出来（这时**不许**合并，宁可多列）
+  const MULTI_FLAG = path.join(dir, 'MULTI_PORT');
+  const NOID_FLAG = path.join(dir, 'NO_ANDROID_ID');
+  const DEV_ANDROID_ID = '927145746ae845d6';
   const imeReady = () => fs.existsSync(path.join(dir, 'IME_ACTIVE'));
   const imeList = () => (imeReady() && !ime.enabled.includes(IME_AUTO) ? [IME_AUTO] : []).concat(ime.enabled);
 
@@ -137,6 +156,10 @@ function makeFakeAdb(dir) {
       const m = cmd.match(/^settings (get|put|delete) secure (\S+)(?:\s+(\S+))?$/);
       if (!m) return fail('settings: bad args');
       const [, verb, key, val] = m;
+      if (key === 'android_id') {
+        // 夹具不区分连的是哪个端口：**所有端口回同一个 id** —— 正是真机上「同一台设备」的样子
+        return okOut(fs.existsSync(NOID_FLAG) ? 'null\n' : DEV_ANDROID_ID + '\n');
+      }
       if (key === 'default_input_method') {
         if (verb === 'get') return okOut((imeReady() ? IME_AUTO : ime.default) + '\n');
         ime.default = verb === 'put' ? val : '';
@@ -153,11 +176,40 @@ function makeFakeAdb(dir) {
       delete anim[key];
       return okOut('');
     }
+    // ★ 2026-10-03 新增：推完素材的「落地确认」（adb.js#filesMissing 发的命令）。
+    //   真机语义就是「文件在磁盘上吗」。夹具里「在不在」= 有没有真实 push 过 ——
+    //   这样「推完却在设备上找不到」这种失败才测得到（不会恒为 EXISTS 造成假绿）。
+    if (/^\[ -f /.test(cmd)) {
+      const m = cmd.match(/^\[ -f '([^']*)' \]/);
+      if (!m) return fail('bad test');
+      return okOut(pushed.includes(m[1]) ? 'EXISTS\n' : 'MISSING\n');
+    }
+    // ★ 2026-10-03 新增：媒体扫描（adb.js#mediaScan 发的就是这条）。
+    //   真机语义：scan_file 成功回 `Bundle[{android.intent.extra.STREAM=content://media/...}]`，
+    //   这时文件**才**进库（content query 才看得见）；失败的标志是 STREAM=null。
+    if (/^content call /.test(cmd)) {
+      const failScan = fs.existsSync(SCAN_FAIL);
+      const argM = cmd.match(/--arg\s+'?([^']+)'?/);
+      const arg = argM ? argM[1].trim() : '';
+      if (/--method scan_file/.test(cmd)) {
+        const asSd = arg.replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+        if (!failScan && asSd && pushed.includes(asSd)) {
+          if (!scanned.includes(asSd)) scanned.push(asSd);
+          return okOut(`Result: Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/${200 + scanned.length}}]\n`);
+        }
+        return okOut('Result: Bundle[{android.intent.extra.STREAM=null}]\n');
+      }
+      if (/--method scan_volume/.test(cmd)) {
+        if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) scanned.push(p); });
+        return okOut('Result: Bundle[{}]\n');
+      }
+      return okOut('Result: Bundle[{}]\n');
+    }
     if (/^content query /.test(cmd)) {
-      // 媒体库索引：默认索引得到「已推送」的文件；
-      // 想模拟「广播发了但还没索引到」，就在现场目录建一个 MEDIA_LAG 文件
+      // 媒体库索引：只回**真进过库**（scanned）的文件 —— push 本身不算进库。
+      // 想模拟「扫描发了但还没索引到」，就在现场目录建一个 MEDIA_LAG 文件
       const lag = fs.existsSync(path.join(dir, 'MEDIA_LAG'));
-      const list = lag ? [] : pushed;
+      const list = lag ? [] : scanned;
       return okOut(list.map((p, i) => `Row: ${i} _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`).join('\n') + (list.length ? '\n' : ''));
     }
     if (/^dumpsys window/.test(cmd)) {
@@ -189,7 +241,13 @@ function makeFakeAdb(dir) {
   function respond(argv) {
     const args = argv.slice();
     if (args[0] === 'version') return okOut('Android Debug Bridge version 1.0.41\n');
-    if (args[0] === 'devices') return okOut('List of devices attached\n127.0.0.1:5555\tdevice\n');
+    if (args[0] === 'devices') {
+      if (fs.existsSync(MULTI_FLAG)) {
+        // 同一台模拟器被三个端口各报一次（真机 MuMu 12 实测的原样）
+        return okOut('List of devices attached\n127.0.0.1:16384\tdevice\n127.0.0.1:5555\tdevice\n127.0.0.1:7555\tdevice\n');
+      }
+      return okOut('List of devices attached\n127.0.0.1:5555\tdevice\n');
+    }
     if (args[0] === '-s') args.splice(0, 2);
 
     if (args[0] === 'exec-out') return okOut(read(SHOT_PNG, Buffer.alloc(0)));   // screencap -p，二进制

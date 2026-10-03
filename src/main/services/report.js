@@ -298,12 +298,13 @@ async function build(report, opts = {}) {
     const goods = row.goods.map(g => ({ sku: g.sku, color: g.color }));
     fillGoodsFromLeaf(row, leaf, goods, fills, filled);
 
+    // 叶子兜底也只在「货号+颜色」命名时才用：随手命名的文件夹（IMG_5253 / 品牌甲）
+    // 解析出来的不是货号，写成货号只会让人以为这条有主了（见 flatten.parseName 的 how）
+    const sku = (goods[0] && goods[0].sku) || ((leaf.how === 'plus' || leaf.how === 'sku') ? leaf.sku : '') || '';
+    const color = (goods[0] && goods[0].color) || (leaf.how === 'plus' ? leaf.color : '') || '';
     items.push({
       id, dir: id, absDir: leaf.absDir,
-      // 叶子兜底也只在「货号+颜色」命名时才用：随手命名的文件夹（IMG_5253 / 品牌甲）
-      // 解析出来的不是货号，写成货号只会让人以为这条有主了（见 flatten.parseName 的 how）
-      sku: (goods[0] && goods[0].sku) || ((leaf.how === 'plus' || leaf.how === 'sku') ? leaf.sku : '') || '',
-      color: (goods[0] && goods[0].color) || (leaf.how === 'plus' ? leaf.color : '') || '',
+      sku, color,
       goods,
       files: leaf.files.map(f => Object.assign({ size: 0 }, f)),
       fileCount: leaf.files.length,
@@ -313,7 +314,9 @@ async function build(report, opts = {}) {
 
     // 标题/文案：有就用，空则排队等生成
     if (row.title && row.body) {
-      copyRows.push({ id, title: row.title, body: row.body, topics: [], status: '已导入', from: '报告' });
+      // ★ 2026-10-03：这里**必须**带上 sku/color。文案生成页的「货号 / 颜色」两列读的就是 copyRows
+      //   （app.js：`rows.length ? rows : …`），以前没带 ⇒ 那两列恒为空，看着像「这条没解析出货号」。
+      copyRows.push({ id, sku, color, title: row.title, body: row.body, topics: [], status: '已导入', from: '报告' });
     } else {
       needGen.push(id);
     }
@@ -386,6 +389,18 @@ async function build(report, opts = {}) {
       copyRows.push(Object.assign({ topics: [], status: '已生成', from: '本地生成' }, r));
     }
     notes.push(`报告里 ${needGen.length} 条没有标题/文案，已由本地模板生成`);
+  }
+
+  // ★ 兜底（2026-10-03）：任何一条 copyRow 缺 sku/color，都按 id 从 items 补齐。
+  //   上面「报告里已有文案」那条路已经显式带了；这里防的是**后来新增的构造路径漏字段** ——
+  //   漏了就会重现「文案生成页货号/颜色两列恒为空」，而且很难查（items 里明明有值）。
+  const itemById = new Map(items.map(i => [i.id, i]));
+  for (const cr of copyRows) {
+    if (cr.sku && cr.color) continue;
+    const it = itemById.get(cr.id);
+    if (!it) continue;
+    if (!cr.sku) cr.sku = it.sku || '';
+    if (!cr.color) cr.color = it.color || '';
   }
 
   return { items, copyRows, publishRows, pairs, blocked, problems, notes, fills, filled };

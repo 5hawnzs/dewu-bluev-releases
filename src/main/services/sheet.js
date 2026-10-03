@@ -28,7 +28,9 @@ function buildRows(state, { startAt, intervalSec }) {
   const copyById = new Map((state.copyRows || []).map(r => [r.id, r]));
   const verifyById = new Map((state.verify.rows || []).map(r => [r.id, r]));
   const base = startAt ? new Date(startAt) : new Date(Date.now() + 60 * 1000);
-  const step = (intervalSec || 90) * 1000;
+  // ★ 0 是合法值（连续发布：每条紧接着上一条）⇒ 不能用 `intervalSec || 90` 兜掉它，
+  //   否则「期待发布时间」列会按 90 秒排开，跟真实执行时刻对不上。
+  const step = (intervalSec === null || intervalSec === undefined ? 90 : Number(intervalSec)) * 1000;
 
   return state.items.map((item, i) => {
     const copy = copyById.get(item.id) || {};
