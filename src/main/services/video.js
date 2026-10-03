@@ -20,6 +20,11 @@
  *
  * 与 adb 一致的三段解析：**用户手填（且文件真实存在）> 程序内置 > 系统 PATH**。
  * 解析写成纯函数（`exists` 可注入），测试不用碰文件系统就能跑全分支。
+ *
+ * ★ 2026-10-03：本模块同时是**全程序唯一的 ffmpeg 通道**（`runFfmpeg` 已导出）——
+ *   视频抽帧（services/frame.js）也走这里。三段解析只能有一个入口：在别处再起一个
+ *   execFile 就等于又写了一份「手填 > 内置 > PATH」，两份迟早不一致
+ *   （用户手填的路径失效，抽帧却还傻傻去调系统 PATH，然后报一堆看不懂的错）。
  */
 const path = require('path');
 const fs = require('fs');
@@ -282,5 +287,8 @@ async function toMp4(src, dst, opts = {}) {
 module.exports = {
   setFfmpegPath, getFfmpegPath, setBundledFfmpegDir, getBundledFfmpegDir, bundledFfmpegPath,
   resolveFfmpegChoice, status, version, toMp4, verifyMp4, readHead, stsdVideoCodecs,
-  MP4_BRANDS, MP4_VIDEO_CODECS
+  MP4_BRANDS, MP4_VIDEO_CODECS,
+  // ★ 给 frame.js（视频抽帧）复用：**同一条 ffmpeg 通道、同一套三段解析**，别在别处另起 execFile。
+  //   explain 一并导出 —— 抽帧失败时要把 ffmpeg 的原文翻成人话，措辞口径与转码那边保持一致。
+  runFfmpeg, explain
 };

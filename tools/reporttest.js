@@ -92,7 +92,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   store.set({
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 4, requiredTopic: '#品牌甲', extraTopics: 4 },
-    publish: { intervalSec: 1, videoIntervalSec: 1, retry: 1 }   // 「演示节奏」开关已删：现在直接给 1 秒间隔
+    publish: { intervalSec: 1, videoIntervalSec: 1 }   // 「演示节奏」开关已删：直接给 1 秒间隔；★ retry 也已删
   });
 
   // 批次目录：4 个叶子（第 2 个图+视频都有、报告又没标；第 3 个只有视频、报告标「视频」）
@@ -289,6 +289,29 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     plusBuilt.items.map(i => i.sku + '/' + i.color).join(' | '));
   ok('⑫ 补了几条会写进说明（不静默补）',
     /按叶子文件夹名（货号\+颜色）补上了 2 条/.test(plusBuilt.notes.join('')), plusBuilt.notes.join(' | '));
+
+  // ⑫d ★★ 2026-10-03 真机实测（E:\bluev_beta\0901_2）：「批次目录 / 货号 / 序号」三层、**颜色没填**。
+  //     老逻辑把批次目录名当货号、真货号当颜色。正确行为：只补货号、颜色留空，并点名。
+  const skuOnlyDir = makeBatch(path.join(TMP, '品牌乙'), {
+    '0901_2/3261163003/1': ['1.jpg'],
+    '0901_2/3261163003/2': ['2.jpg']
+  });
+  const skuOnlyFile = await writeReport(path.join(TMP, '只填货号.xlsx'), COLS, [
+    { 素材路径: skuOnlyDir, 标题: 't1', 文案: 'b1' },
+    { 素材路径: skuOnlyDir, 标题: 't2', 文案: 'b2' }
+  ]);
+  const skuOnlyBuilt = await report.build(await report.readReport(skuOnlyFile), {});
+  ok('⑫d ★★ 「批次目录/货号/序号」三层：货号取真货号、颜色留空（不许写成 0901_2 / 3261163003）',
+    skuOnlyBuilt.items.length === 2
+    && skuOnlyBuilt.items.every(i => i.sku === '3261163003' && i.color === '')
+    && skuOnlyBuilt.publishRows.every(r => (r.goodsList[0] || {}).sku === '3261163003' && !(r.goodsList[0] || {}).color),
+    JSON.stringify(skuOnlyBuilt.items.map(i => i.sku + '/' + i.color)));
+  ok('⑫d 只有货号、没颜色的行会被点名（不静默补，也不瞎猜颜色）',
+    skuOnlyBuilt.filled.noColor.length === 2 && /没写颜色/.test(skuOnlyBuilt.notes.join('')),
+    JSON.stringify({ noColor: skuOnlyBuilt.filled.noColor, notes: skuOnlyBuilt.notes }));
+  ok('⑫d 这批的颜色统计必须是 0（不许把货号算成颜色）',
+    skuOnlyBuilt.filled.color === 0 && skuOnlyBuilt.filled.sku === 2,
+    JSON.stringify({ sku: skuOnlyBuilt.filled.sku, color: skuOnlyBuilt.filled.color }));
 
   const plusImport = await jobs.run('report.import', { file: plusFile });
   ok('⑫ 导入时把补出来的值真写回报告文件（只填空格）',

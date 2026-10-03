@@ -45,6 +45,10 @@ function makeFakeAdb(dir) {
   const WINDOW_XML = path.join(dir, 'window.xml');
   const SHOT_PNG = path.join(dir, 'shot.png');
   const NOT_IDLE_FLAG = path.join(dir, 'DUMP_NOT_IDLE');
+  // ★ 2026-10-03 真机实测的另一种症状：得物发布页首屏的 uiautomator
+  //   有时**一个字都不打印**（不是 could not get idle state）。
+  //   建 DUMP_SILENT 文件 → 系统动画还开着时返回**空输出**；关掉动画就成功（同真机）。
+  const SILENT_FLAG = path.join(dir, 'DUMP_SILENT');
   // `dumpsys activity top` 的夹具 = 真机抓下来的得物发布页 View Hierarchy
   //（前面**故意**垫了两段别的 App，用来证明过滤是按包名做的，不是「取第一段」）。
   // 现场开关：建 NO_DEWU_TOP 文件 → 返回一份**不含得物**的输出（测「备用通道也没抓到」）。
@@ -80,8 +84,17 @@ function makeFakeAdb(dir) {
 
   /** 处理**一条** shell 子命令（adb shell 里用 ';' 串起来的多条会逐个进来） */
   function shellSub(sub) {
-    const cmd = sub.trim();
+    // ★ 2026-10-03 夹具修正：真机上 `cmd 2>&1` / `cmd >/dev/null` 里的**重定向不属于命令本身**。
+    //   原来不剥 ⇒ `uiautomator dump X 2>&1` 用 split().pop() 取「输出文件」取到了 `2>&1`
+    //   （把结构写进一个叫 2>&1 的文件），接着 `cat X 2>&1` 又去 cat 一个叫 `2>&1` 的文件
+    //   ⇒ 只要上游把「抓屏 + 回传」合并成一条 shell，整条链路就全部认不出来（adbtest 一次挂 35 条）。
+    const cmd = sub.trim()
+      .replace(/\s*\d?>&\s*\d+/g, '')
+      .replace(/\s*\d?>\s*\/dev\/null/g, '')
+      .trim();
     if (!cmd) return okOut('');
+    // 真 sh 的 echo：合并抓屏那条命令里用它当中段分隔标记
+    if (/^echo\b/.test(cmd)) return okOut(cmd.replace(/^echo\s*/, '') + '\n');
     if (cmd === 'wm size') return okOut('Physical size: 1080x2400\n');
     if (cmd === 'input') return okOut('usage: input [<source>] <command>\n');
     if (/^input (tap|keyevent|text) /.test(cmd)) return okOut('');
@@ -97,6 +110,9 @@ function makeFakeAdb(dir) {
         : '';
       const blocked = mode === 'always' || (mode === 'anim' && anim.animator_duration_scale !== '0');
       if (blocked) return okOut('ERROR: could not get idle state.\n');   // 真机：报错但**不写文件**
+      // ★ 真机上还有一种：一个字都不打印（同样是“页面永不 idle”）。
+      //   动画关掉后就能成功 —— 用来验「无输出也要走关动画重试」。
+      if (fs.existsSync(SILENT_FLAG) && anim.animator_duration_scale !== '0') return okOut('');
       devFiles.set(target, read(WINDOW_XML, Buffer.from('<hierarchy/>')).toString('utf8'));
       return okOut(`UI hierchary dumped to: ${target}\n`);
     }

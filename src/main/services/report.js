@@ -203,18 +203,22 @@ async function leavesOf(absDir) {
  *   ③ 叶子名里没有 `+`（解析不出货号/颜色）时不猜，记进 noParse，由界面点名。
  */
 function fillGoodsFromLeaf(row, leaf, goods, fills, filled) {
-  // ★ 只认「叶子文件夹名里确实有 `+`」这一种（flatten.parseName 的 how==='plus'）。
-  //   老式三层 / 随手命名的文件夹解析出来的东西**不能当货号**：实测
+  // ★ 能拿来补的只有两种 how：
+  //   'plus' —— 叶子名确实是「货号+颜色」⇒ **货号、颜色都可信**；
+  //   'sku'  —— 只解析出货号（`…/批次目录/货号/序号/` 颜色没填，或扁平副本的 `货号_序号`）
+  //             ⇒ **只补货号，颜色一律留空**，并记一条 noColor 让界面点名（不静默、也不瞎猜颜色）。
+  //   其余（老式三层 / 随手命名）解析出来的东西**不能当货号**：实测
   //   `…/品牌甲/20260904/IMG_5253/1/` 会被读成 货号=20260904 / 颜色=IMG_5253。
   //   宁可空着让人去补，也不往运营的账上写一个假货号。
-  const ok = leaf.how === 'plus';
+  const ok = leaf.how === 'plus' || leaf.how === 'sku';
   const leafSku = ok ? String(leaf.sku || '').trim() : '';
-  const leafColor = ok ? String(leaf.color || '').trim() : '';
+  const leafColor = leaf.how === 'plus' ? String(leaf.color || '').trim() : '';
   if (!goods.length) {
     if (!leafSku) { filled.noParse.push({ rowNo: row.rowNo, name: leaf.name }); return; }
     goods.push({ sku: leafSku, color: leafColor });
     filled.sku++;
     if (leafColor) filled.color++;
+    else if (leaf.how === 'sku') filled.noColor.push({ rowNo: row.rowNo, name: leaf.name, sku: leafSku });
     fills.push({ rowNo: row.rowNo, sku: leafSku, color: leafColor });
     return;
   }
@@ -225,7 +229,8 @@ function fillGoodsFromLeaf(row, leaf, goods, fills, filled) {
     if (!g0.sku || g0.sku === leafSku) { g0.color = leafColor; filled.color++; touched = true; }
     else filled.mismatch.push({ rowNo: row.rowNo, report: g0.sku, leaf: leafSku });
   }
-  if (!g0.color && !ok) filled.noParse.push({ rowNo: row.rowNo, name: leaf.name });
+  if (!g0.color && leaf.how === 'sku') filled.noColor.push({ rowNo: row.rowNo, name: leaf.name, sku: g0.sku || '' });
+  else if (!g0.color && !ok) filled.noParse.push({ rowNo: row.rowNo, name: leaf.name });
   if (touched) fills.push({ rowNo: row.rowNo, sku: g0.sku || '', color: g0.color || '' });
 }
 
@@ -284,7 +289,7 @@ async function build(report, opts = {}) {
   const publishRows = [];
   const blocked = [];
   const fills = [];                                   // 要写回报告文件的格子（只含空格子）
-  const filled = { sku: 0, color: 0, mismatch: [], noParse: [] };
+  const filled = { sku: 0, color: 0, mismatch: [], noParse: [], noColor: [] };
 
   for (const { row, leaf } of pairs) {
     const images = leaf.files.filter(f => f.type === 'image');
@@ -297,7 +302,7 @@ async function build(report, opts = {}) {
       id, dir: id, absDir: leaf.absDir,
       // 叶子兜底也只在「货号+颜色」命名时才用：随手命名的文件夹（IMG_5253 / 品牌甲）
       // 解析出来的不是货号，写成货号只会让人以为这条有主了（见 flatten.parseName 的 how）
-      sku: (goods[0] && goods[0].sku) || (leaf.how === 'plus' ? leaf.sku : '') || '',
+      sku: (goods[0] && goods[0].sku) || ((leaf.how === 'plus' || leaf.how === 'sku') ? leaf.sku : '') || '',
       color: (goods[0] && goods[0].color) || (leaf.how === 'plus' ? leaf.color : '') || '',
       goods,
       files: leaf.files.map(f => Object.assign({ size: 0 }, f)),
@@ -350,7 +355,6 @@ async function build(report, opts = {}) {
       status: '排队',
       // C 列已经是「发布成功」的行 → 续跑时跳过（真机也是这么做的）
       result: /^发布成功/.test(row.result || '') ? '发布成功' : '',
-      retries: 0,
       reason: reasons.join('；') || '',
       expect: row.expect || '',
       title: row.title || '',
@@ -370,6 +374,9 @@ async function build(report, opts = {}) {
   filled.noParse.slice(0, 5).forEach(m => notes.push(
     `第 ${m.rowNo} 行：「${m.name}」这个文件夹名不是「货号+颜色」（以 + 号分隔），解析不出货号/颜色，没有替它猜`));
   if (filled.noParse.length > 5) notes.push(`另有 ${filled.noParse.length - 5} 行同样解析不出货号/颜色（见下方文件夹命名）`);
+  filled.noColor.slice(0, 5).forEach(m => notes.push(
+    `第 ${m.rowNo} 行：「${m.name}」只写了货号「${m.sku}」，**没写颜色** —— 货号已补上，颜色留空请人工补`));
+  if (filled.noColor.length > 5) notes.push(`另有 ${filled.noColor.length - 5} 行只有货号、没有颜色`);
 
   // 空的标题/文案 → 交给 copywriter（只对需要生成的那些跑）
   if (needGen.length && typeof opts.generateCopy === 'function') {

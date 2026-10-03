@@ -154,9 +154,13 @@ async function exportPublishLog(opts = {}) {
       const time = e.at ? `，已回填时间 ${e.at}` : '';
       // 老日志里没有 kind（那时只有图文通道），按图文渲染 —— 与当年的输出一致
       const kindTag = e.kind === '视频' ? '视频' : '图文';
+      // ★ 2026-10-03 用户要求：失败那一行写成「**发布失败，原因xxx**」（原来写「失败：xxx」）。
+      //   只改「失败」这一种；「校验未通过」「已取消」这类仍照原值渲染 —— 把它们叫成「发布失败」是另一种谎。
+      const why = e.reason ? (e.result === '失败' ? `，原因${e.reason}` : `：${e.reason}`) : '';
       const detail = e.result === '发布成功'
         ? `[${mark}] 行 ${e.seq} [${kindTag}] 发布完成${time}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`
-        : `[${mark}] 行 ${e.seq} [${kindTag}] ${e.result}${e.reason ? '：' + e.reason : ''}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`;
+        : `[${mark}] 行 ${e.seq} [${kindTag}] ${e.result === '失败' ? '发布失败' : e.result}${why}（耗时 ${e.elapsed == null ? '—' : e.elapsed + 's'}）`;
+      // 「（重试 N 次）」只在**旧台账**里还会出现：2026-10-03 起不再重试，新记录恒为 0。
       lines.push(detail + (e.retries ? `（重试 ${e.retries} 次）` : ''));
       csv.push([name, brandOf(e), userOf(e), e.seq, e.dir || '', e.result || '', e.at || '', e.elapsed == null ? '' : e.elapsed, e.retries || 0, e.reason || '', e.mode || '', e.ts ? when(new Date(e.ts)) : '']);
     }

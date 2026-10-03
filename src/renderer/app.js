@@ -11,7 +11,6 @@ const state = {
   plan: null,
   jobs: [],           // 运行中的任务：可同时有多个批次，每个实例独立 id / 进度 / 日志标签
   batchDetail: null,  // 「查看详情」正在展开哪个批次的日志
-  recoverEdit: null,  // 失败恢复动作编辑框里的文本（null = 没收起来）
   publishRowTick: 0,
   auth: null,         // {requireLogin, user, isAdmin, defaultHint}
   users: null,        // 管理员可见的账号列表
@@ -29,6 +28,8 @@ const state = {
   brandModal: null,
   // 云端配置弹窗：null=关着；'export' | 'import'。cloudCfg 是导出时从主进程取回的那份（含 url/key）
   cloudModal: null,
+  // 「说明书」弹窗：null=关着；'copy'=批次设置说明 / 'publish'=装置与节奏说明（2026-10-03 新增）
+  helpModal: null,
   cloudCfg: null,
   upd: null,          // 应用更新状态（来自主进程）null=还没读到
   logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
@@ -199,12 +200,21 @@ function clearLogs() {
 }
 /** 侧栏「运行日志」的角标：有错误先报错误数（那才是要去看的信号），否则给总条数 */
 function updateLogBadge() {
-  const el = document.querySelector('[data-st="10"]');
-  if (!el) return;
   const total = (state.logs || []).length;
   const errs = (state.logs || []).filter(e => e.level === 'error').length;
-  el.textContent = total ? (errs ? `${errs} 错` : `${total} 条`) : '—';
-  el.className = 'st' + (total ? (errs ? ' warn' : ' ok') : '');
+  const el = document.querySelector('[data-st="10"]');
+  if (el) {
+    el.textContent = total ? (errs ? `${errs} 错` : `${total} 条`) : '—';
+    el.className = 'st' + (total ? (errs ? ' warn' : ' ok') : '');
+  }
+  // ★ 底部日志栏右上角也要有条数（2026-10-03 用户：「运行日志模块右边不显示有多少条」）。
+  //   口径必须与页里那个 chip 一致（同一个 state.logs，上限 500）—— 底部日志栏**不跟筛选**走，
+  //   它永远是「全量刚才发生了什么」，所以这里写的是总数而不是命中数。
+  const bar = $('#logBarCount');
+  if (bar) {
+    bar.textContent = total ? `共 ${total} 条${errs ? ` · ${errs} 错` : ''}` : '还没有日志';
+    bar.className = 'chip' + (errs ? ' warn' : '');
+  }
 }
 /** 需要导出给主进程的那些：**当前筛选下来的**，外加上下文（筛选条件 + 缓冲区总数） */
 function logExportPayload() {
@@ -215,12 +225,22 @@ function logExportPayload() {
 /** 产出可发布内容的任务：必须带品牌归属。名单要和主进程 jobs.js 的 BRAND_SCOPED 保持一致 */
 const BRAND_SCOPED_TYPES = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
 
+/**
+ * 产出类任务统一带上标题栏选中的品牌。没选中就不带 —— 让主进程把「为什么不行」讲清楚，
+ * 而不是在前端塞一个顶上：归属记错了比报错难查得多。
+ * ★★ 凡是 BRAND_SCOPED_TYPES 里的任务，**所有**调用点都必须经过这里 ——
+ *    包括绕过 runJob 直接调 appApi.run 的那些。漏一处，界面表现就是
+ *    「标题栏明明选着品牌，一点却弹『请先选择品牌』」（2026-10-03「导入内容报告」就是这样漏的）。
+ */
+function brandArgs(type, args) {
+  const a = Object.assign({}, args || {});
+  if (BRAND_SCOPED_TYPES.has(type) && !a.brandId && state.brandId) a.brandId = state.brandId;
+  return a;
+}
+
 async function runJob(type, args) {
   let res;
-  const a = Object.assign({}, args || {});
-  // 自动带上标题栏选中的品牌。没选中就不带 —— 让主进程把「为什么不行」讲清楚，
-  // 而不是在前端塞一个顶上：归属记错了比报错难查得多
-  if (BRAND_SCOPED_TYPES.has(type) && !a.brandId && state.brandId) a.brandId = state.brandId;
+  const a = brandArgs(type, args);
   try {
     res = await appApi.run(type, a);
   } catch (e) {
@@ -310,33 +330,13 @@ function batchesHtml(type, title) {
   </div>`;
 }
 
-/**
- * 失败恢复动作（uiMap.recover）：发布失败后要退回干净起点，否则下一条的界面会被残留页面污染。
- * 真机是「回退转发页」「删除卡片」这类动作，每个账号/版本不一样，所以做成可编辑而不是写死。
+/*
+ * ★ 2026-10-03 用户要求：**「失败恢复动作」整块删除**（原来这里有一个 recoverHtml()：
+ *   可编辑的恢复步骤 + 「编辑恢复动作」按钮；主进程对应 publish.setRecover + publisher.recover）。
+ *   现在发布失败不回退、也不执行任何恢复步骤：失败就写「发布失败，原因xxx」交人工。
+ *   代价如实说：上一条失败后界面可能停在半路，下一条的起点会被残留页面污染 —— 这是用户拍板接受的，
+ *   所以「重跑」那个按钮（publish.rerun）依旧保留：那是**人点的新任务**，不会自己发生。
  */
-function recoverHtml() {
-  const map = (state.config.publish && state.config.publish.uiMap) || {};
-  const steps = map.recover || [];
-  if (state.recoverEdit !== null) {
-    return `<div style="margin-top:10px">
-      <b>失败恢复动作（发布失败后自动执行）</b>
-      <textarea class="inp mono" id="recoverBox" spellcheck="false" style="width:100%;height:132px;margin-top:6px;resize:vertical">${esc(state.recoverEdit)}</textarea>
-      <div class="row" style="margin-top:6px">
-        <button class="btn sm primary" data-act="pub:recoverSave">保存</button>
-        <button class="btn sm" data-act="pub:recoverCancel">取消</button>
-        <span class="hint">可用 action：<code>tapText</code> / <code>tapId</code> / <code>tapDesc</code>（value 是要点的文字、resource-id、描述）与
-          <code>wait</code>（value 是毫秒）。返回键不用写进来 —— 回退时本来就会先按。</span>
-      </div>
-    </div>`;
-  }
-  return `<div class="row" style="margin-top:10px">
-    <b>失败恢复动作</b>
-    <span class="chip">${steps.length ? steps.length + ' 步' : '未配置'}</span>
-    <span class="hint" style="margin:0">${steps.length
-      ? steps.map(s => `${esc(s.action)}：${esc(String(s.value))}`).join(' → ')
-      : '不配也行：失败后只按返回键回退。真机日志里是「已回退转发页」「删除卡片」这类动作。'}</span>
-  </div>`;
-}
 
 /**
  * 「AI 内容报告」（真机流水线的中间产物）：导入后直接发布，结果回写它的 B/C 列
@@ -530,23 +530,16 @@ TABS[3] = {
           <span class="lbl">额外话题</span>
           <select class="inp" data-cfg="copy.extraTopics">${[3, 4, 5].map(v => `<option value="${v}" ${cfg.extraTopics === v ? 'selected' : ''}>${v} 个</option>`).join('')}</select>
         </div>
-        <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
-          <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
-          发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。
-          <br><b>额外话题从哪来</b>：优先抓<b>品牌提示词里写的 <code>#话题</code></b>（就是提示词里那段「话题列表」），
-          品牌提示词里没有 <code>#</code> 话题才退回内置的通用词 —— 所以想让每条笔记都带上你们家的话题，
-          直接在品牌提示词的「话题列表」里写就行，不用在这里再抄一遍。</p>
-        <p class="hint"><b>正文写成 4~5 行短句</b>：一行一句（8~16 字），按「卖点 → 氛围感 → 上身体验 → 搭配」铺开，
-          行尾少量 emoji（全篇 1~3 个）。<b>行与行之间是真的换行</b>，发到得物就是分行的样子；写成一大段会被「文案核对」列点出来。
-          话题走发布单的「话题1~5」独立格子，所以正文结尾不带 <code>#</code> —— 得物渲染出来的位置一样，
-          但只有格子里的话题才点得动。</p>
-        <p class="hint"><b>重复口径</b>：只看<b>相邻两条</b> —— 标题或正文与<b>上一条完全一样</b>（含 emoji）才会提醒；
-          换个 emoji、换个词就算不同；隔开几条再撞句、或换个品牌复用同一句，都没关系。</p>
+        <!-- ★ 2026-10-03 用户要求：「批次设置」文字太多 ⇒ 规则明细收进「说明书」弹窗（HELP.copy），
+             页面只留一行结论 + 一个按钮。原来那 4 段共 600 多字，第一次用的人读不完、老手每次被挡着。
+             ★ 结论行里必须留住两条**会改变行为**的信息（不能只写「看说明书」）：
+               ① 必带话题可写多个（这是用户真正要动手填的那个框）；② 标题看图写、连不上直接报错（原来的承诺）。
+             ★ 详细文字**一字不改**地搬进 HELP.copy，不是删掉 —— 说明书里能逐句核对。 -->
+        <p class="hint">规则在<b>说明书</b>里（话题怎么拼 · 正文怎么写 · 重复怎么算 · 标题怎么来）：
+          必带话题可写多个（<b>空格</b> / <b>逗号</b>隔开，漏写 <code>#</code> 自动补）；正文写成 <b>4~5 行短句</b>；
+          标题是<b>看图写</b>的（模型连不上会直接停下报错，不拿本地模板冒充）。
+          <button class="btn sm" data-act="help:open" data-topic="copy" style="margin-left:6px">看说明书</button></p>
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
-        <p class="hint"><b>标题是看图写的</b>：每条素材把前几张实拍图缩到 768px 发给模型，标题里的品类 / 款式特征 / 颜色
-          都来自图里真实看到的（如「雨伞熊高领毛衣灰色慵懒风🧸」），<b>不是拿货号颜色套模板</b>。
-          模型连不上时会<b>直接停下来报错</b>，不会拿本地模板冒充 AI 文案；要先确认接口就点「设置 → 高级设置 → 文案模型 → 接口自检」。
-          （<b>并发路数</b>是「同时发几路请求」的旋钮，不是内容参数 —— 已收进「高级设置」，出厂 6 路，一般不用动。）</p>
         <p class="hint">跑完会在<b>你选的那个素材文件夹</b>里生成一份 <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>：
           逐行写清 标题 / 正文 / 货号 / 颜色 / 生成来源 / <b>文案核对</b>（自动查出「颜色对不上」「混进货号」「用了模板套话」这类问题）。
           格式与上游那份「KIDS_AI内容报告」一致 ⇒ <b>核对完可以直接把它当发布单导进来</b>。</p>
@@ -611,47 +604,24 @@ TABS[4] = {
   }
 };
 
-TABS[5] = {
-  title: '发布单',
-  desc: '26 列 · 运营确认后交发布端',
-  actions: () => [
-    { act: 'sheet:importReport', label: '导入 AI 内容报告' },
-    { act: 'sheet:open', label: '打开文件', disabled: !state.project.sheet.file },
-    { act: 'sheet:dir', label: '打开目录' },
-    { act: 'sheet:export', label: '导出 xlsx', primary: true }
-  ],
-  render() {
-    const sh = state.project.sheet || {};
-    const rows = (state.project.publish && state.project.publish.rows) || [];
-    const preview = rows.slice(0, 12);
-    return `
-      <div class="box">
-        <div class="row">
-          <input class="inp mono" value="${esc(sh.file || '（尚未导出）')}" readonly>
-          <span class="chip">${sh.rowCount || 0} 行 · ${sh.colCount || 26} 列</span>
-          <span class="chip">${sh.locked ? '被占用' : '未占用'}</span>
-        </div>
-      </div>
-      ${reportBoxHtml()}
-      ${preview.length ? `<div class="tw"><table>
-        <thead><tr><th>#</th><th>期待发布时间</th><th>素材路径</th><th>标题</th><th>好物1</th><th>执行结果</th></tr></thead>
-        <tbody>${preview.map(r => `<tr class="${r.result === '校验未通过' ? 'flag' : ''}">
-          <td class="num">${r.seq}</td><td>${esc(r.expect || '')}</td><td class="mono">${esc(r.dir)}</td>
-          <td class="cut">${esc(r.title || '')}</td><td class="mono">${esc(r.goods1 || '')}</td>
-          <td>${badge(r.result || '待发布', kindOf(r.result || '待发布'))}</td>
-        </tr>`).join('')}</tbody></table></div>`
-        : `<div class="empty">还没有发布单。先做文案生成与校验，再点「导出 xlsx」。</div>`}
-      <p class="hint">发布过程<b>不占用发布单文件</b>：任务读进内存后立即释放 → 结果追加写 <code>publish-log.jsonl</code> → 一批结束再一次性合并回写 Excel。</p>`;
-  }
-};
+// ★ 2026-10-03 用户要求：「发布单」页签删除（那一页与「模拟器发布」页重复）。
+//   ★ 删功能要连**读取链**一起处理：那一页独有的三样都已经安置好了，不是藏起来 ——
+//     · 「导出 xlsx」→ 挪到「模拟器发布」页右上角动作条（用户指定的落点）；
+//     · 「打开文件 / 打开目录」→ 挪到「模拟器发布」页「装置与节奏」那一块（紧挨发布单路径）；
+//     · reportBoxHtml() → 本来就被 TABS[6] 渲染，原地保留。
+//   ★ 编号**不重排**（6~12 保持原样）：重排要把 Ctrl+1..9、跳页写法与一批测试断言全改，
+//     为一个空白位不值当。代价是页签编号在 5 处留了个空位 ⇒ renderAll 与 Ctrl+数字 都加了兜底
+//     （原来落到空位会读 undefined.title，整页白屏）。
 
 TABS[6] = {
   title: '模拟器发布',
   desc: '导入 AI 内容报告 → 选发布间隔 → 开始发布（ADB 驱动得物 App · 失败可单独重跑）',
   actions: () => [
     // ★ 2026-10-03 用户给的流程：「从模拟器发布的入口导入，选择发布间隔时间，点击开始发布」
-    //   ⇒ 导入入口放到这一页（「发布单」页那个还在，两处都能进，导入的是同一份东西）
+    //   ⇒ 导入入口放到这一页（原来「发布单」页那个随页签一起删了，现在只剩这一处）
     { act: 'sheet:importReport', label: '导入 AI 内容报告' },
+    // ★ 2026-10-03：原「发布单」页的「导出 xlsx」挪到这一页（用户指定的落点）
+    { act: 'sheet:export', label: '导出 xlsx' },
     { act: 'pub:connect', label: '连接模拟器' },
     { act: 'pub:exportLog', label: '重导出日志' },
     { act: 'pub:stop', label: '停止', disabled: !running('publish.run') && !running('publish.rerun') },
@@ -660,6 +630,7 @@ TABS[6] = {
   render() {
     const cfg = state.config.publish;
     const pub = state.project.publish || {};
+    const sh = state.project.sheet || {};   // 发布单 xlsx（原「发布单」页那一行挪到这儿）
     const mode = pub.mode || 'mock';
     const rows = pub.rows || [];
     // 与主进程 publisher.estimate 同一口径：图文「间隔+30s」、视频「间隔+60s」（视频推得久，还要等媒体库索引）
@@ -675,14 +646,24 @@ TABS[6] = {
     return `
       <div class="box">
         <h3>装置与节奏</h3>
+        <!-- ★ 2026-10-03：原「发布单」页的路径 / 行数 / 打开文件 / 打开目录挪到这儿。
+             「导出 xlsx」在右上角动作条里。 -->
+        <div class="row" style="margin-bottom:10px">
+          <span class="lbl">发布单</span>
+          <input class="inp mono" value="${esc(sh.file || '（还没导出过发布单）')}" readonly>
+          <span class="chip">${sh.rowCount || 0} 行 · ${sh.colCount || 26} 列</span>
+          <span class="chip">${sh.locked ? '被占用' : '未占用'}</span>
+          <button class="btn sm" data-act="sheet:open" ${sh.file ? '' : 'disabled'}>打开文件</button>
+          <button class="btn sm" data-act="sheet:dir">打开目录</button>
+        </div>
         ${devicesHtml()}
         <div class="row" style="margin-top:10px">
           <span class="lbl">发布间隔</span>
           <select class="inp" data-cfg="publish.intervalSec">
             ${[30, 60, 90, 120].map(v => `<option value="${v}" ${Number(cfg.intervalSec || 60) === v ? 'selected' : ''}>固定 ${v} 秒</option>`).join('')}
           </select>
-          <span class="lbl">失败重试</span>
-          <select class="inp" data-cfg="publish.retry">${[0, 1, 2, 3].map(v => `<option value="${v}" ${cfg.retry === v ? 'selected' : ''}>${v} 次</option>`).join('')}</select>
+          <!-- ★ 2026-10-03 用户要求：发布失败不重试 ⇒「失败重试 N 次」这个下拉与 publish.retry 配置整项删除。
+               失败只影响那一条（写「发布失败，原因xxx」），要再发一次就点行尾的「重跑」——那是人点的新任务。 -->
         </div>
         <div class="row" style="margin-top:10px">
           <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
@@ -709,7 +690,7 @@ TABS[6] = {
           <td>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
           <td>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`
-        : `<div class="empty">还没有发布队列，先到「发布单」导出 xlsx。</div>`}
+        : `<div class="empty">还没有发布队列，先点右上角「导出 xlsx」生成一份。</div>`}
       <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
       发布时按你填的<b>货号</b>在「关联好物」里搜出结果，<b>默认选第一件商品</b>发出去（这条做法已实测可行）。
       要精确到某个颜色，就到「货号颜色校验」页把颜色核对准。要让机器真按这条做，需要在 UI 定位表里、
@@ -749,7 +730,11 @@ function ffBadge(f) {
 
 TABS[7] = {
   title: '设置',
-  desc: '路径、内容校验、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）',
+  // ★ desc 支持函数（renderAll 里求值）：非管理员这一页没有「应用更新」那块，
+  //   副标题就不该提它 —— 界面文字得跟界面上真有的东西对得上。
+  desc: () => (canAdmin()
+    ? '路径、内容校验、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'
+    : '路径、内容校验、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'),
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
@@ -779,7 +764,10 @@ TABS[7] = {
       <!-- ★ 原先这里有一整块「外观」（主题说明 + 运行环境）—— 2026-10-03 按用户要求撤掉：
            主题入口只留顶栏那一个，设置里再复述一遍纯属重复（两处状态迟早各说各话）；
            「运行环境」那行没丢，挪到下面「外部依赖」里了。 -->
-      ${updateHtml()}
+      <!-- ★ 2026-10-03 用户要求：**非管理员**在设置页看不到「应用更新 / 版本信息」整块。
+           这里只是不给人添乱；真正拦住的是主进程那道 guardAdmin（前端改一行不算数）。
+           版本号没丢 —— 挪到标题栏 app 名字后面（#appVer），见 index.html / renderAll。 -->
+      ${canAdmin() ? updateHtml() : ''}
       <div class="box">
         <h3>外部依赖</h3>
         <div class="tw"><table>
@@ -797,7 +785,7 @@ TABS[7] = {
 };
 
 /* ---------------- 页签 11：高级设置（仅管理员可见） ----------------
- * ★ 为什么单开一页：这里全是「装一次、之后再也不动」的配置 —— UI 定位表、失败恢复动作、
+ * ★ 为什么单开一页：这里全是「装一次、之后再也不动」的配置 —— UI 定位表、
  *   文案模型、货号颜色接口、adb 与 ffmpeg 路径。把它们平铺在日常页面上只是干扰
  *   （用户原话：「为什么放了这么多实际根本不会点击使用的功能」）。
  * ★ 但**不许删**：真实通道必须先有 UI 定位表（publisher.run 会直接 throw），
@@ -807,7 +795,7 @@ TABS[7] = {
 TABS[11] = {
   title: '高级设置',
   admin: true,
-  desc: '装一次就不再动的配置：UI 定位表、失败恢复动作、文案模型、并发路数、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
+  desc: '装一次就不再动的配置：UI 定位表、文案模型、并发路数、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
@@ -833,11 +821,6 @@ TABS[11] = {
           视频会<b>自动复用</b>这套 steps，不用再抓一遍。哪天真机改版、视频那条路跟图文不一样了，
           再单独抓一次配 videoSteps 覆盖（配了就以它为准）。</p>
       </div>
-      <div class="box">
-        <h3>失败恢复动作</h3>
-        ${recoverHtml()}
-        ${state.recoverEdit === null ? '<div class="row" style="margin-top:6px"><button class="btn sm" data-act="pub:recoverEdit">编辑恢复动作</button></div>' : ''}
-      </div>
       ${advBox('文案模型', false,
         `<div class="row" style="margin-bottom:9px">
           <span class="lbl">启用</span>
@@ -857,7 +840,9 @@ TABS[11] = {
         </div>
         <p class="hint"><b>留空 = 跟随内置</b>（地址与模型 id 都随包内置，换服务商发新包就行）—— 这一条只在你<b>填了</b>的时候才覆盖内置值。
           <b>标题是看图写的</b>：每条素材把前几张实拍图缩到上面那个尺寸发给模型，标题里的品类 / 款式特征 / 颜色都来自图里真实看到的，
-          不是拿货号颜色套模板。★ 模型连不上时<b>会直接停下来报错</b>，不会拿本地模板冒充 AI 文案
+          不是拿货号颜色套模板。<b>只有视频、没有实拍图的素材</b>会从视频里抽 1 帧当图（在本机抽，不往素材目录里落东西；
+          抽到的帧是黑场/纯色就一张都不送，报告里「生成来源」会写明是「视频抽帧」还是「视频没抽出帧」）。
+          ★ 模型连不上时<b>会直接停下来报错</b>，不会拿本地模板冒充 AI 文案
           （要用模板就选「本地模板（离线）」，那时报告里会逐行标出「本地模板」）。</p>`,
         '默认关闭 · 离线模板就够用')}
       ${advBox('文案生成并发', false,
@@ -1614,13 +1599,15 @@ function logPaneHtml() {
   const ex = state.logExport;
   return `
   <div class="box">
-    <h3>运行日志</h3>
-    <div class="row">
+    <div class="row" style="align-items:baseline">
+      <h3 style="margin:0">运行日志</h3>
+      <span class="grow"></span>
       <span class="chip" id="logPaneCount">${logCountText()}</span>
       ${errs ? `<span class="chip warn">${errs} 条错误</span>` : ''}
       ${warns ? `<span class="chip">${warns} 条警告</span>` : ''}
-      <span class="hint" style="margin:0">与最下面的日志栏是同一份内容；这里筛完了再导出，导出的就是屏幕上这些。</span>
     </div>
+    <p class="hint" style="margin:6px 0 0">与最下面的日志栏是同一份内容；这里筛完了再导出，导出的就是屏幕上这些。
+      条数是<b>内存缓冲区里的</b>（上限 500 条），不是磁盘上历史日志的总数。</p>
     <div class="row" style="margin-top:9px">
       <select class="inp" id="logLv">${opts}</select>
       <input class="inp" id="logQ" style="flex:1;min-width:180px" placeholder="按关键字筛（标题 / 批次 / 文件路径…）" value="${esc(f.q)}" spellcheck="false">
@@ -1674,9 +1661,12 @@ function bindLogPane() {
 /* ---------------- 渲染入口 ---------------- */
 function renderAll() {
   syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
+  // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 编号在 5 处留了空位。老配置里存过 tab=5、
+  //   或按 Ctrl+5 按到空位时，必须兜回第 1 页 —— 否则 t 是 undefined，下面读 t.title 直接崩（整页白屏）。
+  if (!TABS[state.tab]) state.tab = 1;
   const t = TABS[state.tab];
   document.querySelectorAll('.nav').forEach(el => el.classList.toggle('on', Number(el.dataset.tab) === state.tab));
-  $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(t.desc)}</p></div>
+  $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(typeof t.desc === 'function' ? t.desc() : t.desc)}</p></div>
     <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}" data-act="${a.act}" ${a.disabled ? 'disabled' : ''}>${esc(a.label)}</button>`).join('')}</div>`;
   const scroll = $('#pane').scrollTop;
   $('#pane').innerHTML = t.render();
@@ -1688,6 +1678,10 @@ function renderAll() {
     chip.className = 'chip run';
   } else { chip.textContent = '空闲'; chip.className = 'chip'; }
   $('#chipProj').textContent = '项目：' + ((state.project && state.project.projectName) || '—');
+  // 左上角 app 名字后面的版本号：app:info 不受 guardAdmin 限制，人人可读；
+  // 取不到就显示 v—（未知 ≠ 0，绝不编一个版本号出来）
+  const av = $('#appVer');
+  if (av) av.textContent = 'v' + ((state.info && state.info.version) || '—');
   const me = state.auth && state.auth.user;
   const cu = $('#chipUser');
   if (cu) {
@@ -1890,6 +1884,55 @@ function closeBrandModal() {
   state.brandModal = null;
   renderBrandModal();
 }
+
+/* ---------------- 「说明书」弹窗 ----------------
+ * ★ 为什么要有它（2026-10-03 用户要求）：「批次设置」把话题 / 正文 / 重复 / 看图写四套规则
+ *   全铺在页面上（600 多字），第一次用的人读不完，老手每次又都被挡着。
+ *   改成：页面只留**一行结论** + 一个「看说明书」，规则细节点开弹窗再看。
+ * ★ 为什么用弹窗而不是折叠（details）：折叠会把页面往下顶很长，展开又把正在看的队列表挤走；
+ *   弹窗盖在上面，看完关掉，页面滚动位置一点不动。
+ * ★ 内容放注册表里（不是散在模板字符串里）：写断言时可以按 topic **逐条点名**，
+ *   也能钉住「注册表里的每一条都有按钮能打开、每页的按钮都指向存在的条目」——
+ *   光删按钮会留下打不开的死条目，光删条目会留下点了没反应的死按钮，两种都要能抓。
+ */
+const HELP = {
+  copy: {
+    title: '文案生成 · 批次设置说明书',
+    html: () => `
+      <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
+        <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
+        发布单只有 <b>话题1~话题5</b> 五个格子 —— 「必带个数 + 额外话题」超过 5 时，多出来的会<b>少带并明确告警</b>（不会默默丢掉）。</p>
+      <p class="hint"><b>额外话题从哪来</b>：优先抓<b>品牌提示词里写的 <code>#话题</code></b>（就是提示词里那段「话题列表」），
+        品牌提示词里没有 <code>#</code> 话题才退回内置的通用词 —— 所以想让每条笔记都带上你们家的话题，
+        直接在品牌提示词的「话题列表」里写就行，不用在这里再抄一遍。</p>
+      <p class="hint"><b>正文写成 4~5 行短句</b>：一行一句（8~16 字），按「卖点 → 氛围感 → 上身体验 → 搭配」铺开，
+        行尾少量 emoji（全篇 1~3 个）。<b>行与行之间是真的换行</b>，发到得物就是分行的样子；写成一大段会被「文案核对」列点出来。
+        话题走发布单的「话题1~5」独立格子，所以正文结尾不带 <code>#</code> —— 得物渲染出来的位置一样，
+        但只有格子里的话题才点得动。</p>
+      <p class="hint"><b>重复口径</b>：只看<b>相邻两条</b> —— 标题或正文与<b>上一条完全一样</b>（含 emoji）才会提醒；
+        换个 emoji、换个词就算不同；隔开几条再撞句、或换个品牌复用同一句，都没关系。</p>
+      <p class="hint"><b>标题是看图写的</b>：每条素材把前几张实拍图缩到 768px 发给模型，标题里的品类 / 款式特征 / 颜色
+        都来自图里真实看到的（如「雨伞熊高领毛衣灰色慵懒风🧸」），<b>不是拿货号颜色套模板</b>。
+        <b>只有视频、没有实拍图的素材</b>会从视频里抽 <b>1 帧</b>当图发过去（抽帧在本机做，
+        送出去的还是这 1 张、跟视频多长无关；抽到的帧是黑场/纯色就一张都不送）。
+        模型连不上时会<b>直接停下来报错</b>，不会拿本地模板冒充 AI 文案；要先确认接口就点「设置 → 高级设置 → 文案模型 → 接口自检」。</p>
+      <p class="hint"><b>并发路数</b>是「同时发几路请求」的旋钮，<b>不是内容参数</b> —— 已收进「高级设置」，出厂 6 路，一般不用动。</p>
+    `
+  }
+};
+
+function renderHelpModal() {
+  const mask = $('#hmodal'), box = $('#hmBox');
+  if (!mask || !box) return;
+  const h = state.helpModal && HELP[state.helpModal];
+  if (!h) { mask.hidden = true; box.innerHTML = ''; return; }
+  mask.hidden = false;
+  box.innerHTML = `<div class="mh"><h3>${esc(h.title)}</h3><span class="grow"></span>
+      <button class="btn sm" data-act="help:close">关闭</button></div>
+    <div class="mb">${h.html()}</div>`;
+}
+function openHelpModal(topic) { state.helpModal = topic || ''; renderHelpModal(); }
+function closeHelpModal() { state.helpModal = null; renderHelpModal(); }
 
 /* ---------------- 账号操作弹窗（配置品牌权限 / 重置密码） ---------------- */
 /*
@@ -2328,6 +2371,10 @@ const ACTS = {
     renderAll();
   },
   'cloud:close': () => closeCloudModal(),
+
+  // 「说明书」弹窗：topic 从按钮的 data-topic 上取（写错 topic ⇒ 弹窗打不开，测试点名抓）
+  'help:open': (el) => openHelpModal(el.dataset.topic),
+  'help:close': () => closeHelpModal(),
   'cloud:copy': async () => {
     const t = document.querySelector('#cmText');
     if (!t) return;
@@ -2611,13 +2658,13 @@ const ACTS = {
     });
     if (!f) return;
     // 先静默试一次：报告里自带「素材路径」就直接用；没有的话再问一次这一批的素材目录
-    let r = await appApi.run('report.import', { file: f });
+    let r = await appApi.run('report.import', brandArgs('report.import', { file: f }));
     if (!r.ok && /素材路径/.test(r.error || '')) {
       const d = await appApi.pickDir({
         title: '这份报告的「素材路径」是空的 —— 请选择这一批的素材目录（D:\\你的素材目录\\20260901 这种，里面每个叶子文件夹 = 一条内容）'
       });
       if (!d) { toast('已取消：报告里没有素材路径，也没有选素材目录', 'err'); return; }
-      r = await appApi.run('report.import', { file: f, dir: d });
+      r = await appApi.run('report.import', brandArgs('report.import', { file: f, dir: d }));
     }
     if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
     const x = r.result;
@@ -2678,31 +2725,6 @@ const ACTS = {
     if (!f) return;
     const r = await appApi.run('publish.importMap', { file: f });
     if (r.ok) { state.config = await appApi.configGet(); toast(`定位表已导入：${r.result.steps} 步`, 'ok'); }
-    renderAll();
-  },
-  'pub:recoverEdit': () => {
-    const cur = ((state.config.publish || {}).uiMap || {}).recover || [];
-    // 没配过就给一条示例，省得从空白开始猜格式
-    state.recoverEdit = JSON.stringify(cur.length ? cur : [{ name: '删除卡片', action: 'tapText', value: '删除' }], null, 2);
-    renderAll();
-  },
-  'pub:recoverCancel': () => { state.recoverEdit = null; renderAll(); },
-  'pub:recoverSave': async () => {
-    const box = document.getElementById('recoverBox');
-    let steps;
-    try {
-      steps = JSON.parse(box ? box.value : '[]');
-    } catch (e) {
-      toast('JSON 格式不对：' + e.message, 'err');
-      return;
-    }
-    // 校验在主进程（uimap.normalizeRecover）：不认识的 action 会被挡下来并说清可用值
-    const r = await runJob('publish.setRecover', { steps });
-    if (r.ok) {
-      state.recoverEdit = null;
-      state.config = await appApi.configGet();
-      toast(r.result.recover.length ? `已保存 ${r.result.recover.length} 步恢复动作` : '已清空恢复动作（失败后只按返回键）', 'ok');
-    }
     renderAll();
   },
   'pub:addDev': async () => {
@@ -2967,7 +2989,7 @@ async function saveCfgFromDom() {
     if (el.type === 'checkbox') v = el.checked;
     else if (el.dataset.preset === 'interval') { const [a, b] = el.value.split('-'); patch.publish = Object.assign({}, patch.publish, { intervalMinSec: +a, intervalMaxSec: +b }); return; }
     else v = el.value;
-    if (['copy.concurrency', 'copy.extraTopics', 'publish.retry'].includes(key)) v = Number(v);
+    if (['copy.concurrency', 'copy.extraTopics'].includes(key)) v = Number(v);
     if (key.endsWith('.enabled')) v = v === 'true' || v === true;
     // ★ 这一类是「送图 / 不送图」的开关，值是字符串 'true'/'false'。
     //   漏了这一步就会把 'false' 存成字符串，而主进程里 `'false' !== false` ⇒ 「不送图」白点。
@@ -3063,6 +3085,8 @@ function bind() {
   if (umask) umask.addEventListener('click', e => { if (e.target === umask) closeUserModal(); });
   const cmask = $('#cmodal');
   if (cmask) cmask.addEventListener('click', e => { if (e.target === cmask) closeCloudModal(); });
+  const hmask = $('#hmodal');
+  if (hmask) hmask.addEventListener('click', e => { if (e.target === hmask) closeHelpModal(); });
 
   document.querySelectorAll('.nav').forEach(b => {
     b.onclick = () => { state.tab = Number(b.dataset.tab); renderAll(); };
@@ -3079,9 +3103,11 @@ function bind() {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
     if (e.key === 'Escape' && state.userModal) { closeUserModal(); e.preventDefault(); return; }
     if (e.key === 'Escape' && state.cloudModal) { closeCloudModal(); e.preventDefault(); return; }
+    if (e.key === 'Escape' && state.helpModal) { closeHelpModal(); e.preventDefault(); return; }
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
-      if (k >= 1 && k <= 9) { state.tab = k; renderAll(); e.preventDefault(); }
+      // ★ TABS[k] 必须存在：页签 5 已删，Ctrl+5 落到空位的话原来是整页崩（读 undefined.title）
+      if (k >= 1 && k <= 9 && TABS[k]) { state.tab = k; renderAll(); e.preventDefault(); }
     }
   });
 

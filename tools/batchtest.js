@@ -58,7 +58,7 @@ const ok = (label, cond, extra) => {
   store.set({
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4 },
-    publish: { intervalSec: 5, videoIntervalSec: 5, retry: 1 }   // 「演示节奏」开关已删：现在直接给 5 秒间隔
+    publish: { intervalSec: 5, videoIntervalSec: 5 }   // 「演示节奏」开关已删：直接给 5 秒间隔；★ retry 也已删（失败不重试）
   });
 
   // ---- ⓪ ★ 2026-10-02：「设置 → 素材根目录」已删 ⇒ 出厂不再预设素材目录 ----
@@ -137,6 +137,12 @@ const ok = (label, cond, extra) => {
   const txt = fs.readFileSync(one.file, 'utf8');
   ok('⑤ 文本日志可读（带成功/失败标记与耗时）', /批次 发布单_20260812/.test(txt) && /\[V\] 行 1/.test(txt) && /\[X\] 行 2/.test(txt) && /65\.2s/.test(txt), txt.split('\r\n').filter(l => /行 [12]/.test(l)).join(' || '));
   ok('⑤ 只导出指定批次', !/发布单_20260813/.test(txt));
+  // ★ 2026-10-03 用户要求：失败那一行写「**发布失败，原因xxx**」（原来是「失败：xxx」）。
+  //   ★ 同时钉住**旧台账**里的「（重试 N 次）」照旧渲染 —— 历史是最不该被悄悄改写的东西。
+  ok('★ 导出日志里失败行写的是「发布失败，原因xxx」', /\[X\] 行 2 \[图文\] 发布失败，原因找不到发布按钮/.test(txt),
+    txt.split('\r\n').filter(l => /\[X\]/.test(l)).join(' || '));
+  ok('★ 旧台账里的「（重试 N 次）」照旧渲染（新记录不再重试，但历史不许被抹掉）',
+    /（重试 1 次）/.test(txt), txt.split('\r\n').filter(l => /重试/.test(l)).join(' || '));
   ok('⑤ 同时给了 csv 表格', fs.existsSync(one.csvFile) && fs.readFileSync(one.csvFile, 'utf8').includes('找不到发布按钮'));
 
   const all = await sheet.exportPublishLog({});
@@ -146,14 +152,27 @@ const ok = (label, cond, extra) => {
   try { await sheet.exportPublishLog({ batch: '没这个批次' }); } catch (e) { miss = e.message; }
   ok('⑤ 批次不存在时说清现有批次', /现有批次/.test(miss) && /发布单_20260813/.test(miss), miss);
 
-  // ---- ⑥ 失败恢复动作可编辑（保存 → 回读 → 不认识的动作被挡下，不静默吞） ----
-  const saved = await jobs.run('publish.setRecover', { steps: [{ name: '删除卡片', action: 'tapText', value: '删除' }, { action: 'wait', value: 600 }] });
-  ok('⑥ 恢复动作保存成功并回读一致', saved.ok && (store.get('publish.uiMap.recover') || []).length === 2, JSON.stringify(store.get('publish.uiMap.recover')));
-  const bad = await jobs.run('publish.setRecover', { steps: [{ action: 'tapText', value: '删除' }, { action: 'swipe' }] });
-  ok('⑥ 不认识的 action 被挡下，且原配置没被改坏',
-    bad.ok === false && /不认识/.test(bad.error) && (store.get('publish.uiMap.recover') || []).length === 2, bad.error);
-  const cleared = await jobs.run('publish.setRecover', { steps: [] });
-  ok('⑥ 清空恢复动作（失败后只按返回键）', cleared.ok && (store.get('publish.uiMap.recover') || []).length === 0, JSON.stringify(cleared.result));
+  // ---- ⑥ ★ 2026-10-03 用户要求：「失败恢复动作」整块删除 ----
+  //   删功能必须配**负向断言**（否则加回来也全绿），而且要**配正向对照**：
+  //   不能只说「报错了」—— 必须证明报的是「未知任务」，否则任务名拼错也会「报错」，看着一样。
+  // ★ 判据要接住 jobs.run 的**两条**失败通道：它会把派发里抛的异常 catch 成 {ok:false,error}
+  //   （不往外抛）。第一版只写了 try/catch ⇒ 拿到空消息，看着像「没报错」（已实测踩到）。
+  let sr = null, srThrown = '';
+  try { sr = await jobs.run('publish.setRecover', { steps: [] }); } catch (e) { srThrown = e.message; }
+  const srMsg = srThrown || ((sr && sr.error) || '');
+  ok('★ ⑥ publish.setRecover 任务已删除（再调明确报「未知任务」，不是静默成功）',
+    /未知任务/.test(srMsg) && /publish\.setRecover/.test(srMsg), srMsg || ('(居然没报错：' + JSON.stringify(sr) + ')'));
+  // ★ 导入定位表时不再把 prev.recover 捞回来合并（老配置里那个键从此是**没人读的死键**）。
+  //   ★ 别把断言写歪：store.set 是 mergeDeep、**没有删键能力** ⇒ 「老配置里 recover 键还在」是正常的，
+  //     所以只能查**代码里那一处读取点**在不在 —— 这正是「删功能要连读取链一起删」要盯的东西。
+  const jobsCode = fs.readFileSync(path.join(base, 'src/main/jobs.js'), 'utf8')
+    .split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  ok('★ ⑥ 导入定位表不再合并 prev.recover（jobs.js 代码里没有这处读取点）',
+    !/prev\.recover/.test(jobsCode) && !/uiMap\.recover/.test(jobsCode),
+    JSON.stringify({ prevRecover: /prev\.recover/.test(jobsCode), uiMapRecover: /uiMap\.recover/.test(jobsCode) }));
+  ok('★ ⑥ 出厂配置不再有 publish.retry（发布失败不重试）',
+    !('retry' in (store.defaults().publish || {})),
+    JSON.stringify(Object.keys(store.defaults().publish || {})));
 
   // ---- ⑦ ★ 2026-10-03：叶子文件夹名解析（「货号+颜色」，以 + 号分隔） ----
   //   为什么单独测：第一步素材整理会把原来的层级用连接符接成一个名字（`26FW-YB160+冠军白/1`
@@ -172,16 +191,28 @@ const ok = (label, cond, extra) => {
       ['多字色名', p('素材', 'TW男装', '20260901', 'UWH760085+黑色条纹', '1'), 'UWH760085', '黑色条纹', 'plus'],
       ['叶子本身就是「货号+颜色」', p('素材', 'TW男装', '20260901', '26FW-YB160+冠军白'), '26FW-YB160', '冠军白', 'plus'],
       ['老式三层（货号/颜色/序号）', p('素材', 'TW男装', '26FW-CB135', '燕麦色', '1'), '26FW-CB135', '燕麦色', 'split'],
-      ['随手命名的文件夹 → 不许当成货号', p('素材', '品牌甲', '20260901', 'IMG_5253'), 'IMG_5253', '', 'name']
+      ['随手命名的文件夹 → 不许当成货号', p('素材', '品牌甲', '20260901', 'IMG_5253'), 'IMG_5253', '', 'name'],
+      // ★ 2026-10-03 真机实测（E:\bluev_beta\0901_2）：批次目录 / 货号 / 序号 三层、**颜色没填**
+      ['批次目录/货号/序号（颜色没填）', p('素材', 'TW男装', '0901_2', '3261163003', '1'), '3261163003', '', 'sku'],
+      ['日期目录/货号/序号（颜色没填）', p('素材', '卡宾', '20260901', '26FW-YB160', '1'), '26FW-YB160', '', 'sku'],
+      ['扁平副本「货号_序号」→ 后缀要摘', p('素材', 'flat_20261002-2329', '3261163003_1'), '3261163003', '', 'sku'],
+      ['扁平副本「货号_序号」（纯字母头）→ 不许摘', p('素材', 'flat_20261002-2329', 'IMG_5253_1'), 'IMG_5253_1', '', 'name']
     ];
     const got = cases.map(([why, dir]) => Object.assign({ why }, flatten.parseName(dir)));
     const wrong = got.filter((g, i) => g.sku !== cases[i][2] || g.color !== cases[i][3] || g.how !== cases[i][4]);
     ok('⑦ 「货号+颜色」按 + 号切、并把扁平副本的 _序号 / -N 摘掉（不许变成「冠军白_1」）',
       wrong.length === 0, wrong.length ? JSON.stringify(wrong) : got.map(g => `${g.sku}/${g.color}/${g.how}`).join(' | '));
-    ok('⑦ 老式三层 / 随手命名的文件夹不会被当成「货号+颜色」（how 分三档）',
+    ok('⑦ 老式三层 / 随手命名 / 相机名 都不会被当成「货号+颜色」',
       flatten.parseName(p('素材', 'TW男装', '26FW-CB135', '燕麦色', '1')).how === 'split'
       && flatten.parseName(p('素材', '品牌甲', '20260901', 'IMG_5253')).how === 'name'
-      && flatten.parseName(p('素材', '品牌甲', '20260901', 'IMG_5253', '1')).how !== 'plus');
+      && flatten.parseName(p('素材', '品牌甲', '20260901', 'IMG_5253', '1')).how === 'split'
+      && flatten.parseName(p('素材', '品牌甲', '20260901', 'IMG_5253', '1')).how !== 'sku');
+    // ★★ 这一条是本轮的核心缺陷：批次目录名被当货号、真货号被当颜色（报告里就是 0901_2 / 3261163003）。
+    //    必须钉死：货号只能是真货号，颜色必须留空。
+    const swap = flatten.parseName(p('素材', 'TW男装', '0901_2', '3261163003', '1'));
+    ok('⑦ ★★ 批次目录/货号/序号：货号=真货号、颜色留空（不许 货号=0901_2 / 颜色=3261163003）',
+      swap.sku === '3261163003' && swap.color === '' && swap.how === 'sku',
+      JSON.stringify(swap));
     ok('⑦ 色名里本来就带数字的不会被误伤（米白2 / 黑色条纹）',
       flatten.parseName(p('a', '26FW-YB160+米白2')).color === '米白2'
       && flatten.parseName(p('a', '26FW-YB160+黑色条纹')).color === '黑色条纹');

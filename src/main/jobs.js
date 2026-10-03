@@ -49,7 +49,7 @@ const TYPE_LABEL = {
   'verify.check': '好物货号颜色预检',
   'sheet.export': '导出发布单', 'report.import': '导入 AI 内容报告',
   'publish.run': '自动发布', 'publish.rerun': '发布重跑',
-  'publish.exportLog': '重导出日志', 'publish.setRecover': '编辑失败恢复动作', 'pool.import': '导入商品池'
+  'publish.exportLog': '重导出日志', 'pool.import': '导入商品池'
 };
 
 /** 批次级产物目录：每个批次一个文件夹，互不覆盖 */
@@ -266,7 +266,7 @@ async function dispatch(type, args, ctx) {
           images: 0, startAt: '', status: '排队',
           expect: row[17], title: row[4], goods1: row[11] ? (row[11] + (row[12] ? ' / ' + row[12] : '')) : '',
           result: row[20] === '校验未通过' ? '校验未通过' : '',
-          retries: 0, reason: row[21] || '',
+          reason: row[21] || '',
           // 「这条发图文还是视频」也要跟着带过来：发布单本身没有「内容类型」列，
           // 只从 items 重建的话这个判定会丢，视频条会被当成图文推图
           kind: prev.kind || '',
@@ -457,24 +457,14 @@ async function dispatch(type, args, ctx) {
         videoSteps,
         videoNote: j.videoNote || ''
       };
-      // 恢复动作是在界面上单独维护的（「失败恢复动作」），导入定位表不该把它清掉
-      if (Array.isArray(prev.recover) && prev.recover.length) uiMap.recover = prev.recover;
+      // ★ 2026-10-03：「失败恢复动作」整块删除 ⇒ 这里不再把 prev.recover 捞回来合并。
+      //   ★ 别误解成「老配置里那个键会被清掉」：store.set 走的是 mergeDeep，**没有删键能力**，
+      //     所以它作为死键会一直躺在 config.json 里 —— 但**没人再读它**（uimap / publisher / 界面都删了）。
       store.set({ publish: { uiMap } });
       logbus.ok(`UI 定位表已导入：图文 ${steps.length} 步 · ${videoSteps.length
         ? `视频单独配了 ${videoSteps.length} 步`
         : '视频复用图文（默认，不用单独配）'}（来自 ${path.basename(args.file)}）`);
       return { steps: steps.length, videoSteps: videoSteps.length, file: args.file };
-    }
-    case 'publish.setRecover': {
-      // 失败恢复动作可编辑（真机每个账号/版本不同：「回退转发页」「删除卡片」…）
-      const um = require('./services/uimap');
-      const steps = um.normalizeRecover(args.steps);   // 不认识的动作直接报错，不静默吞掉
-      const cur = store.get('publish.uiMap') || {};
-      store.set({ publish: { uiMap: Object.assign({}, cur, { recover: steps }) } });
-      logbus.ok(steps.length
-        ? `失败恢复动作已保存：${steps.length} 步（${steps.map(s => s.action).join(' → ')}）`
-        : '失败恢复动作已清空：失败后只按返回键回退');
-      return { recover: steps };
     }
     case 'publish.run': {
       const s = st();
@@ -520,7 +510,7 @@ async function dispatch(type, args, ctx) {
       const s = st();
       const row = (s.publish.rows || []).find(r => String(r.seq) === String(args.seq));
       if (!row) throw new Error('找不到该行');
-      row.result = ''; row.retries = 0; row.reason = '';
+      row.result = ''; row.reason = '';
       const subset = Object.assign({}, s, { publish: Object.assign({}, s.publish, { rows: [row] }) });
       const r = await publisher.run(subset, Object.assign({}, ctx, { onRow: rw => send('publish:row', rw) }));
       project.patch({ publish: Object.assign({}, s.publish, { rows: s.publish.rows }) });

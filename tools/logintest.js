@@ -151,26 +151,34 @@ app.whenReady().then(async () => {
   ok('登录后业务通道放行（能读到配置）', allowed === true);
   const tabs = await js(`(async () => {
     const titles = [];
-    // ★ 上界**数出来**，不要写死数字：原先这里写的是 i <= 8，于是「新增了第 9 个页签」这条
-    //   永远红不了 —— 循环只跑 8 次，tabs.length === 8 恒成立，断言形同虚设。
-    const n = document.querySelectorAll('.nav').length;
-    for (let i = 1; i <= n; i++) {
-      document.querySelector('.nav[data-tab="' + i + '"]').click();
+    // ★ 页签号与个数都**从 DOM 上数出来**，不要写死：
+    //   ① 原先写 i <= 8 ⇒ 「新增第 9 个页签」这条永远红不了（循环只跑 8 次），断言形同虚设；
+    //   ② 2026-10-03 删掉「发布单」页签后，编号在 5 处**留了空位**（1..4、6..12）——
+    //      再按 i = 1..n 去 querySelector('.nav[data-tab="i"]') 会在 i=5 拿到 null、
+    //      .click() 直接抛异常，整段炸掉。⇒ 改成遍历真实存在的 .nav 按钮（顺序 = index.html 的排列顺序）。
+    const btns = [...document.querySelectorAll('.nav')];
+    for (const b of btns) {
+      b.click();
       await new Promise(r => setTimeout(r, 90));
       titles.push(__t.title());
     }
     return titles;
   })()`);
-  ok('登录后 12 个页签都能渲染（页签数是数出来的，不是写死的）',
-    tabs.length === 12 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
-  ok('第 9 个页签是「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
-    tabs[8] === '品牌与权限', tabs[8] || '(没有)');
-  ok('第 10 个页签是「运行日志」（归在左侧「执行」组里；内容和底部日志栏同一份）',
-    tabs[9] === '运行日志', tabs[9] || '(没有)');
-  ok('第 11 个页签是「高级设置」（管理员可见；装一次就不再动的配置都在这里）',
-    tabs[10] === '高级设置', tabs[10] || '(没有)');
-  ok('第 12 个页签是「热词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
-    tabs[11] === '热词库', tabs[11] || '(没有)');
+  ok('登录后 11 个页签都能渲染（页签数与标题都是从 DOM 上数出来的）',
+    tabs.length === 11 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+  // ★ 一律用「有没有这一页」判，**不按第几个** —— 页签编号从 2026-10-03 起在 5 处留了空位，
+  //   写死下标会在每次增删页签时失效（上一次就是这么被漏掉的）。
+  ok('页签里有「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
+    tabs.includes('品牌与权限'), tabs.join(' / '));
+  ok('页签里有「运行日志」（归在左侧「执行」组里；内容和底部日志栏同一份）',
+    tabs.includes('运行日志'), tabs.join(' / '));
+  ok('页签里有「高级设置」（管理员可见；装一次就不再动的配置都在这里）',
+    tabs.includes('高级设置'), tabs.join(' / '));
+  ok('页签里有「热词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
+    tabs.includes('热词库'), tabs.join(' / '));
+  // ★ 负向断言：删掉的页签必须**真的不在**（否则以后有人加回来，整套回归照样全绿）
+  ok('★「发布单」页签已删除（2026-10-03 用户要求；导出/打开/目录已挪到「模拟器发布」页）',
+    !tabs.includes('发布单'), tabs.join(' / '));
 
   // ---- ④a 页签 12「热词库」：**管理员**可编辑（真读 DOM，不是看源码）----
   const lexAdm = await js(`(async () => {

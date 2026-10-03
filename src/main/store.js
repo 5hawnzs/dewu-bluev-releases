@@ -48,11 +48,12 @@ function defaults() {
       //   读时兜底、**不写回**；和 cloud.url 同一套规矩）—— 用户实测过「配了 key 但地址空着，
       //   于是每次都静默回退本地模板，界面还显示『已生成』」。model 留空同理：
       //   真认的 id 由 copywriter.preflight() 按 /models 清单解析（用户填的显示名会 400）。
-      //   vision:false 才是真的不看图；imageCount / imageMaxSide / timeoutSec 是看图的三个旋钮
+      //   vision:false 才是真的不看图；imageCount / imageMaxSide / timeoutSec 是看图的三个旋钮；
+      //   videoFrames 是第四个：只有视频、没有实拍图时抽几帧（出厂 1，见 llmdefaults.js）。
       //   （出厂值也在 llmdefaults 里，这里存的是「界面上改过的值」）。
       llm: {
         enabled: false, endpoint: '', apiKey: '', model: '', temperature: 0.9,
-        vision: true, imageCount: 2, imageMaxSide: 768, timeoutSec: 90
+        vision: true, imageCount: 2, imageMaxSide: 768, timeoutSec: 90, videoFrames: 1
       },
       pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] },  // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
       // ★★ 标题热词库的用户版（「热词库」页保存的）。**出厂必须是 null** —— 不许预置业务数据：
@@ -78,7 +79,8 @@ function defaults() {
       intervalMaxSec: 60,
       videoIntervalSec: 90,            // 视频单条更慢（push 抖动大 + 上传久 + 还要等媒体库索引），间隔单独放宽
       videoIndexTimeoutSec: 180,       // 视频推上去后等「相册真的能看到」的上限；超时直接失败报出来，不硬点
-      retry: 2,
+      // ★ 2026-10-03 用户要求：发布失败**不重试** ⇒ 出厂的 `retry: 2` 整项删除。
+      //   老配置里就算还留着 retry，也没人读了（读取点已随重试循环一起删）。
       // ffmpeg 可执行文件。空 = 自动（优先内置、再退系统 PATH）。与 adbPath 同一套三段解析，
       // 实现在 src/main/services/video.js。同样只在「高级设置」里手填。
       ffmpegPath: ''

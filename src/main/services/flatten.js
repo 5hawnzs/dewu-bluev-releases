@@ -13,6 +13,11 @@ const wp = require('../util/winpath');
 const store = require('../store');
 
 const NUMERIC = /^\d+$/;
+/** 颜色名一定带汉字（冠军白 / 煤黑色01 / 酒红色74）；货号/批次目录/日期目录都是纯 ASCII。 */
+const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+function hasCJK(s) { return CJK.test(String(s == null ? '' : s)); }
+/** 相机 / 截图文件名：长得像货号但不是货号，不许当真（IMG_5253 / DSCF4233 / Screenshot_1） */
+const CAMERA = /^(IMG|DSC|DSCF|DSCN|PANO|PXL|MVIMG|Screenshot|WechatIMG|微信图片|截屏|屏幕截图)[_-]?\d+$/i;
 
 /**
  * 摘掉「扁平副本」留下的尾巴。
@@ -38,7 +43,10 @@ function stripTail(name) {
  * 从目录名/路径反推 货号 + 颜色 + 序号。
  * ★ 多返回一个 `how`，说明这两个值**是怎么来的**：
  *   'plus'  —— 名字里确实是「货号+颜色」（+ 号分隔）。**只有这一种可以拿去填报告的货号/颜色**。
- *   'split' —— 老式「货号/颜色/序号」三层。颜色可信，货号要看上一级，不能盲目当货号。
+ *   'split' —— 老式「货号/颜色/序号」三层、**且父目录确实是个颜色名**。颜色可信，货号来自再上一层。
+ *   'sku'   —— 「批次目录 / 货号 / 序号」三层，**颜色根本没填**。实测
+ *              `…/0901_2/3261163003/1/`：0901_2 是批次目录、3261163003 才是货号。
+ *              **只有货号可信，颜色必须留空**（老逻辑会把这两个值换位）。
  *   'guess' / 'name' —— 随手命名的文件夹，解析出来的多半是垃圾（实测
  *              `…/品牌甲/20260904/IMG_5253/1/` → 货号=20260904 / 颜色=IMG_5253），**不许当真**。
  * 调用方（report.fillGoodsFromLeaf）按 how 决定用不用。
@@ -66,15 +74,32 @@ function parseName(dir) {
       const parts = parent.split('+').map(s => s.trim()).filter(Boolean);
       return { sku: parts[0] || '', color: parts[1] || '', seq: leaf, how: 'plus' };
     }
-    // …/26FW-YB160/冠军白/1/ —— 老式三层，颜色可信、货号来自再上一层
+    // ★★ 「批次目录 / 货号 / 序号」三层、颜色**没填**：…/0901_2/3261163003/1/
+    //   真机实测（2026-10-03，E:\bluev_beta\0901_2）：老逻辑走的是下面那行 'split'，
+    //   把**批次目录名**当货号、把**真货号**当颜色，写出「货号=0901_2 / 颜色=3261163003」，
+    //   真货号还被当成颜色送进了「色名核对」。
+    //   判据：**颜色名一定带汉字**（冠军白 / 煤黑色01 / 酒红色74 …），
+    //   所以「父目录里没有汉字」就不可能是颜色 ⇒ 父目录是货号，颜色留空，交给界面点名。
+    //   ★ 但相机/截图文件名（IMG_5253 / DSCF4233）不是货号，排除掉，仍按 'split' 当「不可信」。
+    if (!hasCJK(parent) && !CAMERA.test(parent)) {
+      return { sku: parent || grand, color: '', seq: leaf, how: 'sku' };
+    }
+    // …/26FW-YB160/冠军白/1/ —— 老式三层（父目录是颜色名），颜色可信、货号来自再上一层
     return { sku: grand || parent, color: parent || '', seq: leaf, how: 'split' };
   }
   // …/CK-Y208+流沙金/ 或 …/UF46FWT75EH1HF6/领袖蓝/1/
   if (parent && !NUMERIC.test(parent) && parent !== path.basename(path.dirname(dir))) {
     return { sku: parent.includes('+') ? parent.split('+')[0] : parent, color: leaf, seq: '1', how: 'guess' };
   }
-  // 随手命名的文件夹（`IMG_5253` / `DSCF4233`）：原样当货号，**不做后缀摘除** ——
-  // 摘了反而更糟（`IMG_5253` → `IMG` 信息更少、更像是真的）。how='name' 已经说了「别当真」。
+  // ★ 扁平副本的去重后缀（`flat_20261002-2329/3261163003_1`）要摘掉，
+  //   否则货号会带着「_1」进报告（2026-10-03 实测）。
+  //   ★ 只在「摘完还剩下数字、且不是相机名」时摘 —— `IMG_5253` 摘成 `IMG` 信息更少、更像是真的 ⇒ 不摘。
+  const st = stripTail(leaf);
+  if (st.seq && /\d/.test(st.head) && !hasCJK(st.head) && !CAMERA.test(st.head)) {
+    return { sku: st.head, color: '', seq: st.seq, how: 'sku' };
+  }
+  // 随手命名的文件夹（`IMG_5253` / `DSCF4233`）：原样当货号，**不做后缀摘除**。
+  // how='name' 已经说了「别当真」。
   return { sku: leaf, color: '', seq: '1', how: 'name' };
 }
 

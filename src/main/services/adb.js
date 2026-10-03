@@ -215,25 +215,59 @@ async function animRestore(serial, vals) {
  * 抓完直接 cat，且不检查 dump 的返回 —— 失败时会把**上一个页面**的结构当成本页返回，
  * 调用方于是拿着旧页面的坐标去点新页面。这是「静默点错」，比报错危险得多。
  */
+const DUMP_SPLIT = '___BLUEV_DUMP_SPLIT___';
+
 async function dumpOnce(serial) {
-  await shell(serial, `rm -f ${DUMP_REMOTE}`);
-  const r = await shell(serial, `uiautomator dump ${DUMP_REMOTE}`, { timeout: 30000 });
-  const out = String(r.stdout || '').trim();
-  if (!/dumped to/i.test(out)) {
-    const last = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
-    return { ok: false, idle: /idle state/i.test(out), why: last || 'uiautomator dump 没有任何输出' };
+  // ★ 2026-10-03 提速：rm / dump / cat 原来是**三次** adb 往返，每次固定 ~110-180ms
+  //   ⇒ 每条内容 21 个点击步白花 ~4.6s。合成一条 shell 后只剩一次往返。
+  //   失败判据（“没输出” vs “读不出来”）一字未改，只是从「看整体输出」改成「看标记前半段」。
+  const r = await shell(serial,
+    `rm -f ${DUMP_REMOTE}; uiautomator dump ${DUMP_REMOTE} 2>&1; echo ${DUMP_SPLIT}; cat ${DUMP_REMOTE} 2>&1`,
+    { timeout: 40000 });
+  const all = String(r.stdout || '');
+  const cut = all.indexOf(DUMP_SPLIT);
+  const head = (cut >= 0 ? all.slice(0, cut) : all).trim();
+  const body = cut >= 0 ? all.slice(cut + DUMP_SPLIT.length) : '';
+  if (!/dumped to/i.test(head)) {
+    const last = head.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+    // ★★ 2026-10-03 真机实测：得物发布页首屏（选素材相册）有时**一个字都不打印**，
+    //   而不是报 “could not get idle state”。症状不同、病因一样（页面永远不 idle）。
+    //   旧判据只认 “idle state” ⇒ 「临时关动画重试」那条路根本不会走，
+    //   直接掉到 dumpsys 备用通道（那条拿不到文字）。
+    //   实测：关掉三个系统动画开关后，同一屏一次就抓到（85 个节点）。
+    const looksIdle = /idle state/i.test(head) || !head;
+    return { ok: false, idle: looksIdle, why: last || 'uiautomator dump 没有任何输出' };
   }
-  const c = await shell(serial, `cat ${DUMP_REMOTE}`, { timeout: 20000 });
-  if (!c.ok || !/</.test(String(c.stdout || ''))) return { ok: false, idle: false, why: 'dump 已写出，但内容读不出来' };
-  return { ok: true, xml: String(c.stdout).replace(/^\s*[\s\S]*?<\?xml/, '<?xml').trim() };
+  if (!r.ok || !/</.test(body)) return { ok: false, idle: false, why: 'dump 已写出，但内容读不出来' };
+  return { ok: true, xml: body.replace(/^\s*[\s\S]*?<\?xml/, '<?xml').trim() };
 }
 
 /**
  * dump 的详细版：拿不到时告诉调用方**为什么**（是页面不 idle，还是设备不在线）。
  * 返回 { ok, xml?, why, idle, animOff }
  */
-async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true, pkg = '' } = {}) {
+async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true, pkg = '', preferAnimOff = false } = {}) {
   let last = { ok: false, idle: false, why: '未尝试' };
+  // ★★ 2026-10-03 提速：已经知道「这一屏不会 idle」时，**直接走关动画那条路**，
+  //   不再先白等一次 uiautomator 的 idle 超时。
+  //   真机实测（MuMu 12 / 得物相册页）：裸 dump 连打 3 次 11230/11136/11127 ms 全部
+  //   `could not get idle state`；同一张屏关掉系统动画后 2036ms 就抓到。
+  //   ⇒ 那 ~11 秒纯粹是白等。批量发布里同一条屏每条内容都要经过一次，
+  //     所以由调用方（publisher）按**步骤**记住它，本批第 2 条起直接从这里进。
+  //   动画开关照旧**抓完立刻还原**（finally），不把用户设备留在改过的状态。
+  if (preferAnimOff && allowAnimOff) {
+    const before0 = await animGet(serial);
+    if (before0) {
+      await animSet(serial, 0);
+      try {
+        const r0 = await dumpOnce(serial);
+        if (r0.ok) return { ok: true, xml: r0.xml, why: '', animOff: true, via: 'uiautomator' };
+        last = Object.assign({ animOff: true }, r0);
+      } finally {
+        await animRestore(serial, before0);
+      }
+    }
+  }
   for (let i = 0; i <= retries; i++) {
     const r = await dumpOnce(serial);
     if (r.ok) return { ok: true, xml: r.xml, why: '', animOff: false, via: 'uiautomator' };
@@ -353,6 +387,28 @@ function lastDumpInfo() {
 
 async function tap(serial, x, y) {
   return shell(serial, `input tap ${Math.round(x)} ${Math.round(y)}`);
+}
+
+/**
+ * ★ 一次 shell 里连点多个坐标（2026-10-03 加速）。
+ *
+ * 实测（MuMu 12 / Android 12，1080x1920）：
+ *   · 每条 `adb shell` 固定 ~120ms（进程启动 + 往返），设备端 `input` 本身几乎不耗时；
+ *   · 3 次点击**分三条**发 ~380ms，**合一条**发只要 ~127ms。
+ * ⇒ 多点步骤一律走这里，省掉 N-1 次往返。gapMs>0 时在**设备端** `sleep`（小数秒），
+ *   仍然只发一条 shell —— 别改回「JS 侧 sleep + 逐条发」，那样两个开销都躲不掉。
+ * 坐标非法一律返回 ok:false（**不静默跳过**：少点一格＝少选一张图，发出去才发现，最难查）。
+ */
+async function tapSeq(serial, points, gapMs = 0) {
+  const pts = (Array.isArray(points) ? points : [])
+    .filter(p => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)));
+  if (!pts.length) return { ok: false, stdout: '', stderr: 'tapSeq：没有可点的坐标' };
+  const gap = Math.max(0, Number(gapMs) || 0);
+  const sec = (gap / 1000).toFixed(2);
+  const cmd = pts.map((p, i) =>
+    ((i && gap > 0) ? `sleep ${sec}; ` : '') + `input tap ${Math.round(Number(p.x))} ${Math.round(Number(p.y))}`
+  ).join('; ');
+  return shell(serial, cmd, { timeout: 20000 + pts.length * (gap + 1000) });
 }
 
 async function keyevent(serial, code) {
@@ -577,14 +633,27 @@ async function probe(serial) {
   if (sz.ok) out.resolution = (sz.stdout.match(/(\d+x\d+)/) || [])[1] || null;
   out.tools.input = (await shell(serial, 'input')).ok;
   out.tools.screencap = (await screencap(serial)).length > 0;
+  // ★★ 包名要先拿到：备用通道（dumpsys）得靠它才能从整份层级里挑出得物那一段。
+  const pkgs = await packages(serial);
+  out.appPackage = pkgs.find(p => /shizhuang|duapp|poizon|dewu/i.test(p)) || null;
+
   out.tools.uiautomator = !!(await dump(serial));
   if (out.tools.uiautomator) {
     const d = lastDumpInfo();
     if (d && d.animOff) out.notes.push('自检时页面一直不 idle，已临时关掉系统动画才抓到结构（已还原）');
+  } else {
+    // ★★ 「uiautomator 这一下没抓到」≠「正式通道不能用」：得物发布页是**动画页**，
+    //    而程序本来就内置了 dumpsys 备用通道（runStep 用的 dumpEx 会自动退过去）。
+    //    这里把备用通道**单独验一次**、如实记下来 —— 否则「模拟器正停在发布页」这个**正常状态**
+    //    会被判成「不能发布」，`connect()` 就会把发布通道**改写成模拟通道**，
+    //    用户点「开始发布」一路「模拟成功」、设备上什么都没发生（2026-10-03 实测踩到）。
+    const v = await dumpViaDumpsys(serial, out.appPackage || 'com.shizhuang.duapp');
+    out.tools.dumpsys = !!(v && v.ok);
+    if (out.tools.dumpsys) {
+      out.notes.push('当前这一屏 uiautomator 抓不到（发布页是动画页），但**备用通道（dumpsys）可用**'
+        + ' ⇒ 发布不受影响，程序会按屏自动选通道（走备用通道那一屏**拿不到文字**，按文字找的步骤在那屏用不了）');
+    }
   }
-
-  const pkgs = await packages(serial);
-  out.appPackage = pkgs.find(p => /shizhuang|duapp|poizon|dewu/i.test(p)) || null;
   out.adbKeyboard = pkgs.some(p => p.includes('com.android.adbkeyboard'));
   if (out.adbKeyboard) {
     // 装了 ≠ 能用：必须「已启用」且「是当前输入法」，否则 ADB_INPUT_TEXT 广播打不进字
@@ -594,7 +663,8 @@ async function probe(serial) {
     out.adbKeyboardCurrent = kbd.current;
   }
 
-  if (!out.tools.uiautomator) {
+  // ★ 只有**两条通道都不行**才算「抓不到界面」；备用通道能用时它只加了一条 note（上面那条）。
+  if (!out.tools.uiautomator && !out.tools.dumpsys) {
     const d = lastDumpInfo() || {};
     const on = await currentFocus(serial);
     out.focus = on;
@@ -647,7 +717,7 @@ async function probe(serial) {
 
 module.exports = {
   execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, screencap,
-  dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, keyevent, inputText, packages, probe,
+  dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
   installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus

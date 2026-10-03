@@ -89,7 +89,7 @@ const state = {
     //   界面上也没有开关。以前产线代码用 `!!c.adbKeyboard` 决定中文走不走广播 ⇒ 恒为假
     //   ⇒ 中文永远走 `input text`（实测打不进中文却返回 0）⇒ 会发出一条没标题没正文的帖子。
     //   现在这条判断改由「设备当前输入法」决定，配置里有没有这个键都不影响。
-    publish: { device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1, retry: 1 }
+    publish: { device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1 }
   });
 
   // 1) 设备检查（界面上叫「检查能不能发布」；probe() 的返回体同时带 notes 与 fix 两套说法）
@@ -121,19 +121,26 @@ const state = {
   const filled = uimap.fill({ value: '${title}｜${topic1}' }, { title: '白色的鞋谁懂', topic1: '#品牌甲' });
   ok('占位符替换', filled.value === '白色的鞋谁懂｜#品牌甲', filled.value);
 
-  // 失败恢复动作：只认真正会被执行的 action，不认识要说清可用值（不静默跳过）
-  const rec = uimap.normalizeRecover([
-    { name: '删除卡片', action: 'tapText', value: '删除' },
-    { action: 'wait', value: 800 }
-  ]);
-  ok('恢复动作：合法步骤被规范化', rec.length === 2 && rec[0].value === '删除' && rec[1].value === 800, JSON.stringify(rec));
-  let badAct = '';
-  try { uimap.normalizeRecover([{ action: 'back' }]); } catch (e) { badAct = e.message; }
-  ok('恢复动作：不认识的 action 报错并列出可用值', /不认识/.test(badAct) && /tapText/.test(badAct), badAct);
-  let badVal = '';
-  try { uimap.normalizeRecover([{ action: 'tapText', value: '   ' }]); } catch (e) { badVal = e.message; }
-  ok('恢复动作：空 value 被拦住', /不能为空/.test(badVal), badVal);
-  ok('恢复动作：空配置等价于「不配」', uimap.normalizeRecover(null).length === 0 && uimap.normalizeRecover(undefined).length === 0);
+  // ★★ 2026-10-03 用户要求：**失败恢复动作整块删除**（uimap.normalizeRecover / publisher.recover /
+  //    publish.setRecover 三处一起）。★ 删功能必须配**负向断言**：不然以后有人把它加回来，整套回归照样全绿。
+  //    判据看**代码行**（先剔注释）—— 注释里正当提到「recover」不算数，否则等于把文档当缺陷。
+  const codeOnly = s => s.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  ok('★ 失败恢复动作已整块删除（uimap 不再导出 normalizeRecover / RECOVER_ACTIONS）',
+    uimap.normalizeRecover === undefined && uimap.RECOVER_ACTIONS === undefined,
+    JSON.stringify({ fn: typeof uimap.normalizeRecover, actions: typeof uimap.RECOVER_ACTIONS }));
+  const pubSrcNoRec = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
+  const umSrc = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/uimap.js'), 'utf8'));
+  // ★★ 发布失败**不重试**：重试循环（maxTry / c.retry）必须连同代码一起没了 ——
+  //    光把出厂值删掉不算数：老配置里还留着 retry，读完照样会重试。
+  ok('★ publisher 里不再有 recover 函数、也不再读 map.recover / normalizeRecover',
+    !/function recover\s*\(/.test(pubSrcNoRec) && !/normalizeRecover/.test(pubSrcNoRec),
+    JSON.stringify({ fn: /function recover\s*\(/.test(pubSrcNoRec), norm: /normalizeRecover/.test(pubSrcNoRec) }));
+  ok('★★ 重试循环已删干净（没有 maxTry、没有 c.retry / cfg().retry 这种读取点）',
+    !/maxTry/.test(pubSrcNoRec) && !/\.retry\b/.test(pubSrcNoRec), JSON.stringify({ maxTry: /maxTry/.test(pubSrcNoRec), retryRef: /\.retry\b/.test(pubSrcNoRec) }));
+  ok('★ uimap / store 的源码里也不再有 recover 与出厂 retry（读取链一起删）',
+    !/RECOVER_ACTIONS/.test(umSrc)
+      && !/retry:/.test(codeOnly(fs.readFileSync(path.join(base, 'src/main/store.js'), 'utf8'))),
+    JSON.stringify({ umRecover: /RECOVER_ACTIONS/.test(umSrc) }));
 
   // 3) 未配定位表 → 必须报错，不许假装成功
   store.set({ publish: { uiMap: null } });
@@ -160,14 +167,297 @@ const state = {
   ok('话题也真实输入', /ADB_INPUT_TEXT --es msg "#品牌甲"/.test(log));
   ok('结果标为发布成功', r.rows[0].result === '发布成功', r.rows[0].result);
 
+  // 4b) ★ 2026-10-03：条件步骤（when / whenNot）+「好物1~3 货号/颜色」占位符
+  //     为什么要**行为级**测：这两件事任意一件挂了，真机上的表现都是「静默少做一步」
+  //     （少关联一个商品 / 关联好物搜索页开着没人选），日志还说发布成功 —— 最难查的那一类。
+  //     （a）逻辑真值表
+  const truth = [
+    [{ when: 'a' }, { a: 'x' }, true],
+    [{ when: 'a' }, { a: '' }, false],
+    [{ when: 'a' }, {}, false],
+    [{ whenNot: 'a' }, { a: '' }, true],
+    [{ whenNot: 'a' }, {}, true],
+    [{ whenNot: 'a' }, { a: 'x' }, false],
+    [{}, { a: 'x' }, true],
+    // 多键（逗号分隔）：when = 全非空；whenNot = 全空；两个字段可同时写
+    [{ when: 'a,b' }, { a: 'x', b: 'y' }, true],
+    [{ when: 'a,b' }, { a: 'x', b: '' }, false],
+    [{ when: 'a,b' }, { a: 'x' }, false],
+    [{ whenNot: 'a,b' }, { a: '', b: '' }, true],
+    [{ whenNot: 'a,b' }, { a: '', b: 'y' }, false],
+    [{ when: 'a', whenNot: 'b' }, { a: 'x', b: '' }, true],
+    [{ when: 'a', whenNot: 'b' }, { a: 'x', b: 'y' }, false]
+  ].map(([st, dt, want]) => uimap.condOk(st, dt) === want);
+  ok('条件步骤：condOk 真值表 14 组全对（含多键/两字段同写）', truth.every(Boolean), truth.join(','));
+
+  const norm = uimap.normalizeSteps([
+    { name: 'a', action: 'tapText', value: '发布', when: 'goods2Sku' },
+    { name: 'b', action: 'input', value: '${goods1Color}', whenNot: 'goods1Color' }
+  ]);
+  ok('条件步骤：when / whenNot 被规范化成占位符名',
+    norm[0].when === 'goods2Sku' && norm[1].whenNot === 'goods1Color',
+    JSON.stringify([norm[0].when, norm[1].whenNot]));
+  ok('条件步骤：多键写成 ${a}, ${b} 也能归一化',
+    uimap.normalizeSteps([{ action: 'tapText', value: '发布', when: '${goods2Sku}, ${goods2Color}' }])[0].when === 'goods2Sku,goods2Color');
+  ok('条件步骤：手写 ${xxx} 也认（归一化掉花括号）',
+    uimap.normalizeSteps([{ action: 'tapText', value: '发布', when: '${goods1Color}' }])[0].when === 'goods1Color');
+  let badCond = '';
+  try { uimap.normalizeSteps([{ action: 'tapText', value: '发布', when: '${a} + 1' }]); } catch (e) { badCond = e.message; }
+  ok('条件步骤：非法 when 在导入时就报错（不放行到真机）', /只能写占位符名/.test(badCond), badCond);
+
+  //     （b）行为级：拿假设备真跑，看「该跳的有没有真跳、该点的有没有真点到」
+  const condMap = {
+    package: 'com.shizhuang.duapp',
+    steps: [
+      { name: '好物1·点关联好物', action: 'tapText', value: '关联好物', when: 'goods1Sku' },
+      { name: '好物1·填货号', action: 'input', value: '${goods1Sku}', when: 'goods1Sku' },
+      { name: '好物1·按颜色选', action: 'tapText', value: '相册', when: 'goods1Color' },
+      { name: '好物1·没填颜色则选第1格', action: 'tapId', value: 'com.shizhuang.duapp:id/et_title', whenNot: 'goods1Color' },
+      { name: '好物2·点关联好物', action: 'tapText', value: '关联好物', when: 'goods2Sku' },
+      { name: '好物2·填货号', action: 'input', value: '${goods2Sku}', when: 'goods2Sku' },
+      { name: '好物2·按颜色选', action: 'tapText', value: '下一步', when: 'goods2Color' },
+      { name: '好物3·点关联好物', action: 'tapText', value: '关联好物', when: 'goods3Sku' },
+      { name: '提交发布', action: 'tapText', value: '发布' }
+    ]
+  };
+  const mkCondState = gs => ({
+    items: [{
+      id: 'r1', dir: itemDir, absDir: itemDir,
+      sku: (gs[0] && gs[0].sku) || '', color: (gs[0] && gs[0].color) || '',
+      goods: gs, files: [{ name: '1.jpg', type: 'image' }]
+    }],
+    copyRows: [{ id: 'r1', title: '标题', body: '正文', topics: [] }],
+    verify: { rows: [] },
+    publish: {
+      rows: [{ seq: 1, id: 'r1', dir: 'r1', goods: 1, images: 1, startAt: '', status: '排队', result: '', retries: 0, reason: '' }],
+      mode: 'adb', device: '127.0.0.1:5555'
+    }
+  });
+  const runCond = async (gs) => {
+    store.set({ publish: { uiMap: condMap } });
+    clearCalls();
+    const lg = [];
+    const st = mkCondState(gs);
+    await publisher.run(st, { log: (m, l) => lg.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
+    return { log: calls(), logs: lg };
+  };
+  const nTap = (s2, re) => (s2.match(re) || []).length;   // 「关联好物」那行的坐标
+  const GOODS_ROW = /input tap 220 1540/g;
+
+  // ① 只有好物1、且填了颜色 ⇒ 好物2/3 一步都不许点；好物1 走「按颜色选」
+  const GA = await runCond([{ sku: 'A111', color: '冠军白' }]);
+  ok('好物：只有 1 个时「关联好物」恰好点 1 次', nTap(GA.log, GOODS_ROW) === 1, nTap(GA.log, GOODS_ROW) + ' 次');
+  // ★ 只断言「内容有没有被输入 / 出现在第几次关联之后」——**不**断言走的是
+  //   `input text` 还是 ADBKeyboard 广播：纯 ASCII 走前者、含中文走后者，是 adb.inputText 的实现细节，
+  //   断言抄实现细节就变成「改了实现就假红」。（测试数据故意用 ASCII 货号，就是为了不牵扯输入法状态。）
+  ok('好物：第 1 个的货号被输入了', /A111/.test(GA.log));
+  ok('好物：第 2 个的货号没有被输入', !/B222/.test(GA.log), GA.log.split('\n').filter(x => /input text|ADB_INPUT/.test(x)).join(' | '));
+  ok('好物：填了颜色 ⇒ 走「按颜色选」，不走「选第 1 格」的退路',
+    nTap(GA.log, /input tap 162 280/g) === 1 && nTap(GA.log, /input tap 540 450/g) === 0,
+    `按颜色=${nTap(GA.log, /input tap 162 280/g)} 退路=${nTap(GA.log, /input tap 540 450/g)}`);
+  ok('好物：跳过的步骤写进了日志（不静默）',
+    GA.logs.some(m => /跳过/.test(m) && /goods2Sku/.test(m)),
+    GA.logs.filter(m => /跳过/.test(m)).slice(0, 2).join(' | '));
+
+  // ② 两个好物、且好物1 没填颜色 ⇒ 好物2 真被点/真被填；好物1 退化成「选第 1 格」
+  const GB = await runCond([{ sku: 'A111', color: '' }, { sku: 'B222', color: '煤黑色01' }]);
+  ok('好物：有 2 个时「关联好物」点 2 次', nTap(GB.log, GOODS_ROW) === 2, nTap(GB.log, GOODS_ROW) + ' 次');
+  const iTap2 = GB.log.indexOf('input tap 220 1540', GB.log.indexOf('input tap 220 1540') + 1);
+  ok('好物：第 2 个货号被真输入', /B222/.test(GB.log));
+  ok('好物：第 2 个货号是在「第 2 次点关联好物**之后**」才打的（顺序不能反）',
+    iTap2 >= 0 && GB.log.indexOf('B222') > iTap2,
+    `第2次点关联=${iTap2} 打货号=${GB.log.indexOf('B222')}`);
+  ok('好物：好物1 没填颜色 ⇒ 走「选第 1 格」退路（不是按颜色）',
+    nTap(GB.log, /input tap 540 450/g) === 1 && nTap(GB.log, /input tap 162 280/g) === 0,
+    `退路=${nTap(GB.log, /input tap 540 450/g)} 按颜色=${nTap(GB.log, /input tap 162 280/g)}`);
+  ok('好物：好物2 填了颜色 ⇒ 第 2 段按颜色选', nTap(GB.log, /input tap 920 2250/g) === 1);
+
+  // ③ 一个货号都没有 ⇒ 好物三段全跳，但「提交发布」照旧执行（只跳带条件的那些步）
+  const GC = await runCond([{ sku: '', color: '' }]);
+  ok('好物：没货号时三段全跳（一次都没点关联好物）', nTap(GC.log, GOODS_ROW) === 0, nTap(GC.log, GOODS_ROW) + ' 次');
+  ok('好物：无条件的步骤照旧执行（提交发布点了）', nTap(GC.log, /input tap 162 160/g) === 1,
+    nTap(GC.log, /input tap 162 160/g) + ' 次');
+
+  // 4c) ★ 2026-10-03 真机撞出来的两处健壮性缺口（都在「关联好物」那段路上暴露的）——
+  //     ① 抓结构没带包名 ⇒ 动画页抓不到时**没有 dumpsys 备用通道**；
+  //     ② 找不到节点一次就判失败 ⇒ 结果图墙加载那一两秒会被误判成「页面结构变了」。
+  const oneMap = { package: 'com.shizhuang.duapp', steps: [{ name: '一次就找到', action: 'tapText', value: '发布' }] };
+  store.set({ publish: { uiMap: oneMap } });
+  clearCalls();
+  await publisher.run(mkCondState([{ sku: 'A111', color: '冠军白' }]),
+    { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+  const dumpsOnce = (calls().match(/uiautomator dump/g) || []).length;
+  ok('抓结构：一次就找到时只抓 1 次（不白白重试）', dumpsOnce === 1, dumpsOnce + ' 次');
+
+  const bogusMap = {
+    package: 'com.shizhuang.duapp',
+    steps: [
+      { name: '根本不存在的文字', action: 'tapText', value: '这里根本没有这行字' },
+      { name: '提交发布', action: 'tapText', value: '发布' }
+    ]
+  };
+  store.set({ publish: { uiMap: bogusMap } });
+  clearCalls();
+  const retryLogs = [];
+  const rc = await publisher.run(mkCondState([{ sku: 'A111', color: '冠军白' }]),
+    { log: (m, l) => retryLogs.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
+  const dumpsRetry = (calls().match(/uiautomator dump/g) || []).length;
+  ok('抓结构：找不到节点先重试（不是一次就判失败）', dumpsRetry >= 3, dumpsRetry + ' 次 dump');
+  ok('抓结构：重试期间写进日志（说清「还没看到、再抓一次」）',
+    retryLogs.some(m => /再抓一次/.test(m)), retryLogs.filter(m => /再抓一次/.test(m)).length + ' 条');
+  ok('抓结构：重试到失败后，报错仍然点名缺什么',
+    /找不到「这里根本没有这行字」/.test(rc.rows[0].reason || ''), rc.rows[0].reason);
+
+  // ③ 源码级（不是行为级，如实标注）：runStep 抓结构必须带包名 —— 夹具里那份 dumpsys 层级
+  //    **一个 resource-id 都没有**（tools/fakeadb/activity-top.txt），所以「带包名 → 备用通道能按 id 点到」
+  //    这件事在当前夹具下**测不出来**，只能钉住那一行字。行为级验证留给真机（已在真机确认 dumpsys 通道有 id）。
+  const pubSrcForTap = fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8');
+  const tapBranch = pubSrcForTap.slice(pubSrcForTap.indexOf("case 'tapText': case 'tapId': case 'tapDesc':"),
+                                 pubSrcForTap.indexOf("case 'input':"));
+  // ★ 2026-10-03 提速后 dumpEx 多带了一个 retries:0（见 publisher 里那段注释）⇒
+  //   断言不能锁死「参数只有 pkg」这一种写法，要看**语义**：抓屏调用里带了包名。
+  ok('抓结构（源码级）：runStep 抓结构带上了包名（语义：dumpEx 调用里必须有 pkg: uimap.DEWU.pkg）',
+    /adb\.dumpEx\(serial, \{[^}]*pkg: uimap\.DEWU\.pkg[^}]*\}/.test(tapBranch) && tapBranch.length > 200,
+    tapBranch.length + ' 字符的 tap 分支');
+
+  // 4d) ★★ 2026-10-03 用户追问「什么叫做只能发第一张图片？？」——
+  //     「一条内容多张图」是**动作层缺的能力**，不是通道问题（真机通道一模一样）：
+  //     相册缩略图**没有文字也没有描述**，只能按 resource-id 点，而「取第一个匹配」
+  //     ⇒ 一条内容只选上第 1 张（其余图早就推上设备了，只是没被点中）。
+  //     真机旁证：右下角按钮文字是「下一步 (1)」—— 带计数 ⇒ 相册本来就是多选。
+  const albumXml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0" width="1080" height="2400">
+  <node index="0" text="" resource-id="com.shizhuang.duapp:id/flThumbSelect" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="true" bounds="[40,300][340,600]" />
+  <node index="1" text="" resource-id="com.shizhuang.duapp:id/flThumbSelect" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="true" bounds="[380,300][680,600]" />
+  <node index="2" text="" resource-id="com.shizhuang.duapp:id/flThumbSelect" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="true" bounds="[720,300][1020,600]" />
+  <node index="3" text="下一步 (1)" resource-id="com.shizhuang.duapp:id/flNextStep" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[800,2200][1040,2300]" />
+</hierarchy>`;
+  const albumNodes = uimap.parseNodes(albumXml);
+  const THUMB = 'com.shizhuang.duapp:id/flThumbSelect';
+  const allThumbs = uimap.findNodes(albumNodes, { id: THUMB });
+  ok('多图：findNodes 按**界面顺序**返回全部匹配（不是只给第一个）',
+    allThumbs.length === 3 && allThumbs.map(n => n.center.x).join(',') === '190,530,870'
+    && uimap.findNode(albumNodes, { id: THUMB }).center.x === 190,
+    JSON.stringify(allThumbs.map(n => n.center)));
+
+  const CNT = [[undefined, 1], ['', 1], [0, 1], [-3, 1], ['abc', 1], ['2', 2], [3, 3], [18, 18],
+               [999, uimap.MAX_TAP_COUNT]];
+  const cntBad = CNT.filter(([v, w]) => uimap.countOf(v) !== w);
+  ok('多图：countOf 真值表（缺省/空/0/负数/非数字 ⇒ 1；正常值取整；超上限夹住）',
+    cntBad.length === 0, JSON.stringify(cntBad));
+
+  const normA = uimap.normalizeSteps([{ action: 'tapId', value: THUMB, count: 3 }])[0];
+  const normB = uimap.normalizeSteps([{ action: 'tapId', value: THUMB, count: '${imageCount}' }])[0];
+  const normC = uimap.normalizeSteps([{ action: 'tapId', value: THUMB }])[0];
+  ok('多图：导入时 count 认三种写法（整数 / 占位符 / 不写＝1）',
+    normA.count === 3 && normB.count === '${imageCount}' && normC.count === 1,
+    JSON.stringify({ a: normA.count, b: normB.count, c: normC.count }));
+  const cntErrs = [0, -1, 'abc', 21, 2.5].map(v => {
+    try { uimap.normalizeSteps([{ action: 'tapId', value: THUMB, count: v }]); return '未报错(' + v + ')'; }
+    catch (e) { return /count/.test(e.message) ? '' : '报错但没提 count(' + v + ')'; }
+  }).filter(Boolean);
+  ok('多图：一眼就错的 count（0 / 负数 / 非数字 / 超上限 / 小数）**导入即报错**',
+    cntErrs.length === 0, cntErrs.join(' | '));
+  ok('多图：fill 把 count 里的占位符替换成真实张数；解析不到时**原样留着**（不变成空）',
+    uimap.fill({ value: 'x', count: '${imageCount}' }, { imageCount: 3 }).count === '3'
+    && uimap.fill({ value: 'x', count: '${imageCount}' }, {}).count === '${imageCount}',
+    JSON.stringify([uimap.fill({ value: 'x', count: '${imageCount}' }, { imageCount: 3 }).count,
+                    uimap.fill({ value: 'x', count: '${imageCount}' }, {}).count]));
+
+  // ---- 端到端：真起一遍真实通道，数「到底点了几下、点在哪」 ----
+  const albumBackup = fs.readFileSync(FAKE_WINDOW, 'utf8');
+  const mkAlbumState = (nImg) => ({
+    items: [{
+      id: 'r-album', dir: itemDir, absDir: itemDir, sku: 'A111', color: '冠军白',
+      files: Array.from({ length: nImg }, (_, i) => ({ name: (i + 1) + '.jpg', type: 'image' }))
+    }],
+    copyRows: [{ id: 'r-album', title: '标题', body: '正文', topics: [] }],
+    verify: { rows: [] },
+    publish: {
+      rows: [{ seq: 1, id: 'r-album', dir: 'r-album', goods: 1, images: nImg, startAt: '', status: '排队', result: '', retries: 0, reason: '' }],
+      mode: 'adb', device: '127.0.0.1:5555'
+    }
+  });
+  const runAlbum = async (steps, nImg) => {
+    store.set({ publish: { uiMap: { package: 'com.shizhuang.duapp', steps } } });
+    clearCalls();
+    const lg = [];
+    const st = mkAlbumState(nImg);
+    try {
+      await publisher.run(st, { log: (m, l) => lg.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
+    } catch (e) { st.publish.rows[0].reason = st.publish.rows[0].reason || ('抛出：' + e.message); }
+    return { log: calls(), logs: lg, row: st.publish.rows[0] };
+  };
+  const nOf = (s2, re) => (s2.match(re) || []).length;
+  const T1 = /input tap 190 450/g, T2 = /input tap 530 450/g, T3 = /input tap 870 450/g;
+  const thumbStep = (extra) => Object.assign({ name: '选中要发的图', action: 'tapId', value: THUMB }, extra);
+
+  try {
+    fs.writeFileSync(FAKE_WINDOW, albumXml);
+    // ① 素材有 3 张图 ⇒ 3 张都要被点中（这才是「能发多张图」的行为级证据）
+    const A = await runAlbum([thumbStep({ count: '${imageCount}' })], 3);
+    ok('多图（端到端）：素材 3 张 ⇒ 相册前 3 格**各点 1 次**（真调了 3 次 input tap）',
+      nOf(A.log, T1) === 1 && nOf(A.log, T2) === 1 && nOf(A.log, T3) === 1,
+      `第1格=${nOf(A.log, T1)} 第2格=${nOf(A.log, T2)} 第3格=${nOf(A.log, T3)}`);
+    ok('多图（端到端）：点了几格写进日志（不静默）',
+      A.logs.some(m => /一次点了 3 个/.test(m)), A.logs.filter(m => /一次点了/.test(m))[0] || '（没有）');
+
+    // ② 只有 1 张图 ⇒ 只点第 1 格（不能把别人的图也点上）
+    const B = await runAlbum([thumbStep({ count: '${imageCount}' })], 1);
+    ok('多图（端到端）：素材只有 1 张 ⇒ 只点第 1 格，第 2/3 格一次都不点',
+      nOf(B.log, T1) === 1 && nOf(B.log, T2) === 0 && nOf(B.log, T3) === 0,
+      `第1格=${nOf(B.log, T1)} 第2格=${nOf(B.log, T2)} 第3格=${nOf(B.log, T3)}`);
+
+    // ③ 老定位表（没写 count）⇒ 行为与从前**完全一致**：只点第一个匹配
+    const C = await runAlbum([thumbStep({})], 3);
+    ok('多图（端到端）：老表没写 count ⇒ 仍然只点第 1 格（向后兼容，不改老表行为）',
+      nOf(C.log, T1) === 1 && nOf(C.log, T2) === 0 && nOf(C.log, T3) === 0,
+      `第1格=${nOf(C.log, T1)} 第2格=${nOf(C.log, T2)}`);
+
+    // ④ 要 5 格、界面只有 3 格 ⇒ **必须失败**，且说清「要几个 / 找到几个」（不静默少发图）
+    const D = await runAlbum([thumbStep({ count: 5 })], 5);
+    ok('多图（端到端）：张数对不上 ⇒ 失败，不静默少点（报错里同时有「5」和「3」）',
+      D.row.result === '失败' && /5 个/.test(D.row.reason || '') && /3 个/.test(D.row.reason || ''),
+      (D.row.result || '') + ' / ' + (D.row.reason || ''));
+
+    // ⑤ 占位符解析不出（这条记录读不到图片清单）⇒ 当场报错，**不许默默按 1 张发**
+    // 这条素材**有 3 张图**，只是把 count 写成数据里没有的键 ⇒ 考的是「解析不出来」这一支
+    const E = await runAlbum([thumbStep({ count: '${noSuchKey}' })], 3);
+    ok('多图（端到端）：count 解析成空 ⇒ 当场失败并点名 count（不默默按 1 张发）',
+      E.row.result === '失败' && /count/.test(E.row.reason || ''), (E.row.reason || '').slice(0, 120));
+  } finally {
+    fs.writeFileSync(FAKE_WINDOW, albumBackup);
+  }
+
+  // ★ 收尾：把 uiMap 还原成这一套后面几步（5/6/7…）要用的那一份 —— 不还原就是把它们偷偷换了表跑
+  store.set({ publish: { uiMap } });
+
   // 5) 页面结构变了 → 必须失败 + 存截图，绝不能成功
   const backup = fs.readFileSync(FAKE_WINDOW, 'utf8');
   fs.writeFileSync(FAKE_WINDOW, backup.replace(/text="发布"/g, 'text="首页"'));
   state.publish.rows[0].result = '';
-  const r2 = await publisher.run(state, ctx);
+  const failLogs = [];
+  const r2 = await publisher.run(state,
+    { log: (m, l) => failLogs.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
   fs.writeFileSync(FAKE_WINDOW, backup);
   ok('找不到节点时报失败', r2.rows[0].result === '失败', r2.rows[0].result + ' / ' + r2.rows[0].reason);
   ok('失败原因说明缺什么', /找不到/.test(r2.rows[0].reason), r2.rows[0].reason);
+  // ★★ 2026-10-03 用户要求「发布失败**不重试**」——「不重试」必须**行为级**证明，不能只看源码里 maxTry 没了：
+  //    老实现下这一行会失败 2~3 次（retry 出厂 2 ⇒ maxTry=3），每次都会写一行「第 N 次失败」；
+  //    现在只跑一次 ⇒ 带该行目录名的「发布失败，原因…」**只出现一次**，且不存在任何「第 N 次失败」。
+  //    （把改前的版本喂进来，这两条都会红 —— 已实测。）
+  const dir0 = state.publish.rows[0].dir;
+  const rowFail = failLogs.filter(m => m.indexOf(dir0) >= 0 && /发布失败，原因/.test(m));
+  ok('★ 失败只跑一次（不重试）：该行的「发布失败，原因…」只出现 1 次',
+    rowFail.length === 1, rowFail.length + ' 次 → ' + (rowFail.join(' | ') || '(一条都没有)'));
+  ok('★ 日志里没有任何「第 N 次失败」的重试痕迹（重试循环已删）',
+    !failLogs.some(m => /第 \d+ 次失败/.test(m)),
+    failLogs.filter(m => /次失败/.test(m)).join(' | ') || '无');
+  ok('★ 失败那行写的是「发布失败，原因xxx」（用户 2026-10-03 指定的口径，不是「失败：xxx」）',
+    /发布失败，原因/.test(rowFail[0] || ''), rowFail[0] || '(没有)');
+  // ★ 台账里不再写 retries（失败不再重试 ⇒ 它恒为 0）；旧台账那一列仍照原样读（见 batchtest ⑤）
+  ok('★ 新台账里不再写 retries 字段（恒为 0 的字段不写假值）',
+    r2.results.length === 1 && !('retries' in r2.results[0]), JSON.stringify(r2.results[0] || {}).slice(0, 160));
   const shots = fs.existsSync(path.join(TMP, '输出', 'failures'))
     ? fs.readdirSync(path.join(TMP, '输出', 'failures')) : [];
   ok('失败时存了截图', shots.length > 0, shots.join(', '));
@@ -244,6 +534,43 @@ const state = {
     rv3.rows[0].result === '失败' && /媒体库还没索引到/.test(rv3.rows[0].reason), rv3.rows[0].reason);
   ok('⑧ 等不到就一步界面都没点', !/input tap/.test(vlog3), (vlog3.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
 
+  // 8b) ★★ 2026-10-03：「模拟器正停在得物发布页」是**发布前的正常状态**，
+  //     不许因为这个状态被判成「不能发布」而把发布通道**改写成模拟通道**。
+  //     根因：connect() 的 ready 原来把 `tools.uiautomator`（＝当场那次 dump 成没成功）算进去，
+  //     而发布页是**动画页**、uiautomator 抓不到是常态；程序本来就有 dumpsys 备用通道。
+  //     后果：用户点「开始发布」一路「模拟成功」，模拟器里毫无动静 —— 就是「老是有那么多问题」的那个坑。
+  {
+    const NOTIDLE8 = path.join(FDB, 'DUMP_NOT_IDLE');
+    const NODEWU8 = path.join(FDB, 'NO_DEWU_TOP');
+    const had8 = fs.existsSync(NOTIDLE8) ? fs.readFileSync(NOTIDLE8, 'utf8') : null;
+    try {
+      fs.writeFileSync(NOTIDLE8, 'always');            // uiautomator 彻底抓不到（对齐发布页实测）
+      if (fs.existsSync(NODEWU8)) fs.unlinkSync(NODEWU8);
+      const p8 = await publisher.probe('127.0.0.1:5555');
+      ok('⑧b 抓取通道自检：uiautomator 抓不到时，会**单独验一次** dumpsys 备用通道并如实记录',
+        p8.tools.uiautomator === false && p8.tools.dumpsys === true,
+        JSON.stringify({ uiautomator: p8.tools.uiautomator, dumpsys: p8.tools.dumpsys }));
+      const c8 = await publisher.connect('127.0.0.1:5555');
+      ok('⑧b ★ 模拟器停在发布页（动画页）时，「连接」后仍是**真实设备通道**（绝不退回模拟通道）',
+        c8.connected === true && c8.mode === 'adb',
+        JSON.stringify({ connected: c8.connected, mode: c8.mode }));
+
+      // 负向对照：两条抓取通道都不通 ⇒ 才允许退回模拟通道。
+      // （没有这一条，上面那条可能只是「恒为真」—— 那就等于什么都没证明。）
+      fs.writeFileSync(NODEWU8, '1');                  // dumpsys 也抓不到得物
+      const p8b = await publisher.probe('127.0.0.1:5555');
+      const c8b = await publisher.connect('127.0.0.1:5555');
+      ok('⑧b（对照）两条抓取通道都不通 ⇒ 才退回模拟通道（证明上一条不是恒真）',
+        p8b.tools.uiautomator === false && p8b.tools.dumpsys === false
+        && c8b.connected === false && c8b.mode === 'mock',
+        JSON.stringify({ uiautomator: p8b.tools.uiautomator, dumpsys: p8b.tools.dumpsys, connected: c8b.connected, mode: c8b.mode }));
+    } finally {
+      if (fs.existsSync(NODEWU8)) fs.unlinkSync(NODEWU8);
+      if (had8 == null) { if (fs.existsSync(NOTIDLE8)) fs.unlinkSync(NOTIDLE8); }
+      else fs.writeFileSync(NOTIDLE8, had8);           // 还原成这一组进来之前的样子
+    }
+  }
+
   // 9) 页面一直不 idle（得物发布页实测就这样）→ 自动关动画兜底，且**必须还原**
   const NOTIDLE = path.join(FDB, 'DUMP_NOT_IDLE');
   const animLines = () => calls().split(/\r?\n/).filter(l => /settings (get|put|delete) global/.test(l));
@@ -264,8 +591,12 @@ const state = {
   clearCalls();
   const r10 = await publisher.run(state, ctx);
   const log10 = calls();
+  // ★ 2026-10-03 有意收紧了这一条：以前 runStep 抓结构**不带包名** ⇒ 动画页抓不到就直接失败，
+  //   报错是「拿不到界面结构：…一直不 idle」。现在带包名 ⇒ 会退到 dumpsys 备用通道（有 id / 没文字），
+  //   于是「按文字点」的这一步失败在**找不到文字**上。文案必须点明是「备用通道没有文字」并给出改法
+  //   （改成 tapId），否则错误反而更难查 —— 断言也就跟着钉在新文案上。
   ok('⑩ 关动画也抓不到时，发布明确失败并说明原因',
-    r10.rows[0].result === '失败' && /idle/.test(r10.rows[0].reason),
+    r10.rows[0].result === '失败' && /备用通道/.test(r10.rows[0].reason) && /tapId/.test(r10.rows[0].reason),
     r10.rows[0].result + ' / ' + r10.rows[0].reason);
   ok('⑩ 抓不到结构就一步界面都没点', !/input tap/.test(log10),
     (log10.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
@@ -285,11 +616,17 @@ const state = {
   fs.unlinkSync(NOTIDLE);
 
   // 12) 结构上也要能看出来：每次 dump 之前必须先删掉远端那个复用文件
+  //     ★ 2026-10-03 提速：rm / dump / cat 合并成**一条** shell（省两次 adb 往返），
+  //       所以不能再按「两行、比行号」判 —— 改成在**同一条命令里**比先后位置。
+  //       语义没变：还是「先删、再 dump」（不删的话 dump 失败时 cat 出来的是上一页的结构）。
   const seq = calls().split(/\r?\n/);
-  const iRm = seq.findIndex(l => /shell rm -f \/sdcard\/bluev_window\.xml/.test(l));
-  const iDump = seq.findIndex(l => /uiautomator dump/.test(l));
-  ok('⑫ 抓取前先删远端文件（顺序：rm → dump）',
-    iRm >= 0 && iDump >= 0 && iRm < iDump, `rm@${iRm} dump@${iDump}`);
+  const iLine = seq.findIndex(l => /rm -f \/sdcard\/bluev_window\.xml/.test(l) && /uiautomator dump/.test(l));
+  const line = iLine >= 0 ? seq[iLine] : '';
+  const pRm = line.indexOf('rm -f /sdcard/bluev_window.xml');
+  const pDump = line.indexOf('uiautomator dump');
+  ok('⑫ 抓取前先删远端文件（同一条 shell 里：rm 必须排在 dump 前面）',
+    iLine >= 0 && pRm >= 0 && pDump >= 0 && pRm < pDump,
+    iLine >= 0 ? `第 ${iLine} 行内 rm@${pRm} < dump@${pDump}` : '没找到同时含 rm 与 dump 的那条命令');
 
   // 14) ★★ 「抓取页面结构」必须先说清「你现在停在哪一屏」，停在别的 App 上要拦下来。
   //     真机依据（2026-10-01 MuMu 12 / 得物 900×1600）：得物首页右上角的发布入口是相机图标
@@ -615,6 +952,379 @@ const state = {
     sug17.videoSteps[0].action === sug17.steps[0].action
     && sug17.videoSteps[0].value === sug17.steps[0].value,
     JSON.stringify({ 图文: sug17.steps[0].value, 视频: sug17.videoSteps[0].value }));
+
+  // ---- ⑲ 真机实测：uiautomator 有时**一个字都不打印**（不是 could not get idle state）----
+  //   旧判据只认 "idle state" ⇒ 「临时关动画重试」那条路压根不走 ⇒ 直接掉到 dumpsys 备用通道。
+  //   用户 2026-10-03 明确：不要备用通道，就走正常通道。
+  const SILENT19 = path.join(FDB, 'DUMP_SILENT');
+  fs.writeFileSync(SILENT19, '1');
+  const before19 = calls();
+  const dSilent = await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp' });
+  const seg19 = calls().slice(before19.length);
+  ok('⑲ ★ uiautomator 一个字都不打印时，关动画重试能抓成功（不再直接判失败）',
+    dSilent.ok === true && dSilent.via === 'uiautomator' && dSilent.animOff === true,
+    JSON.stringify({ ok: dSilent.ok, via: dSilent.via, animOff: dSilent.animOff, why: dSilent.why }));
+  ok('⑲ ★ 这一次**没有**去碰 dumpsys 备用通道（只要一条通道）',
+    !/dumpsys activity top/.test(seg19),
+    seg19.split('\n').filter(l => /dumpsys/.test(l)).join(' | ') || '（没有 dumpsys 调用）');
+  ok('⑲ 试完必须把用户设备的动画开关还原（不许留在关掉的状态）',
+    /settings put global animator_duration_scale 0/.test(seg19)
+    && /settings put global animator_duration_scale 1/.test(seg19),
+    seg19.split('\n').filter(l => /animator_duration_scale/.test(l)).join(' | '));
+  fs.unlinkSync(SILENT19);
+
+  // ---- ⑳ 真机实测：「点颜色文字」弹出的是「选择商品规格」，**不会选中卡片** ----
+  //   能选中整张卡的是商品图；而颜色文字在几何上落在它所属那张图的 bounds 之内。
+  //   证据：2026-10-03 MuMu / 得物 UWG460108 货号搜索页 dump（tvCSpuInfo [278,554][354,597]
+  //   完全包在 ivProduct [35,278][354,597] 里）。
+  const CARD_ID = 'com.shizhuang.duapp:id/ivProduct';
+  ok('⑳ uimap 公布了新动作 tapCardText', uimap.STEP_ACTIONS.includes('tapCardText'));
+  let e20 = null;
+  try { uimap.normalizeSteps([{ action: 'tapCardText', value: '本白' }]); } catch (e) { e20 = e; }
+  ok('⑳ tapCardText 不写 card ⇒ 导入时就报错（不让它跑到真机上瞎点）',
+    !!e20 && /card/.test(e20.message), e20 && e20.message);
+
+  // 真机两套重叠列表：可见那套在前（右下角对齐），背后那套坐标错开 220px
+  const gridXml = '<hierarchy rotation="0">'
+    + `<node index="0" text="" resource-id="${CARD_ID}" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="false" bounds="[35,278][354,597]" />`
+    + '<node index="1" text="本白" resource-id="com.shizhuang.duapp:id/tvCSpuInfo" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[278,554][354,597]" />'
+    + `<node index="2" text="" resource-id="${CARD_ID}" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="false" bounds="[35,498][354,817]" />`
+    + `<node index="3" text="" resource-id="${CARD_ID}" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="false" bounds="[380,278][699,597]" />`
+    + '<node index="4" text="冷灰" resource-id="com.shizhuang.duapp:id/tvCSpuInfo" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[623,554][699,597]" />'
+    + '</hierarchy>';
+  const n20 = uimap.parseNodes(gridXml);
+  const c20a = uimap.cardOf(n20, uimap.findNode(n20, { text: '本白' }), CARD_ID);
+  ok('⑳ ★「本白」映射到**右下角对齐**的那张图 [35,278][354,597]，不是背后那套重叠列表',
+    !!c20a && c20a.box.x1 === 35 && c20a.box.y1 === 278, c20a && JSON.stringify(c20a.box));
+  const c20b = uimap.cardOf(n20, uimap.findNode(n20, { text: '冷灰' }), CARD_ID);
+  ok('⑳ ★「冷灰」映射到**它自己那一列**的图（不是永远第一张）',
+    !!c20b && c20b.box.x1 === 380, c20b && JSON.stringify(c20b.box));
+  // ★ 这一条专盯「归属判据」本身：把**背后那套列表排在文档前面**。
+  //   一旦退回「取第一张包住的」，就会选到 [35,498] 那张（错列）⇒ 必须红。
+  const swapXml = '<hierarchy rotation="0">'
+    + `<node index="0" text="" resource-id="${CARD_ID}" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="false" bounds="[35,498][354,817]" />`
+    + '<node index="1" text="本白" resource-id="com.shizhuang.duapp:id/tvCSpuInfo" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[278,554][354,597]" />'
+    + `<node index="2" text="" resource-id="${CARD_ID}" class="android.widget.ImageView" package="com.shizhuang.duapp" clickable="false" bounds="[35,278][354,597]" />`
+    + '</hierarchy>';
+  const n20c = uimap.parseNodes(swapXml);
+  const c20c = uimap.cardOf(n20c, uimap.findNode(n20c, { text: '本白' }), CARD_ID);
+  ok('⑳ ★ 背后那套列表排在文档前面时，仍必须选「右下角对齐」的那张（y1=278 而不是 498）',
+    !!c20c && c20c.box.y1 === 278, c20c && JSON.stringify(c20c.box));
+
+  ok('⑳ 文字落在所有卡之外 ⇒ 返回 null（宁可不点，也不点错卡）',
+    uimap.cardOf(n20, { text: 'x', box: { x1: 0, y1: 1900, x2: 4, y2: 1904 }, center: { x: 2, y: 1902 } }, CARD_ID) === null);
+
+  // 行为级：让真代码自己点一次，看它点在哪
+  const gridBak = fs.readFileSync(FAKE_WINDOW, 'utf8');
+  fs.writeFileSync(FAKE_WINDOW, gridXml);
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', { action: 'tapCardText', value: '冷灰', card: CARD_ID, count: 1 }, {}, { log() {} });
+  const tap20 = /-s \S+ shell input tap (\d+) (\d+)/.exec(calls());
+  ok('⑳ ★ 行为级：tapCardText 真点在「冷灰」那张图的中心 (540,438)，而不是颜色标签 (661,576)',
+    !!tap20 && tap20[1] === '540' && tap20[2] === '438', tap20 && (tap20[1] + ',' + tap20[2]));
+
+  // 行为级负向：文字没有任何卡包住 ⇒ 硬失败，绝不瞎挂一个商品
+  fs.writeFileSync(FAKE_WINDOW, gridXml.replace('bounds="[278,554][354,597]"', 'bounds="[278,1554][354,1597]"'));
+  let e20b = null;
+  try { await publisher.runStep('127.0.0.1:5555', { action: 'tapCardText', value: '本白', card: CARD_ID, count: 1 }, {}, { log() {} }); }
+  catch (e) { e20b = e; }
+  ok('⑳ ★ 颜色文字没有任何卡包住时**硬失败**并说清原因（点错卡＝挂错商品，最难查）',
+    !!e20b && /包住/.test(e20b.message), e20b && e20b.message);
+  fs.writeFileSync(FAKE_WINDOW, gridBak);
+
+  // ---- ㉑ 真机实测：草稿箱是**拦截页** —— 「我→主页→发布新动态」在草稿箱非空时落到 DraftActivity ----
+  //   证据（2026-10-03，MuMu 12 / 得物 / 1080×1920）：
+  //     DraftActivity 上：iv_draft_title text="草稿箱"；底部 fl_publish clickable=true 居中 (540,1871)，
+  //     子节点 tv_draft_publish text="发布新动态"。
+  //     点 fl_publish → TotalPublishProcessActivity（相册：全部/照片/视频 + flThumbSelect×N）。
+  //     相册页的 dump 里 iv_draft_title / fl_publish 各出现 **0 次** ⇒ 守卫判据干净。
+  const DRAFT_TITLE = 'com.shizhuang.duapp:id/iv_draft_title';
+  const DRAFT_EXIT = 'com.shizhuang.duapp:id/fl_publish';
+  ok('㉑ uimap 公布了草稿箱拦截信息（标题 id + 出口 id）',
+    !!(uimap.DEWU.draft && uimap.DEWU.draft.titleId === DRAFT_TITLE && uimap.DEWU.draft.exitId === DRAFT_EXIT),
+    JSON.stringify(uimap.DEWU.draft));
+
+  let e21 = null;
+  try { uimap.normalizeSteps([{ action: 'tapId', value: DRAFT_EXIT, whenOn: '草稿箱' }]); } catch (e) { e21 = e; }
+  ok('㉑ whenOn 写了文字（不是 resource-id）⇒ 导入时就报错（不许跑到真机上才发现守卫永不成立）',
+    !!e21 && /resource-id/.test(e21.message), e21 && e21.message);
+
+  const draftXml21 = '<hierarchy rotation="0">'
+    + `<node index="0" text="草稿箱" resource-id="${DRAFT_TITLE}" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="false" bounds="[480,60][600,102]" />`
+    + '<node index="1" text="#我在的得物当博主 " resource-id="com.shizhuang.duapp:id/tv_draft_title" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="false" bounds="[40,546][640,586]" />'
+    + `<node index="2" text="发布新动态" resource-id="${DRAFT_EXIT}" class="android.widget.FrameLayout" package="com.shizhuang.duapp" clickable="true" bounds="[0,1826][1080,1916]" />`
+    + '</hierarchy>';
+  const albumXml21 = '<hierarchy rotation="0">'
+    + '<node index="0" text="照片" resource-id="" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="false" bounds="[500,256][580,296]" />'
+    + `<node index="1" text="" resource-id="${THUMB}" class="android.widget.FrameLayout" package="com.shizhuang.duapp" clickable="true" bounds="[56,299][276,419]" />`
+    + '</hierarchy>';
+  const dNodes21 = uimap.parseNodes(draftXml21);
+  const aNodes21 = uimap.parseNodes(albumXml21);
+  ok('㉑ 真值表：草稿箱这一屏 ⇒ 守卫放行（要去点出口）',
+    uimap.screenCondOk({ whenOn: DRAFT_TITLE }, dNodes21).ok === true);
+  ok('㉑ 真值表：相册这一屏 ⇒ 守卫拦下（整步跳过）',
+    uimap.screenCondOk({ whenOn: DRAFT_TITLE }, aNodes21).ok === false);
+  ok('㉑ 真值表：whenNotOn 反着用也对（相册屏没有草稿箱标题 ⇒ 放行；草稿箱屏 ⇒ 拦下）',
+    uimap.screenCondOk({ whenNotOn: DRAFT_TITLE }, aNodes21).ok === true
+    && uimap.screenCondOk({ whenNotOn: DRAFT_TITLE }, dNodes21).ok === false);
+
+  const win21bak = fs.readFileSync(FAKE_WINDOW, 'utf8');
+  // ★★ 行为级两组都要 try/catch 兜住异常，并把「抛异常」本身算成 FAIL。
+  //   为什么：不兜的话，守卫一旦被拆掉，这里会**抛异常直接中断整个套件** ——
+  //   `FAIL` 一行都不打，只看「有没有 FAIL」的人会误判成「没被抓住 ⇒ 断言无效」。
+  //   2026-10-03 反向验证时真踩到这个（D2/D7 被判成 GREEN），见 REFERENCE §AV。
+  const probe21 = async (xml, step) => {
+    fs.writeFileSync(FAKE_WINDOW, xml);
+    clearCalls();
+    try { return { r: await publisher.runStep('127.0.0.1:5555', step, {}, { log() {} }), e: null }; }
+    catch (e) { return { r: null, e }; }
+  };
+
+  // 行为级（负向，最关键的一条）：**相册屏**跑这一步 ⇒ 一个 tap 都不许发
+  // ★ 这里刻意用 `uimap.DEWU.draft.*` 而不是上面那两个硬编码常量 ——
+  //   硬编码常量只能验「引擎本身对不对」，验不了「配置里的 id 是不是真机那个」。
+  //   反向验证时正是踩到这一点：把 DEWU.draft.exitId 改错，行为级照样全绿
+  //   （因为它用的是测试自己的常量）。改成读配置后，配置写错这两条也会红。
+  const p21a = await probe21(albumXml21,
+    { action: 'tapId', value: uimap.DEWU.draft.exitId, whenOn: uimap.DEWU.draft.titleId });
+  ok('㉑ ★ 行为级：相册屏上这一步**不发任何 tap**（只有草稿箱才点，别屏一个像素都不碰）',
+    !p21a.e && !/shell input tap/.test(calls()),
+    p21a.e ? ('这一步抛异常了：' + p21a.e.message)
+      : (calls().split('\n').filter(l => /input tap/.test(l)).join(' | ') || '（没有 tap）'));
+  ok('㉑ ★ 行为级：拦下时必须**如实返回 skipped**（不许静默当成成功）',
+    !!(!p21a.e && p21a.r && p21a.r.skipped === true && p21a.r.why),
+    p21a.e ? ('抛异常：' + p21a.e.message) : JSON.stringify(p21a.r));
+
+  // 行为级（正向对照）：**草稿箱屏**跑同一步 ⇒ 必须真点到出口那颗，坐标 = 中心 (540,1871)
+  const p21b = await probe21(draftXml21,
+    { action: 'tapId', value: uimap.DEWU.draft.exitId, whenOn: uimap.DEWU.draft.titleId });
+  const tap21 = /-s \S+ shell input tap (\d+) (\d+)/.exec(calls());
+  ok('㉑ ★ 行为级：按**配置里**的 id 在草稿箱屏上真点到 fl_publish 的中心 (540,1871)（与真机实测同一坐标）',
+    !p21b.e && !!tap21 && tap21[1] === '540' && tap21[2] === '1871'
+    && !(p21b.r && p21b.r.skipped),
+    p21b.e ? ('抛异常：' + p21b.e.message)
+      : (tap21 ? (tap21[1] + ',' + tap21[2])
+        : '没点到；skipped=' + JSON.stringify(p21b.r && p21b.r.why)));
+
+  // 拿不到界面结构 ⇒ **硬失败**，不许猜「大概不在草稿箱吧」
+  const NI21 = path.join(FDB, 'DUMP_NOT_IDLE');
+  const ND21 = path.join(FDB, 'NO_DEWU_TOP');
+  fs.writeFileSync(NI21, 'always');
+  fs.writeFileSync(ND21, '1');
+  let e21b = null;
+  try {
+    await publisher.runStep('127.0.0.1:5555',
+      { action: 'tapId', value: DRAFT_EXIT, whenOn: DRAFT_TITLE, name: '草稿箱拦截' }, {}, { log() {} });
+  } catch (e) { e21b = e; }
+  ok('㉑ ★ 两条通道都拿不到结构时硬失败并点名是哪一步（不许猜「大概不在草稿箱」）',
+    !!e21b && /拿不到界面结构/.test(e21b.message) && /草稿箱拦截/.test(e21b.message),
+    e21b && e21b.message);
+  fs.unlinkSync(NI21); fs.unlinkSync(ND21);
+  fs.writeFileSync(FAKE_WINDOW, win21bak);
+
+  // ㉑b 候选表（「抓取页面结构」）必须自带这一步 —— 否则用户重新抓一次表就把修复丢了
+  const sug21 = uimap.suggest(uimap.parseNodes(routeXml), 'com.shizhuang.duapp');
+  const dStepG = sug21.steps.filter(s => s.whenOn === DRAFT_TITLE && s.value === DRAFT_EXIT);
+  const dStepV = sug21.videoSteps.filter(s => s.whenOn === DRAFT_TITLE && s.value === DRAFT_EXIT);
+  ok('㉑b 图文候选表自带「草稿箱拦截」步（带 whenOn 守卫，紧跟入口之后）',
+    dStepG.length === 1 && sug21.steps.indexOf(dStepG[0]) === 1,
+    JSON.stringify(sug21.steps.slice(0, 3).map(s => s.name)));
+  ok('㉑b 视频候选表也自带（视频是同一条入口，同样会被草稿箱接走）',
+    dStepV.length === 1, JSON.stringify(sug21.videoSteps.slice(0, 3).map(s => s.name)));
+
+  // ---- ㉒ 2026-10-03 提速改动：固定坐标直点（tapXY）/ 多点合并一条 shell（tapSeq）----
+  //   真机实测依据（MuMu 12 / 1080×1920，本机 adb 二进制）：
+  //     · `adb shell` 任意命令一次 ~110–180ms（纯往返，跟命令内容无关）
+  //     · `uiautomator dump` 本体 ~593ms + 回传 ~112ms；老写法 rm+dump+cat = 3 次往返 ~1518ms
+  //     · `input tap` 一次 126ms；3 次点击**合并成一条 shell** = 127ms（≈42ms/击）
+  //   ⇒ 提速只有两条路：① 该合并的合并（省往返）② 版式固定的格子不抓屏（省掉 1.5s 的 dump）
+  //   这套断言盯**语义**（合并成一条 / 真没抓屏 / 复用同一次抓屏），不锁死写法。
+
+  // A) 坐标解析
+  const pts22 = uimap.parsePoints('540,1871');
+  ok('㉒ parsePoints 认 "x,y"', pts22.length === 1 && pts22[0].x === 540 && pts22[0].y === 1871,
+    JSON.stringify(pts22));
+  const pts22b = uimap.parsePoints('945,1869; 540,1871\n1007,175');
+  ok('㉒ 分号 / 换行都能分隔多个点（顺序保持）',
+    pts22b.length === 3 && pts22b.map(p => p.x + ',' + p.y).join(' ') === '945,1869 540,1871 1007,175',
+    JSON.stringify(pts22b));
+  ok('㉒ 全角逗号也认（用户从 Excel/文档里粘过来的是全角）',
+    JSON.stringify(uimap.parsePoints('945，1869')) === JSON.stringify([{ x: 945, y: 1869 }]),
+    JSON.stringify(uimap.parsePoints('945，1869')));
+  ok('㉒ 写坏的段**只丢那一段**，不把整串判成空（也不猜一个坐标出来）',
+    JSON.stringify(uimap.parsePoints('540,1871; 乱写; 100,200'))
+      === JSON.stringify([{ x: 540, y: 1871 }, { x: 100, y: 200 }]),
+    JSON.stringify(uimap.parsePoints('540,1871; 乱写; 100,200')));
+  ok('㉒ 全是垃圾 ⇒ 空数组（调用方据此硬失败，不会去点 (0,0)）',
+    uimap.parsePoints('乱写; ; 12').length === 0, JSON.stringify(uimap.parsePoints('乱写; ; 12')));
+  ok('㉒ 半个坐标（只写 x）不算数', uimap.parsePoints('540').length === 0,
+    JSON.stringify(uimap.parsePoints('540')));
+
+  // B) 导入期就挡住「坐标没写」
+  ok('㉒ uimap 公布了新动作 tapXY', uimap.STEP_ACTIONS.includes('tapXY'));
+  let e22 = null;
+  try { uimap.normalizeSteps([{ action: 'tapXY', value: '' }]); } catch (e) { e22 = e; }
+  ok('㉒ tapXY 不写坐标 ⇒ 导入时就报错（不让它跑到真机上点到屏幕左上角）',
+    !!e22 && /540,1871/.test(e22.message), e22 && e22.message);
+  let e22b = null;
+  try { uimap.normalizeSteps([{ action: 'tapXY', value: '乱写' }]); } catch (e) { e22b = e; }
+  ok('㉒ tapXY 坐标解析不出来 ⇒ 同样在导入期报错', !!e22b, e22b && e22b.message);
+  const st22 = uimap.normalizeSteps([{ action: 'tapXY', value: '945,1869; 540,1871' }]);
+  ok('㉒ 导入通过后 points 已经解析好挂在步骤上（运行时不用再解析一次）',
+    Array.isArray(st22[0].points) && st22[0].points.length === 2, JSON.stringify(st22[0].points));
+
+  // C) tapSeq：多点**合并成一条 shell**（这才是省时间的地方）
+  clearCalls();
+  const ts22 = await adbMod.tapSeq('127.0.0.1:5555',
+    [{ x: 100, y: 200 }, { x: 300, y: 400 }, { x: 500, y: 600 }], 250);
+  const lines22 = calls().split(/\r?\n/).filter(l => /input tap/.test(l));
+  ok('㉒ ★ tapSeq：3 个点只发**一条** shell（老写法是 3 条）',
+    ts22.ok === true && lines22.length === 1, lines22.length + ' 条：' + lines22.join(' | '));
+  ok('㉒ ★ 三个坐标都在同一条命令里、按顺序',
+    !!lines22[0] && /input tap 100 200; sleep 0\.25; input tap 300 400; sleep 0\.25; input tap 500 600/.test(lines22[0]),
+    lines22[0]);
+  ok('㉒ 间隔是**设备端** sleep（放在 JS 侧的话每次点击都要多一次往返）',
+    !!lines22[0] && /sleep 0\.25/.test(lines22[0]), lines22[0]);
+  clearCalls();
+  await adbMod.tapSeq('127.0.0.1:5555', [{ x: 540, y: 1871 }], 250);
+  const one22 = calls().split(/\r?\n/).filter(l => /input tap/.test(l));
+  ok('㉒ 只有一个点时**不加** sleep（白等 250ms 也是成本），但仍是单条 shell',
+    one22.length === 1 && /input tap 540 1871$/.test(one22[0]), one22.join(' | '));
+  const empty22 = await adbMod.tapSeq('127.0.0.1:5555', [], 250);
+  ok('㉒ 空坐标列表 ⇒ 明确失败，**不假装成功**（ok:false 且给原因）',
+    empty22.ok === false && !!empty22.stderr, JSON.stringify(empty22));
+  clearCalls();
+  await adbMod.tapSeq('127.0.0.1:5555', [{ x: 100.4, y: 200.6 }], 0);
+  ok('㉒ 小数坐标四舍五入成整数（input tap 只认整数）',
+    /input tap 100 201\b/.test(calls()), calls().trim());
+
+  // D) 行为级：真代码跑一个 tapXY 步 ⇒ 真按坐标点下去，且**不抓屏**
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', { action: 'tapXY', value: '945,1869' }, {}, { log() {} });
+  ok('㉒ ★ 行为级：tapXY 真点到 945,1869，而且**一次 dump 都没抓**（这才是提速点）',
+    /-s \S+ shell input tap 945 1869/.test(calls()) && !/uiautomator dump/.test(calls()),
+    calls().split(/\n/).filter(Boolean).join(' | ') || '（没有任何命令）');
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', { action: 'tapXY', value: '945,1869; 540,1871' }, {}, { log() {} });
+  const lines22d = calls().split(/\r?\n/).filter(l => /input tap/.test(l));
+  ok('㉒ ★ 行为级：一个 tapXY 步写两个坐标 ⇒ **一条** shell 点两下',
+    lines22d.length === 1 && /945 1869; sleep 0\.25; input tap 540 1871/.test(lines22d[0]),
+    lines22d.join(' | '));
+  let e22c = null;
+  try {
+    await publisher.runStep('127.0.0.1:5555', { action: 'tapXY', value: '乱写' }, {}, { log() {} });
+  } catch (e) { e22c = e; }
+  ok('㉒ ★ 行为级：坐标解析不出来时**硬失败**（绝不默默点屏幕左上角）',
+    !!e22c && /坐标解析不出来/.test(e22c.message), e22c && e22c.message);
+
+  // E) 行为级：相册多点选图 ⇒ 也走 tapSeq（一条 shell），不是「一条一条 tap + JS sleep」
+  const album2 = '<hierarchy rotation="0">'
+    + `<node index="0" text="" resource-id="${THUMB}" class="android.widget.FrameLayout" package="com.shizhuang.duapp" clickable="true" bounds="[56,299][276,419]" />`
+    + `<node index="1" text="" resource-id="${THUMB}" class="android.widget.FrameLayout" package="com.shizhuang.duapp" clickable="true" bounds="[332,299][552,419]" />`
+    + '</hierarchy>';
+  const win22bak = fs.readFileSync(FAKE_WINDOW, 'utf8');
+  fs.writeFileSync(FAKE_WINDOW, album2);
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', { action: 'tapId', value: THUMB, count: 2 }, {}, { log() {} });
+  const lines22e = calls().split(/\r?\n/).filter(l => /input tap/.test(l));
+  ok('㉒ ★ 行为级：一次选 2 张图 ⇒ **一条** shell 点两格（相册按时间倒序，点最前面两格）',
+    lines22e.length === 1 && /input tap 166 359; sleep 0\.25; input tap 442 359/.test(lines22e[0]),
+    lines22e.join(' | '));
+
+  // F) ★★ 守卫复用：带 whenOn 的步，守卫抓到的结构**直接给同一步的点击用** ⇒ 全场只抓 1 次屏。
+  //    没有这个复用就是 2 次（守卫 1 次 + 点击 1 次），实测多花 ~1–2s。
+  //    判据 = 数 calls.log 里含 `uiautomator dump` 的**行数**：1 = 复用了；2 = 复用被拆掉。
+  fs.writeFileSync(FAKE_WINDOW, draftXml21);
+  clearCalls();
+  const r22 = await publisher.runStep('127.0.0.1:5555',
+    { action: 'tapId', value: DRAFT_EXIT, whenOn: DRAFT_TITLE, name: '草稿箱拦截' }, {}, { log() {} });
+  const dumps22 = calls().split(/\r?\n/).filter(l => /uiautomator dump/.test(l)).length;
+  // 注意：点击成功时 runStep 返回的是 **undefined**（只有守卫拦下才返回 {skipped}）。
+  // 写成 `!r22.skipped` 会在这里抛异常 ⇒ 整段断言一条都不打、只看 FAIL 的人会误判成「全绿」。
+  ok('㉒ ★ 带 whenOn 的步：全程只抓 **1** 次屏（守卫抓到的那份被点击步复用，不再白抓第二次）',
+    !(r22 && r22.skipped) && dumps22 === 1 && /input tap 540 1871/.test(calls()),
+    'dump 次数=' + dumps22 + ' / ' + calls().split(/\n/).filter(Boolean).join(' | '));
+  // ★ 反向对照：证明这个「数 dump 次数」的计数器真的数得动。
+  //   没有这一条，上面那个 `1 === 1` 可能是计数器坏掉凑出来的（空==空式的假通过）。
+  clearCalls();
+  await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp', retries: 0 });
+  await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp', retries: 0 });
+  const dumps22b = calls().split(/\r?\n/).filter(l => /uiautomator dump/.test(l)).length;
+  ok('㉒ 对照：连抓两次就是 2（证明上面那条「1 次」不是计数器坏掉数出来的）',
+    dumps22b === 2, 'dump 次数=' + dumps22b);
+  fs.writeFileSync(FAKE_WINDOW, win22bak);
+
+  // ---- ㉓ 「不会 idle 的屏」只在同一批里付一次 ==============================
+  //   真机依据（2026-10-03，MuMu 12 / 得物 / 1080×1920）：
+  //     相册页裸 `uiautomator dump` 连打 3 次 = 11230 / 11136 / 11127 ms，**全部**
+  //     `could not get idle state`；同一张屏**关掉三个系统动画**后 2036ms 就抓到。
+  //     ⇒ 那 ~11 秒纯粹是白等的 idle 超时（控制面：纯 shell 往返 135ms）。
+  //   行为：publisher 按**步骤名**记住「这一步这一屏不会 idle」，本批第 2 条起直接走关动画。
+  const NI23 = path.join(FDB, 'DUMP_NOT_IDLE');
+  fs.writeFileSync(NI23, 'anim');   // 动画开着时 dump 必败（= 真机相册页的行为）
+  const nDumps23 = () => calls().split(/\r?\n/).filter(l => /uiautomator dump/.test(l)).length;
+  const animState23 = async () => {
+    const r = await adbMod.shell('127.0.0.1:5555',
+      'settings get global window_animation_scale; settings get global transition_animation_scale; settings get global animator_duration_scale');
+    return String(r.stdout).replace(/\s+/g, ' ').trim();
+  };
+
+  // A) 对照：不认识这屏 ⇒ 先白抓一次，再去关动画（两次抓屏）
+  clearCalls();
+  const d23plain = await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp', retries: 0 });
+  const n23plain = nDumps23();
+  ok('㉓ 对照：不认识这屏 ⇒ 先白抓一次才去关动画（两次抓屏）',
+    d23plain.ok === true && d23plain.animOff === true && n23plain === 2,
+    'ok=' + d23plain.ok + ' animOff=' + d23plain.animOff + ' dump 次数=' + n23plain);
+
+  // B) 已知这屏不会 idle ⇒ 直接关动画抓，只抓一次（省掉那 ~11 秒）
+  clearCalls();
+  const d23pre = await adbMod.dumpEx('127.0.0.1:5555',
+    { pkg: 'com.shizhuang.duapp', retries: 0, preferAnimOff: true });
+  const n23pre = nDumps23();
+  const animAfter23 = await animState23();
+  ok('㉓ ★★ 已知这屏不会 idle ⇒ 直接关动画抓（只抓一次，省掉那 ~11 秒的白等）',
+    d23pre.ok === true && d23pre.animOff === true && n23pre === 1,
+    'ok=' + d23pre.ok + ' animOff=' + d23pre.animOff + ' dump 次数=' + n23pre);
+  ok('㉓ ★ 走这条路也必须把动画还原（不许把用户设备留在关掉的状态）',
+    animAfter23 === '1 1 1', '动画开关 = ' + animAfter23);
+
+  // C) 行为级：真代码跑同一步两次 ⇒ 第 1 次学会、第 2 次不再白抓
+  const win23bak = fs.readFileSync(FAKE_WINDOW, 'utf8');
+  fs.writeFileSync(FAKE_WINDOW, album2);
+  const idleStep23 = { name: '㉓ 这屏不会 idle 的测试步', action: 'tapId', value: THUMB };
+  const ctx23 = { log() {}, animOffSteps: {} };
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', idleStep23, {}, ctx23);
+  const n23a = nDumps23();
+  ok('㉓ ★ 行为级：第 1 次跑 ⇒ 白抓一次（共 2 次），并把这步记进缓存',
+    n23a === 2 && ctx23.animOffSteps[idleStep23.name] === true,
+    'dump 次数=' + n23a + ' 缓存=' + JSON.stringify(ctx23.animOffSteps));
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', idleStep23, {}, ctx23);
+  const n23b = nDumps23();
+  ok('㉓ ★★ 行为级：同一步第 2 次跑 ⇒ 只抓一次（真机上就是省掉那 ~11 秒）',
+    n23b === 1, 'dump 次数=' + n23b);
+
+  // D) 反向对照：不给缓存（每次新建 ctx）⇒ 永远学不会，每次都是 2 次
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', idleStep23, {}, { log() {} });
+  await publisher.runStep('127.0.0.1:5555', idleStep23, {}, { log() {} });
+  const n23d = nDumps23();
+  ok('㉓ 反向对照：不给缓存 ⇒ 两次都是白抓 2+2=4 次（证明省下来的是缓存带来的）',
+    n23d === 4, 'dump 次数=' + n23d);
+
+  // E) ★ 负向：页面本来就会 idle ⇒ **不许**往缓存里塞
+  //    （塞错了的后果：以后每一步都无端关掉用户设备的动画，白花 3 次往返还改了系统设置）
+  fs.unlinkSync(NI23);
+  const ctx23e = { log() {}, animOffSteps: {} };
+  clearCalls();
+  await publisher.runStep('127.0.0.1:5555', idleStep23, {}, ctx23e);
+  const n23e = nDumps23();
+  ok('㉓ ★ 负向：页面本来就会 idle ⇒ 不塞缓存、也不多抓（1 次就够）',
+    Object.keys(ctx23e.animOffSteps).length === 0 && n23e === 1,
+    '缓存=' + JSON.stringify(ctx23e.animOffSteps) + ' dump 次数=' + n23e);
+  fs.writeFileSync(FAKE_WINDOW, win23bak);
 
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));

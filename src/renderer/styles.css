@@ -63,6 +63,8 @@ html.dark ::-webkit-scrollbar-thumb:hover{background:rgba(180,180,180,.6);backgr
 .titlebar .logo{width:17px;height:17px;display:block;border-radius:4px;flex:0 0 17px}
 .titlebar .logo svg{display:block;width:17px;height:17px;border-radius:4px}
 .titlebar .name{font-size:12.5px;font-weight:600;letter-spacing:.2px;white-space:nowrap}
+/* 版本号小标签（app 名字后面）：低调的次要文字，用主题变量 ⇒ 浅/深色都不用另写一份 */
+.titlebar .chip-ver{font-size:11px;padding:2px 8px;font-weight:600;letter-spacing:.02em;background:transparent;color:var(--tx3)}
 .titlebar .tb-drag{flex:1}
 .titlebar .tb-right{display:flex;align-items:stretch;-webkit-app-region:no-drag}
 .titlebar .chips{display:flex;align-items:center;gap:8px;padding-right:6px}

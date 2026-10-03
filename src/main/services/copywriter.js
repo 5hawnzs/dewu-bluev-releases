@@ -27,6 +27,9 @@ const path = require('path');
 const store = require('../store');
 const llmdefaults = require('../llmdefaults');
 const imaging = require('./imaging');
+// ★ 视频抽帧（2026-10-03）：只有视频、没有实拍图的叶子，从视频里抽帧当「图」送模型。
+//   真起 ffmpeg 的是 frame.js，它复用 video.js 那一条 ffmpeg 通道（三段解析只有一个入口）。
+const frame = require('./frame');
 const copycheck = require('./copycheck');
 const hotwords = require('./hotwords');
 
@@ -91,7 +94,13 @@ function cfgOf() {
     vision: bool(c.vision === undefined ? true : c.vision),
     imageCount: num(c.imageCount, llmdefaults.imageCount, 1, 4),
     imageMaxSide: num(c.imageMaxSide, llmdefaults.imageMaxSide, 320, 1568),
-    timeoutSec: num(c.timeoutSec, llmdefaults.timeoutSec, 10, 300)
+    timeoutSec: num(c.timeoutSec, llmdefaults.timeoutSec, 10, 300),
+    // ★ 视频素材没有实拍图时，从视频里抽几帧送给模型（frame.js）。
+    //   空串要当「没填」：`Number('')` 是 0，会被读成「一张都不抽」—— 而 0 是**真的**要「不抽」，
+    //   这两件事必须分得开（和上面 vision 那个字符串 'false' 是同一类坑）。
+    videoFrames: (c.videoFrames === '' || c.videoFrames == null)
+      ? llmdefaults.videoFrames
+      : num(c.videoFrames, llmdefaults.videoFrames, 0, frame.MAX_FRAMES)
   };
 }
 
@@ -210,6 +219,17 @@ async function imagePartsOf(item, cfg) {
     } catch (e) { /* 单张失败继续下一张 */ }
   }
   return out;
+}
+
+/**
+ * 这个叶子里的视频素材（抽帧只认第一个 —— 真机一个叶子 = 一个商品的素材）。
+ * 返回 null 表示「这个叶子里没有视频」，**据此决定「没图」那句该怎么如实说**。
+ */
+function videoOf(item) {
+  const dir = (item && (item.absDir || item.dir)) || '';
+  const v = ((item && item.files) || []).find(f => f && f.type === 'video' && f.name);
+  if (!dir || !v) return null;
+  return { name: v.name, path: path.join(dir, v.name) };
 }
 
 /** 兜底话题池（品牌提示词与设置里都没给时才用） */
@@ -644,6 +664,12 @@ async function generate(items, ctx = {}) {
       log('「设置 → 文案 → 看图」关着 ⇒ 这次不送图，标题只能按货号/颜色写', 'warn');
     } else {
       log(`看图写：每条送前 ${cfg.imageCount} 张实拍图（缩到 ${cfg.imageMaxSide}px 再发，不落盘）`, 'info');
+      if (cfg.videoFrames > 0) {
+        log(`只有视频、没有实拍图的素材：从视频里抽 ${cfg.videoFrames} 帧当图送去`
+          + '（抽帧在本机做；送出去的还是这个常数，不随视频变长而变多）', 'info');
+      } else {
+        log('抽帧张数被设成 0 ⇒ 只有视频的素材一张图都不送，标题只能按货号/颜色写', 'warn');
+      }
     }
   }
   if (!llmOn) {
@@ -657,12 +683,30 @@ async function generate(items, ctx = {}) {
 
   const out = new Map();
   let done = 0, failed = 0, visionOff = 0, topicStripped = 0, noImage = 0, firstErr = '';
+  // 视频抽帧的账：成功几条、失败几条（失败原因取第一条；逐条的结果都写进了报告的「生成来源」）
+  let frameUsed = 0, frameFail = 0, frameErr = '';
 
   const workOne = async (row) => {
     const item = items.find(it => it.id === row.id) || {};
     let text = null, err = null, images = [];
+    // ★ 这个叶子里的视频素材：既用来抽帧，也决定「没图」那句该怎么说才如实
+    const vid = videoOf(item);
+    let fromVideo = false;
     if (llmOn && vision) {
       images = await imagePartsOf(item, cfg);
+      // ★★ 一张实拍图都没有、却有视频 ⇒ 从视频里抽帧当图（用户 2026-10-03：
+      //   「目前导入视频无法根据视频中的产品生成对应的文案」—— 以前视频叶子一张图都送不出去，
+      //   模型只能按货号+颜色写，出来的又是套话壳）。
+      //   **有图就只送图**：实拍图本来就是这件货最好的那几帧，而抽帧要起 ffmpeg、多花时间。
+      //   抽帧失败**不抛**（frame.framesOf 自己把原因带回来）—— 一条视频抽不出帧，
+      //   不该把整批 50 条一起弄挂；那一条如实标成「视频没抽出帧」照常往下走。
+      if (!images.length && vid && cfg.videoFrames > 0 && !cancelled()) {
+        const fr = await frame.framesOf(vid.path, {
+          count: cfg.videoFrames, maxSide: cfg.imageMaxSide, cancelled
+        });
+        if (fr.ok) { images = fr.images; fromVideo = true; frameUsed++; }
+        else { frameFail++; if (!frameErr) frameErr = fr.err; }
+      }
       if (!images.length) noImage++;
     }
     for (let attempt = 0; attempt < 3 && !text; attempt++) {
@@ -711,7 +755,13 @@ async function generate(items, ctx = {}) {
       // 逐条如实标来源：这条到底看没看图（模型不收图 / 这条没图 都要分得清）
       genSource: llmOn
         ? (vision
-          ? (images.length ? `AI 看图（${pf.modelId}）` : `AI 文字（${pf.modelId}，这条没图）`)
+          ? (images.length
+            ? (fromVideo ? `AI 看图（${pf.modelId}，视频抽帧）` : `AI 看图（${pf.modelId}）`)
+            : (vid
+              ? (cfg.videoFrames > 0
+                ? `AI 文字（${pf.modelId}，视频没抽出帧）`
+                : `AI 文字（${pf.modelId}，视频没抽帧）`)
+              : `AI 文字（${pf.modelId}，这条没图）`))
           : `AI 文字（${pf.modelId}，没看图）`)
         : '本地模板'
     }));
@@ -736,7 +786,9 @@ async function generate(items, ctx = {}) {
     throw new Error(`一条都没生成出来（${failed} 条全失败）——接口或模型有问题，先解决再跑，别拿空文案往下走。原始错误：${firstErr || '（没记到）'}`);
   }
   if (failed) log(`${failed} 条没生成出来（已如实记成「未生成」，报告里逐行写明了原因）`, 'warn');
-  if (noImage && vision) log(`有 ${noImage} 条没找到可用图片 ⇒ 那几条标题只能按货号/颜色写`, 'warn');
+  if (frameUsed) log(`${frameUsed} 条素材只有视频 ⇒ 已从视频里抽帧送去（每条最多 ${cfg.videoFrames} 帧，本机抽、不落素材目录）`, 'info');
+  if (frameFail) log(`有 ${frameFail} 条视频没能抽出可用帧（${frameErr || '原因不明'}）⇒ 那几条标题只能按货号/颜色写`, 'warn');
+  if (noImage && vision) log(`有 ${noImage} 条没能给出可用的图（没有实拍图，或视频里没抽出帧）⇒ 那几条标题只能按货号/颜色写`, 'warn');
   if (topicStripped) log(`${topicStripped} 条的正文结尾模型自己带了 #话题，已去掉（话题另有「话题1~5」独立格子）`, 'info');
   log(`文案生成完成：${rows.length} 篇${llmOn ? '' : '（本地模板，不是 AI 文案）'}`, llmOn ? 'ok' : 'warn');
   return {
@@ -744,7 +796,7 @@ async function generate(items, ctx = {}) {
     genSource: llmOn ? (vision ? 'AI 看图' : 'AI 文字') : '本地模板',
     modelId: pf ? pf.modelId : '', modelHow: pf ? pf.modelHow : '',
     endpoint: cfg.endpoint, endpointSource: cfg.endpointSource,
-    vision, failed, visionOff, topicStripped, noImage
+    vision, failed, visionOff, topicStripped, noImage, frameUsed, frameFail
   };
 }
 

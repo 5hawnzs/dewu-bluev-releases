@@ -153,6 +153,79 @@ const sizeOf = p => (fs.existsSync(p) ? fs.statSync(p).size : -1);
   const hBad = await video.readHead(P('bad.mov'));
   ok('I3) 坏文件读头得到空结果（不抛错、也不编造）', !hBad.moov, JSON.stringify(hBad && hBad.moov ? '有 moov' : '无 moov'));
 
+  // ---- J 视频抽帧（frame.js）：真抽、真读产物 ----
+  // ★ 立场与本套件一致：不许「文件存在 == 抽到了」。这里真去解产物，看它是不是一张能解的 JPEG、尺寸对不对。
+  const frame = require(path.join(ROOT, 'src/main/services/frame.js'));
+  const jpegjs = require(path.join(ROOT, 'node_modules', 'jpeg-js'));
+
+  const rJ = await frame.framesOf(P('src.mp4'), { count: 1, maxSide: 240 });
+  ok('J1) ★ 一个真 mp4 抽 1 帧 → 真拿到一张图', rJ.ok === true && rJ.images.length === 1,
+    JSON.stringify({ ok: rJ.ok, n: rJ.images.length, t: rJ.times, e: rJ.errs }));
+  let jDec = null;
+  try { jDec = jpegjs.decode(Buffer.from(String(rJ.images[0].image_url.url).split(',')[1], 'base64')); } catch (e) { jDec = null; }
+  ok('J2) ★ 抽出来那段 base64 真能解成一张 JPEG（不是空串/占位）',
+    !!jDec && jDec.width > 0 && jDec.height > 0, jDec ? jDec.width + '×' + jDec.height : '解不开');
+  ok('J3) 帧缩到 maxSide 内（240px）', !!jDec && Math.max(jDec.width, jDec.height) <= 240,
+    jDec ? jDec.width + '×' + jDec.height : '—');
+  ok('J4) 时长走 moov 读（mp4 不该为时长多起一次 ffmpeg）',
+    Math.abs((rJ.duration || 0) - 2) < 0.6 && rJ.durationHow === 'moov', rJ.duration + 's · ' + rJ.durationHow);
+
+  // mkv 不是 ISO-BMFF，moov 读不到 ⇒ 时长必须落到「用 ffmpeg 探一次」，而且照样抽得出帧
+  ff(['-i', P('src.mp4'), '-c', 'copy', '-f', 'matroska', P('src.mkv')]);
+  const rJ2 = await frame.framesOf(P('src.mkv'), { count: 2, maxSide: 240 });
+  ok('J5) ★ mkv（moov 读不到）时时长落到 ffmpeg 探一次，而且照样抽得出帧',
+    rJ2.ok === true && rJ2.durationHow === 'ffmpeg' && rJ2.images.length === 2,
+    JSON.stringify({ ok: rJ2.ok, n: rJ2.images.length, how: rJ2.durationHow, d: rJ2.duration, e: rJ2.errs }));
+  ok('J6) 2 帧是两个不同时间点（不是同一帧复制两份）', new Set(rJ2.times).size === 2, JSON.stringify(rJ2.times));
+
+  // 空帧判据：**双向**都要钉 —— 只测「纯色被判空」＝只验负向，正片被误杀也照样绿
+  const mkJpg = (fn, name) => {
+    const N = 64, d = Buffer.alloc(N * N * 4);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const i = (y * N + x) * 4, v = fn(x, y);
+      d[i] = v[0]; d[i + 1] = v[1]; d[i + 2] = v[2]; d[i + 3] = 255;
+    }
+    fs.writeFileSync(P(name), jpegjs.encode({ data: d, width: N, height: N }, 90).data);
+  };
+  mkJpg(() => [12, 12, 12], 'solid.jpg');
+  mkJpg((x, y) => [x * 4, y * 4, 128], 'grad.jpg');
+  ok('J7) 空帧判据：纯色图判成空帧（片头片尾的黑场/纯色标题卡就长这样）',
+    (await frame.looksBlank(P('solid.jpg'))) === true);
+  ok('J8) ★ 反向对照：有明暗层次的图**不许**被判成空帧（否则真在展示货的那一帧会被误杀）',
+    (await frame.looksBlank(P('grad.jpg'))) === false);
+
+  ff(['-f', 'lavfi', '-i', 'color=c=black:s=160x120:d=1:r=10',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', P('black.mp4')]);
+  const rJ3 = await frame.framesOf(P('black.mp4'), { count: 1, maxSide: 160 });
+  ok('J9) ★ 整段黑场 ⇒ 一帧都不送，并说清是空帧',
+    rJ3.ok === false && rJ3.images.length === 0 && /空帧/.test(rJ3.errs.join(' ')), JSON.stringify(rJ3.errs));
+
+  // ffmpeg 不可用（手填路径不存在、又没内置）：如实说清原因、**不抛** —— 上游据此把那条标成
+  // 「视频没抽出帧」照常往下跑，而不是把整批弄挂
+  try {
+    video.setFfmpegPath('D:/nope/ffmpeg.exe');
+    video.setBundledFfmpegDir('');
+    // ★ 这里必须 try/catch：坏版是**抛异常**的，不接住的话会冒到套件外层变成
+    //   「VIDEOTEST ERROR」—— 一条 FAIL 都不打（上层只看 FAIL 行就等于没抓到），而且 J12 也不会跑。
+    let rJ5 = null, j5err = '';
+    try { rJ5 = await frame.framesOf(P('src.mp4'), { count: 1, maxSide: 160 }); }
+    catch (e) { j5err = String((e && e.message) || e); }
+    ok('J11) ★ ffmpeg 不可用时如实说清原因、**且不许抛异常**',
+      !j5err && !!rJ5 && rJ5.ok === false && /ffmpeg 不可用/.test(rJ5.err),
+      j5err ? ('抛异常了：' + j5err) : (rJ5 ? rJ5.err : '没返回'));
+  } finally {
+    video.setFfmpegPath('');
+    video.setBundledFfmpegDir(VENDOR_FF);
+  }
+  ok('J12) 恢复后又能抽了（证明 J11 那次是「把 ffmpeg 摘掉」，不是永久改坏）',
+    (await frame.framesOf(P('src.mp4'), { count: 1, maxSide: 160 })).ok === true);
+
+  const junkBefore = fs.readdirSync(os.tmpdir()).filter(n => /^bluev-frame-/.test(n)).length;
+  const rJ4 = await frame.framesOf(P('src.mp4'), { count: 2, maxSide: 160 });
+  const junkAfter = fs.readdirSync(os.tmpdir()).filter(n => /^bluev-frame-/.test(n)).length;
+  ok('J10) ★ 抽帧不留垃圾：临时目录用完即删（只比「有没有变多」，别把上一轮留下的算到这次头上）',
+    junkAfter <= junkBefore, 'before=' + junkBefore + ' after=' + junkAfter + '（抽到 ' + rJ4.images.length + ' 帧）');
+
   console.log('');
   console.log('==== ' + (fail ? ('FAIL ' + fail) : 'ALL PASS') + ' ====');
   console.log('TMP: ' + TMP);

@@ -19,7 +19,9 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-uicheck-'));
 app.setPath('userData', TMP);
 app.commandLine.appendSwitch('disable-gpu');
 
-const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', '发布单', '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '热词库'];
+// ★ 下标 = 页签编号 - 1。页签 5「发布单」2026-10-03 已按用户要求删除，编号**不重排**
+//   ⇒ 第 5 位留 null 占位（否则 6~12 的标题会整体错位一格）。
+const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '热词库'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -124,7 +126,7 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
-  ok('左侧导航是 12 个页签（「高级设置」「热词库」依次排在最后）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 12,
+  ok('左侧导航是 11 个页签（「发布单」2026-10-03 已删；「高级设置」「热词库」排在最后）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 11,
     await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
   ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
     await win.webContents.executeJavaScript(`(() => {
@@ -170,9 +172,10 @@ app.whenReady().then(async () => {
     })()
   `);
 
-  // 页签 9 前面单独测过（品牌与权限）；10 是新增的「运行日志」
+  // 页签 9 前面单独测过（品牌与权限）；10 是新增的「运行日志」。
+  // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 从遍历名单里去掉（编号不重排，5 是空位）。
   const phs = [];        // 收集各页签真实渲染出来的 placeholder（见下方守卫断言）
-  for (const i of [1, 2, 3, 4, 5, 6, 7, 8, 10, 12]) {
+  for (const i of [1, 2, 3, 4, 6, 7, 8, 10, 12]) {
     await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('.nav[data-tab="${i}"]'); if (b) b.click(); return true; })()`);
     await new Promise(r => setTimeout(r, 150));
     const info = await win.webContents.executeJavaScript(`(() => {
@@ -231,6 +234,31 @@ app.whenReady().then(async () => {
   const phHit = phs.join(' | ').match(BAN);
   ok(`★ 渲染出来的 placeholder 里没有举例品牌名（查了 ${phs.length} 个输入框）`, !phHit, phHit ? phHit[0] : '');
 
+  // ---- ★★ 产出类任务的「品牌归属」不许漏带（2026-10-03 实测事故）----
+  // 现象：标题栏明明选着品牌，在「模拟器发布」页点「导入内容报告」却弹「请先选择品牌」。
+  // 根因：BRAND_SCOPED_TYPES 里的任务本来都走 runJob()（在那里统一补 brandId），
+  //       只有这一条是绕过 runJob、直接调 appApi.run 的 ⇒ 主进程收到的 brandId 是空的。
+  // 判据：源码里**不许**再出现 `appApi.run('<产出类任务>'` 这种裸调用
+  //       （只查代码行 —— 注释里正解释这件事，直接搜全文必然自命中）。
+  {
+    const codeOnly = t => t.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    const code = codeOnly(uiSrc);
+    const bare = [];
+    for (const t of ['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']) {
+      // ★ 判据必须盯「有没有带 brandArgs」，不能只查「出现了什么字」——
+      //   `appApi.run('x', brandArgs('x', …))` 里同样含 `appApi.run('x'` 这个子串，
+      //   只查子串会把**已经修好的行**误判成漏点（2026-10-03 第一版就这么误报了一条假红）。
+      //   ★ 另一个坑：`\s*(?!brandArgs\()` 的 `\s*` 能匹配空字符，前瞻会退到空位上做检查、恒真 ⇒
+      //     好版也报红。负向前瞻必须**紧跟逗号**写：`,(?!\s*brandArgs\()`。
+      if (new RegExp("appApi\\.run\\('" + t.replace('.', '\\.') + "',(?!\\s*brandArgs\\()").test(code)) bare.push(t);
+    }
+    ok('★★ 产出类任务（文案生成 / 导入内容报告 / 导出发布单 / 开始发布 / 发布重跑）都先过 brandArgs()，没有裸调 appApi.run 的漏点',
+      bare.length === 0, bare.length ? '裸调用：' + bare.join(' / ') : '');
+    ok('★ brandArgs() 就是「补上标题栏品牌」的那一处，且 runJob 也走它（只有一处逻辑，不会两边各写一遍）',
+      /function brandArgs\(type, args\)/.test(code) && /const a = brandArgs\(type, args\);/.test(code));
+  }
+
   // ---- 「演示节奏（mock）」这个纯演示开关已按用户要求整条删除 ----
   // ★ 光删勾选框不够：出厂 mock=true 时**真实发布**也会用 5 秒间隔。
   //   所以这里连源码里对 cfg.mock 的读取一起查（只查代码行，避免注释命中 —— 注释里正解释这件事）。
@@ -262,12 +290,28 @@ app.whenReady().then(async () => {
   };
   ok('页签 2 有「导出报告」', await onTab(2, 'comp:export'));
   ok('页签 3 有「选择素材目录并启动任务」', await onTab(3, 'copy:pickRun'));
-  ok('页签 5 有「导入 AI 内容报告」', await onTab(5, 'sheet:importReport'));
+  // ★「发布单」页签 2026-10-03 已删（用户要求）。删了就必须**读真 DOM**证明它真没了 ——
+  //   光删源码行不算，以后有人把按钮加回来、或 index.html 里留了个隐藏按钮，都发现不了。
+  ok('★ 页签 5「发布单」已删除（导航里连按钮都不剩，不是藏起来）',
+    await win.webContents.executeJavaScript(`!document.querySelector('.nav[data-tab="5"]')`));
+  // ★ 它独有的三个功能必须还在、且落在「模拟器发布」页上 —— 否则就是「删干净了功能」。
+  ok('★「导出 xlsx」已挪到页签 6「模拟器发布」（原发布单页唯一独有功能，不能删丢）', await onTab(6, 'sheet:export'));
+  ok('★「打开文件 / 打开目录」也在页签 6（紧挨发布单路径那一行，没变成死代码）',
+    (await onTab(6, 'sheet:open')) && (await onTab(6, 'sheet:dir')));
   ok('页签 6 有「重导出日志」', await onTab(6, 'pub:exportLog'));
   // ★ 2026-10-02：这几个「装一次就不再动」的入口按用户要求从日常页面收进「高级设置」。
   //   断言也跟着搬 —— 搬了就得能证明它**不在老地方了**，否则「收起来」等于没发生。
-  ok('页签 11 有「失败恢复动作」', await onTab(11, 'pub:recoverEdit'));
-  ok('页签 6 不再有「失败恢复动作」', !(await onTab(6, 'pub:recoverEdit')));
+  // ★ 2026-10-03 用户要求：**失败恢复动作整块删除** —— 不是「从这一页挪到那一页」，而是哪一页都没有了。
+  //   负向断言必须**真读 DOM**：光删源码行证明不了界面上真的没有这个入口。
+  ok('★「失败恢复动作」已整块删除：任何一页都点不到这个入口',
+    !(await onTab(6, 'pub:recoverEdit')) && !(await onTab(11, 'pub:recoverEdit')));
+  // 同批删掉的还有「失败重试 N 次」下拉（用户：发布失败**不重试**）
+  const retryCfgGone = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('.nav[data-tab="6"]').click();
+    await new Promise(r => setTimeout(r, 150));
+    return !document.querySelector('[data-cfg="publish.retry"]');
+  })()`);
+  ok('★「失败重试 N 次」下拉也已删除（页签 6 上没有 [data-cfg="publish.retry"]）', retryCfgGone === true);
   ok('页签 6 不再有「抓取页面结构」「导入 UI 定位表」',
     !(await onTab(6, 'pub:dump')) && !(await onTab(6, 'pub:map')));
   ok('页签 11 有「抓取页面结构」「导入 UI 定位表」',
@@ -367,6 +411,8 @@ app.whenReady().then(async () => {
         pane: txt([...document.querySelectorAll('#logPaneLines > div')]),
         badge: (document.querySelector('[data-st="10"]') || {}).textContent || '',
         count: (document.querySelector('#logPaneCount') || {}).textContent || '',
+        barCount: (document.querySelector('#logBarCount') || {}).textContent || '',
+        countOnTitleRow: (function () { var c = document.querySelector('#logPaneCount'); var r = c && c.closest ? c.closest('.row') : null; return !!(r && r.querySelector('h3')); })(),
         acts: [...document.querySelectorAll('#pane [data-act]')].map(e => e.dataset.act),
         hasLv: !!document.querySelector('#logLv'), hasQ: !!document.querySelector('#logQ')
       };
@@ -377,6 +423,13 @@ app.whenReady().then(async () => {
     ok('刚灌进去的那两条两处都看得到（说明走的是真推送链路，不是各自造的数据）',
       ui0.pane.some(l => /ENG-INFO/.test(l)) && ui0.bar.some(l => /ENG-INFO/.test(l)),
       ui0.pane.slice(-2).join(' | ').slice(0, 120));
+    ok('★ 运行日志页的条数在标题那一行的右边（2026-10-03 用户：右边不显示有多少条）',
+      ui0.countOnTitleRow && /共 \d+ 条|显示 \d+ \/ 共 \d+ 条/.test(ui0.count),
+      JSON.stringify({ onTitleRow: ui0.countOnTitleRow, count: ui0.count }));
+    ok('★ 底部日志栏右边也显示条数，且与页里的「共 N 条」是同一个数',
+      /共 (\d+) 条/.test(ui0.barCount) && /共 (\d+) 条/.test(ui0.count)
+        && ui0.barCount.match(/共 (\d+) 条/)[1] === ui0.count.match(/共 (\d+) 条/)[1],
+      JSON.stringify({ barCount: ui0.barCount, paneCount: ui0.count, barLines: ui0.bar.length }));
     ok('页上有「级别下拉 + 关键字 + 清空 + 导出」四件东西',
       ui0.hasLv && ui0.hasQ && ui0.acts.includes('log:clear') && ui0.acts.includes('log:export'),
       JSON.stringify(ui0.acts));
@@ -553,6 +606,98 @@ app.whenReady().then(async () => {
   // 把更新模块还原成「未打包」的初始状态，免得影响后面还在用同一进程的断言
   updater._reset();
   updater.init({ send: () => {}, packaged: app.isPackaged, version: app.getVersion() });
+
+  // ---- 2026-10-03 用户要求：**非管理员**在设置页看不到「自动更新 / 版本信息」，版本号挪到左上角 ----
+  // ★ 负向断言必须**真读 DOM**（不是看源码里有没有那行字），而且必须配**正向对照** ——
+  //   否则「这一页整个渲染失败、一片空白」也能让「不含『应用更新』」通过（空 == 空的假绿）。
+  // ★ uicheck 跑在 BLUEV_NO_LOGIN=1 下 ⇒ requireLogin=false ⇒ canAdmin() 恒为 true（没账号也算管理员），
+  //   所以非管理员那一支只能在渲染层把 state.auth 换掉再重画。这条路已实测可行：
+  //   `state` 是经典脚本的顶层 const，executeJavaScript 在同一个 realm 里直接读得到、改得动，
+  //   改完 canAdmin() 立刻变 false（探针 2026-10-03 验证）。
+  {
+    const gate = await win.webContents.executeJavaScript(`(async () => {
+      const nav7 = document.querySelector('.nav[data-tab="7"]');
+      const saved = state.auth;
+      const out = {};
+      // ① 管理员视角（当下就是这一支）：这一块必须在 —— 作为下面「消失」的对照基线
+      nav7.click();
+      await new Promise(r => setTimeout(r, 200));
+      out.admin = {
+        updBox: !!document.querySelector('#pane #updBox'),
+        head: (document.querySelector('#head') || {}).textContent || ''
+      };
+      // ② 切成普通成员再重画：整块必须消失，副标题也不许再提「应用更新」
+      state.auth = { requireLogin: true, isAdmin: false, user: { username: 'u1', displayName: '普通成员', role: 'user' } };
+      out.canAdmin_nonadmin = canAdmin();
+      renderAll();
+      const pane = document.querySelector('#pane');
+      const head = document.querySelector('#head');
+      out.nonadmin = {
+        updBox: !!pane.querySelector('#updBox'),
+        paneText: pane.textContent,
+        head: head.textContent,
+        h3: [...pane.querySelectorAll('.box h3')].map(e => e.textContent),
+        // 正向对照：这一页必须**还在正常渲染**，不是白页
+        hasPaths: /输出目录|隔离目录/.test(pane.textContent),
+        hasDeps: /外部依赖/.test(pane.textContent),
+        saveBtn: !!document.querySelector('[data-act="cfg:save"]')
+      };
+      // ③ 还原登录态，别污染后面的套件
+      state.auth = saved;
+      renderAll();
+      out.restored = { canAdmin: canAdmin(), updBox: !!document.querySelector('#pane #updBox') };
+      return out;
+    })()`);
+
+    ok('★ 管理员视角：设置页仍有「应用更新」整块（下面非管理员那一支的对照基线）',
+      !!gate && gate.admin.updBox === true && /应用更新/.test(gate.admin.head),
+      gate ? 'updBox=' + gate.admin.updBox + ' head=' + JSON.stringify((gate.admin.head || '').slice(0, 60)) : 'gate=null');
+    ok('★ 切到普通成员后 renderAll：canAdmin() 真的变 false（机制先自证，免得断言建在空地基上）',
+      !!gate && gate.canAdmin_nonadmin === false, JSON.stringify(gate && gate.canAdmin_nonadmin));
+    ok('★ 非管理员设置页：整块「应用更新」从 DOM 里消失（不是藏起来，是真的不渲染）',
+      !!gate && gate.nonadmin.updBox === false,
+      gate ? 'h3=' + JSON.stringify(gate.nonadmin.h3) : '');
+    ok('★ 非管理员设置页：页面（含副标题）一个字都不提 应用更新/当前版本/新版本/检查更新/下载更新/更新通道/测试版',
+      !!gate && !/应用更新|当前版本|新版本|检查更新|下载更新|更新通道|测试版/.test(gate.nonadmin.paneText + gate.nonadmin.head),
+      gate ? JSON.stringify((gate.nonadmin.paneText || '').replace(/\s+/g, ' ').slice(0, 90)) : '');
+    ok('★ 非管理员设置页副标题也不再提「应用更新」（界面文字得跟界面上真有的东西对得上）',
+      !!gate && !/应用更新/.test(gate.nonadmin.head),
+      gate ? JSON.stringify((gate.nonadmin.head || '').replace(/\s+/g, ' ').slice(0, 110)) : '');
+    ok('★ 正向对照：非管理员这一页**照常渲染**（路径 / 外部依赖 / 保存 都在，不是白页）—— 防「空==空」假绿',
+      !!gate && gate.nonadmin.hasPaths && gate.nonadmin.hasDeps && gate.nonadmin.saveBtn,
+      gate ? 'paths=' + gate.nonadmin.hasPaths + ' deps=' + gate.nonadmin.hasDeps + ' save=' + gate.nonadmin.saveBtn : '');
+    ok('测试自己收尾：还原登录态后「应用更新」又回来了（证明上面的消失是权限造成的，不是渲染坏了）',
+      !!gate && gate.restored.updBox === true && gate.restored.canAdmin === true,
+      JSON.stringify(gate && gate.restored));
+
+    // 版本号：左上角 app 名字后面那枚 chip
+    const ver = await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector('#appVer');
+      const nameEl = document.querySelector('.titlebar .name');
+      return {
+        exists: !!el,
+        text: el ? el.textContent : '',
+        inTitlebar: !!(el && el.closest('.tb-left') && el.closest('.titlebar')),
+        afterName: !!(el && nameEl && (nameEl.compareDocumentPosition(el) & 4)),
+        info: (state.info && state.info.version) || ''
+      };
+    })()`);
+    ok('★ 左上角 app 名字后面有版本号（#appVer 在标题栏、且在名字之后）',
+      !!ver && ver.exists && ver.inTitlebar && ver.afterName,
+      JSON.stringify(ver && { exists: ver.exists, inTitlebar: ver.inTitlebar, afterName: ver.afterName }));
+    ok('★ 版本号显示的就是 app:info.version（一致性断言，不写死版本号）',
+      !!ver && !!ver.info && ver.text === 'v' + ver.info,
+      JSON.stringify(ver && { text: ver.text, info: ver.info }));
+
+    // 源码级门控（先剥注释：负向只看代码行，注释里正当地写着「原来是裸的 updateHtml()」会误报）
+    const srcA = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
+    const codeOnly = s => s.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+    const codeA = codeOnly(srcA);
+    const gated = codeA.includes("${canAdmin() ? updateHtml() : ''}");
+    const bare = /\$\{updateHtml\(\)\}/.test(codeA);
+    ok('★ 源码级：设置页那一行是**门控**渲染（canAdmin() ? updateHtml() : \'\'），没有裸的 updateHtml() 调用',
+      gated && !bare, 'gated=' + gated + ' bare=' + bare);
+  }
 
   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
   // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动
@@ -827,9 +972,12 @@ app.whenReady().then(async () => {
       collapsed: ds.length, openCount: ds.filter(d => d.open).length
     };
   })()`);
-  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 失败恢复 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作含导出导入）',
-    advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map && advUi.recover
+  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作含导出导入）',
+    advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map
       && advUi.llm && advUi.sku && advUi.mode && advUi.conc && advUi.cloud, JSON.stringify(advUi));
+  // ★ 2026-10-03 用户要求删掉的那一块：负向断言盯着（不然哪天被加回来，整套回归照样全绿）
+  ok('★ 高级设置页不再有「失败恢复动作」（整块删了，不是藏起来）',
+    advUi.recover === false, JSON.stringify({ recover: advUi.recover }));
   // ★★ 2026-10-02 第六轮：云端配置改成「留空＝跟随内置」后，删掉了 applyCloudDefaults，
   //    于是守「界面骗人」的担子全压在这一行上 —— 它必须**无条件**显示主进程真正在用的地址。
   //    （以前是靠「把内置值写回配置」让框里的值 = 在用的值；那条会固化，已删。）
@@ -876,6 +1024,70 @@ app.whenReady().then(async () => {
   ok('★ 云端配置弹窗在 index.html 且挂在 .app 外面（塞进 #pane 会被裁掉、底部按钮点不到）',
     appOpen >= 0 && appClose > appOpen && cmodalAt > appClose && /id="cmBox"/.test(idxHtml),
     JSON.stringify({ appOpen, appClose, cmodalAt }));
+
+  // ---- ★ 2026-10-03：「批次设置」那六百多字长文 ⇒ 「说明书」弹窗（用户要求）----
+  //   ① 结构：弹窗在 index.html 且挂在 .app 外面（跟上面那个同规矩）
+  const hmodalAt = iLines.findIndex(l => /id="hmodal"/.test(l));
+  ok('★ 说明书弹窗在 index.html 且挂在 .app 外面（塞进 #pane 会被 overflow 裁掉、长文还滚不动）',
+    appOpen >= 0 && appClose > appOpen && hmodalAt > appClose && /id="hmBox"/.test(idxHtml),
+    JSON.stringify({ appOpen, appClose, hmodalAt }));
+
+  //   ② 行为：真点一下「看说明书」→ 弹窗开、内容对；Esc / 点遮罩能关，点弹窗本体不关。
+  //   ③ 双向对账：注册表 HELP 里每条都得有按钮能打开（光删按钮 ⇒ 留下打不开的死条目）；
+  //      按钮的 data-topic 也得真在注册表里（topic 写错字 ⇒ 点了没反应，最容易被漏掉的那种）。
+  //   ④ 负向：那几段长文**不在页面上**了（搬走 ≠ 复制一份，贴两处）。
+  const helpUi = await win.webContents.executeJavaScript(`(async () => {
+    const keys = Object.keys(HELP).sort();
+    document.querySelector('.nav[data-tab="3"]').click();
+    await new Promise(r => setTimeout(r, 200));
+    const pane = document.querySelector('#pane');
+    const paneText = pane.textContent;
+    // 页面上不该再出现那几段长文的特征句（它们已经搬进说明书）
+    const longOnPage = /按「卖点 → 氛围感 → 上身体验 → 搭配」铺开/.test(paneText)
+      || /只看相邻两条/.test(paneText);
+    const btn = pane.querySelector('[data-act="help:open"]');
+    if (!btn) return { keys, hasBtn: false, longOnPage };
+    const topic = btn.getAttribute('data-topic') || '';
+    btn.click();
+    await new Promise(r => setTimeout(r, 160));
+    const mask = document.getElementById('hmodal');
+    const box = document.getElementById('hmBox');
+    const opened = !!mask && mask.hidden === false && !!box;
+    const body = box ? box.querySelector('.mb') : null;
+    const txt = box ? box.textContent : '';
+    const h3 = box ? box.querySelector('h3') : null;
+    // 长文必须落在 .mb 里 —— .mbox 是 overflow:hidden，直接灌进去会被裁掉且滚不动
+    const scrollable = !!body && body.scrollHeight > 0 && box.firstElementChild !== body;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await new Promise(r => setTimeout(r, 130));
+    const closedByEsc = mask ? mask.hidden === true : false;
+    btn.click();                       // 再开一次，验「点遮罩关」与「点弹窗本体不关」
+    await new Promise(r => setTimeout(r, 130));
+    box.click();
+    await new Promise(r => setTimeout(r, 110));
+    const stayOnBoxClick = mask.hidden === false;
+    mask.click();
+    await new Promise(r => setTimeout(r, 130));
+    const closedByMask = mask.hidden === true;
+    return { keys, hasBtn: true, topic, opened, scrollable, closedByEsc, stayOnBoxClick, closedByMask,
+      longOnPage,
+      hasRules: /只看相邻两条/.test(txt) && /4~5 行短句/.test(txt) && /不是拿货号颜色套模板/.test(txt),
+      title: h3 ? h3.textContent : '' };
+  })()`);
+  ok('★「批次设置」里有「看说明书」按钮，且 data-topic 指向注册表里真实存在的条目',
+    helpUi.hasBtn === true && helpUi.keys.includes(helpUi.topic),
+    JSON.stringify({ keys: helpUi.keys, topic: helpUi.topic }));
+  ok('★ 点「看说明书」真的弹出说明书，内容在 .mb 里（滚得动，不会被 .mbox 的 overflow 裁掉）',
+    helpUi.opened === true && helpUi.scrollable === true, JSON.stringify({ opened: helpUi.opened, scrollable: helpUi.scrollable }));
+  ok('★ 说明书里确实有那几条硬规则（重复只看相邻两条 / 正文 4~5 行 / 标题不是套模板）',
+    helpUi.hasRules === true && /说明书/.test(helpUi.title || ''), JSON.stringify({ title: helpUi.title, rules: helpUi.hasRules }));
+  // ★ closedByEsc / closedByMask 必须配「**真的开过**」这个前提：弹窗没打开时它本来就是 hidden，
+  //   只看这两个布尔值会**空过**（假绿 —— 弹窗压根没弹出来，Esc 当然「关得掉」）。
+  ok('★ 说明书 Esc 能关、点遮罩能关、点弹窗本体不关（选字拖一下鼠标不会把弹窗弄没）',
+    helpUi.opened === true && helpUi.closedByEsc === true && helpUi.stayOnBoxClick === true && helpUi.closedByMask === true,
+    JSON.stringify({ opened: helpUi.opened, esc: helpUi.closedByEsc, stay: helpUi.stayOnBoxClick, mask: helpUi.closedByMask }));
+  ok('★ 那 4 段长文已不在页面上（是搬进说明书，不是复制一份贴两处）',
+    helpUi.longOnPage === false, JSON.stringify({ longOnPage: helpUi.longOnPage }));
 
   const cloudModalUi = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="11"]').click();
@@ -996,24 +1208,11 @@ app.whenReady().then(async () => {
   ok('★ 设置页的「更新日志」已整条删除（界面上没有这一行，也没有 upd:log:* 动作）',
     setPane.logRow === false, JSON.stringify(setPane));
 
-  // ---- 失败恢复动作：界面能编辑、能存进配置（走真实 IPC，不直连模块）----
-  // （2026-10-02 起这个入口在「高级设置」页，不在「模拟器发布」页）
-  const rec = await win.webContents.executeJavaScript(`
-    (async () => {
-      document.querySelector('.nav[data-tab="11"]').click();
-      await new Promise(r => setTimeout(r, 120));
-      document.querySelector('[data-act="pub:recoverEdit"]').click();
-      await new Promise(r => setTimeout(r, 120));
-      const box = document.getElementById('recoverBox');
-      const opened = !!box;
-      if (box) box.value = JSON.stringify([{ name: '删除卡片', action: 'tapText', value: '删除' }, { action: 'wait', value: 600 }]);
-      document.querySelector('[data-act="pub:recoverSave"]').click();
-      await new Promise(r => setTimeout(r, 500));
-      const cfg = await window.api.configGet();
-      return { opened, recover: ((cfg.publish || {}).uiMap || {}).recover || [], closed: !document.getElementById('recoverBox') };
-    })()
-  `);
-  ok('失败恢复动作：界面能编辑并保存进配置', rec.opened && rec.recover.length === 2 && rec.closed, JSON.stringify(rec.recover));
+  // ---- ★ 2026-10-03 用户要求：**「失败恢复动作」界面整块删除** ----
+  //   原来这里有一段「点『编辑恢复动作』→ 填文本框 → 保存 → 回读校验」的端到端测试。
+  //   控件、三个动作（pub:recoverEdit / pub:recoverCancel / pub:recoverSave）、配置键 uiMap.recover
+  //   连同主进程的 publish.setRecover 与 publisher.recover 全删了 ⇒ 那一段没有测试对象。
+  //   接手的是上面两条**负向**断言：「任何一页都点不到这个入口」+「高级设置页不再有」。
 
   // ---- 待办①端到端：真起一个批次，看「运行中的批次」出现取消按钮、跑完又消失 ----
   const batchSrc = path.join(TMP, '自检素材', '自检批次源');
@@ -1253,6 +1452,17 @@ app.whenReady().then(async () => {
       && /const serial = device \|\| c\.device \|\| \(list\[0\] && list\[0\]\.serial\) \|\| '';/.test(P3)
       && /还没选设备/.test(P3));
 
+    // ③b ★★ 2026-10-03：同一族缺陷还有一个 —— publisher.run() 里的
+    //     `|| '127.0.0.1:5555'` 兜底。后果与 emulator-5554 那次一模一样：
+    //     没选设备也能“跑起来”，实际拿一台不存在的设备去发，界面与台账却是绿的。
+    //    判据（可复算）：代码行里不得出现 `|| '127.0.0.1:任意端口'`；且 run() 里
+    //    必须是 `|| ''` + 一条“还没选设备”的显式报错。
+    ok('★ publisher.run() 不兜底任何硬编码序列号，没选设备直接报错',
+      !/\|\|\s*'127\.0\.0\.1:\d+'/.test(codeOnly3(P3))
+      && !/\|\|\s*"127\.0\.0\.1:\d+"/.test(codeOnly3(P3))
+      && /const serial = \(state\.publish && state\.publish\.device\) \|\| c\.device \|\| '';/.test(P3)
+      && /mode === 'adb' && !serial/.test(codeOnly3(P3)));
+
     // ④ ★★ 面向用户的文案里**一个设备名字例都不许有**。
     //    上一版只查了 app.js 的「如 emulator-5554」，结果 adb.js 的
     //    「（雷电 / MuMu 默认就叫 emulator-5554）」整段溜过去了 —— 用户直接截图打脸。
@@ -1296,6 +1506,43 @@ app.whenReady().then(async () => {
     // ⑦ 界面不再说「视频未配」（改成「视频复用图文」，免得用户以为还要再抓一次）
     ok('★ 界面把「视频未配」改成「视频复用图文」',
       !/视频未配/.test(codeOnly3(A3)) && /视频复用图文/.test(A3));
+  }
+
+  // ---- 2026-10-03（第十一次会话）：「删功能」真正会漏的那一环 —— 别处还在指路 ----
+  //   用户原话：「目前发布单没啥用，删了吧」「去掉发布失败重试次数和失败恢复动作」。
+  //   页签、下拉框、配置键谁都会删；**真正会被漏掉的是别处还在指着它的那几句话** ——
+  //   用户照着那句提示去点，点到一个不存在的页面，只会以为程序坏了（比不删更糟）。
+  //   实测就是踩在这上面：模拟器发布页空态写着「先到「发布单」导出 xlsx」，
+  //   而「发布单」页签当天已删；高级设置页的副标题也还列着已整块删掉的「失败恢复动作」。
+  {
+    const A4 = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+    const H4 = fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8');
+    // ★ 只留「用户能看见的字」：剥掉块注释 / HTML 注释 / 行注释。
+    //   块注释用**保持行数**的剥法（内容换成空格、\n 留着）—— 否则剥完行号会整体错位，
+    //   报出来的位置是假的，等于把「可复算的证据」变成猜。
+    const visibleOnly = s => s
+      .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, m => m.replace(/[^\n]/g, ' '))
+      .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    const A4c = visibleOnly(A4);
+    const H4c = visibleOnly(H4);
+
+    // ① 「发布单」页签已删 ⇒ 任何用户可见文案都不许再让人「到『发布单』去」
+    ok('★ 用户可见文案不再把用户指到已删除的「发布单」页签',
+      !/到「发布单」/.test(A4c) && !/「发布单」页/.test(A4c)
+      && /先点右上角「导出 xlsx」/.test(A4c));
+
+    // ② 已删功能的名字不许再出现在用户可见文案里
+    //    （「失败恢复动作」「失败重试 N 次」是 2026-10-03 用户要求整块删的两项）
+    const deadNames = ['失败恢复动作', '恢复动作', '失败重试', '重试次数', '演示节奏'];
+    const hits = [];
+    [['src/renderer/app.js', A4c], ['src/renderer/index.html', H4c]].forEach(([f, s]) => {
+      s.split('\n').forEach((ln, i) => {
+        deadNames.forEach(w => { if (ln.indexOf(w) >= 0) hits.push(f + ':' + (i + 1) + ' ' + w); });
+      });
+    });
+    ok('★ 已删功能的名字不再出现在用户可见文案里（失败恢复动作 / 失败重试 / 重试次数 / 演示节奏）',
+      hits.length === 0, hits.join(' | ') || '无');
   }
 
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');

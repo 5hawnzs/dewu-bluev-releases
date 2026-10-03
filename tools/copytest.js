@@ -69,6 +69,9 @@ function jpgBuf(size, rgba) {
   return jpeg.encode({ data: d, width: size, height: size }, 90).data;
 }
 
+/** 文件体积（只用来在断言里打印，不存在给 -1，不编数字） */
+const sizeOf2 = p => (fs.existsSync(p) ? fs.statSync(p).size : -1);
+
 /** 造一批素材：3 个叶子，每个 2 张图（叶子名 = 货号+颜色+序号，真机的命名） */
 function makeBatch(name, leaves) {
   const root = path.join(TMP, name);
@@ -138,7 +141,7 @@ function startServer() {
   store.set({
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 3, requiredTopic: '#品牌甲', extraTopics: 4, llm: { enabled: false } },
-    publish: { intervalSec: 5, videoIntervalSec: 5, retry: 1 }
+    publish: { intervalSec: 5, videoIntervalSec: 5 }   // ★ retry 已删（失败不重试，2026-10-03）
   });
 
   /* ---- ⓪ 时间戳：报告文件名要能一眼看出哪一天哪一刻（而且不能有 Windows 非法字符） ---- */
@@ -822,6 +825,173 @@ function startServer() {
   ok('⑮ ★ 恢复内置写回的是 null，不是「和基线一样的一份副本」（否则以后改基线顶不动老机器）',
     store.get('copy.hotwords') === null, JSON.stringify(store.get('copy.hotwords')));
 
+
+  /* ---- ⑯ 视频素材：抽帧送模型（2026-10-03 用户原话「目前导入视频无法根据视频中的产品生成对应的文案」）----
+     ★ 要的是**行为**：请求里真的带着一张从视频里抽出来的 JPEG（现场用内置 ffmpeg 造的真 mp4），
+       不是「源码里有 framesOf 这行字」。
+     ★ 费用口径（用户拍板「抽帧送模型，但是在尽可能少消耗模型费用的前提下做」）：
+       默认 1 帧、是个常数、不随视频变长而变多；**有实拍图的叶子一个字节都不多送**。 */
+  const videoMod = require(path.join(base, 'src/main/services/video.js'));
+  const frameMod = require(path.join(base, 'src/main/services/frame.js'));
+  const execSync = require('child_process').execFileSync;
+  const VENDOR_FF = path.join(base, 'vendor', 'ffmpeg');
+  const FF = path.join(VENDOR_FF, 'ffmpeg.exe');
+  videoMod.setBundledFfmpegDir(VENDOR_FF);
+  const hasFF = fs.existsSync(FF);
+  ok('⑯ 前置：内置 ffmpeg 在仓库里（抽帧就靠它；不在的话后面几条无从谈起）', hasFF, FF);
+
+  if (hasFF) {
+    // 纯函数：抽哪几个时间点（不启 ffmpeg，直接喂输入）
+    ok('⑯ ★ planTimes：默认 1 帧 = 片子中间（首帧常是黑场/标题卡，中间那帧更像在展示货）',
+      JSON.stringify(frameMod.planTimes(10, 1)) === '[5]', JSON.stringify(frameMod.planTimes(10, 1)));
+    ok('⑯ planTimes：3 帧 = 25%/50%/75%，三个点互不相同',
+      JSON.stringify(frameMod.planTimes(8, 3)) === '[2,4,6]', JSON.stringify(frameMod.planTimes(8, 3)));
+    ok('⑯ ★ planTimes：时长读不到（null）⇒ 全是 0（只能抢首帧），**绝不编一个时长**',
+      JSON.stringify(frameMod.planTimes(null, 2)) === '[0,0]', JSON.stringify(frameMod.planTimes(null, 2)));
+    ok('⑯ planTimes：要 0 帧就是要 0 帧（不抽）', frameMod.planTimes(10, 0).length === 0);
+
+    // 造真样本：一个「只有视频」的叶子 + 一个「只有图片」的叶子
+    const vroot = path.join(TMP, '视频抽帧批');
+    const vdir = path.join(vroot, '26FW-VD001+雾霾蓝+1');
+    fs.mkdirSync(vdir, { recursive: true });
+    execSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+      '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      path.join(vdir, '短片.mp4')]);
+    const idir = path.join(vroot, '26FW-YB160+冠军白+1');
+    fs.mkdirSync(idir, { recursive: true });
+    fs.writeFileSync(path.join(idir, '1.jpg'), jpgBuf(160, [230, 230, 232]));
+    fs.writeFileSync(path.join(idir, '2.jpg'), jpgBuf(160, [230, 230, 232]));
+    // ★ 第三个叶子：**既有实拍图、又有视频** —— 专门钉「有图就不抽帧」这条省钱的规矩。
+    //   少了它，「有实拍图的叶子只送那 2 张图」这句在「抽帧根本没接线」时也会绿（典型假通过）。
+    const bdir = path.join(vroot, '26FW-BOTH1+墨绿+1');
+    fs.mkdirSync(bdir, { recursive: true });
+    fs.writeFileSync(path.join(bdir, '1.jpg'), jpgBuf(160, [90, 120, 90]));
+    fs.writeFileSync(path.join(bdir, '2.jpg'), jpgBuf(160, [90, 120, 90]));
+    execSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+      '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      path.join(bdir, '短.mp4')]);
+    ok('⑯ 样本造好：只有视频 / 只有图片 / 图和视频都有 —— 各 1 个叶子',
+      fs.statSync(path.join(vdir, '短片.mp4')).size > 0 && fs.statSync(path.join(bdir, '短.mp4')).size > 0,
+      sizeOf2(path.join(vdir, '短片.mp4')) + ' B + ' + sizeOf2(path.join(bdir, '短.mp4')) + ' B');
+
+    store.set({
+      copy: {
+        concurrency: 1,
+        llm: { enabled: true, endpoint: ENDPOINT, apiKey: 'sk-test', model: 'deepseek-flash', vision: true, imageCount: 2, imageMaxSide: 320, videoFrames: 1 }
+      }
+    });
+    seen.length = 0;
+    reply = { title: '雾霾蓝轻薄羽绒服通勤百搭🩵', body: BODY4 };
+    const vRun = await jobs.run('copy.generate', { sourceDir: vroot, batchId: '视频抽帧批', label: '视频抽帧批' });
+    ok('⑯ 视频批跑通', vRun.ok === true, vRun.ok ? '' : vRun.error);
+    const vGen = seen.filter(s => /chat\/completions/.test(s.url));
+    const vReq = vGen.find(s => /26FW-VD001/.test(userText(s)));
+    const iReq = vGen.find(s => /26FW-YB160/.test(userText(s)));
+    const bReq = vGen.find(s => /26FW-BOTH1/.test(userText(s)));
+    ok('⑯ 三个叶子各发一次请求', vGen.length === 3, vGen.length + ' 次');
+    ok('⑯ ★★ 视频素材真的带图了（默认抽 1 帧：不是 0、也不是 2）',
+      !!vReq && vReq.images.length === 1, vReq ? vReq.images.length + ' 张' : '没找到视频那条请求');
+    ok('⑯ ★ 有实拍图的叶子照旧只送图（2 张），**不抽帧** —— 能抽帧不等于该多花这笔钱',
+      !!iReq && iReq.images.length === 2, iReq ? iReq.images.length + ' 张' : '没找到图片那条请求');
+    ok('⑯ ★★ 图和视频都有的叶子：只送那 2 张实拍图、**一帧都不抽** —— 这条才是「省钱」那句话的证据',
+      !!bReq && bReq.images.length === 2, bReq ? bReq.images.length + ' 张' : '没找到「图+视频」那条请求');
+    const vUrl = (vReq && vReq.images[0] && vReq.images[0].image_url && vReq.images[0].image_url.url) || '';
+    ok('⑯ 帧以 data URL 内联（和实拍图同一条路，不发本地路径）', /^data:image\/jpeg;base64,/.test(vUrl), vUrl.slice(0, 32) + '…');
+    let vDec = null;
+    try { vDec = jpeg.decode(Buffer.from(vUrl.split(',')[1], 'base64')); } catch (e) { vDec = null; }
+    ok('⑯ ★ 那段 base64 真能解出一张 JPEG（不是空串、不是占位）',
+      !!vDec && vDec.width > 0 && vDec.height > 0, vDec ? `${vDec.width}×${vDec.height}` : '解不开');
+    ok('⑯ 帧缩到了 imageMaxSide 内（320px）', !!vDec && Math.max(vDec.width, vDec.height) <= 320,
+      vDec ? `${vDec.width}×${vDec.height}` : '—');
+    ok('⑯ user 里如实说「给了 1 张」（没说 2 张、也没说没有）',
+      !!vReq && /本次给了 1 张/.test(userText(vReq)),
+      vReq ? (userText(vReq).match(/"看图":"[^"]*"/) || [''])[0] : '—');
+
+    // 报告里逐行如实标来源（这一列是给人核对「到底看没看图」的）
+    const wbV = new ExcelJS.Workbook();
+    await wbV.xlsx.readFile(wp.toLong(vRun.result.reportFile));
+    const wsV = wbV.getWorksheet('AI 内容报告');
+    const hV = (wsV.getRow(1).values || []).slice(1).map(String);
+    const cV = r => (wsV.getRow(r).values || []).slice(1).map(v => (v == null ? '' : String(v)));
+    const srcCol = hV.indexOf('生成来源'), skuCol = hV.indexOf('好物1_货号');
+    const rowsV = [2, 3, 4].map(r => ({ sku: cV(r)[skuCol], src: cV(r)[srcCol] }));
+    const vRow = rowsV.find(x => /VD001/.test(x.sku)) || {};
+    const iRow = rowsV.find(x => /YB160/.test(x.sku)) || {};
+    const bRow = rowsV.find(x => /BOTH1/.test(x.sku)) || {};
+    ok('⑯ ★ 报告里视频那条的来源写明「视频抽帧」',
+      /AI 看图/.test(vRow.src || '') && /视频抽帧/.test(vRow.src || ''), vRow.src);
+    ok('⑯ 图片那条的来源不带「视频抽帧」（两条分得清，不是一刀切）',
+      /AI 看图/.test(iRow.src || '') && !/视频抽帧/.test(iRow.src || ''), iRow.src);
+    ok('⑯ 「图+视频」那条的来源也和真实行为一致（没抽帧就不许写抽帧）',
+      /AI 看图/.test(bRow.src || '') && !/视频抽帧/.test(bRow.src || ''), bRow.src);
+
+    /* ⑯b 抽不出帧时：如实说、不带图、**批次照样跑完** —— 一条视频抽不出帧不该把整批弄挂 */
+    try {
+      videoMod.setFfmpegPath('D:/nope/ffmpeg.exe');
+      videoMod.setBundledFfmpegDir('');
+      seen.length = 0;
+      const nf = await jobs.run('copy.generate', { sourceDir: vroot, batchId: '没ffmpeg批', label: '没ffmpeg批' });
+      ok('⑯b ★ ffmpeg 不可用时批次照样跑完（抽帧失败不阻断整批）', nf.ok === true, nf.ok ? '' : nf.error);
+      const nfReq = seen.filter(s => /chat\/completions/.test(s.url)).find(s => /26FW-VD001/.test(userText(s)));
+      ok('⑯b ★ 抽不出帧时如实不带图（不塞一张假的/空的进去）',
+        !!nfReq && nfReq.images.length === 0, nfReq ? nfReq.images.length + ' 张' : '没找到视频那条');
+      ok('⑯b user 里如实说「本次没有图」', !!nfReq && /"看图":"本次没有图"/.test(userText(nfReq)));
+      const wbN = new ExcelJS.Workbook();
+      await wbN.xlsx.readFile(wp.toLong(nf.result.reportFile));
+      const wsN = wbN.getWorksheet('AI 内容报告');
+      const hN = (wsN.getRow(1).values || []).slice(1).map(String);
+      const cN = r => (wsN.getRow(r).values || []).slice(1).map(v => (v == null ? '' : String(v)));
+      const nRow = [2, 3, 4].map(r => ({ sku: cN(r)[hN.indexOf('好物1_货号')], src: cN(r)[hN.indexOf('生成来源')] }))
+        .find(x => /VD001/.test(x.sku)) || {};
+      ok('⑯b ★ 报告里如实写「视频没抽出帧」（不是笼统的「这条没图」）',
+        /AI 文字/.test(nRow.src || '') && /视频没抽出帧/.test(nRow.src || ''), nRow.src);
+    } finally {
+      videoMod.setFfmpegPath('');
+      videoMod.setBundledFfmpegDir(VENDOR_FF);
+    }
+
+    /* ⑯c videoFrames=0：真的不抽（有人连那一张的钱也不想花） */
+    store.set({ copy: { llm: { videoFrames: 0 } } });
+    seen.length = 0;
+    const zeroRun = await jobs.run('copy.generate', { sourceDir: vroot, batchId: '不抽帧批', label: '不抽帧批' });
+    ok('⑯c 设成 0 时批次照跑', zeroRun.ok === true, zeroRun.ok ? '' : zeroRun.error);
+    const zReq = seen.filter(s => /chat\/completions/.test(s.url)).find(s => /26FW-VD001/.test(userText(s)));
+    ok('⑯c ★ 设成 0 ⇒ 视频那条一张图都不送', !!zReq && zReq.images.length === 0,
+      zReq ? zReq.images.length + ' 张' : '没找到视频那条');
+    const wbZ = new ExcelJS.Workbook();
+    await wbZ.xlsx.readFile(wp.toLong(zeroRun.result.reportFile));
+    const wsZ = wbZ.getWorksheet('AI 内容报告');
+    const hZ = (wsZ.getRow(1).values || []).slice(1).map(String);
+    const cZ = r => (wsZ.getRow(r).values || []).slice(1).map(v => (v == null ? '' : String(v)));
+    const zRow = [2, 3, 4].map(r => ({ sku: cZ(r)[hZ.indexOf('好物1_货号')], src: cZ(r)[hZ.indexOf('生成来源')] }))
+      .find(x => /VD001/.test(x.sku)) || {};
+    ok('⑯c ★ 报告里如实写「视频没抽帧」（和「抽了没抽到」是两件事，不许混成一句）',
+      /AI 文字/.test(zRow.src || '') && /视频没抽帧/.test(zRow.src || ''), zRow.src);
+    store.set({ copy: { llm: { videoFrames: 1 } } });
+
+    /* ⑯d 空帧（黑场/纯色）⇒ 一张都不送 —— 送过去只会让模型瞎编，还白花钱 */
+    const blackMp4 = path.join(TMP, '全黑.mp4');
+    execSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+      '-i', 'color=c=black:s=320x240:d=2:r=15',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', blackMp4]);
+    const bf = await frameMod.framesOf(blackMp4, { count: 1, maxSide: 320 });
+    ok('⑯d ★ 整段黑场 ⇒ 一帧都不送，并说清是空帧',
+      bf.ok === false && bf.images.length === 0 && /空帧/.test(bf.errs.join(' ')), JSON.stringify(bf.errs));
+    const gf = await frameMod.framesOf(path.join(vdir, '短片.mp4'), { count: 3, maxSide: 320 });
+    ok('⑯d 正常视频要 3 帧就真给 3 张（有画面的一帧不许被空帧判据误杀）',
+      gf.ok === true && gf.images.length === 3, JSON.stringify({ n: gf.images.length, t: gf.times, e: gf.errs }));
+    ok('⑯d ★ 3 帧是三个不同时间点（不是同一帧复制三份）', new Set(gf.times).size === 3, JSON.stringify(gf.times));
+    ok('⑯d 时长走 moov 读（mp4 不该为了时长多起一次 ffmpeg）',
+      Math.abs((gf.duration || 0) - 2) < 0.6 && gf.durationHow === 'moov',
+      gf.duration + 's · ' + gf.durationHow);
+    const beforeJunk = fs.readdirSync(os.tmpdir()).filter(n => /^bluev-frame-/.test(n)).length;
+    await frameMod.framesOf(path.join(vdir, '短片.mp4'), { count: 2, maxSide: 160 });
+    const afterJunk = fs.readdirSync(os.tmpdir()).filter(n => /^bluev-frame-/.test(n)).length;
+    ok('⑯d ★ 抽帧不留垃圾：临时目录用完即删（素材目录里更不该多出一堆帧图）',
+      afterJunk <= beforeJunk, `before=${beforeJunk} after=${afterJunk}（只比「有没有变多」—— 别把上一轮留下的算到这次头上）`);
+  }
 
   srv.close();
   srvRef = null;

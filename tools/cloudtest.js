@@ -265,8 +265,9 @@ let r = null;
   //    saveCfgFromDom 会把那一页所有 [data-cfg] 控件的值整体提交；scheduleSave 又把整个 cache 写盘。
   //    所以必须证明「改无关设置」也不会把云地址带进配置（先清空成「跟随内置」的常态，再改无关项）。
   setCfg({ url: '', anonKey: '', org: '' });
-  store.set({ ui: { theme: 'dark' }, publish: { retry: 1 } });
-  ok('★★ 改无关设置（主题 / 重试次数）也不会把云地址固化进配置',
+  // ★ 2026-10-03：原来这里拿「重试次数」当无关设置，但那一项已随「失败不重试」删掉 ⇒ 换成间隔。
+  store.set({ ui: { theme: 'dark' }, publish: { intervalSec: 45 } });
+  ok('★★ 改无关设置（主题 / 发布间隔）也不会把云地址固化进配置',
     store.get('cloud.url') === '' && store.get('cloud.anonKey') === '' && store.get('cloud.org') === '',
     JSON.stringify({ url: store.get('cloud.url'), key: store.get('cloud.anonKey'), org: store.get('cloud.org') }));
   ok('★★ 而且它仍然连得上：留空后 status 如实报出内置地址与「跟随内置」',
