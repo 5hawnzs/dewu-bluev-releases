@@ -1622,6 +1622,91 @@ const state = {
       }));
   }
 
+  // ==========================================================================
+  // D) 专属相册「清干净」这条命脉（2026-10-04 用户报「第二条永远拉不起来」后加的）
+  //    用户原话：「点击发布新动态后，显示在页面中的照片、视频只有那一个叶子文件夹里的
+  //    东西……发布下一个叶子文件夹时，上一条的素材也不会出现在这个页面」——P0 级。
+  //    这一组专门盯 clearMediaDir 的**行为**：不光要发对命令，还要**目录真的空了**。
+  // ==========================================================================
+  {
+    const adb = require(path.join(base, 'src/main/services/adb.js'));
+    // 拿到假 adb 挂出来的现场状态（直接读目录内容，不靠解析 calls.log）
+    const fakeExec = require('child_process').execFile;
+    const dirState = fakeExec.__bluevDir;
+    const DIR = fakeExec.__bluevDirPath;
+    const resetDir = (exists) => { dirState.exists = !!exists; dirState.files = []; dirState.renames = []; };
+    const staleFlag = path.join(FDB, 'DIR_STALE');
+    if (fs.existsSync(staleFlag)) fs.unlinkSync(staleFlag);
+
+    // D1) 常规：目录里有上次留下的素材 ⇒ 清完必须空
+    resetDir(true);
+    dirState.files = ['上一条素材.mp4', '上一条素材2.jpg'];
+    let r = await adb.clearMediaDir('FAKESERIAL', '/sdcard/DCIM/Camera/bluev');
+    ok('清相册 ① 常规残留：清完目录必须真为空（不是「发过 rm 命令」就算数）',
+      r.ok && dirState.files.length === 0,
+      `ok=${r.ok} 残留=${JSON.stringify(dirState.files)}`);
+
+    // D2) 目录不存在：必须算干净并把它建出来（否则第一条内容每次都在这步卡死）
+    resetDir(false);
+    r = await adb.clearMediaDir('FAKESERIAL', '/sdcard/DCIM/Camera/bluev');
+    ok('清相册 ② 目录不存在：要判成「干净」并把目录建出来（否则第一条永远发不出去）',
+      r.ok && dirState.exists === true,
+      `ok=${r.ok} exists=${dirState.exists} err=${r.error || ''}`);
+
+    // D3) ★ 核心：stale 句柄（Text file busy）时必须走 mv 换名法，而不是原地死磕
+    resetDir(true);
+    dirState.files = ['锁住的素材.mp4'];
+    fs.writeFileSync(staleFlag, '1');
+    r = await adb.clearMediaDir('FAKESERIAL', '/sdcard/DCIM/Camera/bluev');
+    const usedRename = dirState.renames.length > 0;
+    ok('清相册 ③ ★ stale 句柄（Text file busy）：必须改用 mv 换名绕开，且目录最终变干净',
+      r.ok && dirState.files.length === 0 && usedRename,
+      `ok=${r.ok} 残留=${JSON.stringify(dirState.files)} 换名次数=${dirState.renames.length}`);
+    ok('清相册 ③ ★ 反向对照：这条用例确实造出了 stale 状态（否则上面那条是空==空的假绿）',
+      usedRename, `换名历史=${JSON.stringify(dirState.renames)}`);
+    fs.unlinkSync(staleFlag);
+
+    // D4) 幂等：已经空了再清，不许报错
+    resetDir(true);
+    r = await adb.clearMediaDir('FAKESERIAL', '/sdcard/DCIM/Camera/bluev');
+    ok('清相册 ④ 幂等：目录本来就空，再清一次不许报错',
+      r.ok && !r.error, `ok=${r.ok} err=${r.error || ''}`);
+
+    // D4b) ★★ 核心红线：目录**读不出来**（不是不存在）时，绝不许判成干净。
+    //   「目录不存在」和「目录读不出来」是两回事：
+    //     · 不存在 ⇒ 本来就没有 ⇒ 算干净（D2 已验）；
+    //     · 读不出来 ⇒ **不知道里面有什么** ⇒ 必须如实报错。
+    //   老写法 `if (left)` 只看 stdout 非空 ⇒ 读失败（空输出）会被当成"空目录"放过去，
+    //   这就是在**假装清干净了** —— 比不删更糟（用户会拿到别人素材发出去）。
+    const unreadFlag = path.join(FDB, 'DIR_UNREADABLE');
+    resetDir(true);
+    fs.writeFileSync(unreadFlag, '1');
+    r = await adb.clearMediaDir('FAKESERIAL', '/sdcard/DCIM/Camera/bluev');
+    fs.unlinkSync(unreadFlag);
+    ok('清相册 ④b ★ 目录读不出来时必须如实报错（读不到 ≠ 空，绝不许判成干净）',
+      r.ok === false && !!r.error,
+      `ok=${r.ok} err=${(r.error || '').slice(0, 50)}`);
+
+    // D5) ★ 源码级：不许用「删目录本体」的写法（目录被占时会 Text file busy，然后 mkdir 假成功）
+    //   ★ 判据要精确，否则会假红（我第一版就踩了）：
+    //     · `rm -rf ' + dir + '/* ...` —— 删**内容**，允许
+    //     · `rm -rf ' + dir + '`     —— 删**本体**，禁止（本体会被占住，且后面 mkdir 会假成功）
+    //     · `rm -rf ' + trash + '`   —— 删**已经换过名的垃圾目录**，允许（它就是拿来删的）
+    //   ⇒ 只在「紧跟 dir 变量、后面不是 /*」时才判违规。
+    const adbSrc = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8'));
+    const rmBodies = (adbSrc.match(/rm -rf ' \+ dir \+ '[^/]/g) || []);
+    ok('清相册 ⑤ 源码级：不许出现 `rm -rf <目录本体>`（被占时必失败且 mkdir 会假成功）',
+      rmBodies.length === 0, JSON.stringify(rmBodies) || '（干净：只删内容，不删本体）');
+    ok('清相册 ⑥ 源码级：必须带 mv 换名法（stale 句柄唯一可靠的解法）',
+      /mv ' \+ dir \+ ' /.test(adbSrc), '（找不到 mv 换名逻辑）');
+    ok('清相册 ⑦ 源码级：清完必须回读校验（ls -A），删不动要如实报错、不许假装干净',
+      /ls -A ' \+ dir/.test(adbSrc), '（找不到回读校验）');
+    ok('清相册 ⑧ 源码级：find -mindepth 1 -delete 删内容（不碰目录本体）',
+      /find ' \+ dir \+ ' -mindepth 1 -delete/.test(adbSrc), '（找不到 find 删内容）');
+    ok('清相册 ⑨ 源码级：目录不存在要判成干净（否则第一条内容永远发不出去）',
+      /No such file or directory/.test(adbSrc), '（找不到「目录不存在＝干净」的判据）');
+  }
+
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));
 })().catch(e => { console.error('ADB TEST ERROR', e); process.exitCode = 1; });

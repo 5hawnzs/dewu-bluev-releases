@@ -77,6 +77,36 @@ function makeFakeAdb(dir) {
   // 所以失败时若不清掉旧文件，cat 出来的就是**上一个页面**的结构。
   const devFiles = new Map();
 
+  // ★★ 2026-10-04 新增：模拟「专属相册目录」DCIM/Camera/bluev 的真实文件系统语义。
+  //   为什么必须加：清相册那一步（adb.js#clearMediaDir）现在走的是
+  //     `find <dir> -mindepth 1 -delete` / `rm -rf <dir>/*` / `ls -A <dir>` / `mv <dir> <trash>`
+  //   这一套。旧夹具只认 `rm -f`，其余一律回空 ⇒ 清目录在回归里变成**空操作**、
+  //   无论代码写得多烂都全绿（典型假绿）。这里把这几个命令的语义补上，才算真测到。
+  //   现场开关（建文件即生效）：
+  //     DIR_STALE   —— 这个目录处于 `Text file busy` 的 stale 句柄状态：
+  //                    `find -delete` 与 `rm -rf` 都**删不掉**，只有 `mv` 改名/`ls` 能过。
+  //                    用来验「清不动时必须走 mv 换名法，而不是原地死磕」。
+  //   语义细节（对齐真机，2026-10-04 实测）：
+  //     · 目录不存在   → `ls -A` 回 `ls: <dir>: No such file or directory`（code 1）
+  //     · 目录存在且空 → `ls -A` 回空、code 0
+  //     · 有残留       → `ls -A` 逐行列出
+  //     · stale 时     → find/rm 删不掉内容，`mv` 成功（这是 mv 换名法成立的根据）
+  const DIR_STALE = path.join(dir, 'DIR_STALE');
+  // 现场开关 DIR_UNREADABLE：`ls -A <dir>` 回**非 missing 的失败**（权限拒绝之类）。
+  //   用途：证明「读不到目录时**不许**判成干净」——
+  //     目录不存在（No such file）与「读不出来」（Permission denied）是两回事：
+  //       · 前者 ⇒ 本来就没有 ⇒ 干净；
+  //       · 后者 ⇒ **不知道里面有什么** ⇒ 必须如实报错，绝不能放过（放过去 = 假装清干净了）。
+  const DIR_UNREADABLE = path.join(dir, 'DIR_UNREADABLE');
+  // 只模拟 bluev 这一个专属目录（真实产品里也只有它）
+  const BLUEV = '/sdcard/DCIM/Camera/bluev';
+  const dirState = { exists: false, files: [], renames: [] };
+  // 把命令里的路径统一成 /sdcard/... 形式，好和 BLUEV 比
+  const norm = p => String(p || '').trim().replace(/\/+$/, '');
+  // 现场夹具：内容就用推到过这个目录的 pushed 文件（与真实一致：推完才在目录里）
+  const bluevFiles = () => pushed.filter(p => norm(p).indexOf(BLUEV + '/') === 0)
+    .map(p => norm(p).slice(BLUEV.length + 1)).concat(dirState.files);
+
   // 系统动画开关的初值（真机默认都是 1）
   const anim = { window_animation_scale: '1', transition_animation_scale: '1', animator_duration_scale: '1' };
 
@@ -120,6 +150,64 @@ function makeFakeAdb(dir) {
     if (/^am broadcast /.test(cmd)) return okOut('Broadcast completed: result=0\n');
     if (/^rm -f /.test(cmd)) {
       cmd.split(/\s+/).slice(2).forEach(p => devFiles.delete(p));
+      return okOut('');
+    }
+    // ★★ 2026-10-04 新增：专属相册目录的真实语义（清相册那一步用的就是这些命令）。
+    //   顺序有讲究：先判 `ls -A`（最简单、最常调），再判 find / rm -rf / mv。
+    // ★ 注意：真机上 MediaStore/磁盘路径有两种写法（/sdcard/... 与 /storage/emulated/0/...），
+    //   产品代码发出来的正是后者 ⇒ 判断**不能用字面 indexOf(BLUEV)**（那样永远匹配不上，
+    //   mv 分支就成了死代码，测试会误以为「代码没走换名法」）。统一走 norm 后比较。
+    const hasBluev = (...ps) => ps.some(p => {
+      const n = norm(p).replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      return n === BLUEV || n.indexOf(BLUEV + '/') === 0;
+    });
+    if (/^ls -A /.test(cmd)) {
+      const target = cmd.replace(/^ls -A\s+/, '').trim();
+      if (!hasBluev(target)) return fail('ls: ' + target + ': No such file or directory');
+      if (fs.existsSync(DIR_UNREADABLE)) return fail('ls: ' + target + ': Permission denied');
+      if (!dirState.exists) return fail('ls: ' + target + ': No such file or directory');
+      const list = bluevFiles();
+      return okOut(list.join('\n') + (list.length ? '\n' : ''));
+    }
+    if (/^mkdir -p /.test(cmd)) {
+      const target = cmd.replace(/^mkdir -p\s+/, '').trim();
+      if (hasBluev(target)) dirState.exists = true;
+      return okOut('');
+    }
+    if (/^find .* -mindepth 1 -delete/.test(cmd)) {
+      const target = cmd.replace(/^find\s+(\S+).*$/, '$1').trim();
+      if (!hasBluev(target)) return okOut('');
+      if (fs.existsSync(DIR_STALE)) {
+        // stale 句柄：删不掉，如实报 Text file busy（真机原话）
+        return fail('rm: ' + target + ': Text file busy');
+      }
+      dirState.files = [];
+      for (let i = pushed.length - 1; i >= 0; i--) {
+        if (norm(pushed[i]).indexOf(BLUEV + '/') === 0) pushed.splice(i, 1);
+      }
+      return okOut('');
+    }
+    if (/^rm -rf /.test(cmd) && cmd.indexOf('Camera/bluev') >= 0) {
+      if (fs.existsSync(DIR_STALE)) return fail('rm: ' + BLUEV + ': Text file busy');
+      dirState.files = [];
+      for (let i = pushed.length - 1; i >= 0; i--) {
+        if (norm(pushed[i]).indexOf(BLUEV + '/') === 0) pushed.splice(i, 1);
+      }
+      return okOut('');
+    }
+    if (/^mv /.test(cmd) && cmd.indexOf('Camera/bluev') >= 0) {
+      // ★ 关键：mv **永远成功** —— 这正是 mv 换名法能在 stale 句柄下绕过去的原因。
+      //   真机实测（2026-10-04）：同一时刻 `rm -rf <dir>` rc=1、`mv <dir> <trash>` rc=0。
+      const parts = cmd.split(/\s+/);
+      dirState.renames.push(parts[parts.length - 1]);
+      // 换名后「bluev」这个路径不再存在，直到代码 mkdir 重建它。
+      // ★ 内容随目录一起被搬走 ⇒ files 必须清空（否则 mkdir 重建后又"带着"残留，
+      //   等于换名法没生效，测试会误判成失败）。
+      dirState.files = [];
+      dirState.exists = false;
+      for (let i = pushed.length - 1; i >= 0; i--) {
+        if (norm(pushed[i]).indexOf(BLUEV + '/') === 0) pushed.splice(i, 1);
+      }
       return okOut('');
     }
     if (/^uiautomator dump /.test(cmd)) {
@@ -210,7 +298,33 @@ function makeFakeAdb(dir) {
       // 想模拟「扫描发了但还没索引到」，就在现场目录建一个 MEDIA_LAG 文件
       const lag = fs.existsSync(path.join(dir, 'MEDIA_LAG'));
       const list = lag ? [] : scanned;
-      return okOut(list.map((p, i) => `Row: ${i} _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`).join('\n') + (list.length ? '\n' : ''));
+      // ★★ 2026-10-04：投影语义要对齐真机。
+      //   真机 `content query --projection _id:_data` 回的是 `Row: N _id=K, _data=路径`
+      //   （**逗号分隔、带 _id**），clearMediaDir 的正则抓的就是这个格式。
+      //   旧夹具回的是 `Row: N _data=路径`（没 _id）⇒ 会把**所有记录都漏掉**，
+      //   于是「按记录删库」这一半在回归里等于没测（假绿）。
+      return okOut(list.map((p, i) =>
+        `Row: ${i} _id=${100 + i}, _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`
+      ).join('\n') + (list.length ? '\n' : ''));
+    }
+    if (/^content delete /.test(cmd)) {
+      // ★★ 2026-10-04 新增：按 _id 删库记录（clearMediaDir 用的就是这条）。
+      //   真机语义：删掉记录的同时**物理文件也一起消失**（见 adb.js 顶部实测注释）。
+      //   夹具要同步把 scanned / pushed 里的对应项去掉 —— 否则 content query 还看得见，
+      //   「删完库里还有」这种 bug 就永远抓不到。
+      const m = cmd.match(/\/media\/(\d+)\s*$/);
+      if (m) {
+        const idx = Number(m[1]) - 100;
+        if (idx >= 0 && idx < scanned.length) {
+          const gone = scanned[idx];
+          scanned.splice(idx, 1);
+          for (let i = pushed.length - 1; i >= 0; i--) {
+            if (norm(pushed[i]).replace(/^\/storage\/emulated\/0\//, '/sdcard/') ===
+                norm(gone).replace(/^\/storage\/emulated\/0\//, '/sdcard/')) pushed.splice(i, 1);
+          }
+        }
+      }
+      return okOut('');
     }
     if (/^dumpsys window/.test(cmd)) {
       const f = path.join(dir, 'FOCUS');
@@ -277,7 +391,7 @@ function makeFakeAdb(dir) {
   }
 
   /** 可直接覆盖到 require('child_process').execFile 上 */
-  return function execFile(file, args, options, callback) {
+  const fakeExec = function execFile(file, args, options, callback) {
     if (typeof options === 'function') { callback = options; options = {}; }
     const argv = Array.isArray(args) ? args : [];
     const opts = options || {};
@@ -317,6 +431,12 @@ function makeFakeAdb(dir) {
       callback(null, stdout, '');
     });
   };
+  // ★★ 2026-10-04：把「专属相册目录」的现场状态挂出来，测试直接读它做断言
+  //   （不用去解析 calls.log 猜 —— 那只能证明"发过命令"，证明不了"目录真干净了"）。
+  //   state.files  = 目录里还剩的项；state.exists = 目录在不在；state.renames = 换名历史。
+  fakeExec.__bluevDir = dirState;
+  fakeExec.__bluevDirPath = BLUEV;
+  return fakeExec;
 }
 
 module.exports = { makeFakeAdb };

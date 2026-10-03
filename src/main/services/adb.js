@@ -198,16 +198,30 @@ async function filesMissing(serial, remoteFiles) {
  */
 async function clearMediaDir(serial, remoteDir) {
   const dir = toMediaPath(remoteDir).replace(/\/+$/, '') + '/';
+  // ★★ 2026-10-04：路径匹配放宽成「两种写法都认」。
+  //   设备上同一个文件在库里可能写成 /storage/emulated/0/DCIM/... 也可能写成 /sdcard/DCIM/...
+  //   （实测两种都存在）⇒ 只比一种前缀会**漏掉一半**，那半个就是「删了但还在」的那半个。
+  const dirs = [dir];
+  const alt = String(remoteDir).replace(/\/+$/, '') + '/';
+  if (alt !== dir) dirs.push(alt);
   const hit = [];
   let error = '';
-  for (const t of ['video', 'images']) {
+  // ★ 表名放宽：video / images / audio / files 全扫一遍（老代码只扫前两张，漏掉的表里
+  //   若挂着指向该目录的记录，得物相册照样能看见它）。
+  for (const t of ['video', 'images', 'audio', 'files']) {
     const r = await shell(serial,
       'content query --uri content://media/external/' + t + '/media --projection _id:_data', { timeout: 30000 });
-    if (!r.ok) { error = String(r.stderr || '').trim() || ('content query(' + t + ') 执行失败'); continue; }
+    if (!r.ok) {
+      const e = String(r.stderr || '').trim() || ('content query(' + t + ') 执行失败');
+      // files 表在部分机型上不可查 —— 不因它整体失败，但**记录在案**
+      if (t === 'files' && /no such table|Invalid|Unknown|not found/i.test(e)) continue;
+      if (!error) error = e;
+      continue;
+    }
     for (const line of String(r.stdout || '').split(/\r?\n/)) {
       const m = /_id=(\d+),\s*_data=(.+?)\s*$/.exec(line);
       if (!m) continue;
-      if (m[2].indexOf(dir) !== 0) continue;
+      if (!dirs.some(d => m[2].indexOf(d) === 0)) continue;
       hit.push({ table: t, id: m[1], file: m[2] });
     }
   }
@@ -219,9 +233,124 @@ async function clearMediaDir(serial, remoteDir) {
     if (r.ok) removed++;
     else if (!error) error = String(r.stderr || '').trim() || ('content delete(' + h.id + ') 执行失败');
   }
-  // 兜底：库里没记录、磁盘上还躺着的（上次删库失败留下的那种）
-  await shell(serial, "rm -f '" + dir + "'* 2>/dev/null; mkdir -p '" + dir + "'", { timeout: 30000 });
+  // ★★ 2026-10-04（第三十五轮）：按用户指令「全部删掉」，把目录**内容**清空到一条不剩。
+  //   用户原话：「我跟你说全部删掉，你还考虑误杀什么？……我指令已经非常非常明确了」
+  //   ⇒ 这里**不做任何"可能还有用"的保留判断**，凡在这个目录里的一律删掉。
+  //   为什么以前清不干净（真机实测 2026-10-04 01:15，127.0.0.1:16384）：
+  //     `ls -laR /sdcard/DCIM/Camera/bluev` 里躺着一条 10-02 23:28 的 mp4（38,919,318 B），
+  //     而 `content query` 按 _data 前缀**匹配不到它**（库里没有对应记录 / 记录路径与磁盘路径
+  //     写法不一致）⇒ 老代码报 `removed=0` 却**假装清干净了**，那条文件就一直留在目录里，
+  //     下一条发布时得物相册里照样能看到它 ⇒ 用户看到的「第二条的相册里混着上一条的素材」。
+  //   ⇒ 结论：**不能只依赖 MediaStore 记录**，必须直接对**磁盘目录**动刀（下面这步）。
+  //   ★★ 2026-10-04 追加实测修正（很重要，差点踩坑）：
+  //     一开始写的是 `rm -rf '<dir>'`（删目录本身），真机一跑就炸：
+  //       `rm: /sdcard/DCIM/Camera/bluev: Text file busy`
+  //     因为**得物 App 正停在发布页、它就打开着这个目录**。目录被占住时：
+  //       rm 删不掉目录 → 接着那句 mkdir -p 也因为目录还在而"成功"得毫无意义
+  //       → 如果这里判 ok，就等于**在素材最可能残留的时候假装清干净了**，比不删更糟。
+  //     ⇒ 正确做法：**只删目录里的内容、绝不碰目录本身**（目录 inode 不动 ⇒ 被占也能删内容）。
+  //   ★★★ 2026-10-04 第三次实测修正（引号坑，这次是真踩透了）：
+  //     写成 `rm -rf '<dir>'/* '<dir>'/.[!.]*` 后 — 实测把 `ls -A` 的结果变成了**设备根目录 /
+  //     的内容**（acct / apex / bin / data ... 全列出来了）。根因是 `shell()` 走 `execFile`
+  //     数组传参：设备端最终执行 `sh -c '<我们拼的整串>'`，**里面的引号会被再解析一次**，
+  //     我们精心写的 `'...'` 到设备端已被剥掉，`<dir>/*` 里的 `*` 就落到别的目录上了。
+  //     ⇒ 结论：**不要再往设备端塞任何引号 / glob**。用 `find <dir> -mindepth 1 -delete`：
+  //       路径不含空格（DCIM/Camera/bluev 全是安全字符），根本不需要引号；
+  //       find 按路径递归删**内容**、不碰目录本体。
+  //   ★★ 2026-10-04 第四次实测补充（重试是必需的，不是保险）：
+  //     得物停在发布页时会**持有这个目录的句柄**，此时删目录内容会间歇性报
+  //     `Text file busy`（实测：造一个空子目录 sub，连 `rm -rf sub`、`find -delete`、
+  //     `rmdir sub` 全失败；等得物重新扫过目录后**同一句 `rmdir` 直接成功**）。
+  //     ⇒ 锁是**短暂**的，不是永久的 ⇒ 删完若还有残留，**等一下重试**就能过。
+  //     这解释了老代码为什么偶尔"清干净了"偶尔没有 —— 它只删一次，撞上锁就放弃了。
+  //   ★★★ 2026-10-04 第五次实测修正（★ 这是最终方案，前面四次都被它取代）：
+  //     实测发现 `Text file busy` **不是得物持有的** —— 把得物 `am force-stop` 掉之后
+  //     同一个目录**照样报 Text file busy**（真机实测：force-stop 后 `rm -rf <dir>` 仍 rc=1）；
+  //     而且报错里提到的子目录（`deep`）**其实早就不存在了** ⇒ 这是 MuMu 的
+  //     sdcardfs/共享目录映射留下的**失效句柄（stale handle）**，等多久都不会自己好。
+  //     ⇒ 死等重试解决不了它（实测等了 3s、60s 都照样失败）。
+  //     ★ 真正有效的解法是 **`mv` 换名法**（实测同一时刻 `rm -rf` rc=1、`mv` rc=0）：
+  //         把 `DCIM/Camera/bluev` 整个改名叫 `DCIM/Camera/bluev_trash_<时间戳>`，
+  //         再 `mkdir` 一个新的 `bluev`。
+  //       · 改名**不删任何 inode** ⇒ 不受失效句柄影响，一次就成功；
+  //       · 换完之后「bluev 这个相册」里的内容 = **全新的空目录** ⇒ 得物相册下拉里的
+  //         bluev 相册就是空的，正是用户要的「上一条的素材一条都不出现」；
+  //       · 改名后的垃圾目录若删得掉就顺手删掉，删不掉也不影响正确性（它不在 bluev 名下，
+  //         得物相册不会把它当成本工具素材；它是隐藏在外面的废目录）。
+  //     ★ 顺序：先按记录删库（上面那段，能删多少删多少）→ 再 mv 换名 → 再 mkdir 新的。
+  //       库记录必须先删：不然记录还指向 <dir>/xxx.mp4，而那个路径已经被换名了 ⇒ 僵尸记录。
+
+  // ★★ 2026-10-04 第八次实测修正（这里原来也在犯「读不到 = 空的」这个错误）：
+  //   原来写的是 `if (left)` —— **只看 stdout 非空、没看命令是否成功**。
+  //   目录不存在时 `ls -A` 是**非零退出码 + 空输出** ⇒ `left=''` ⇒ 代码当成「目录是空的、
+  //   已经干净」。判据必须和末尾那处一致：**命令成功（ok）且输出非空** 才算「有残留」。
+  //   · 读不到 ≠ 没有；· 目录不存在 ≠ 目录是空的（虽然两者都算「这次不用换名」）。
+  const hasLeftover = s => !!(s && s.ok && String(s.stdout || '').trim());
+
+  // 1) 先试「原地清内容」（绝大多数情况能过；只有 stale 句柄时才会失败）
+  await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
+  await shell(serial, 'rm -rf ' + dir + '/* ' + dir + '/.[!.]* 2>/dev/null', { timeout: 60000 });
+  let stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+  let left = String(stage.stdout || '').trim();
+  if (hasLeftover(stage)) {
+    // 2) 原地清不掉（stale 句柄）⇒ mv 换名法，绕开它
+    const trash = dir.replace(/\/+$/, '') + '_trash_' + Date.now();
+    const mv = await shell(serial, 'mv ' + dir + ' ' + trash, { timeout: 60000 });
+    if (mv.ok) {
+      await shell(serial, 'mkdir -p ' + dir, { timeout: 30000 });
+      // 垃圾目录能删就删（删不掉不影响正确性，留着也不进 bluev 相册）
+      await shell(serial, 'rm -rf ' + trash + ' 2>/dev/null', { timeout: 60000 });
+      stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+      left = String(stage.stdout || '').trim();
+    } else if (!error) {
+      error = '专属目录既清不掉也改不了名：' + String(mv.stderr || '').trim();
+    }
+  }
+  // 3) 兜底重试：换名后仍残留（极罕见）⇒ 再原地清两次
+  for (let attempt = 1; attempt <= 2 && hasLeftover(stage); attempt++) {
+    await new Promise(r => setTimeout(r, 800));
+    await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
+    stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+    left = String(stage.stdout || '').trim();
+  }
+  // ★★ 2026-10-04 第六次实测修正：目录**不存在**时也必须算「干净」并把它建出来。
+  //   实测踩到：把 bluev 目录整个 mv 走了之后，`ls -A <dir>` 返回
+  //     `ls: .../bluev/: No such file or directory` ⇒ 老判据会把它当成"校验失败"报 ok:false，
+  //     于是**第一条内容永远发不出去**（每次都在清相册这步卡死）。这个坑比它看起来严重得多。
+  //   ★★★ 2026-10-04 第七次实测修正（这一段先说 `ls`、**再** mkdir —— 顺序不能反）：
+  //     第一版把它写成「先 `mkdir -p` 再 `ls -A`」⇒ 两个后果，都是真 bug：
+  //       ① `missing` 分支变成**死代码**（mkdir 已经建好了，ls 永远不会报 No such file）
+  //          ⇒ 反向验证时「删掉 missing 分支」一条测试都不红（假通过）；
+  //       ② 更危险：ls 若因**别的原因**失败（权限、挂载掉了），会被 `left = ''` 当成
+  //          「干净」放过去 —— 这就是在**假装清干净了**，正是我们的红线。
+  //     ⇒ 正确顺序：**先 `ls -A` 定状态**（此时目录还没被 mkdir 造出来，missing 判据才有效），
+  //       确认真需要建目录之后，再 `mkdir -p`；只有「明确 clean」才允许往下走。
+  //   三态判据：① 目录不存在 = 干净（顺手建出来）；② 存在且 ls 空 = 干净；
+  //            ③ 其余（含 ls 失败） = 不干净，如实报 error。
+  const chk = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+  const chkOut = String(chk.stdout || '').trim();
+  const missing = /No such file or directory|not found/i.test(chkOut + String(chk.stderr || ''));
+  const needsMkdir = !chk.ok && missing;
+  if (needsMkdir) {
+    // 目录不存在 ⇒ 本来就干净，把它建出来（后面推素材要用）
+    left = '';
+  } else if (!chk.ok) {
+    // ★ 不许在这里判「干净」：ls 读不出来时必须如实报错（读不到 ≠ 没有）
+    if (!error) error = String(chk.stderr || '').trim() || 'ls -A 校验失败（读不到目录，不敢判干净）';
+    left = '';
+  } else {
+    left = chkOut;
+  }
+  // 只有「这次真的需要建目录」时才建；正常存在的情况不动它（免得掩盖上面的读失败）
+  if (needsMkdir) {
+    const mk = await shell(serial, 'mkdir -p ' + dir, { timeout: 30000 });
+    if (!mk.ok && !error) error = String(mk.stderr || '').trim() || '专属目录建不出来';
+  }
   if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error };
+  if (left) {
+    return { ok: false, removed: removed, files: hit.map(h => h.file),
+      error: '专属目录清完仍残留（' + left.split(/\r?\n/).length + ' 项）：' + left.split(/\r?\n/).slice(0, 3).join(' , ') };
+  }
   return { ok: true, removed: removed, files: hit.map(h => h.file), error: '' };
 }
 
