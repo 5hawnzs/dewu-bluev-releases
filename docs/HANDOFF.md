@@ -1488,6 +1488,24 @@ T10 26FW-KW02 驼    驼色针织毛衣自带少年感🧶
 - 定位表里 2 处仍 `verified:false`：关联好物的「搜货号 → 选商品」两屏、相册第 1 格；图文主图方案待定。
 - 可编辑热词库模块（§5 待做 6）**仍未开工**（只到「给判断」这一步）。
 
+#### 8. 发布（v1.0.8，2026-10-03 第七轮 / 会话B）
+
+| 项 | 实测值 |
+|---|---|
+| 提交 | `3497b25`（修复，9 文件 / +113 −33）+ `fef2ef2`（版本号与本文档）；`git ls-remote origin refs/heads/main` == `git rev-parse HEAD` |
+| 打包 | 干净 `git worktree` 快照 `D:/work/_rel108`（detached @ `fef2ef2`）+ `node_modules` 目录联接；`electron-builder --win --x64 --publish never`，23 s |
+| 产物 | `得物蓝V素材发布工具-1.0.8-x64-win.exe` = **114024197 B**（1.0.7 = 114023445 B，**+752 B**）；`resources/` 顶层 = `adb` / `adbkeyboard` / `ffmpeg` / `app.asar` / `app.asar.unpacked` / `app-update.yml` / `elevate.exe`，**没多出任何二进制**（§H2：与 `vendor/` 逐文件比对，两边各 9 个、完全一致） |
+| 包内核对 | **33/33 通过**：包内 `package.json` version = `1.0.8`；★ 遍历整个 asar（`listPackage` 2516 条目、**真读到 2153 个文件 / 50599465 字节**，其余 363 个是目录条目）—— ①**词库功能在包里**：`src/main/services/hotwords.js` 在，与打包快照源码 **md5 逐字节一致**（`e80a544c8d14…`）；把包里那份抠出来**真跑** ⇒ `GROUPS=8 / STYLES=10 / ALL_WORDS=64`，**材质参数词 0 个越界**；②**反向：包里没有任何「可编辑词库」界面**（渲染层 `hotword` / `词库` / `热词` / `并入词库` **各 0**；全包 `并入词库` / `hotwords-` **各 0**）；③本轮修复点全在（`itemsDir` / `Object.assign({}, st().publish` / `模拟成功` ×4 / `'模拟成功':'warn'` / confirm 文案 / 无「话题联想点选」且无「等联想」）；④**反向证明该留的还在**（`发布成功` / `copy:prompt` / `ADB_INPUT_TEXT`（在 `services/adb.js`）/ `update:check` / `update:set-channel` / `logLineHtml`） |
+| 快照回归 | ★ 在**打包用的同一份字节**上跑 `tools/run-all.js` ⇒ **17 套 1013 项全绿** |
+| 公网核对 | `latest.yml` = **`1.0.8`**、size = `114024197`；安装包 **HTTP 200 / Content-Length 114024197**；`beta.yml` **未动**（仍 `1.0.1-beta.2`） |
+| 本机已装副本 | `D:\bluevbeta\dewu-bluev-publisher` 包内 version = `1.0.6`；★ `tasklist` 实测 **4 个实例正在运行** ⇒ 按 §Q 规矩**没换 asar**（运行时替换会让正在跑的程序崩）。用户重启后点「检查更新」即可升到 1.0.8 |
+| 看板 | 本次**没改** `web/` ⇒ 不用重新部署 |
+
+★ **本轮踩到并已修掉的两个「假通过」写法**（留档）：
+
+1. `asar.extractFile` 传**正斜杠**路径 ⇒ 全部抛错，`read = 1`、`bytes = 505`，而脚本仍会一路「PASS 包内版本号」往下跑 —— 看着像通过。改成反斜杠路径后 `read = 2153`。判据必须**同时断言「真读到几个」**（`read>=15 && bytes>300000`）。
+2. 拿**全文搜字符串**判「词库有没有混进材质词」⇒ **假红**：`hotwords.js` 第 25 行的注释里**正写着那张禁词表**（「**材质与参数类**（鹅绒、充绒量、加厚、防风防水、羊毛含量……）不进来」）。改成**把包里那份抠出来真跑** `ALL_WORDS` 才是有效判据（跑完 64 个词、越界 0）。
+
 ### 从录屏里挑出的「可抄项」（尚未做，按建议顺序）
 
 | # | 真机怎么做 | 我们现在 | 建议 | 成本 |
