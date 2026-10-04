@@ -2283,3 +2283,46 @@ const map = c.uiMap;      // 只读配置
   只有 `uiautomator dump` 才看得到（此前一直误判成「按 id 找首页失灵」）。
 - ★★ 两个弹窗里 `tvCancel` **语义相反**：「是否继续编辑」里 = **放弃**（回主页）；
   「是否保存本次修改？」里 = **取消**（留在编辑态）。⇒ **不要用 id 做锚点，按文本找**。
+
+### ★ 发 v1.0.11（2026-10-04）—— 相册提速这批真正上线
+
+**发的是什么**：版本号 1.0.10 → 1.0.11。带出去的 = `ed9d381`（发布前清相册 P0）/ `61921bc`（连发 3 条全链路）
+/ `3acd4d1`（相册 · 剪辑页 · 封面页盲点提速 + 关动画缓存）。发版范围 = **main 全量**
+—— 体检确认 main 上只有本项目自己的提交、无第三方在制品，所以没有产品决策要问。
+
+**实测数字**（真机连发 2 条视频，2/2 成功）：**159.0s → 137.5s → 124.8s**。
+「相册选素材 / 相册下一步 / 剪辑页下一步 / 封面页跳过」四步**全部 <300ms**（从 2135ms 掉出耗时表）。
+根因数字：`uiautomator dump` **2085ms** vs `input tap` **125ms**（约 16 倍）。
+
+**发版过程取证**（每步都可复算）：
+
+- 打包在 `git worktree` 干净快照 `D:/work/_rel1011`（HEAD = `57e91c5`）里做，依赖用目录联接共享主仓。
+- ★ 在**打包用的那份快照**上跑回归：`tools/run-all.js` **17 套 / 1380 项全绿**（跑的就是包里的字节）。
+- ★ asar **全扫**（`listPackage` 逐条 `extractFile`，不是挑几个文件）：条目 2517 / 真读到 **2154** /
+  **50801710** 字节，门槛 `read>=15 && bytes>300000` **PASS**；包内版本 **1.0.11**。
+- 正向 6 条（证明本轮修复真在包里）：`DUMP_IDLE_CAP_S = 4`、`timeout ${DUMP_IDLE_CAP_S}`、
+  `publisher` 失败路径学 `animOffSteps`、`uimap` 的 `enabled` 字段、`waitEnabled`、`resumeDialog`。
+- 反向 4 条（防删过头 / 防关键词开太宽自报假红）：`update:check` / `copy:prompt` / `logLineHtml` / `uiMap` 读取。
+- 上传：`--dry-run` 过五处闸门 → 真传 → **从公网侧**核对 `latest.yml` = **1.0.11**、
+  新 exe `Content-Length: 107063069`（与本地逐字节同值）、`beta.yml` 仍是 `1.0.1-beta.2`（**没动**）。
+
+**★★ 必须记住：这批提速有一半在「配置层」，不在包里。**
+
+- 盲点坐标（`tapXY` `166,359` / `985,1843` / `820,1857`）写在用户 `config.json` 的
+  `publish.uiMap.steps / videoSteps` 里，由 `tools/fixuimap.js` **就地打补丁**。
+- `package.json` 的 `build.files` 只收 `src/**/*` + `package.json` ⇒ **`tools/` 不进包**；
+  `store.js` / `clouddefaults.js` 里**也没有默认 uiMap** ⇒ 新装用户拿到的是**引擎**，不是**这份坐标**。
+- ⇒ **升级包 ≠ 别的机器自动变快**。要在另一台机器用上盲点提速，得在那台机器上跑一次
+  `tools/fixuimap.js`（源码仓库里的工具），或导入一份改好的 `uiMap.json`。
+- 本机 `%APPDATA%\dewu-bluev-publisher\config.json` 已含盲点坐标（17:37 打过补丁）⇒ 本机是快的。
+
+**★ 换本机已装副本：没做 —— 因为当时有 4 个实例在跑。**
+
+- `Get-Process | ? { $_.Path -like 'D:\bluevbeta\*' }` 实测命中 **4 个**
+  （PID 38200 / 41476 / 45648 / 61056），按红线停手。等关掉应用再换，备份命名 `app.asar.bak-1.0.10`。
+- ★ 判「有没有实例在跑」**别只看 stdout**：这次 PowerShell 的 stdout 被吞成空，
+  是**写成文件再读**才拿到确凿清单的（空 stdout ≠ 没有）。
+- ★ 收尾时自己吓自己一次：主仓 `node_modules` 条目数 PowerShell 数 **313**、bash `ls` 数 **311**。
+  真因是**两次数法不同**（PowerShell 数了 `.bin` / `.package-lock.json`，`ls` 不数点文件），
+  `ls -a` = 315 = 311 + 4 ⇒ **没有发生联接被穿透删除**。关键依赖（electron / electron-builder /
+  @electron/asar / @img / sharp）+ `electron.exe`（180849624 B）+ smoke 全部复核通过。
