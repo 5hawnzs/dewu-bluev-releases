@@ -481,13 +481,13 @@ TABS[2] = {
         <div class="stat good"><b>${n(s.ok)}</b><span>合格</span></div>
         <div class="stat"><b>${n(s.todo)}</b><span>可自动处理</span></div>
         <div class="stat bad"><b>${n(s.manual)}</b><span>需人工定夺</span></div>
-        <div class="stat"><b>${n(s.scaled)}</b><span>等比缩放</span></div>
+        ${cfg0.enforceMaxSide ? `<div class="stat"><b>${n(s.scaled)}</b><span>等比缩放</span></div>` : ''}
         <div class="stat bad"><b>${n(s.tooSmall)}</b><span>尺寸不足</span></div>
         <div class="stat bad"><b>${n(s.notMp4)}</b><span>非 MP4</span></div>
         <div class="stat bad"><b>${n(s.oversize)}</b><span>超 10MB 压缩</span></div>
         <div class="stat"><b>${n(s.isolate)}</b><span>隔离到 _rejected</span></div>
       </div>
-      <p class="hint">规则（对齐真机）：图片<b>必须为 JPG</b>、≥<b>${cfg0.minPixels}</b> 像素²（约 42×42）、边长 <b>${cfg0.minSide}~${cfg0.maxSide}</b>${cfg0.autoScale ? '（超限自动等比缩放）' : ''}、≤${cfg0.maxImageMB}MB；视频<b>必须 .mp4</b>（<code>.mov</code>/<code>.m4v</code> 等会自动转成 mp4）且 &lt;${cfg0.maxVideoSec} 秒（超时只标红不裁剪）。</p>
+      <p class="hint">规则（对齐真机）：图片<b>必须为 JPG</b>、≥<b>${cfg0.minPixels}</b> 像素²（约 42×42）、边长 <b>${cfg0.enforceMaxSide ? `${cfg0.minSide}~${cfg0.maxSide}` : `≥${cfg0.minSide}`}</b>${cfg0.enforceMaxSide ? (cfg0.autoScale ? '（超限自动等比缩放）' : '（超限需更换）') : '（<b>超出不再限制、不做缩放</b>；2026-10-05 起按你的口径只卡下限）'}、≤${cfg0.maxImageMB}MB；视频<b>必须 .mp4</b>（<code>.mov</code>/<code>.m4v</code> 等会自动转成 mp4）且 &lt;${cfg0.maxVideoSec} 秒（超时只标红不裁剪）。</p>
       ${(c.groups && c.groups.length) ? `<div class="box"><h3>按子文件夹（${c.groups.length} 个）</h3>
         <div class="tw"><table><thead><tr><th>子文件夹</th><th>合格</th><th>可自动</th><th>需人工</th></tr></thead><tbody>
         ${c.groups.map(g => `<tr class="${g.stats.manual ? 'warnrow' : ''}"><td class="mono">${esc(g.name)}</td><td class="num">${n(g.stats.ok)}</td><td class="num">${n(g.stats.todo)}</td><td class="num">${n(g.stats.manual)}</td></tr>`).join('')}

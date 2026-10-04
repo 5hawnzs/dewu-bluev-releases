@@ -90,7 +90,12 @@ const ok = (label, cond, extra) => {
   // ② 合规检查
   const sc = await compliance.scan(fl.items, ctx());
   ok('② 扫描出报告', sc.stats.total === 8, JSON.stringify(sc.stats));
-  ok('② 尺寸规则生效（等比缩放/尺寸不足）', sc.rows.some(r => r.action === '等比缩放' || r.action === '需更换图片'), sc.rows.filter(r=>r.action==='等比缩放').length + ' 张需缩放');
+  // ★ 2026-10-05 用户口径：边长**只判下限**（超尺寸不处理、不缩放）；低于下限 ⇒「需更换图片」交人工。
+  const tooSmallRows = sc.rows.filter(r => r.action === '需更换图片');
+  ok('② 尺寸下限生效（低于下限 → 需更换图片 / 交人工）',
+    tooSmallRows.length > 0 && tooSmallRows.every(r => r.status === 'manual'), `${tooSmallRows.length} 张低于下限`);
+  ok('② 超上限不再被拦（默认不判上限）：小图也不许被标成「等比缩放」',
+    !sc.rows.some(r => r.action === '等比缩放') && (sc.stats.scaled || 0) === 0, `scaled=${sc.stats.scaled || 0}`);
   ok('② 垃圾文件被识别', sc.rows.some(r => r.file === '.DS_Store' && r.status === 'isolate'));
   ok('② PNG 需转 JPG', sc.rows.filter(r => r.action === '转 JPG（白底填充）').length === 2);
   const fx = await compliance.fix(fl.items, sc.rows, ctx());

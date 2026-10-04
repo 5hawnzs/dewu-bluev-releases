@@ -29,12 +29,16 @@ function defaults() {
     brandsSeeded: false,
     // 真机做法：扁平名用 _ 连接层级路径；原素材完全不动（不改名、不移动）
     flatten: { mode: 'auto', connector: '_', touchOriginal: false, withStamp: true },
-    // 真机规格：必须 JPG / ≥1764 像素²(约42×42) / 边长 150~1500 / 超限自动等比缩放 / 视频 <600s；
+    // 真机规格：必须 JPG / ≥1764 像素²(约42×42) / 边长 **只判下限 ≥150** / ≤10MB / 视频 <600s；
+    //   ★ 2026-10-05 用户口径：「超尺寸的图片没必要做等比缩放，只要不要低于下限就不用处理尺寸问题，
+    //     除非后面我提示」（真机实测：3213×4284 这类原图能直接发布）⇒ 上限默认**不判**。
+    //     maxSide / autoScale 没删，留给 `enforceMaxSide`（默认 false）打开时用：
+    //     置 true 即恢复「超 maxSide ⇒ 等比缩放」的老行为。
     // 视频格式：得物只收 mp4 ⇒ 非 mp4（.mov/.m4v/...）由内置 ffmpeg 自动转成 mp4（先无损转封装、不兼容再转码）
     compliance: {
       maxImageMB: 10, maxVideoSec: 600, isolateJunk: true,
       requireJpg: true, minPixels: 1764, minSide: 150, maxSide: 1500,
-      autoScale: true, videoExtMustBeMp4: true
+      enforceMaxSide: false, autoScale: true, videoExtMustBeMp4: true
     },
     copy: {
       concurrency: 6,

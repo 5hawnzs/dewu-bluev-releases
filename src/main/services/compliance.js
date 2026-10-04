@@ -23,7 +23,8 @@ async function scan(items, ctx = {}) {
   const cancelled = ctx.cancelled || (() => {});
   const maxBytes = MAX_BYTES(), maxSec = MAX_SEC();
   const RULES = Object.assign(
-    { requireJpg: true, minPixels: 1764, minSide: 150, maxSide: 1500, autoScale: true, videoExtMustBeMp4: true },
+    // enforceMaxSide 默认 false = 不判上限（2026-10-05 用户口径，见下面图片分支的注释）
+    { requireJpg: true, minPixels: 1764, minSide: 150, maxSide: 1500, enforceMaxSide: false, autoScale: true, videoExtMustBeMp4: true },
     store.get('compliance') || {}
   );
   const rows = [];
@@ -129,11 +130,21 @@ async function scan(items, ctx = {}) {
         rows.push({ item: item.id, file: name, type: '图片', issue: `${dim.width}×${dim.height}，不足 ${RULES.minPixels} 像素²（约 42×42）`, action: '需更换图片', status: 'manual', size });
         continue;
       }
-      const sideOk = !dim || (Math.max(dim.width, dim.height) <= RULES.maxSide && Math.min(dim.width, dim.height) >= RULES.minSide);
-      if (!sideOk) {
+      // ★★★ 2026-10-05 用户口径（原话）：「超尺寸的图片没必要做等比缩放，只要不要低于下限
+      //   就不用处理尺寸问题，除非后面我提示」（真机实测：3213×4284 的原图直接能发布）。
+      //   ⇒ **上限默认不判**（能力没删，开关 = `enforceMaxSide`，默认 false；置 true 即恢复老行为）。
+      //   ★ 同时修正一处旧口径错误：边长**低于下限**以前和超上限走同一分支、被标成「等比缩放」，
+      //     而 fitWithin 只缩不放 ⇒ 那是句假话。现在低于下限一律「需更换图片」（manual、交人工）。
+      const minSideOk = !dim || Math.min(dim.width, dim.height) >= RULES.minSide;
+      if (!minSideOk) {
+        rows.push({ item: item.id, file: name, type: '图片', issue: `${dim.width}×${dim.height}，边长不能小于 ${RULES.minSide}`, action: '需更换图片', status: 'manual', size });
+        continue;
+      }
+      const overMaxSide = !!dim && !!RULES.enforceMaxSide && Math.max(dim.width, dim.height) > RULES.maxSide;
+      if (overMaxSide) {
         rows.push({
           item: item.id, file: name, type: '图片',
-          issue: `${dim.width}×${dim.height}，边长需在 ${RULES.minSide}~${RULES.maxSide} 之间`,
+          issue: `${dim.width}×${dim.height}，边长超 ${RULES.maxSide}`,
           action: RULES.autoScale ? '等比缩放' : '需更换图片',
           status: RULES.autoScale ? 'todo' : 'manual', size
         });

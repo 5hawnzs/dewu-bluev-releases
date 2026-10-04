@@ -73,6 +73,36 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
   ok('① 合格 JPG 只有一条记录', jpgRows.length === 1 && jpgRows[0].status === 'ok', JSON.stringify(jpgRows));
   ok('① 合格 JPG 没有第二重身份（不会被判隔离）', !sc.rows.some(r => r.file === '1.jpg' && r.status === 'isolate'));
 
+  // ---- ①b 尺寸口径（2026-10-05 用户口径：「超尺寸的图片没必要做等比缩放，只要不要低于下限
+  //          就不用处理尺寸问题，除非后面我提示」；真机实测 3213×4284 原图能直接发布）----
+  //   ★ 必须**双向**：默认态证明「超上限放行」，打开开关证明「上限能力还在、不是整段被删」。
+  const sizeLeaf = path.join(TMP, 'flat', 'SIZE-001+白+1');
+  fs.mkdirSync(sizeLeaf, { recursive: true });
+  fs.writeFileSync(path.join(sizeLeaf, '大图.jpg'), jpgBuf(200, 200, 205, 3000));  // 3000×3000，远超 1500
+  fs.writeFileSync(path.join(sizeLeaf, '小图.jpg'), jpgBuf(210, 210, 215, 120));   // 120×120，低于下限 150
+  const sItems = [{
+    id: 'SIZE-001+白+1', dir: 'SIZE-001+白+1', absDir: sizeLeaf, sku: 'SIZE-001', color: '白',
+    files: [{ name: '大图.jpg', size: 0, type: 'image' }, { name: '小图.jpg', size: 0, type: 'image' }]
+  }];
+  const s1 = await compliance.scan(sItems, ctx());
+  const big1 = s1.rows.find(r => r.file === '大图.jpg') || {};
+  const small1 = s1.rows.find(r => r.file === '小图.jpg') || {};
+  ok('①b 超尺寸图片不再被拦（默认不判上限：3000×3000 判合格）',
+    big1.status === 'ok', JSON.stringify({ status: big1.status, action: big1.action, issue: big1.issue }));
+  ok('①b 低于下限仍被拦，且口径是「需更换图片 / 交人工」（旧口径把它错标成「等比缩放」，而 fitWithin 只缩不放）',
+    small1.status === 'manual' && small1.action === '需更换图片',
+    JSON.stringify({ status: small1.status, action: small1.action, issue: small1.issue }));
+  ok('①b 默认态 scaled=0 / tooSmall=1（界面那格恒 0 才够格被藏起来）',
+    s1.stats.scaled === 0 && s1.stats.tooSmall === 1, JSON.stringify(s1.stats));
+
+  store.set({ compliance: { enforceMaxSide: true } });   // ← 反向对照：把上限能力打开
+  const s2 = await compliance.scan(sItems, ctx());
+  const big2 = s2.rows.find(r => r.file === '大图.jpg') || {};
+  ok('①b 反向对照：打开 enforceMaxSide 后同一张 3000×3000 必须变回「等比缩放 / todo」',
+    big2.status === 'todo' && big2.action === '等比缩放' && s2.stats.scaled === 1,
+    JSON.stringify({ status: big2.status, action: big2.action, scaled: s2.stats.scaled }));
+  store.set({ compliance: { enforceMaxSide: false } });  // 复原，别把开关带进后面几组
+
   // ---- ② 处理：好图必须原地不动 ----
   const fx = await compliance.fix(items, sc.rows, ctx());
   ok('② 只处理该处理的（1 转 JPG + 1 隔离）', fx.converted === 1 && fx.isolated === 1 && fx.failed === 0, JSON.stringify({ converted: fx.converted, isolated: fx.isolated, failed: fx.failed }));
