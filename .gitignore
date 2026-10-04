@@ -3,6 +3,7 @@
 # 装机包给同事用 → 走 GitHub Releases / 网盘，不要塞进 git 历史（历史里的二进制删不干净）。
 node_modules/
 dist/
+dist-new/
 out/
 *.log
 
