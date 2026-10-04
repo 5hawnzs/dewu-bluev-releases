@@ -63,7 +63,7 @@ const imaging = require(path.join(base, 'src/main/services/imaging.js'));
 
 store.set({
   paths: { output: path.join(TMP, '输出/得物'), rejected: path.join(TMP, '素材/_rejected') },
-  compliance: { maxImageMB: 0.0005, maxVideoSec: 600, isolateJunk: true },  // 故意压得很小，触发压缩分支
+  compliance: { maxImageMB: 0.0005, maxVideoSec: 600, isolateJunk: true },  // 故意压得很小 —— 但体积上限默认不判，所以不该产生任何「压缩」行
   publish: { intervalSec: 1, videoIntervalSec: 1 }   // 「演示节奏」开关已删：直接给 1 秒间隔；★ retry 也已删（失败不重试）
 });
 
@@ -96,6 +96,14 @@ const ok = (label, cond, extra) => {
     tooSmallRows.length > 0 && tooSmallRows.every(r => r.status === 'manual'), `${tooSmallRows.length} 张低于下限`);
   ok('② 超上限不再被拦（默认不判上限）：小图也不许被标成「等比缩放」',
     !sc.rows.some(r => r.action === '等比缩放') && (sc.stats.scaled || 0) === 0, `scaled=${sc.stats.scaled || 0}`);
+  // ★ 体积那条**必须先把尺寸下限放开**再扫，否则这些小图在「边长 < 150」那关就被 continue，
+  //   永远走不到体积判定 ⇒ 断言恒绿、是个假绿（破坏源码验证时实测：不放下限时红 0）。
+  store.set({ compliance: { minSide: 1, minPixels: 1 } });
+  const scv = await compliance.scan(fl.items, ctx());
+  ok('② 体积上限默认不判（maxImageMB 压到 524 字节、且放下限让图走到体积判定，仍无「压缩」行）',
+    scv.rows.some(r => r.type === '图片') && !scv.rows.some(r => r.action === '压缩') && (scv.stats.oversize || 0) === 0,
+    `oversize=${scv.stats.oversize || 0} · 图片行 ${scv.rows.filter(r => r.type === '图片').length}`);
+  store.set({ compliance: { minSide: 150, minPixels: 1764 } });   // 复原，后面还要用
   ok('② 垃圾文件被识别', sc.rows.some(r => r.file === '.DS_Store' && r.status === 'isolate'));
   ok('② PNG 需转 JPG', sc.rows.filter(r => r.action === '转 JPG（白底填充）').length === 2);
   const fx = await compliance.fix(fl.items, sc.rows, ctx());

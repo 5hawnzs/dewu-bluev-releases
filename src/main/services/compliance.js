@@ -23,8 +23,8 @@ async function scan(items, ctx = {}) {
   const cancelled = ctx.cancelled || (() => {});
   const maxBytes = MAX_BYTES(), maxSec = MAX_SEC();
   const RULES = Object.assign(
-    // enforceMaxSide 默认 false = 不判上限（2026-10-05 用户口径，见下面图片分支的注释）
-    { requireJpg: true, minPixels: 1764, minSide: 150, maxSide: 1500, enforceMaxSide: false, autoScale: true, videoExtMustBeMp4: true },
+    // enforceMaxSide / enforceMaxMB 默认 false = 不判上限（2026-10-05 用户口径，见下面图片分支的注释）
+    { requireJpg: true, minPixels: 1764, minSide: 150, maxSide: 1500, enforceMaxSide: false, enforceMaxMB: false, autoScale: true, videoExtMustBeMp4: true },
     store.get('compliance') || {}
   );
   const rows = [];
@@ -150,7 +150,10 @@ async function scan(items, ctx = {}) {
         });
         continue;
       }
-      if (size > maxBytes) {
+      // ★★ 2026-10-05 同一口径的**第二道关卡**（用户拍板「一起放开」）：体积上限也默认不判。
+      //   实测依据：用户那 4 张 3213×4284 原图 12.3 / 11.8 / 10.2 / 12.6 MB，全都超 10MB，
+      //   但他在得物那边**实际能发布** ⇒ 该拦没道理拦。开关 = `enforceMaxMB`（默认 false）。
+      if (RULES.enforceMaxMB && size > maxBytes) {
         rows.push({ item: item.id, file: name, type: '图片', issue: `${wp.humanSize(size)}，超 ${store.get('compliance.maxImageMB')}MB`, action: '压缩', status: 'todo', size });
         continue;
       }

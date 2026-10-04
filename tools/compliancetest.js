@@ -103,6 +103,23 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
     JSON.stringify({ status: big2.status, action: big2.action, scaled: s2.stats.scaled }));
   store.set({ compliance: { enforceMaxSide: false } });  // 复原，别把开关带进后面几组
 
+  // ①b **第二道关卡**：体积上限也默认不判（2026-10-05 用户拍板「一起放开」）。
+  //   触发方式：把 maxImageMB 压到 0.0005MB（≈524 字节）—— 任何真图都超，「判没判」一眼可见。
+  store.set({ compliance: { maxImageMB: 0.0005 } });
+  const s3 = await compliance.scan(sItems, ctx());
+  const big3 = s3.rows.find(r => r.file === '大图.jpg') || {};
+  ok('①b 体积上限默认不判：maxImageMB 压到 524 字节，大图仍判合格（不产生「压缩」行）',
+    big3.status === 'ok' && s3.stats.oversize === 0,
+    JSON.stringify({ status: big3.status, action: big3.action, oversize: s3.stats.oversize }));
+
+  store.set({ compliance: { enforceMaxMB: true } });      // ← 反向对照：把体积上限打开
+  const s4 = await compliance.scan(sItems, ctx());
+  const big4 = s4.rows.find(r => r.file === '大图.jpg') || {};
+  ok('①b 反向对照：打开 enforceMaxMB 后同一张必须变回「压缩 / todo」',
+    big4.status === 'todo' && big4.action === '压缩' && s4.stats.oversize === 1,
+    JSON.stringify({ status: big4.status, action: big4.action, oversize: s4.stats.oversize }));
+  store.set({ compliance: { enforceMaxMB: false, maxImageMB: 10 } });   // 复原
+
   // ---- ② 处理：好图必须原地不动 ----
   const fx = await compliance.fix(items, sc.rows, ctx());
   ok('② 只处理该处理的（1 转 JPG + 1 隔离）', fx.converted === 1 && fx.isolated === 1 && fx.failed === 0, JSON.stringify({ converted: fx.converted, isolated: fx.isolated, failed: fx.failed }));
