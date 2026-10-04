@@ -2815,6 +2815,91 @@ const state = {
     }
   }
 
+  // ---- ㉚ 2026-10-05 新增：**「货号不能不挂，不接受任何得物自动挂的」**（用户口径） -------------
+  //   真机实测依据（有 dump + 截图为证，见 tools/fixuimap.js 头部 ⑧）：
+  //     · 得物会把视觉识别到的商品**自动挂上**（容器里多出 rvRelevantProduct + tvName + ivDelete）；
+  //     · 「关联好物」那一行的文字**判不出有没有挂**（没挂/已挂都写「关联好物」）⇒ 唯一判据 = ivDelete；
+  //     · 实测**没挂时 ivDelete 不在结构里**（全屏唯一含 delete 的 id）⇒ whenOn 守卫安全；
+  //     · 点 ivDelete ⇒ 那三件一起消失（1236→1131）。
+  //   这一组守四件事 + 幂等：
+  //     ① 「好物1」之前必须有「先摘掉得物自动挂的商品」(tapId ivDelete, whenOn=ivDelete, when=goods1Sku)；
+  //     ② **好物2/3 绝不许**有这一步（否则会把我们自己挂的摘掉）—— 这条是语义，必须断言；
+  //     ③ 点完整行后必须「等转场 + 没进搜索页就补点一次(whenNotOn=etSearch)」再硬等 etSearch；
+  //     ④ 每选完一格必须「waitId ivDelete」校验 —— 挂上了才算过；
+  //     ⑤ 新增的每一步都要带 `when: goodsNSku`（否则只有 1 个好物时也要白跑，白白多花几秒）；
+  //     ⑥ 幂等：连跑两次一字不差。
+  {
+    const cp = require('child_process');
+    const DID = 'com.shizhuang.duapp:id/';
+    const cfgDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-fixuimap-goods-'));
+    const cfgFile2 = path.join(cfgDir2, 'config.json');
+    // 「改之前」的样子：好物三步都是老写法（没有摘掉/补点/校验）
+    const goodsOld = (g) => ([
+      { name: `好物${g} · 点「关联好物」这一行`, action: 'tapId', value: DID + 'tvRelevantProduct', when: `goods${g}Sku` },
+      { name: `好物${g} · 等搜索页加载`, action: 'waitId', value: DID + 'etSearch', when: `goods${g}Sku`, timeout: 10000 },
+      { name: `好物${g} · 点搜索框`, action: 'tapId', value: DID + 'etSearch', when: `goods${g}Sku` },
+      { name: `好物${g} · 输「货号+颜色」`, action: 'input', value: `\${goods${g}Sku}\${goods${g}Color}`, when: `goods${g}Sku` },
+      { name: `好物${g} · 等结果出来`, action: 'wait', value: 600, when: `goods${g}Sku` },
+      { name: `好物${g} · 选结果第 1 格`, action: 'tapId', value: DID + 'ivProduct', when: `goods${g}Sku` }
+    ]);
+    const oldArr = [].concat(goodsOld(1), goodsOld(2), goodsOld(3));
+    fs.writeFileSync(cfgFile2, JSON.stringify({ publish: { uiMap: { package: 'com.shizhuang.duapp', steps: oldArr, videoSteps: oldArr } } }, null, 2), 'utf8');
+    const before2 = JSON.parse(fs.readFileSync(cfgFile2, 'utf8')).publish.uiMap;
+    // ★ 双向：喂「改之前」的版本，这几步必须**不在**（否则断言在查空气）
+    ok('㉚ 前置（反证）：改之前的表里这三类步一个都没有 —— 证明下面查的确实是新加的东西',
+      !(before2.videoSteps || []).some(s => /先摘掉得物自动挂的商品|没进搜索页就补点一次|校验确实挂上了/.test(String(s.name || ''))),
+      '改前表里相关步数=' + (before2.videoSteps || []).filter(s => /先摘掉|补点一次|校验确实/.test(String(s.name || ''))).length);
+
+    const runFix2 = () => cp.execFileSync(process.execPath, [path.join(base, 'tools/fixuimap.js')],
+      { env: Object.assign({}, process.env, { BLUEV_CFG_DIR: cfgDir2 }), encoding: 'utf8', stdio: 'pipe' });
+    runFix2();
+    const after2 = JSON.parse(fs.readFileSync(cfgFile2, 'utf8')).publish.uiMap;
+    const findN = (arr, re) => (arr || []).find(s => re.test(String(s.name || '')));
+
+    for (const key2 of ['steps', 'videoSteps']) {
+      const arr2 = after2[key2] || [];
+      const tag2 = key2 === 'steps' ? '图文表' : '视频表';
+      // ① 「好物1」前紧跟「先摘掉得物自动挂的商品」
+      const iRow1 = arr2.findIndex(s => /^好物1 · 点「关联好物」这一行$/.test(String(s.name || '')));
+      const dell = iRow1 > 0 ? arr2[iRow1 - 1] : null;
+      ok(`㉚ ★★ ${tag2}：「好物1」的前一步必须是「先摘掉得物自动挂的商品」(tapId ivDelete, whenOn=ivDelete)`,
+        !!dell && dell.action === 'tapId' && dell.value === DID + 'ivDelete' && dell.whenOn === DID + 'ivDelete'
+        && dell.when === 'goods1Sku',
+        dell && JSON.stringify({ action: dell.action, value: dell.value, whenOn: dell.whenOn, when: dell.when }));
+      // ② 好物2/3 **不许**有摘掉步（否则会把自己挂的摘掉 —— 语义断言）
+      const other = arr2.filter(s => /^好物[23] · 先摘掉得物自动挂的商品/.test(String(s.name || '')));
+      ok(`㉚ ★★ ${tag2}：好物2/3 **绝不许**有「先摘掉」步（会把我们自己挂的摘掉）`,
+        other.length === 0, other.length + ' 个');
+      // ③ 点完行 → 转场等 + 幂等补点（whenNotOn=etSearch）
+      const retap = findN(arr2, /^好物1 · 没进搜索页就补点一次/);
+      ok(`㉚ ★★ ${tag2}：必须有「没进搜索页就补点一次」，且守卫是 whenNotOn=etSearch（已在搜索页就跳过）`,
+        !!retap && retap.action === 'tapId' && retap.value === DID + 'tvRelevantProduct'
+        && retap.whenNotOn === DID + 'etSearch',
+        retap && JSON.stringify({ action: retap.action, value: retap.value, whenNotOn: retap.whenNotOn }));
+      const iW = arr2.findIndex(s => /^好物1 · 等搜索页加载$/.test(String(s.name || '')));
+      const pre = iW >= 2 ? arr2.slice(iW - 2, iW) : [];
+      ok(`㉚ ★★ ${tag2}：补点与硬等之间要有「转场等」（实测转场 ~1.2s，固定 wait 比空转可靠）`,
+        pre.length === 2 && pre[0].action === 'wait' && Number(pre[0].value) >= 1000
+        && /没进搜索页就补点一次/.test(String(pre[1].name || '')),
+        JSON.stringify(pre.map(s => s.name)));
+      // ④ 选完一格 → waitId ivDelete 校验
+      const iPick = arr2.findIndex(s => /^好物1 · 选结果第 1 格$/.test(String(s.name || '')));
+      const ver = iPick >= 0 ? arr2[iPick + 1] : null;
+      ok(`㉚ ★★ ${tag2}：「选结果第 1 格」之后必须紧跟「校验确实挂上了」(waitId ivDelete)`,
+        !!ver && ver.action === 'waitId' && ver.value === DID + 'ivDelete' && Number(ver.timeout) >= 5000,
+        ver && JSON.stringify({ action: ver.action, value: ver.value, timeout: ver.timeout }));
+      // ⑤ 新增的每一步都必须带 when 守卫（否则只有 1 个好物也要白跑）
+      const noWhen = arr2.filter(s => /^好物\d · (先摘掉得物自动挂的商品|没进搜索页就补点一次|等搜索页转场|校验确实挂上了)/.test(String(s.name || '')) && !s.when);
+      ok(`㉚ ★ ${tag2}：新增的每一步都要带 when 守卫（不然「这一列空着」时也要白跑，白白多花几秒）`,
+        noWhen.length === 0, noWhen.map(s => s.name).join(' | ') || '全部带 when');
+    }
+    const snap1b = fs.readFileSync(cfgFile2, 'utf8');
+    runFix2();
+    const snap2b = fs.readFileSync(cfgFile2, 'utf8');
+    ok('㉚ 幂等：连跑两次结果一字不差（新增步不许叠加）', snap1b === snap2b,
+      snap1b === snap2b ? '两次完全一致' : '第二次内容变了');
+  }
+
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));
 })().catch(e => { console.error('ADB TEST ERROR', e); process.exitCode = 1; });

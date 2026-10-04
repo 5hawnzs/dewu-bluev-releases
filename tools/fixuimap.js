@@ -54,6 +54,19 @@
  *      ★★ 盲点**没有抓屏 ⇒ 也就没有天然的屏间等待**（tapId 那 2085ms 的 dump 顺带把转场等掉了）。
  *         实测后果：视频连点两下后 seq1 还停在剪辑页、seq2 只过一屏 —— 点在了转场中的屏幕上。
  *         ⇒ 见 ⑦-b：视频那两步之间插固定 `wait` 补回等待（图文有守卫、自带 dump，不用补）。
+ *   ⑧ ★★★ 2026-10-05（用户原话「**货号不能不挂，不接受任何得物自动挂的**」）：
+ *      真机实测（00:45~00:56，有 dump + 截图为证）：
+ *        · 贴完文案后得物会把**视觉识别到的商品自动挂上**：容器 relevantProductContainer 里多出
+ *          rvRelevantProduct（tvName=商品名、ivDelete=右侧 ×）。
+ *        · ⚠ **看「关联好物」那一行的文字判不出来**（没挂/已挂都写着「关联好物」）⇒ 唯一可靠判据
+ *          = 容器里有没有 **ivDelete**；且实测**没挂时 ivDelete 根本不在结构里**（全屏唯一含 delete 的 id）。
+ *        · 点 ivDelete ⇒ rvRelevantProduct / tvName / ivDelete 一起消失（容器 [0,1054][1080,1236]→[..][..,1131]）。
+ *        · 点整行 → 搜索页；输「货号+颜色」后 **600ms 结果就已就位**（600ms 与 3.1s 卡片文字完全一致），
+ *          第 1 格就是我们的商品（卡上颜色标签 = 我们的颜色）。
+ *      ⇒ 三条规则：8a「好物1」前先摘掉得物自动挂的那条（whenOn=ivDelete，没挂就跳过；只做一次）；
+ *        8b 点完整行后「转场等 1.5s」+「没进搜索页就补点一次」（whenNotOn=etSearch）再硬等 etSearch
+ *        （run5 seq2 卡死的正面修复：识别结果到达时整行被重建，点空一次就再没机会）；
+ *        8c 每选完一格 `waitId ivDelete` 8s —— **挂上了才算这一步过**，没挂上当场报错。
  */
 const fs = require('fs');
 const path = require('path');
@@ -318,6 +331,124 @@ for (const key of ['steps', 'videoSteps']) {
     if (iAlbum >= 0) arrW.splice(iAlbum + 1, 0, mk());
     const iClip = arrW.findIndex(s => /^剪辑页/.test(String(s.name || '')));
     if (iClip >= 0) arrW.splice(iClip + 1, 0, mk());
+  }
+
+  // ⑧ ★★★ 2026-10-05（用户口径，原话「**货号不能不挂，不接受任何得物自动挂的**」）
+  //   真机实测（2026-10-05 00:45~00:56，MuMu 12 / 1080×1920，全程有 dump + 截图为证）：
+  //     · 贴完文案后，得物会把**视觉识别到的商品自动挂上**：容器 `relevantProductContainer` 里
+  //       多出一行 `rvRelevantProduct`（`tvName` = 商品名、`ivDelete` = 右侧那颗 ×）。
+  //       ⚠ **光看「关联好物」那一行的文字判不出来** —— 没挂 / 已挂，`tvRelevantProduct` 的文字
+  //       都是「关联好物」；可靠判据 = 容器里**有没有 `ivDelete`**。
+  //     · 点 `ivDelete` ⇒ `rvRelevantProduct` / `tvName` / `ivDelete` **一起消失**
+  //       （实测容器高度 [0,1054][1080,1236] → 缩回 [0,1054][1080,1131]）。
+  //       ⇒「摘掉」确实有效，**且没挂时 `ivDelete` 根本不在结构里**（全屏只有这一个含 delete 的 id）
+  //         ⇒ 拿 `whenOn: ivDelete` 当守卫是安全的：没挂就整步跳过、一个像素不碰。
+  //     · 点「关联好物」整行 → 搜索页（`etSearch` + `ivProduct` 出现）；输「货号+颜色」后
+  //       **600ms 结果就已就位**（实测 600ms 与 3.1s 的卡片文字完全一致），第 1 格就是我们的商品
+  //       （卡上颜色标签 = 我们的颜色「煤黑色01」）。
+  //   ⇒ 三条规则（都按名字幂等，重跑不叠加）：
+  //     8a. 「好物1」之前：**先把得物自动挂的那条摘掉**（`whenOn: ivDelete`，没挂就跳过）。
+  //         ★ 只做一次、只挂在「好物1」上 —— 好物2/3 时容器里躺着的是**我们自己挂的**，
+  //           再摘就把自己摘掉了。
+  //     8b. 点完「关联好物」之后加一道**幂等补点**：转场实测 ~1.2s ⇒ 先固定等 1.5s，
+  //         若还没看到 `etSearch` 就再点一次整行（`whenNotOn: etSearch`，已经在搜索页就整步跳过），
+  //         然后再硬等 `etSearch`。这是 run5 seq2「等了 12.2s 没等到搜索框」的正面修复：
+  //         那一刻 `tvRelevantProduct` 正被得物的识别结果**重建**（日志里反复出现
+  //         「还没看到 tvRelevantProduct，等半秒再抓一次」），点空一次就再也没有第二次机会。
+  //     8c. 每选完一格 → `waitId ivDelete` 8s：**挂上了才算这一步过**。
+  //         搜索为空 / 点空时 `ivDelete` 不出现 ⇒ 当场报错，绝不带着「得物自动挂的那条」
+  //         或「一条都没挂」去点发布。
+  const arrG = um[key];
+  const GN = (n, t) => `好物${n} · ${t}`;
+  const IDD = DEWU + ':id/ivDelete';
+  const IDE = DEWU + ':id/etSearch';
+  const IDR = DEWU + ':id/tvRelevantProduct';
+  const GOODS_NEW = /^好物\d · (先摘掉得物自动挂的商品|没进搜索页就补点一次|等搜索页转场|校验确实挂上了)/;
+  // 幂等第一步：删掉本段上一次插进去的所有步
+  {
+    let k = 0;
+    for (let i = arrG.length - 1; i >= 0; i--) if (GOODS_NEW.test(String(arrG[i].name || ''))) { arrG.splice(i, 1); k++; }
+    if (k) log.push(`好物段：先清掉上次插入的 ${k} 步（保证幂等）`);
+  }
+  // 幂等第二步：按顺序重建
+  {
+    const rebuilt = [];
+    for (const s of arrG) {
+      const n = String(s.name || '');
+      const mRow = /^好物(\d) · 点「关联好物」这一行$/.exec(n);
+      const mWait = /^好物(\d) · 等搜索页加载$/.exec(n);
+      const mPick = /^好物(\d) · 选结果第 1 格$/.exec(n);
+      if (mRow) {
+        const g = mRow[1];
+        // 8a：只给「好物1」加「先摘掉得物自动挂的商品」
+        if (g === '1') {
+          rebuilt.push({
+            name: GN(1, '先摘掉得物自动挂的商品（有才点，没有就跳过）'),
+            action: 'tapId',
+            value: IDD,
+            when: 'goods1Sku',
+            whenOn: IDD,
+            hint: '★★ 2026-10-05 用户口径「不接受任何得物自动挂的」：贴完文案后得物会把**视觉识别到的商品自动挂上**，'
+              + '必须先摘掉它再挂我们自己的。'
+              + '① 判据：**不能看「关联好物」那一行的文字**（没挂/已挂都写着「关联好物」）——'
+              + '唯一可靠判据是容器里有没有 **ivDelete**（右侧那颗 ×）。'
+              + '② 守卫 whenOn=ivDelete：实测**没挂商品时 ivDelete 不在结构里**（全屏只有这一个含 delete 的 id），'
+              + '所以没挂时这一步整步跳过、一个像素都不碰。'
+              + '③ 实测点它之后 rvRelevantProduct / tvName / ivDelete 一起消失（容器高度 1236→1131）。'
+              + '★ 只做一次、只挂在「好物1」上：好物2/3 时容器里躺的是**我们自己挂的**，再摘就把自己摘掉。',
+            verified: true
+          });
+          log.push('好物1 之前插入「先摘掉得物自动挂的商品」(tapId ivDelete, whenOn=ivDelete)');
+        }
+      }
+      if (mWait) {
+        const g = mWait[1];
+        // 8b：转场等 + 幂等补点（插在「等搜索页加载」这一步**之前**）
+        rebuilt.push({
+          name: GN(g, '等搜索页转场 1.5s（实测转场 ~1.2s）'),
+          action: 'wait',
+          value: 1500,
+          when: `goods${g}Sku`,
+          hint: '★ 点完整行到搜索页是**异步转场**（实测 ~1.2s）。先固定等 1.5s，'
+            + '下一步再按「这一屏有没有 etSearch」决定要不要补点一次。'
+            + '★ 带 when 守卫：这一列货号空着时整步跳过（不白等）。'
+        });
+        rebuilt.push({
+          name: GN(g, '没进搜索页就补点一次（幂等）'),
+          action: 'tapId',
+          value: IDR,
+          when: `goods${g}Sku`,
+          whenNotOn: IDE,
+          hint: '★★ 2026-10-05 新增（run5 seq2「等了 12.2s 没等到搜索框」的正面修复）：'
+            + '得物的识别结果到达时会把 `tvRelevantProduct` **重建**（生产日志里反复出现'
+            + '「还没看到「tvRelevantProduct」，等半秒再抓一次（第 2 次）」），'
+            + '这一刻点下去会**点空**，而原来的流程只点一次就死等 ⇒ 整条卡死。'
+            + '⇒ 加一次**幂等补点**：守卫 whenNotOn=etSearch —— 已经在搜索页就整步跳过（不重复点）；'
+            + '还在发布页才补点一次。后面还有一道硬等（waitId）兜底。'
+        });
+        log.push(`好物${g}：插入「转场等 1.5s」+「没进搜索页就补点一次」`);
+      }
+      rebuilt.push(s);
+      if (mPick) {
+        const g = mPick[1];
+        // 8c：选完一格 → 校验确实挂上了
+        rebuilt.push({
+          name: GN(g, '校验确实挂上了（没挂上就报错）'),
+          action: 'waitId',
+          value: IDD,
+          when: `goods${g}Sku`,
+          timeout: 8000,
+          hint: '★★ 2026-10-05 用户口径「货号不能不挂」：选完结果第 1 格后，'
+            + '**必须等容器里重新出现 ivDelete** 才算这一步真的成了。'
+            + '① 搜索为空、或那一下点空 ⇒ ivDelete 不出现 ⇒ 这里等 8s 后**当场报错**，'
+            + '绝不允许带着「一条都没挂」或「得物自动挂的那条」去点发布（那是静默的错，最难查）。'
+            + '② 实测选完回发布页约 2.5s，8s 上限足够。'
+        });
+        log.push(`好物${g}：插入「校验确实挂上了」(waitId ivDelete 8s)`);
+      }
+    }
+    arrG.length = 0;
+    for (const s of rebuilt) arrG.push(s);
   }
 
   console.log(`${key}: ${before} → ${arr.length} 步`);
