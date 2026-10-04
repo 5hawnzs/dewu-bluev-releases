@@ -85,6 +85,18 @@ function makeFakeAdb(dir) {
   //   （实测：不调的话得物相册里根本看不到这个文件）。所以 content query 只回 scanned、
   //   不回 pushed —— 否则「扫描没生效」这种情况永远测不出来（恒绿）。
   const scanned = [];
+  // ★★ 2026-10-04：给每条进库的记录分配一个**稳定 id**。
+  //   真机 MediaStore 的 `_id` 是主键 —— 删掉一条**不会**让别的记录改号。
+  //   老夹具拿「下标 + 100」当 id ⇒ 删掉中间一条会让后面所有记录改号，于是
+  //   「按 _id 逐条删」这种写法在回归里**只能删掉一条、剩下的全部假绿**
+  //   （clearAlbum 正是逐条删的，所以这条必须修）。
+  let nextMediaId = 100;
+  const mediaIds = new Map();               // 路径 -> _id
+  const mediaIdOf = p => {
+    const key = String(p);
+    if (!mediaIds.has(key)) mediaIds.set(key, nextMediaId++);
+    return mediaIds.get(key);
+  };
   // 现场开关 SCAN_FAIL：假装媒体扫描**没生效**（scan_file 回空 STREAM、scan_volume 不回填）
   //   —— 用来验「扫描失败时必须靠进库确认兜底，且最终如实失败」。
   const SCAN_FAIL = path.join(dir, 'SCAN_FAIL');
@@ -554,12 +566,12 @@ function makeFakeAdb(dir) {
         const asSd = arg.replace(/^\/storage\/emulated\/0\//, '/sdcard/');
         if (!failScan && asSd && pushed.includes(asSd)) {
           if (!scanned.includes(asSd)) scanned.push(asSd);
-          return okOut(`Result: Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/${200 + scanned.length}}]\n`);
+          return okOut(`Result: Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/${mediaIdOf(asSd)}}]\n`);
         }
         return okOut('Result: Bundle[{android.intent.extra.STREAM=null}]\n');
       }
       if (/--method scan_volume/.test(cmd)) {
-        if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) scanned.push(p); });
+        if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) { scanned.push(p); mediaIdOf(p); } });
         return okOut('Result: Bundle[{}]\n');
       }
       return okOut('Result: Bundle[{}]\n');
@@ -575,7 +587,7 @@ function makeFakeAdb(dir) {
       //   旧夹具回的是 `Row: N _data=路径`（没 _id）⇒ 会把**所有记录都漏掉**，
       //   于是「按记录删库」这一半在回归里等于没测（假绿）。
       return okOut(list.map((p, i) =>
-        `Row: ${i} _id=${100 + i}, _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`
+        `Row: ${i} _id=${mediaIdOf(p)}, _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`
       ).join('\n') + (list.length ? '\n' : ''));
     }
     if (/^content delete /.test(cmd)) {
@@ -585,10 +597,12 @@ function makeFakeAdb(dir) {
       //   「删完库里还有」这种 bug 就永远抓不到。
       const m = cmd.match(/\/media\/(\d+)\s*$/);
       if (m) {
-        const idx = Number(m[1]) - 100;
-        if (idx >= 0 && idx < scanned.length) {
+        const id = Number(m[1]);
+        const idx = scanned.findIndex(p => mediaIdOf(p) === id);   // 按**稳定 id** 反查（不再用下标推算）
+        if (idx >= 0) {
           const gone = scanned[idx];
           scanned.splice(idx, 1);
+          mediaIds.delete(String(gone));
           for (let i = pushed.length - 1; i >= 0; i--) {
             if (norm(pushed[i]).replace(/^\/storage\/emulated\/0\//, '/sdcard/') ===
                 norm(gone).replace(/^\/storage\/emulated\/0\//, '/sdcard/')) pushed.splice(i, 1);

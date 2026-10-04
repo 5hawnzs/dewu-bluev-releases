@@ -2081,6 +2081,80 @@ const state = {
   }
 
   // ==========================================================================
+  // D8) ★★★ 2026-10-04（真机实测新增）：**清全盘相册** `adb.clearAlbum`
+  //
+  //   用户口径（原话）：「你只要保证发布某条素材时，调出相册只能看到他的图片或者视频」。
+  //   真机对照实验（可复算、已截图）：把一条 mp4 放进 `/sdcard/Movies`（**不在** DCIM/Camera
+  //   下），得物相册里**照样出现**、和专属目录里的并排显示 —— 得物相册是**全盘聚合视图**。
+  //   ⇒ 光清 DCIM/Camera 不足以保证「相册里只有他的」；唯一靠得住的判据是
+  //     **MediaStore 里没有别的素材**（clearAlbum 就是按这个判据写的）。
+  //
+  //   这一组盯四件事：
+  //     ① 库里在「别处」有素材 ⇒ 清完**库必须真的为空**（不是"发过删除命令"就算数）；
+  //     ② 反向对照：没被 App 占着时**一次都不许强停**（乱停会把用户正在用的 App 关掉）；
+  //     ③ 空库 ⇒ 直接判干净、removed=0；
+  //     ④ 源码级：`ok` 只由**复查**决定；publisher 真调了它、且只调一次。
+  // ==========================================================================
+  {
+    const fakeExec8 = require('child_process').execFile;
+    const appStops8 = fakeExec8.__appStops;
+    const adbS8 = require(path.join(base, 'src/main/services/adb.js'));
+    const DEWU8 = 'com.shizhuang.duapp';
+    const reset8 = () => { fakeExec8.__appReset(); appStops8.length = 0; };
+    const libCount = async () => {
+      const r = await adbS8.shell('FAKESERIAL',
+        'content query --uri content://media/external/video/media --projection _id:_data');
+      return String(r.stdout || '').split(/\r?\n/).filter(l => /_id=\d+/.test(l)).length;
+    };
+
+    // ① 库里在「别处」（不在专属目录）有素材 ⇒ 清完库必须为空
+    reset8();
+    await adbS8.push('FAKESERIAL', '/tmp/无所谓A.mp4', '/sdcard/Movies/别处来的.mp4');
+    await adbS8.push('FAKESERIAL', '/tmp/无所谓B.mp4', '/sdcard/DCIM/Camera/bluev/上一条的.mp4');
+    await adbS8.shell('FAKESERIAL', 'content call --uri content://media --method scan_volume --arg external_primary', {});
+    const before8 = await libCount();
+    clearCalls();
+    const r8 = await adbS8.clearAlbum('FAKESERIAL', { forceStopPkg: DEWU8 });
+    const after8 = await libCount();
+    ok('清相册 ⑰ ★★ 清全盘相册：别处（/sdcard/Movies）的素材也要清掉，清完库必须为空',
+      before8 === 2 && r8.ok === true && after8 === 0,
+      `清前=${before8} 清后=${after8} ok=${r8.ok} removed=${r8.removed}`);
+    ok('清相册 ⑰b ★★ 反向对照：没被 App 占着时**一次都不许强停**得物（乱停会把用户正在用的 App 关掉）',
+      r8.forceStopped === false && appStops8.length === 0 && !/am force-stop/.test(calls()),
+      `强停=${r8.forceStopped} stops=${JSON.stringify(appStops8)}`);
+
+    // ② 空库 ⇒ 直接判干净（不许无脑强停、也不许报失败）
+    reset8();
+    const r8b = await adbS8.clearAlbum('FAKESERIAL', { forceStopPkg: DEWU8 });
+    ok('清相册 ⑱ ★ 本来就是空库 ⇒ 直接判干净（ok=true、removed=0、一次都不强停）',
+      r8b.ok === true && r8b.removed === 0 && r8b.forceStopped === false,
+      `ok=${r8b.ok} removed=${r8b.removed} 强停=${r8b.forceStopped}`);
+
+    // ③ 不传 forceStopPkg ⇒ 一个 App 都不许碰
+    reset8();
+    await adbS8.push('FAKESERIAL', '/tmp/无所谓C.mp4', '/sdcard/Movies/再来一个.mp4');
+    await adbS8.shell('FAKESERIAL', 'content call --uri content://media --method scan_volume --arg external_primary', {});
+    const r8c = await adbS8.clearAlbum('FAKESERIAL');
+    ok('清相册 ⑱b 不传 forceStopPkg 时一个 App 都不碰（默认行为与以前一字不差）',
+      appStops8.length === 0 && r8c.ok === true,
+      `stops=${JSON.stringify(appStops8)} ok=${r8c.ok}`);
+
+    // ④ 源码级：ok 只由「复查」决定
+    const adbSrc8 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8'));
+    const iAlbum = adbSrc8.indexOf('async function clearAlbum');
+    ok('清相册 ⑲ ★★ 源码级：clearAlbum 的 ok 必须是「复查时四张表都为空」（不许只看删成功了几条）',
+      iAlbum >= 0 && adbSrc8.slice(iAlbum, iAlbum + 3200).includes('ok: left === 0'),
+      iAlbum >= 0 ? '（判据在）' : '（找不到 clearAlbum）');
+
+    // ⑤ 源码级：publisher 真的调了它，且只调一次
+    const pubSrc8 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
+    const nCalls8 = (pubSrc8.match(/adb\.clearAlbum\(/g) || []).length;
+    ok('清相册 ⑳ ★★ 源码级：发布流程真的调了 clearAlbum（且只调一次，别重复清）',
+      nCalls8 === 1, `调用次数=${nCalls8}`);
+    reset8();
+  }
+
+  // ==========================================================================
   // F) ★★★ 2026-10-04（用户口径，原话：「**发出去了才算成功**」）
   //   点完「提交发布」**不等于**发出去了。真机上「没发出去」有三种长相，而**每一种在界面上都像成功**
   //   （脚本跑完、不报错、台账写「发布成功」）：

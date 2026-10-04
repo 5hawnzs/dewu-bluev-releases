@@ -717,8 +717,23 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       + ' —— 不清干净的话上一条的素材会留在相册里，选素材那一步会点到上一条的图。'
       + '（这一步不许跳过：跳过的表现是「内容看着发成功了，配图却是上一条的」，最难查。）');
   }
+  // ★★★ 2026-10-04（真机实测新增）**清全盘相册** —— 上面两步只清了目录，
+  //   而得物相册顶部那个「所有照片」是**全盘聚合视图**：把一条 mp4 放进 /sdcard/Movies
+  //   （不在 DCIM/Camera 下），它照样出现在得物相册里、和专属目录里的并排显示（已截图对照）。
+  //   ⇒「发布这一条时，调出相册只能看到它的素材」这件事，唯一靠得住的判据是
+  //   **MediaStore 里没有别的素材**。清完复查四张表，一条不剩才算过。
+  //   （这一步也顺手覆盖了「系统截图 / 别的 App 存的素材混进相册」那类问题。）
+  const clAll = await adb.clearAlbum(serial, { forceStopPkg: uimap.DEWU.pkg });
+  if (!clAll.ok) {
+    throw new Error('没能把设备相册清到一条不剩：' + (clAll.error || '未知原因')
+      + ' —— 不清干净的话相册里会混着其他素材（专属目录之外的也算），选素材那一步会点到别的图。');
+  }
+  if (clAll.removed) {
+    log(`${row.dir}：相册里有 ${clAll.removed} 条其他素材（不在 ${remoteDir} 里，普通清目录清不掉），已一并清掉`, 'info');
+  }
+
   // ★★ 强停过得物 ⇒ 它现在是**死的**，必须重新拉起来并确认回到首页（否则后面全是点空气）。
-  if (clRoot.forceStopped || cl.forceStopped) {
+  if (clRoot.forceStopped || cl.forceStopped || clAll.forceStopped) {
     log(`${row.dir}：清相册时得物正占着素材文件（Text file busy），已强制停掉它腾出句柄 —— 现在重新拉回首页`, 'warn');
     await pullHome('清相册时强停过得物');
   }

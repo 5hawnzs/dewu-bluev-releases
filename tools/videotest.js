@@ -312,6 +312,41 @@ const sizeOf = p => (fs.existsSync(p) ? fs.statSync(p).size : -1);
       /h264/.test(lineOut) && /yuv420p\b/.test(lineOut), lineOut.trim().slice(0, 110));
   }
 
+  // ==========================================================================
+  // L) ★★ 2026-10-04（真机踩到，回头补的）：ffmpeg **起不来**时，错误必须是能看懂的话。
+  //   现场：我用脚本直接调 toMp4、忘了先 `setBundledFfmpegDir`（app 启动时 index.js 会做）
+  //   ⇒ execFile 报 ENOENT，而 **stderr 是空的**（ENOENT 只有 err.message）⇒
+  //   界面显示「ffmpeg 转码失败：未知原因」，完全没法排查。
+  //   这一组盯两件事：
+  //     ① `explain()` 必须能认出「起不来」并指出去哪儿看；
+  //     ② **端到端**：ffmpeg 路径真不存在时，抛的错就是那句话（不是「未知原因」）。
+  // ==========================================================================
+  {
+    const e1 = video.explain('spawn ffmpeg ENOENT');
+    ok('L1) ★ explain：ffmpeg 起不来（ENOENT）要翻成人话、并指出「设置 → 外部依赖」',
+      /启动不了 ffmpeg/.test(e1) && /外部依赖/.test(e1), e1);
+    const e2 = video.explain('ffmpeg: not recognized as an internal or external command');
+    ok('L2) ★ explain：Windows 那句「不是内部或外部命令」也认得出',
+      /启动不了 ffmpeg/.test(e2), e2);
+    const e3 = video.explain('Invalid data found when processing input');
+    ok('L3) 反向对照：真·文件损坏仍走原来那句（别把所有错都吞成「起不来」）',
+      /不是能识别的视频文件/.test(e3), e3);
+
+    // 端到端：把「手填」和「内置」两条路都掐断 ⇒ 只能走 PATH，而 PATH 里没有 ffmpeg
+    const hadCfg = video.getFfmpegPath();
+    const hadBundle = video.getBundledFfmpegDir();
+    video.setFfmpegPath('');
+    video.setBundledFfmpegDir('');
+    let msg = '';
+    try {
+      await video.toMp4(P('h264.mp4'), P('never_out.mp4'), { log: () => {} });
+    } catch (e) { msg = String(e && e.message || e); }
+    video.setFfmpegPath(hadCfg);
+    video.setBundledFfmpegDir(hadBundle);
+    ok('L4) ★★ 端到端：ffmpeg 路径不存在时，抛的错必须说清「启动不了 ffmpeg」，**不许**是「未知原因」',
+      /启动不了 ffmpeg/.test(msg) && !/未知原因/.test(msg), msg.slice(0, 170));
+  }
+
   console.log('');
   console.log('==== ' + (fail ? ('FAIL ' + fail) : 'ALL PASS') + ' ====');
   console.log('TMP: ' + TMP);

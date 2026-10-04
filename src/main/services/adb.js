@@ -579,6 +579,115 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
 }
 
 /**
+ * ★★★ 2026-10-04（真机实测新增）：把设备**整个相册**清到一条不剩 —— 判据是「MediaStore 里
+ *   除了本条要推的，没有别的素材」。这是用户口径「发布某条素材时，调出相册只能看到他的图/视频」
+ *   的**唯一靠得住的落点**。
+ *
+ * 为什么 clearMediaDir 不够（真机对照实验，可复算）：
+ *   得物相册顶部那个「所有照片」是个**全盘聚合视图**。把一条 mp4 放进 `/sdcard/Movies`
+ *   （**不在** DCIM/Camera 下），它照样出现在得物相册里，和专属目录里的并排显示、次序按时间排。
+ *   ⇒ 只清 DCIM/Camera 时，设备上任何**别处**的素材都会混进这一屏，选素材那一步就会点到它。
+ *
+ * 与 clearMediaDir 的分工（两条都要留着，判据不同）：
+ *   · clearMediaDir —— 按**目录**清：把 DCIM/Camera（含 bluev）清干净，能顺带把物理文件删掉；
+ *   · clearAlbum     —— 按**媒体库**清：不管素材落在哪个目录，只要相册里看得见的就清掉。
+ *
+ * 实现：扫 4 张表拿到所有 _id/_data ⇒ 先 `rm -f` 物理文件（不删文件的话，下一次 scan_volume
+ *   会把残留**重新扫进库**、又冒出来）⇒ 再按 _id `content delete`（按 id 删不需要引号）⇒
+ *   `scan_volume` ⇒ **复查**；还有残留就 `am force-stop` 一次再重来。
+ *
+ * ★ 不假装清干净：`ok` 只在**复查时四张表都为空**时给出，否则把「还剩几条、前几个是谁」如实带回。
+ *   清不干净是**静默错误** —— 表现是「内容看着发成功了，配图却是别人的」，最难查。
+ *
+ * @param {object} [opts]
+ *   · `forceStopPkg` —— 清不掉时**允许**把哪个 App 强停掉再重试（真机实测它持有解码句柄）。
+ *                       不传就完全不碰 App。
+ * 返回 { ok, removed, files, left, error, note, forceStopped }
+ */
+async function clearAlbum(serial, opts = {}) {
+  const forceStopPkg = String((opts && opts.forceStopPkg) || '').trim();
+  // 表名与 clearMediaDir 保持一致（file 表在部分机型不可查，单独容忍）
+  const TABLES = ['video', 'images', 'audio', 'files'];
+  let forceStopped = false;
+
+  const scanAll = async () => {
+    const hit = []; let error = '';
+    for (const t of TABLES) {
+      const r = await shell(serial,
+        'content query --uri content://media/external/' + t + '/media --projection _id:_data', { timeout: 30000 });
+      if (!r.ok) {
+        const e = String(r.stderr || '').trim() || ('content query(' + t + ') 执行失败');
+        if (t === 'files' && /no such table|Invalid|Unknown|not found/i.test(e)) continue;
+        if (!error) error = e;
+        continue;
+      }
+      for (const line of String(r.stdout || '').split(/\r?\n/)) {
+        const m = /_id=(\d+),\s*_data=(.*?)\s*$/.exec(line);
+        if (m) hit.push({ table: t, id: m[1], file: m[2] });
+      }
+    }
+    return { hit, error };
+  };
+
+  const removeAll = async (hit) => {
+    let removed = 0;
+    for (const h of hit) {
+      // ① 物理文件先删：记录删了但文件还在时，scan_volume 会把它重新索引回来。
+      //    路径不含空格时才拼裸路径（不往设备端塞引号 —— 引号会被 `adb shell` 再解析一次吃掉）。
+      if (h.file) {
+        if (/\s/.test(h.file)) {
+          // 含空格的路径没法安全地走 shell ⇒ 交给下面按 _id 删记录，物理文件留给「按目录清」那条路。
+        } else {
+          await shell(serial, 'rm -f ' + h.file, { timeout: 20000 });
+        }
+      }
+      // ② 按 _id 删记录（`content delete --uri .../<id>` 完全不需要引号）
+      const rd = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
+      if (rd.ok) removed++;
+    }
+    return { removed };
+  };
+
+  const reScan = async () => {
+    await shell(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 60000 });
+    return scanAll();
+  };
+
+  let s = await scanAll();
+  if (s.error) return { ok: false, removed: 0, files: [], left: s.hit.length, error: s.error, note: '', forceStopped };
+  if (!s.hit.length) return { ok: true, removed: 0, files: [], left: 0, error: '', note: '', forceStopped };
+
+  const all = s.hit.slice();
+  let r = await removeAll(s.hit);
+  let chk = await reScan();
+
+  // 还有残留 ⇒ 多半是句柄锁着（App 正解码）⇒ 强停一次再重来
+  if (chk.hit.length && forceStopPkg) {
+    const fsr = await forceStop(serial, forceStopPkg);
+    if (fsr.ok) {
+      forceStopped = true;
+      await sleepMs(800);
+      const r2 = await removeAll(chk.hit);
+      r.removed += r2.removed;
+      chk = await reScan();
+    }
+  }
+
+  const left = chk.hit.length;
+  const note = left
+    ? ('还有 ' + left + ' 条清不掉（前几个：' + chk.hit.slice(0, 3).map(h => h.file || (h.table + '/' + h.id)).join('、') + '）')
+    : '';
+  return {
+    ok: left === 0,
+    removed: r.removed,
+    files: all.map(h => h.file).filter(Boolean),
+    left,
+    error: left ? (forceStopPkg ? '把得物强停之后仍然清不掉：' + note : note) : '',
+    note, forceStopped
+  };
+}
+
+/**
  * ★★ 尽力清掉「历史遗留的超长垃圾目录」（stale 句柄锁死、rm/rmdir 都报 `Text file busy`）。
  *
  * 为什么必须单独有这么一条（真机实测 / MuMu 12）：
@@ -1666,7 +1775,7 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, reapLongTrashDirs, filesMissing, screencap, forceStop,
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   dumpAnimOff, animRestoreCmd, shellQuoteForInputText, offlineHint,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,

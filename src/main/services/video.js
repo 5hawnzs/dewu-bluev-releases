@@ -324,6 +324,11 @@ function errTail(s, n = 400) {
 function explain(s) {
   const raw = errTail(s, 200);
   const t = String(s || '');
+  // ★★ 2026-10-04：ffmpeg 起不来（不是它跑失败，是**根本没跑起来**）单独说清楚 ——
+  //   这类以前只显示「未知原因」。内置那份被杀软隔离、或手填路径写错，都会落到这里。
+  if (/ENOENT|not recognized as an internal|No such file or directory|EACCES|permission denied.*ffmpeg/i.test(t)) {
+    return `启动不了 ffmpeg（${raw}）—— 内置那份可能被删掉或被安全软件隔离了，去「设置 → 外部依赖」看一眼`;
+  }
   if (/matches no streams|Failed to set value '0:v:0'/i.test(t)) {
     return `这个文件里没有可用的视频轨（ffmpeg: ${raw}）`;
   }
@@ -347,7 +352,12 @@ function runFfmpeg(args, { timeout = 0, cancelled = null } = {}) {
         (err, stdout, stderr) => finish({
           ok: !err, killed: !!(err && err.killed), code: err ? (err.code || null) : 0,
           signal: (err && err.signal) || null,
-          stdout: String(stdout || ''), stderr: String(stderr || '')
+          stdout: String(stdout || ''),
+          // ★★ 2026-10-04（真机实测踩到）：ffmpeg **根本起不来**时（路径不对 / 内置那份被杀软隔离 /
+          //   没有执行权限），`execFile` 的 err 里有 message，但 **stderr 是空的** ⇒ 界面只会显示
+          //   「ffmpeg 转码失败：未知原因」，用户完全不知道该干嘛（我自己就被这句话挡住过一次）。
+          //   把 err 的 message / code 一起带上，explain() 才能翻成人话。
+          stderr: String(stderr || '') || String((err && (err.message || err.code)) || '')
         }));
     } catch (e) {
       return finish({ ok: false, code: null, stderr: String((e && e.message) || e), stdout: '' });
