@@ -160,5 +160,47 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
     fs.existsSync(path.join(v2leaf, '片段-2.mp4')) && fs.statSync(path.join(v2leaf, '片段.mp4')).size === occ,
     fs.readdirSync(v2leaf).join(' '));
 
+  // ---- ⑥ ★★★ 2026-10-04（用户报「第一篇素材是全黑 0 秒视频，哪来的」）
+  //   用户原话：「**我已经在合规检查转码了，而且他在文件夹里的格式就是 mp4，怎么可能格式不对？**」
+  //   —— 扩展名确实对（就是 .mp4），问题在**容器里那个编码**：真机实测得物**解不开 HEVC Main 10
+  //   （10-bit）**，相册里那一格是纯黑 + 一直转圈。用户第一条素材就是这一种
+  //   （`82-326313100701-变装展示-7月份.mp4` = hvc1 / yuv420p10le / 10-bit / 39.9MB），
+  //   同批另一条 H.264 8-bit 的缩略图正常。
+  //   ⇒ 这一段是**集成路径**（合规检查 → 内置 ffmpeg → 回写条目清单）：证明扩展名是 .mp4、
+  //     容器合法的素材，也能被**认出来**并**真转到 8-bit**（不是只标红、更不是只改个名字）。
+  const v10leaf = path.join(TMP, 'flat', 'HEVC10-001+黑+1');
+  fs.mkdirSync(v10leaf, { recursive: true });
+  execFileSync(path.join(VENDOR_FF, 'ffmpeg.exe'),
+    ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', path.join(v10leaf, '片段.mp4')],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  ok('⑥ 前置：造出一个**扩展名就是 .mp4**、但里面是 10-bit HEVC 的样本',
+    fs.existsSync(path.join(v10leaf, '片段.mp4')) && (await vmod.probeDecodable(path.join(v10leaf, '片段.mp4'))).tenBit === true,
+    JSON.stringify(await vmod.probeDecodable(path.join(v10leaf, '片段.mp4'))));
+  const v10items = [{
+    id: 'HEVC10-001+黑+1', dir: 'HEVC10-001+黑+1', absDir: v10leaf, sku: 'HEVC10-001', color: '黑',
+    files: [{ name: '片段.mp4', size: 0, type: 'video' }]
+  }];
+  const v10sc = await compliance.scan(v10items, ctx());
+  const v10row = v10sc.rows[0] || {};
+  ok('⑥ ★★ 扩展名是 .mp4、但编码得物解不开 ⇒ 必须判成「可自动处理」并点名 10-bit（不许记成合格）',
+    v10row.status === 'todo' && v10row.codecBad === true && /10-bit/.test(v10row.issue || ''),
+    JSON.stringify({ status: v10row.status, action: v10row.action, issue: v10row.issue, codecBad: v10row.codecBad }));
+  ok('⑥ 统计里单独列「编码不可解」= 1，且「非 MP4」= 0（两件事不许混成一列：扩展名没毛病）',
+    v10sc.stats.codecBad === 1 && v10sc.stats.notMp4 === 0, JSON.stringify(v10sc.stats));
+
+  const v10fx = await compliance.fix(v10items, v10sc.rows, ctx());
+  const v10after = await vmod.probeDecodable(path.join(v10leaf, '片段.mp4'));
+  ok('⑥ ★★ fix() 必须把这条**转成 8-bit**（文件名不变、就地替换，不是另存一份）',
+    v10fx.converted === 1 && v10fx.failed === 0 && v10after.ok === true && v10after.bitDepth === 8,
+    JSON.stringify({ converted: v10fx.converted, failed: v10fx.failed, after: v10after }));
+  ok('⑥ 处置结果里写清了「原编码是什么」（让人看得懂为什么一条 .mp4 会被"转"一次）',
+    /10-bit/.test(v10row.result || '') && /H\.264/.test(v10row.result || ''), String(v10row.result));
+  ok('⑥ 条目清单里还是 video、还是同一个文件名（下游发布拿到的仍是这条视频）',
+    v10items[0].files[0].name === '片段.mp4' && v10items[0].files[0].type === 'video',
+    JSON.stringify(v10items[0].files[0]));
+  ok('⑥ 目录里只有这一个文件（转码不留中间产物、不另起名字）',
+    fs.readdirSync(v10leaf).length === 1, fs.readdirSync(v10leaf).join(' '));
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('COMPLIANCE TEST ERROR', e); process.exitCode = 1; });

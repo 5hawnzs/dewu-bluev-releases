@@ -2014,6 +2014,177 @@ const state = {
   }
 
   // ==========================================================================
+  // D7) ★★★ 2026-10-04（用户报「第 2/3 篇直接提示没能清干净设备相册目录」的**真解**）
+  //   真机实测（同一秒、同一台设备，两条命令的差别是决定性的）：
+  //     `rm -rf /sdcard/DCIM/Camera/bluev`              → rc=1  `Text file busy`
+  //     `am force-stop com.shizhuang.duapp` 之后再执行   → **rc=0，目录立刻空**
+  //   根因：**得物自己正停在发布页/相册页、拿着这批 mp4 的硬解码句柄**（锁在 App 进程里）。
+  //   这一组盯四件事：
+  //     ① 被 App 占着时：必须**强停得物**再重试，并且**目录真清干净**（不是"发过命令"）；
+  //     ② 反向对照：App **没占着**时**一次都不许乱停**（乱停会把用户正在用的 App 关掉）；
+  //     ③ 强停之后 publisher 必须**把得物重新拉回首页**（App 已经死了，直接点固定坐标＝点空气）；
+  //     ④ 源码级：`clearMediaDir` 的顺序必须是「先强停重试 → 再 mv 换名」
+  //        （顺序反了就会先造一堆 trash 残骸，残骸会堆在相册目录里）。
+  // ==========================================================================
+  {
+    const fakeExec7 = require('child_process').execFile;
+    const appFlag = path.join(FDB, 'DIR_LOCKED_BY_APP');
+    const appStops = fakeExec7.__appStops;
+    const resetApp = () => { fakeExec7.__appReset(); appStops.length = 0; if (fs.existsSync(appFlag)) fs.unlinkSync(appFlag); };
+    const DEWU_PKG = 'com.shizhuang.duapp';
+    const rmFlag = f => { if (fs.existsSync(f)) fs.unlinkSync(f); };
+    const adbS = require(path.join(base, 'src/main/services/adb.js'));
+    const camState = fakeExec7.__dirs[fakeExec7.__cameraDirPath];
+    resetApp();
+
+    // ① 得物占着 ⇒ 必须强停再清，且目录真为空
+    fs.writeFileSync(appFlag, '1');
+    camState.exists = true; camState.files = ['上一条的素材.mp4']; camState.renames = [];
+    clearCalls();
+    let r7 = await adbS.clearMediaDir('FAKESERIAL', fakeExec7.__cameraDirPath, { forceStopPkg: DEWU_PKG });
+    ok('清相册 ⑭ ★ 得物占着素材（Text file busy）⇒ 必须强停得物再重试，最后**真清干净**',
+      r7.ok === true && r7.forceStopped === true && appStops.includes(DEWU_PKG) && camState.files.length === 0,
+      `ok=${r7.ok} 强停=${r7.forceStopped} stops=${JSON.stringify(appStops)} 残留=${JSON.stringify(camState.files)}`);
+    ok('清相册 ⑭b ★ 强停得手后**不许再走 mv 换名**（换名会造出 trash 残骸，一直堆在相册目录里）',
+      camState.renames.length === 0, `换名次数=${camState.renames.length}`);
+    ok('清相册 ⑭c 强停这一步必须**先试原地删**、删不掉才停 —— 停完必须回读到干净（不是"发过命令就算数"）',
+      r7.error === '' && /am force-stop/.test(calls()), 
+      (/am force-stop/.test(calls()) ? '（确实发了 force-stop）' : '（没有 force-stop）'));
+
+    // ② 反向对照：没有 DIR_LOCKED_BY_APP ⇒ 本来就能删 ⇒ **一次都不许乱强停**
+    resetApp();
+    camState.exists = true; camState.files = ['能删掉的.mp4']; camState.renames = [];
+    clearCalls();
+    r7 = await adbS.clearMediaDir('FAKESERIAL', fakeExec7.__cameraDirPath, { forceStopPkg: DEWU_PKG });
+    ok('清相册 ⑮ ★★ 反向对照：没被占着时**一次都不许强停得物**（乱停会把用户正在用的 App 关掉）',
+      r7.ok === true && r7.forceStopped === false && appStops.length === 0 && !/am force-stop/.test(calls()),
+      `ok=${r7.ok} 强停=${r7.forceStopped} stops=${JSON.stringify(appStops)}`);
+
+    // ②b 不传 forceStopPkg ⇒ 一个 App 都不许碰（默认行为与以前一字不差）
+    //   ★ 此时 rm / mv 全被 App 的锁挡着 ⇒ 正确结果就是**如实报失败**（清不干净绝不假装干净）。
+    resetApp();
+    fs.writeFileSync(appFlag, '1');
+    camState.exists = true; camState.files = ['锁着的.mp4']; camState.renames = [];
+    clearCalls();
+    r7 = await adbS.clearMediaDir('FAKESERIAL', fakeExec7.__cameraDirPath);
+    ok('清相册 ⑮b 不传 forceStopPkg 时一个 App 都不碰，且清不干净要**如实报失败**（不许假装干净）',
+      appStops.length === 0 && r7.ok === false && !!r7.error,
+      `stops=${JSON.stringify(appStops)} ok=${r7.ok} err=${(r7.error || '').slice(0, 50)}`);
+    resetApp();
+
+    // ④ 源码级：顺序必须是「强停重试」在「mv 换名」**之前**
+    const adbSrc7 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8'));
+    const iLock = adbSrc7.indexOf('forceStopPkg && !forceStopped');
+    const iMvTry = adbSrc7.indexOf("mv ' + dir + ' ' + trash");
+    ok('清相册 ⑯ ★★ 源码级：强停重试（1b 段）必须排在 mv 换名**之前** —— 顺序反了会先造一堆 trash 残骸',
+      iLock >= 0 && iMvTry >= 0 && iLock < iMvTry, `强停@${iLock} / mv换名@${iMvTry}`);
+  }
+
+  // ==========================================================================
+  // F) ★★★ 2026-10-04（用户口径，原话：「**发出去了才算成功**」）
+  //   点完「提交发布」**不等于**发出去了。真机上「没发出去」有三种长相，而**每一种在界面上都像成功**
+  //   （脚本跑完、不报错、台账写「发布成功」）：
+  //     · 得物压根没受理、还停在发布流程里；
+  //     · 得物把它**存成草稿**了（用户原话「我什么时候跟你说真实发布环境可以存草稿的」）；
+  //     · 提交那一步被屏幕守卫跳过（那一屏不对 ⇒ 一个 tap 都没发）。
+  //   这一组用假 adb 的 TAP_FOCUS 开关分别摆出这三种现场，验：
+  //     ① leave（真发出去了）⇒ 发布成功；
+  //     ② publish（还停在发布流程）⇒ **失败** + 已强停得物（不留草稿）；
+  //     ③ draft（被存成草稿）⇒ **失败** + 已强停得物（把那条草稿清掉）。
+  // ==========================================================================
+  {
+    const FOCUSF = path.join(FDB, 'FOCUS');
+    const TAPF = path.join(FDB, 'TAP_FOCUS');
+    const HOME_F = 'com.shizhuang.duapp/.modules.home.ui.HomeActivity';
+    const PROFILE_F = 'com.shizhuang.duapp/.modules.user.ui.MyActivity';
+    const fakeExecF = require('child_process').execFile;
+    const stopsF = fakeExecF.__appStops;
+    const hadFocusF = fs.existsSync(FOCUSF) ? fs.readFileSync(FOCUSF, 'utf8') : null;
+    const mkSt = () => ({
+      items: [{ id: 'r-pub', dir: itemDir, absDir: itemDir, sku: 'A111', color: '冠军白', files: [{ name: '1.jpg', type: 'image' }] }],
+      copyRows: [{ id: 'r-pub', title: '标题', body: '正文', topics: [] }],
+      verify: { rows: [] },
+      publish: {
+        rows: [{ seq: 1, id: 'r-pub', dir: 'r-pub', goods: 1, images: 1, startAt: '', status: '排队', result: '', reason: '' }],
+        mode: 'adb', device: '127.0.0.1:5555'
+      }
+    });
+    const runPub = async () => {
+      store.set({ publish: { uiMap, intervalSec: 0, postPublishWaitSec: 1 } });
+      clearCalls();
+      const st = mkSt();
+      await publisher.run(st, { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      return { row: st.publish.rows[0], log: calls() };
+    };
+    const cleanF = () => { [TAPF].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); }); };
+    try {
+      cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
+
+      // ① 真的发出去了（点完离开发布流程，回到个人主页）⇒ 成功
+      fs.writeFileSync(FOCUSF, HOME_F);
+      fs.writeFileSync(TAPF, 'leave');
+      let rf = await runPub();
+      ok('发布后校验 ① 点完真的离开发布流程（回到个人主页）⇒ 记「发布成功」',
+        rf.row.result === '发布成功', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
+      ok('发布后校验 ① 这种情况**不许**乱强停得物（发出去了就别去关人家的 App）',
+        stopsF.length === 0, JSON.stringify(stopsF));
+
+      // ② 还停在发布流程里 ⇒ 失败 + 强停清草稿
+      cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
+      fs.writeFileSync(FOCUSF, HOME_F);
+      fs.writeFileSync(TAPF, 'publish');
+      rf = await runPub();
+      ok('发布后校验 ② ★ 点完**还停在发布流程里** ⇒ 必须记「失败」（不许记成功）',
+        rf.row.result === '失败', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
+      ok('发布后校验 ② ★ 失败原因要说清「没有离开发布流程」（不是一句含糊的"未知"）',
+        /离开发布流程/.test(rf.row.reason || ''), String(rf.row.reason || '').slice(0, 120));
+      ok('发布后校验 ② ★ 必须强停得物把没发出去的草稿清掉（不留草稿是用户的硬要求）',
+        stopsF.includes('com.shizhuang.duapp'), JSON.stringify(stopsF));
+
+      // ③ 被存成草稿 ⇒ 失败 + 强停清草稿
+      cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
+      fs.writeFileSync(FOCUSF, HOME_F);
+      fs.writeFileSync(TAPF, 'draft');
+      rf = await runPub();
+      ok('发布后校验 ③ ★★ 落到**草稿箱**（＝被存成草稿）⇒ 必须记「失败」',
+        rf.row.result === '失败', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
+      ok('发布后校验 ③ ★★ 同样必须强停得物（否则那条草稿会一直留在「草稿箱」里，下一条还会弹「是否继续编辑」）',
+        stopsF.includes('com.shizhuang.duapp'), JSON.stringify(stopsF));
+
+      // ⑤ 超时**行为级**：`postPublishWaitSec` 配大 ⇒ 真等更久。
+      //   为什么不用源码级：本项目规矩是「源码里有这行字 ≠ 它真解决了问题」——
+      //   把 timeoutMs 写死成 15000，源码级照样绿，行为级会红。
+      cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
+      fs.writeFileSync(FOCUSF, HOME_F);
+      fs.writeFileSync(TAPF, 'publish');
+      const timePub = async (sec) => {
+        store.set({ publish: { uiMap, intervalSec: 0, postPublishWaitSec: sec } });
+        const t0 = Date.now();
+        await publisher.run(mkSt(), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+        return Date.now() - t0;
+      };
+      const fastF = await timePub(1);
+      const slowF = await timePub(3);
+      ok('发布后校验 ⑤ 超时配置真被读到（1s 档 vs 3s 档，实测耗时差 ≥ 1.5s）',
+        slowF - fastF >= 1500, `1s 档 ${fastF}ms / 3s 档 ${slowF}ms`);
+
+      // ④ 判据自证：`isDraftScreen` 真在查草稿箱（把草稿箱写进判据，别让它变成死代码）
+      ok('发布后校验 ④ 草稿箱判据认得 DraftActivity（否则 ③ 是空==空）',
+        uimap.isDraftScreen('com.shizhuang.duapp/media.activity.DraftActivity') === true
+        && uimap.isDraftScreen(PROFILE_F) === false
+        && uimap.isDraftScreen('') === false,
+        JSON.stringify([uimap.isDraftScreen('com.shizhuang.duapp/media.activity.DraftActivity'),
+          uimap.isDraftScreen(PROFILE_F), uimap.isDraftScreen('')]));
+      ok('发布后校验 ④b 导出了 waitLeftPublishFlow（这条红线要能单独喂假 adb 验正反两面）',
+        typeof publisher.waitLeftPublishFlow === 'function');
+    } finally {
+      cleanF();
+      if (hadFocusF == null) { if (fs.existsSync(FOCUSF)) fs.unlinkSync(FOCUSF); }
+      else fs.writeFileSync(FOCUSF, hadFocusF);
+    }
+  }
+
+  // ==========================================================================
   // E) ★★「回主线」守卫（2026-10-04 用户报「第二条永远拉不起来」的另一半）
   //    一条内容发完之后，得物停在哪儿是**不确定的**（个人主页 / 相册页 / 发布成功页），
   //    而下一条的第一步是「底部点『我』」那个**固定坐标** —— 只有 App 在首页时它底下
@@ -2123,11 +2294,20 @@ const state = {
       //   夹具语义：FOCUS='-' ⇒ 这一次读不到，下一次读就正常（见 fakeadb 里那段注释）。
       //   ★ 断言只盯「有没有瞎启动 App」：转场之后得物**可能本来就在首页**，
       //     那种情况下不启动才是对的 —— 拿「没启动」当唯一判据就把两件事混成一件了。
+      //   ★★ 2026-10-04 补充：夹具的 `'-'` 语义是「这一次读不到、下一次正常」，而它"正常"时
+      //     落的是**发布页** ⇒ 这一轮结束时会**还停在发布流程里**。这在真机上对应的是
+      //     「点了提交却没发出去」，按用户口径「发出去了才算成功」**本来就该记失败**。
+      //     这一条要测的不是那件事（它测的是"别瞎启动 App"），所以显式把夹具设成
+      //     「提交后离开发布流程」—— 让这一轮的发布结果名副其实，而不是靠旧判据侥幸绿。
+      const TAPF4 = path.join(FDB, 'TAP_FOCUS');
+      const hadT4 = fs.existsSync(TAPF4);
+      fs.writeFileSync(TAPF4, 'leave');
       fs.writeFileSync(FOCUSE, '-');
       store.set({ publish: { uiMap, ensureAppTimeoutMs: 8000 } });
       clearCalls();
       const rE4a = await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
       const logE4a = calls();
+      if (!hadT4) fs.unlinkSync(TAPF4);
       ok('回主线 ④a 转场瞬间读不到一次前台 ⇒ 不当成「App 不在」而瞎启动，照常往下走',
         !/am start|monkey/.test(logE4a) && rE4a.rows[0].result === '发布成功',
         (logE4a.match(/.*(am start|monkey).*/g) || []).join(' | ') + ' / ' + rE4a.rows[0].result);

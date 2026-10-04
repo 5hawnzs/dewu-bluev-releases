@@ -175,6 +175,18 @@ function isHomeScreen(focus) {
   const s = String(focus || '');
   return isDewuFocus(s) && s.indexOf(DEWU.homeActivity) >= 0;
 }
+/**
+ * ★★ 2026-10-04 新增：当前前台是不是**得物草稿箱**（`media.activity.DraftActivity`）。
+ *
+ * 为什么要单独有这么一条（用户口径：「发出去了才算成功」「真实发布环境不许存草稿」）：
+ *   点「提交发布」之后如果能停在**草稿箱**，那不是"发完了"，而是**草稿被留下来了** ——
+ *   用户的诉求是「不许存草稿」。判据只看 Activity 名（便宜），
+ *   页面结构级的判据（`iv_draft_title`）留给需要更准的地方（那要多付一次抓屏）。
+ */
+function isDraftScreen(focus) {
+  const s = String(focus || '');
+  return isDewuFocus(s) && s.indexOf(DEWU.draft.activity) >= 0;
+}
 
 /** 按关键词在 dump 里猜一套候选步骤，用户改改就能用 */
 function suggest(nodes, pkg) {
@@ -603,5 +615,5 @@ module.exports = {
   parseNodes, findNode, findNodes, cardOf, countOf, parsePoints, MAX_TAP_COUNT, suggest, fill,
   normalizeSteps, STEP_ACTIONS, normalizeCond, condOk, condWhy, COND_KEYS,
   SCREEN_KEYS, normalizeScreenCond, screenCondOk,
-  DEWU, isDewuFocus, isPublishScreen, isHomeScreen
+  DEWU, isDewuFocus, isPublishScreen, isHomeScreen, isDraftScreen
 };

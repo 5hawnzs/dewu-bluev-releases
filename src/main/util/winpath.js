@@ -88,6 +88,41 @@ function isFileLockError(e) {
   return /EBUSY|EPERM|EACCES|being used by another process|permission denied|the process cannot access|cannot access the file|被占用|正在使用|拒绝访问/i.test(msg);
 }
 
+/**
+ * ★★ 2026-10-04 新增：**这个文件现在能不能被本程序写**（= 有没有被 Excel/WPS 之类独占着）。
+ *
+ * 与 `isFileLockError` 的分工：那个是**事后**判断异常算不算「被占用」（回写失败时用），
+ * 这个是**事前**探测（发布**开跑之前**就要知道，不然整批都白跑）。
+ *
+ * 怎么做：以 `r+`（读写、不截断）试开一次再关掉。
+ *   · 能开 ⇒ `writable:true`；
+ *   · 打开时抛 EBUSY/EPERM/EACCES（= 别的进程不让写共享）⇒ `writable:false, busy:true`。
+ * ★ 已用对照实验验过这条真会红（不是恒绿）：用 PowerShell 以 `FileShare::None` 独占一个 xlsx，
+ *   同一时刻 `r+` 抛 `EBUSY: resource busy or locked`；对照组（没独占）正常打开。
+ * ★ 为什么不用 Windows 的 `~$xxx.xlsx` 锁文件当判据：那是 Office **崩溃残留**，
+ *   实测有 `~$` 残留但文件其实没被占用 ⇒ 拿它判「占用」会**误拦**（用户关着 Excel 也不让发）。
+ * ★ 明确不做的事：**不往文件里写任何东西**（只 `open` + `close`）—— 这是运营的账，一个字节都不动。
+ *
+ * @returns {{exists:boolean, writable:boolean, busy:boolean, code:string, error:string}}
+ *   `exists:false` ⇒ 文件不在（不算被占用，由调用方决定要不要报错）；`busy:true` 才是"被占着"。
+ */
+async function probeWritable(file) {
+  const p = String(file || '');
+  if (!p) return { exists: false, writable: false, busy: false, code: '', error: '没给文件路径' };
+  // ★ 这里必须用**绝对路径**（调用方传的就是绝对路径）。
+  //   toLong 会把相对路径 resolve 到 cwd —— 那会造出 E:\work\...\c\Users\... 这种错路径（本机踩过）。
+  try {
+    const fh = await fs.promises.open(p, 'r+');
+    await fh.close();
+    return { exists: true, writable: true, busy: false, code: '', error: '' };
+  } catch (e) {
+    const code = String((e && e.code) || '');
+    if (code === 'ENOENT') return { exists: false, writable: false, busy: false, code, error: '' };
+    const busy = isFileLockError(e);
+    return { exists: true, writable: false, busy, code, error: String((e && e.message) || e) };
+  }
+}
+
 async function readdirSafe(dir) {
   try {
     return await fs.promises.readdir(toLong(dir), { withFileTypes: true });
@@ -203,7 +238,7 @@ function defaultPaths() {
 }
 
 module.exports = {
-  isWin, toLong, toDisplay, pathRisk, sameVolume, retry, isFileLockError,
+  isWin, toLong, toDisplay, pathRisk, sameVolume, retry, isFileLockError, probeWritable,
   mkdirp, readdirSafe, statSafe, exists, linkOrCopy, copyFile, renameDir, moveFile,
   isJunk, ext, isMedia, isVideo, contentKind, stamp, stampISO, humanSize, defaultPaths,
   MEDIA_EXT, VIDEO_EXT

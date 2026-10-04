@@ -136,6 +136,33 @@ function makeFakeAdb(dir) {
     const v = parseInt(read(STUBBORN_FLAG, Buffer.from('1')).toString('utf8').trim(), 10);
     return Number.isFinite(v) && v > 0 ? v : 1;
   };
+  // ★★★ 2026-10-04 新增现场开关 **DIR_LOCKED_BY_APP**：锁在**得物进程自己**手里那种。
+  //   真机形态（本轮实测，用户报「第 2/3 篇直接提示没能清干净」的真因）：
+  //     得物停在发布页 / 相册页时，它**正拿着这批 mp4 的硬解码句柄** ⇒
+  //       `rm` / `find -mindepth 1 -delete` / `rmdir` / `mv` **全失败**（Text file busy /
+  //       Operation not permitted），而 `am force-stop com.shizhuang.duapp` 之后**同一句立刻成功**。
+  //   ★★ 为什么必须与 DIR_STALE **分开摆**（不能合并成一个开关）：
+  //     DIR_STALE 模拟的是 MuMu sdcardfs 留下的**真 stale 句柄**（跟一个已经消失的 inode 走）——
+  //     那种 **force-stop 也解不开**。两类现象长得一模一样（都是 Text file busy），但解法不同：
+  //       · 锁在 App 里   ⇒ 强停得物再删就过了（不该去造 trash 残骸）；
+  //       · 真 stale 句柄 ⇒ 只能 mv 换名绕开。
+  //     产品代码两手都留着（先强停、过不了再换名）⇒ 回归里也必须两类都有，
+  //     否则「先强停」这一手被删掉、或「换名」那一手被删掉，都测不出来。
+  const DIR_LOCKED_BY_APP = path.join(dir, 'DIR_LOCKED_BY_APP');
+  let appStopped = false;   // 被 `am force-stop <得物>` 过 ⇒ 它进程里的句柄一起被系统收走
+  const appLocked = () => fs.existsSync(DIR_LOCKED_BY_APP) && !appStopped;
+  const appStops = [];      // 真的被执行过的 force-stop 包名（断言要用它证明「确实停了得物」）
+  // ★★ 2026-10-04 新增现场开关 **TAP_FOCUS**：**点完之后前台落到哪一屏**
+  //   （模拟得物对这次提交的真实反应）。内容取值（缺省 = publish）：
+  //     · `publish` —— 还停在发布流程里（＝没发出去：得物压根没受理，或提交那步被跳过了）；
+  //     · `draft`   —— 落到**草稿箱**（＝这条被存成草稿了；用户原话「我什么时候跟你说真实发布环境可以存草稿的」）；
+  //     · `leave`   —— 离开发布流程、回到个人主页（＝这次**真的**提交出去了）。
+  //   用途：验用户口径「**发出去了才算成功**」—— 只有 leave 能算成功，另两种必须记失败，
+  //   而且必须**把得物强停掉**（不然那条草稿会一直留在「草稿箱」里）。
+  const TAP_FOCUS = path.join(dir, 'TAP_FOCUS');
+  const PUB_FOCUS = 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity';
+  const DRAFT_FOCUS = 'com.shizhuang.duapp/media.activity.DraftActivity';
+  const PROFILE_FOCUS = 'com.shizhuang.duapp/.modules.user.ui.MyActivity';
 
   // 受管目录的规范路径（命令里可能出现 /sdcard/... 或 /storage/emulated/0/... 两种写法）
   const CAMERA = '/sdcard/DCIM/Camera';
@@ -210,7 +237,18 @@ function makeFakeAdb(dir) {
     if (/^echo\b/.test(cmd)) return okOut(cmd.replace(/^echo\s*/, '') + '\n');
     if (cmd === 'wm size') return okOut('Physical size: 1080x2400\n');
     if (cmd === 'input') return okOut('usage: input [<source>] <command>\n');
-    if (/^input (tap|keyevent|text) /.test(cmd)) return okOut('');
+    // ★★ 2026-10-04 新增：定位表里的 tapXY / tapId 最终都落到 `input tap`。
+    //   现场开关 TAP_FOCUS：点完之后前台落到哪一屏（publish / draft / leave，见文件顶部说明）。
+    //   真机形态就是用户口径「发出去了才算成功」要防的那两种：得物没受理（还停在发布流程里）、
+    //   或把它**当草稿存了**。用途：验「这两种必须记失败 + 强制关掉得物清草稿」。
+    if (/^input (tap|keyevent|text) /.test(cmd)) {
+      if (fs.existsSync(TAP_FOCUS)) {
+        const v = read(TAP_FOCUS, Buffer.from('')).toString('utf8').trim();
+        const to = /draft/i.test(v) ? DRAFT_FOCUS : (/leave/i.test(v) ? PROFILE_FOCUS : PUB_FOCUS);
+        fs.writeFileSync(path.join(dir, 'FOCUS'), to);
+      }
+      return okOut('');
+    }
     // ★★ 2026-10-04 修正（推翻了我上一轮**自己编出来**的「行首 # 会让命令炸」）：
     //   真机逐条实验 12 组（MuMu 12 / Android 12 / 内置 adb）——
     //     `"a\n#TW"` / `"a\n##TW"` / `"a\n\`b"` / `"a #TW"` / `"a\n #TW"` / `"a\n$X"` /
@@ -328,8 +366,8 @@ function makeFakeAdb(dir) {
       const target = cmd.replace(/^find\s+(\S+).*$/, '$1').trim();
       const d = whichDir(target);
       if (!d) return okOut('');
-      if (fs.existsSync(DIR_STALE)) {
-        // stale 句柄：删不掉，如实报 Text file busy（真机原话）
+      if (fs.existsSync(DIR_STALE) || appLocked()) {
+        // stale 句柄 / 锁在 App 进程里：删不掉，如实报 Text file busy（真机原话）
         return fail('rm: ' + target + ': Text file busy');
       }
       // ★★ 顽固空残骸现场：`find -delete` **删不掉目录**（能删文件，但残骸目录留着）。
@@ -359,8 +397,8 @@ function makeFakeAdb(dir) {
       const d = whichDir(target);
       const ch = d ? null : childOf(target);
       if (!d && !ch) return okOut('');
-      // stale / 顽固开关下 rm 一律删不掉（含子项）—— 真机原话 Text file busy / busy
-      if (fs.existsSync(DIR_STALE) || stubbornN() > 0) {
+      // stale / 顽固开关 / App 占着 之下 rm 一律删不掉（含子项）—— 真机原话 Text file busy / busy
+      if (fs.existsSync(DIR_STALE) || stubbornN() > 0 || appLocked()) {
         return fail('rm: ' + target + ': Text file busy');
       }
       if (d) {
@@ -375,9 +413,9 @@ function makeFakeAdb(dir) {
       return okOut('');
     }
     if (/^rmdir /.test(cmd)) {
-      // 空目录残骸：stale / 顽固开关下 rmdir 也放不掉（真机实测偶尔能过，这里从严）
+      // 空目录残骸：stale / 顽固 / App 占着 之下 rmdir 也放不掉（真机实测偶尔能过，这里从严）
       const target = cmd.replace(/^rmdir\s+/, '').replace(/\s+2>\S+$/, '').trim();
-      if (fs.existsSync(DIR_STALE) || stubbornN() > 0) {
+      if (fs.existsSync(DIR_STALE) || stubbornN() > 0 || appLocked()) {
         return fail('rmdir: ' + target + ': Device or resource busy');
       }
       const d = whichDir(target);
@@ -395,6 +433,12 @@ function makeFakeAdb(dir) {
       const target = cmd.split(/\s+/)[1];
       const d = whichDir(target);
       const parts = cmd.split(/\s+/);
+      // ★★ 2026-10-04 真机实测：锁在 App 进程里时 **连 mv 也不行** ——
+      //   真机原话 `mv: bad '...': Operation not permitted`（得物正在用这批文件）。
+      //   这与 DIR_STALE 的 `Device or resource busy` 是两种不同的真机报错，别混成一个。
+      if (appLocked()) {
+        return fail('mv: bad \'' + target + '\': Operation not permitted');
+      }
       // ★★ 2026-10-04 真机约束：`Camera` 是 sdcardfs 的**挂载点级目录**，它自己不能被改名。
       //   真机原话：`mv: bad '.../DCIM/Camera/': Device or resource busy`。
       //   ⇒ 夹具必须同样拒绝「换名 Camera 根」，否则产品代码里那条
@@ -553,6 +597,9 @@ function makeFakeAdb(dir) {
       }
       return okOut('');
     }
+    // ★★ 2026-10-04 新增：`input tap` 的现场开关 TAP_FOCUS 见上面第 24x 行 ——
+    //   它**必须**写在已有的 `input (tap|keyevent|text)` 那一支里；另起一个分支就是死代码
+    //   （前面那条已经 return 了。写这一条时我自己踩过一次，如实记在这儿）。
     if (/^dumpsys window/.test(cmd)) {
       const f = path.join(dir, 'FOCUS');
       const exists = fs.existsSync(f);
@@ -599,6 +646,17 @@ function makeFakeAdb(dir) {
       //   ★ 这里必须**真的改 FOCUS**（前台）。只回一句成功而前台不动的话，
       //     守卫会一直等下去直到超时 —— 那把「拉不起来」这条失败路径测成恒失败，等于没测到成功路径。
       //   ★ 现场开关 SPLASH_STUCK：假装卡在启动页（转不过去）—— 验「等不到首页必须如实失败」。
+      // ★★ 2026-10-04 新增：`am force-stop <pkg>`（清相册时用来把占着文件的得物强停掉）。
+      //   真机语义（本轮实测）：force-stop 会把**该进程持有的文件句柄一起收走** ——
+      //   同一句 `rm -rf <dir>` 在 force-stop 之前报 `Text file busy`、之后就成功。
+      //   ⇒ 夹具里 `appStopped = true` 让 DIR_LOCKED_BY_APP 这套锁**失效**。
+      //   ★ 注意语义边界：这只解「锁在 App 进程里」那类；DIR_STALE（真 stale 句柄）**照旧锁着**。
+      if (/^am force-stop /.test(cmd)) {
+        const pkg = cmd.replace(/^am force-stop\s+/, '').trim();
+        appStops.push(pkg);
+        if (/^com\.shizhuang\.duapp/i.test(pkg)) appStopped = true;
+        return okOut('');
+      }
       if (/^am start /.test(cmd)) {
       const m = cmd.match(/-n\s+(\S+?)\/(\S+)/);
       if (!m) return okOut('Error: no intent supplied\n');
@@ -768,6 +826,13 @@ function makeFakeAdb(dir) {
   //   断言用法：`fakeExec.__dirs['/sdcard/DCIM/Camera'].files = ['X_gone_1']`
   fakeExec.__dirs = dirs;
   fakeExec.__cameraDirPath = CAMERA;
+  // ★★ 2026-10-04 新增：`am force-stop` 的现场（断言侧用它证明「确实强停过、停了哪个包」）。
+  //   · `__appStops` —— 真被执行过的 force-stop 包名列表（空 = 一次都没停过）。
+  //   · `__appReset()` —— 把「App 已被停掉 ⇒ 它手里的锁没了」这个状态**复位**（用例之间隔离用）。
+  //     ★ 必须有这个复位口：`appStopped` 是**进程级**状态，不复位的话第二组用例会接着第一组的
+  //       "锁已经没了"往下跑 ⇒ 该红的用例反而绿（典型串味假绿）。
+  fakeExec.__appStops = appStops;
+  fakeExec.__appReset = () => { appStopped = false; };
   return fakeExec;
 }
 

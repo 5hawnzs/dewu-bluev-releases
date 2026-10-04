@@ -213,6 +213,32 @@ async function filesMissing(serial, remoteFiles) {
 }
 
 /**
+ * ★★ 2026-10-04 新增：**把 App 强行停掉**（`am force-stop <pkg>`）。
+ *
+ * 为什么必须有这一条（本轮真机实测，推翻了以前「stale 句柄跟 adb 服务有关」的归因）：
+ *   得物停在**发布页 / 相册页**时，它自己**正拿着 `DCIM/Camera/bluev` 里那些 mp4 的硬解码句柄**。
+ *   此时在同一台设备上：
+ *     · `rm -f <file>`          → `Text file busy`（rc=1）
+ *     · `rm -rf <dir>`          → `Text file busy`（rc=1）
+ *     · `find <dir> -mindepth 1 -delete` → **rc=0 却根本没删**（★ 静默假成功，最坑的一种）
+ *     · `mv <dir> <trash>`      → `Operation not permitted`（rc=1）
+ *     · **`am force-stop com.shizhuang.duapp` 之后再执行同一句** ⇒ rc=0、**立刻删掉**
+ *   ⇒ 锁**在 App 进程里**，不在 adb 服务里。这也解释了老代码里「kill-server 解不开」的现象。
+ *
+ * ★ 一点必须说清的边界：force-stop **不是万能**。设备上另有一类**真的 stale 句柄**
+ *   （MuMu 的 sdcardfs 映射留下的、跟某个已经消失的 inode 走）—— 那种 force-stop 也解不开，
+ *   只能靠 mv 换名绕开或重启模拟器。两类现象长得很像，所以调用方**两条路都要留着**。
+ */
+async function forceStop(serial, pkg) {
+  const p = String(pkg || '').trim();
+  if (!p) return { ok: false, error: '没给包名' };
+  // 包名只允许字母数字点下划线（不往设备端塞任何引号/特殊字符）
+  if (!/^[A-Za-z0-9_.]+$/.test(p)) return { ok: false, error: '包名不合法：' + p };
+  const r = await shell(serial, 'am force-stop ' + p, { timeout: 20000 });
+  return { ok: !!r.ok, out: String(r.stdout || '').trim(), error: r.ok ? '' : (String(r.stderr || '').trim() || 'force-stop 执行失败') };
+}
+
+/**
  * 把这个「专属相册目录」清空（媒体库记录 + 物理文件一起）。
  *
  * ★★ 2026-10-03 真机实测（127.0.0.1:16384 / MuMu 12 / Android 12）：
@@ -231,9 +257,15 @@ async function filesMissing(serial, remoteFiles) {
  * ★ 查不动时返回 ok:false 并把原因带回去 —— 不假装清干净了。清不干净是**静默错误**：
  *   选图步点前 N 格会点到上一条的图，发出去才发现。
  *
- * 返回 { ok, removed, files, error }
+ * @param {object} [opts]
+ *   · `forceStopPkg` —— 清不掉时**允许**把哪个 App 强停掉再重试（真机实测它持有解码句柄）。
+ *                       不传就完全不碰 App（默认行为与以前一字不差）。
+ * 返回 { ok, removed, files, error, note, forceStopped }
  */
-async function clearMediaDir(serial, remoteDir) {
+async function clearMediaDir(serial, remoteDir, opts = {}) {
+  const forceStopPkg = String((opts && opts.forceStopPkg) || '').trim();
+  // ★ 「这次是不是把 App 强停过」—— 调用方要据此决定「得物现在是不是死的、要不要重新拉起来」。
+  let forceStopped = false;
   const dir = toMediaPath(remoteDir).replace(/\/+$/, '') + '/';
   // ★★ 2026-10-04：路径匹配放宽成「两种写法都认」。
   //   设备上同一个文件在库里可能写成 /storage/emulated/0/DCIM/... 也可能写成 /sdcard/DCIM/...
@@ -262,7 +294,7 @@ async function clearMediaDir(serial, remoteDir) {
       hit.push({ table: t, id: m[1], file: m[2] });
     }
   }
-  if (error) return { ok: false, removed: 0, files: hit.map(h => h.file), error };
+  if (error) return { ok: false, removed: 0, files: hit.map(h => h.file), error, forceStopped };
 
   let removed = 0;
   for (const h of hit) {
@@ -316,6 +348,15 @@ async function clearMediaDir(serial, remoteDir) {
   //         得物相册不会把它当成本工具素材；它是隐藏在外面的废目录）。
   //     ★ 顺序：先按记录删库（上面那段，能删多少删多少）→ 再 mv 换名 → 再 mkdir 新的。
   //       库记录必须先删：不然记录还指向 <dir>/xxx.mp4，而那个路径已经被换名了 ⇒ 僵尸记录。
+  //   ★★★ 2026-10-04 第十四次实测修正（上面第五次那段**归因错了，别照它推理**）：
+  //     第五次结论说「force-stop 掉得物之后照样 Text file busy ⇒ 是 MuMu 的 stale 句柄」。
+  //     本轮重做同一个实验，结果**相反**：force-stop 之后**同一句 rm 立刻成功**、目录立刻空。
+  //     两次都在真机上做的，差别在于**当时锁在谁手里**：
+  //       · 得物**正在跑**、停在发布页/相册页 ⇒ 锁在**得物进程**里 ⇒ force-stop 能解；
+  //       · 得物**早就退出/被杀**、锁却还在   ⇒ 才是 MuMu sdcardfs 的 stale 句柄 ⇒ force-stop 解不开。
+  //     两类现象长得一模一样（都是 `Text file busy`），但解法不同
+  //     ⇒ 所以现在**两手都留着**：先 force-stop 重试（见上面 1b 段，能过就不造残骸），
+  //       过不了再 mv 换名（对付真 stale）。
 
   // ★★ 2026-10-04 第八次实测修正（这里原来也在犯「读不到 = 空的」这个错误）：
   //   原来写的是 `if (left)` —— **只看 stdout 非空、没看命令是否成功**。
@@ -331,6 +372,32 @@ async function clearMediaDir(serial, remoteDir) {
   await shell(serial, 'rm -rf ' + dir + '/* ' + dir + '/.[!.]* 2>/dev/null', { timeout: 60000 });
   let stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
   let left = String(stage.stdout || '').trim();
+  if (hasLeftover(stage)) {
+    // ★★★ 1b) 2026-10-04 第十四次实测修正（★ 本轮用户报的「第 2/3 篇直接提示没能清干净」的真解）：
+    //   先别急着 mv 换名 —— **先看清是什么在锁**。
+    //   真机上这两条命令的差别是决定性的（同一秒、同一台设备）：
+    //     `rm -rf /sdcard/DCIM/Camera/bluev`            → rc=1  `Text file busy`
+    //     `am force-stop com.shizhuang.duapp` 之后再执行 → **rc=0，目录立刻空**
+    //   根因：**得物自己正停在发布页/相册页、拿着这批 mp4 的硬解码句柄**（这跟「MuMu 的 stale
+    //   句柄」是两回事 —— 那种 force-stop 也解不开，所以才要把 mv 换名法留在后面当第二手）。
+    //   ★ 顺序很重要：**先强停、再重试原地删**，成功了就**不进换名那条路**——
+    //     换名会造出 `X_trash_<ts>` 残骸，残骸会一直堆在相册目录里（老代码吃过这个亏）。
+    //   ★ 只在调用方明确给了包名（`forceStopPkg`）时才做 —— 默认一个 App 都不碰。
+    if (forceStopPkg && !forceStopped) {
+      const st = await forceStop(serial, forceStopPkg);
+      if (st.ok) {
+        forceStopped = true;
+        await sleepMs(500);   // 等系统把句柄收回去（实测 force-stop 后立刻 rm 也能过，留点余量）
+        await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
+        await shell(serial, 'rm -rf ' + dir + '/* ' + dir + '/.[!.]* 2>/dev/null', { timeout: 60000 });
+        stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+        left = String(stage.stdout || '').trim();
+      } else if (!dirNote) {
+        dirNote = '想强停 ' + forceStopPkg + ' 腾出文件句柄，但没停掉（' + (st.error || '未知原因') + '）';
+      }
+    }
+    // ★ 到这里还没清掉 ⇒ 才走 mv 换名法（对付 force-stop 也解不开的那种 stale 句柄）
+  }
   if (hasLeftover(stage)) {
     // 2) 原地清不掉（stale 句柄）⇒ mv 换名法，绕开它
     const trash = dir.replace(/\/+$/, '') + '_trash_' + Date.now();
@@ -471,7 +538,7 @@ async function clearMediaDir(serial, remoteDir) {
     const mk = await shell(serial, 'mkdir -p ' + dir, { timeout: 30000 });
     if (!mk.ok && !error) error = String(mk.stderr || '').trim() || '专属目录建不出来';
   }
-  if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error };
+  if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error, forceStopped };
   if (left) {
     // ★★★ 2026-10-04（第三十八轮）**判据修正：看「还有没有文件」，不是「目录 listing 空不空」**。
     //   真机实测（MuMu 12 / sdcardfs）：`mv` 换名法能把**内容**搬走、也造出了全新的空目录，
@@ -487,7 +554,7 @@ async function clearMediaDir(serial, remoteDir) {
     if (!fchk.ok) {
       if (!error) error = String(fchk.stderr || '').trim() || 'find -type f 校验失败（读不到目录，不敢判干净）';
     } else if (filesLeft) {
-      return { ok: false, removed: removed, files: hit.map(h => h.file),
+      return { ok: false, removed: removed, files: hit.map(h => h.file), forceStopped,
         error: '目录里还有 ' + filesLeft.split(/\r?\n/).length + ' 个文件没删掉（前几个：'
           + filesLeft.split(/\r?\n/).slice(0, 3).join(' , ') + '）' };
     } else {
@@ -505,10 +572,10 @@ async function clearMediaDir(serial, remoteDir) {
             : `另有 ${rp.after} 个历史遗留的超长垃圾目录清不掉（${rp.why}）；` + note;
         }
       } catch (e) { /* 尽力而为：清残骸失败绝不能影响发布 */ }
-      return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note };
+      return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note, forceStopped };
     }
   }
-  return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note: dirNote };
+  return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note: dirNote, forceStopped };
 }
 
 /**
@@ -1599,7 +1666,7 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, reapLongTrashDirs, filesMissing, screencap,
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, reapLongTrashDirs, filesMissing, screencap, forceStop,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   dumpAnimOff, animRestoreCmd, shellQuoteForInputText, offlineHint,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,

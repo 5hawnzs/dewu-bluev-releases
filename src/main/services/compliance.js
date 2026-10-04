@@ -60,7 +60,31 @@ async function scan(items, ctx = {}) {
         } else if (dur > maxSec) {
           rows.push({ item: item.id, file: name, type: '视频', issue: `时长 ${dur} 秒，超 ${maxSec} 秒上限`, action: '只标红不裁剪', status: 'manual', size, duration: dur });
         } else {
-          rows.push({ item: item.id, file: name, type: '视频', issue: '—', action: '—', status: 'ok', size, duration: dur });
+          // ★★★ 2026-10-04（用户报「第一篇素材是全黑 0 秒视频，哪来的」）：
+          //   **扩展名判 `.mp4` 是不够的** —— `.mp4` 是容器，里面装什么编码它管不着。
+          //   真机实测（决定性对照，见 video.js 文件头）：
+          //     · 用户第一条素材 `82-326313100701-变装展示-7月份.mp4`
+          //       = HEVC **Main 10（10-bit）** / hvc1 / yuv420p10le / 1080x1920 / 39.9MB
+          //       ⇒ 得物解不开，相册里那一格是**纯黑 + 一直转圈**，发出去就是「黑封面」的内容；
+          //     · 同批 `79-326313100774-变装-7月.mp4` = H.264 8-bit ⇒ 缩略图正常。
+          //   ⇒ 这里再往容器里看一眼：**视频轨的真实位深**。得物解不开的 ⇒ 标成待处理（可自动转码）。
+          //   ★ 为什么不是「一律标红」：能真的转 —— 内置 ffmpeg 转成 H.264 8-bit（实测 4.8s / 41MB 一条），
+          //     而且 `video.toMp4` 现在会**跳过无损转封装**（转封装出来还是 10-bit）直接落转码。
+          const dec = await video.probeDecodable(abs);
+          if (!dec.ok && dec.readable) {
+            rows.push({
+              item: item.id, file: name, type: '视频',
+              issue: `视频轨是 ${dec.label}，得物解不开（相册里会是黑格 + 一直转圈，发出去就是黑封面）`,
+              action: video.status().usable ? '转码 H.264（8-bit）' : '需手动转码（程序里没找到 ffmpeg）',
+              status: video.status().usable ? 'todo' : 'manual',
+              size, duration: dur, codec: dec.codec, codecLabel: dec.label,
+              // ★ 显式标记「容器是 mp4、但里面那个编码得物吃不下」——
+              //   统计与 fix() 都靠这个标记，不靠 action 文案（文案会被改，标记不会）。
+              codecBad: true
+            });
+          } else {
+            rows.push({ item: item.id, file: name, type: '视频', issue: '—', action: '—', status: 'ok', size, duration: dur, codec: dec.codec || '', codecLabel: dec.label || '' });
+          }
         }
         continue;
       }
@@ -127,9 +151,18 @@ async function scan(items, ctx = {}) {
     // 「视频超时」只数**真的超了时长**的。以前是「视频 + manual」全算进来，
     // 加了「没找到 ffmpeg」这条新的 manual 路径之后那样会算错 —— 报表不能撒谎。
     videoLong: rows.filter(r => r.type === '视频' && r.duration != null && r.duration > maxSec).length,
+    // ★ 2026-10-04 新增：「扩展名是 .mp4、但里面那个编码得物吃不下」的条数（10-bit HEVC 那一类）。
+    //   与 notMp4 **互斥**，别合并：一个「扩展名不对」、一个「扩展名对但编码吃不下」——
+    //   混成一列的话，用户看到「非 MP4 = 0」会以为视频都没问题，而黑封面正出自这里。
+    codecBad: rows.filter(r => r.codecBad).length,
     total: rows.length
   };
   log(`扫描完成：${stats.total} 个文件，${stats.todo} 个待处理，${stats.manual} 个需人工定夺`, stats.manual ? 'warn' : 'ok');
+  // ★ 单独点名这一类：它是最难自己发现的问题（扩展名是 .mp4、看着没问题，发出去却是黑封面）。
+  if (stats.codecBad) {
+    log(`★ 其中 ${stats.codecBad} 个视频是「容器是 mp4、但里面那个编码得物解不开」（10-bit HEVC 这类）：`
+      + '得物相册里会是黑格 + 一直转圈，直接发就是黑封面。点「处理」会转成 H.264 8-bit（会改素材文件）', 'warn');
+  }
   return { rows, stats };
 }
 
@@ -188,9 +221,13 @@ async function fix(items, rows, ctx = {}) {
         // 去掉旧链接后重写同名文件：原目录（硬链接源）不受影响
         row.status = 'done'; row.result = `压缩至 ${wp.humanSize(r.size)}（质量 ${r.quality}）`; converted++;
         syncItem(item, row, row.file, r.size);
-      } else if (row.action === '转 MP4') {
+      } else if (row.action === '转 MP4' || /^转码/.test(String(row.action || ''))) {
         // 视频转 mp4：先无损转封装（只换容器，秒级、画质不变），容器/编码不兼容时 video.js 自己转码。
         // 目录里已经有同名 .mp4 时**绝不覆盖**（那是另一份素材），另起一个名字。
+        // ★★ 2026-10-04：这条分支现在还承担「容器已经是 mp4、但编码得物解不开」（`codecBad`）。
+        //   那种情况**目标路径就是原路径**（同名 .mp4）⇒ 走的是「写 tmp → 删旧 → 改名回原位」，
+        //   下面这段不用改；关键在 `video.toMp4`：它现在会**跳过无损转封装**
+        //   （10-bit 源转封装出来还是 10-bit，verifyMp4 会判不合格）直接落转码。
         const stem = row.file.replace(/\.[^.]+$/, '');
         let dst = path.join(baseDir, stem + '.mp4');
         if (path.resolve(dst) !== path.resolve(abs) && await wp.exists(dst)) {
@@ -212,7 +249,11 @@ async function fix(items, rows, ctx = {}) {
         row.status = 'done';
         row.result = rv.mode === 'remux'
           ? `已转 MP4（无损转封装 · ${rv.codec} · ${rv.duration}s）`
-          : `已转 MP4（转码 H.264 · ${rv.duration}s）`;
+          : (row.codecBad
+            // ★ 把「为什么要转」写进结果里：不然用户看到一条本来就叫 .mp4 的素材被"转了一次"，
+            //   会以为工具在瞎折腾。原来的编码名（10-bit HEVC (Main 10)）必须留在案上。
+            ? `已转码 H.264 8-bit（原 ${row.codecLabel || '编码不可解'} 得物解不开）· ${rv.duration}s`
+            : `已转 MP4（转码 H.264 · ${rv.duration}s）`);
         row.duration = rv.duration;
         converted++;
         syncItem(item, row, path.basename(dst), szv ? szv.size : null, 'video');
@@ -286,6 +327,7 @@ async function scanParent(parentDir, ctx = {}) {
     tooSmall: groups.reduce((a, g) => a + (g.stats.tooSmall || 0), 0),
     notMp4: groups.reduce((a, g) => a + (g.stats.notMp4 || 0), 0),
     videoLong: groups.reduce((a, g) => a + (g.stats.videoLong || 0), 0),
+    codecBad: groups.reduce((a, g) => a + (g.stats.codecBad || 0), 0),
     total: rows.length
   };
   log(`父目录检查完成：${groups.length} 个子文件夹 · ${stats.total} 个文件 · ${stats.todo} 个可自动处理 · ${stats.manual} 个需人工`, stats.manual ? 'warn' : 'ok');
@@ -325,7 +367,8 @@ async function exportReport(report, opts = {}) {
       const s = g.stats || {};
       return {
         name: g.name, ok: s.ok || 0, todo: s.todo || 0, manual: s.manual || 0, isolate: s.isolate || 0,
-        scaled: s.scaled || 0, tooSmall: s.tooSmall || 0, notMp4: s.notMp4 || 0, videoLong: s.videoLong || 0, total: s.total || 0
+        scaled: s.scaled || 0, tooSmall: s.tooSmall || 0, notMp4: s.notMp4 || 0,
+        codecBad: s.codecBad || 0, videoLong: s.videoLong || 0, total: s.total || 0
       };
     })
     : null;
@@ -348,10 +391,11 @@ async function exportReport(report, opts = {}) {
       { header: '可自动处理', key: 'todo', width: 12 }, { header: '需人工定夺', key: 'manual', width: 12 },
       { header: '隔离', key: 'isolate', width: 10 }, { header: '等比缩放', key: 'scaled', width: 10 },
       { header: '尺寸不足', key: 'tooSmall', width: 10 }, { header: '非 MP4', key: 'notMp4', width: 10 },
+      { header: '编码不可解', key: 'codecBad', width: 12 },
       { header: '视频超时', key: 'videoLong', width: 10 }, { header: '合计', key: 'total', width: 10 }
     ];
     if (summary) summary.forEach(r => ws1.addRow(r));
-    ws1.addRow({ name: '全部', ok: stats.ok || 0, todo: stats.todo || 0, manual: stats.manual || 0, isolate: stats.isolate || 0, scaled: stats.scaled || 0, tooSmall: stats.tooSmall || 0, notMp4: stats.notMp4 || 0, videoLong: stats.videoLong || 0, total: stats.total || 0 }).font = { bold: true };
+    ws1.addRow({ name: '全部', ok: stats.ok || 0, todo: stats.todo || 0, manual: stats.manual || 0, isolate: stats.isolate || 0, scaled: stats.scaled || 0, tooSmall: stats.tooSmall || 0, notMp4: stats.notMp4 || 0, codecBad: stats.codecBad || 0, videoLong: stats.videoLong || 0, total: stats.total || 0 }).font = { bold: true };
 
     const ws2 = wb.addWorksheet('明细', { views: [{ state: 'frozen', ySplit: 1 }] });
     ws2.columns = [

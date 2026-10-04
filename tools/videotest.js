@@ -226,6 +226,92 @@ const sizeOf = p => (fs.existsSync(p) ? fs.statSync(p).size : -1);
   ok('J10) ★ 抽帧不留垃圾：临时目录用完即删（只比「有没有变多」，别把上一轮留下的算到这次头上）',
     junkAfter <= junkBefore, 'before=' + junkBefore + ' after=' + junkAfter + '（抽到 ' + rJ4.images.length + ' 帧）');
 
+  // ==========================================================================
+  // K) ★★★ 2026-10-04（用户报「第一篇素材是全黑 0 秒视频，哪来的」⇒ 本轮的**决定性对照实验**）
+  //   **得物解不开 HEVC Main 10（10-bit）** —— 相册里那一格是**纯黑 + 一直转圈**，永远不出图。
+  //   真机并排对照（同内容、同时长 00:14，同一台设备）：H.264 8-bit 出图 / 10-bit HEVC 全黑转圈。
+  //   而 `.mp4` 里装着 10-bit HEVC 时，**扩展名判据会放行**（用户原话：「他在文件夹里的格式就是 mp4，
+  //   怎么可能格式不对」—— 扩展名确实对，问题在**容器里那个编码**）。
+  //   ⇒ 判据必须往容器里再看一层「**视频轨位深**」，光看扩展名 + 编码白名单（hvc1 就在白名单里）不够。
+  //   这一组钉四件事：
+  //     ① 纯函数 videoTrackInfo / decoderCompat 的分支 —— 特别是「hvc1 但 8-bit **必须放行**」
+  //        这条**反向对照**（没有它，写成「见 hvc1 就杀」也照样绿）；
+  //     ② 用内置 ffmpeg 真造 10-bit HEVC 与 8-bit HEVC，判据必须**分开**它们、且与 ffmpeg 原话一致；
+  //     ③ toMp4 对 10-bit HEVC 必须**跳过无损转封装**直接落转码（转封装出来还是 10-bit，白干）；
+  //     ④ 转码产物的位深必须是 **8-bit**（真解析产物，不看文件名、也不看日志说了什么）。
+  // ==========================================================================
+  {
+    // ---- 手搓最小 moov：直接喂纯函数，把每个分支都点一遍（不碰文件系统） ----
+    // ★ 布局要对齐真实的 box 结构，否则测的是"我编的格式"而不是真格式：
+    //   · `stsdVideoCodecs` 在 moov 里找 'stsd'，读 **+16** 那 4 字节当编码 ⇒ 编码必须落在 stsd+16；
+    //   · `boxContent` 找 'hvcC'/'avcC'，取**其后**的内容 ⇒ 配置内容紧跟在 4 字节类型名之后。
+    const stsdOnly = (codec) => { const b = Buffer.alloc(20); b.write('stsd', 0, 'latin1'); b.write(codec, 16, 'latin1'); return b; };
+    // HEVCDecoderConfigurationRecord：内容[1] = reserved(2)+tier(1)+profile_idc(5)；内容[17] = reserved(5)+bitDepthLumaMinus8(3)
+    const hvcC = (profileIdc, bitDepthMinus8) => {
+      const c = Buffer.alloc(22); c[0] = 1; c[1] = profileIdc & 0x1f; c[17] = bitDepthMinus8 & 0x07; c[18] = bitDepthMinus8 & 0x07;
+      return Buffer.concat([Buffer.from('hvcC', 'latin1'), c]);
+    };
+    // AVCDecoderConfigurationRecord：内容[1] = AVCProfileIndication
+    const avcC = (profileIdc) => { const c = Buffer.alloc(8); c[0] = 1; c[1] = profileIdc; return Buffer.concat([Buffer.from('avcC', 'latin1'), c]); };
+    const infoOf = (moov) => video.videoTrackInfo(moov);
+    const compatOf = (moov) => video.decoderCompat(video.videoTrackInfo(moov));
+
+    const k1 = compatOf(Buffer.concat([stsdOnly('avc1'), avcC(100)]));
+    ok('K1) H.264 High（8-bit）⇒ 得物吃（合格）', k1.ok === true, JSON.stringify(k1));
+    const k2 = compatOf(Buffer.concat([stsdOnly('avc1'), avcC(110)]));
+    ok('K2) H.264 High 10（10-bit）⇒ 得物不吃（判不合格）', k2.ok === false && /10-bit/.test(k2.why), JSON.stringify(k2));
+    const k3 = compatOf(Buffer.concat([stsdOnly('hvc1'), hvcC(1, 0)]));
+    ok('K3) ★★ 反向对照：HEVC **8-bit**（Main）⇒ **必须放行** —— 不是「见 hvc1 就杀」',
+      k3.ok === true, JSON.stringify(k3));
+    const k4 = compatOf(Buffer.concat([stsdOnly('hvc1'), hvcC(2, 2)]));
+    ok('K4) ★★ HEVC Main 10（10-bit）⇒ 判不合格，且原因点名「得物解不开 10-bit」',
+      k4.ok === false && /10-bit/.test(k4.why) && /黑格/.test(k4.why), JSON.stringify(k4));
+    const k5 = compatOf(stsdOnly('hvc1'));
+    ok('K5) 有 hvc1 但读不到 hvcC ⇒ 按编码白名单放行（不误杀；位深未知这件事如实写在 why 里）',
+      k5.ok === true && /hvcC/.test(infoOf(stsdOnly('hvc1')).why), JSON.stringify({ ok: k5.ok, why: infoOf(stsdOnly('hvc1')).why }));
+    const k6 = compatOf(stsdOnly('vp09'));
+    ok('K6) 认不出的编码（vp09）⇒ fail-closed 判不合格', k6.ok === false, JSON.stringify(k6));
+    const k7 = infoOf(Buffer.concat([stsdOnly('hvc1'), hvcC(2, 2)]));
+    ok('K7) 位深是从 hvcC 真读出来的（10-bit / Main 10），不是猜的',
+      k7.bitDepth === 10 && k7.bitDepthKnown === true && /Main 10/.test(k7.profileName), JSON.stringify(k7));
+    ok('K8) codecLabel 说人话（`10-bit HEVC (Main 10)`），日志与合规报告都用它',
+      video.codecLabel(k7) === '10-bit HEVC (Main 10)', video.codecLabel(k7));
+
+    // ---- 真样本：内置 ffmpeg 现造 10-bit / 8-bit HEVC，判据必须分得开 ----
+    ff(['-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1', P('hevc10.mp4')]);
+    ff(['-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-c:v', 'libx265', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', P('hevc8.mp4')]);
+    // ffmpeg 自己的原话（作为对照：我们判的必须与解码器说的**一致**，不是我们自说自话）
+    const ffLine = (p) => {
+      const r = require('child_process').spawnSync(FF, ['-hide_banner', '-i', p], { encoding: 'utf8' });
+      return String((r.stderr || '')).split('\n').find(l => /Stream #0:0/.test(l)) || '';
+    };
+    const line10 = ffLine(P('hevc10.mp4')), line8 = ffLine(P('hevc8.mp4'));
+    ok('K9) 前置：10-bit 样本的 ffmpeg 原话里确实是 `hevc (Main 10) … yuv420p10le`',
+      /Main 10/.test(line10) && /yuv420p10le/.test(line10), line10.trim().slice(0, 110));
+    ok('K9b) 前置：8-bit 样本的 ffmpeg 原话里确实是 `hevc (Main) … yuv420p`（不带 10）',
+      /hevc \(Main\)/.test(line8) && !/10le/.test(line8), line8.trim().slice(0, 110));
+
+    const p10 = await video.probeDecodable(P('hevc10.mp4'));
+    const p8 = await video.probeDecodable(P('hevc8.mp4'));
+    ok('K10) ★★★ probeDecodable：10-bit HEVC 判「得物解不开」（与 ffmpeg 原话一致）',
+      p10.ok === false && p10.tenBit === true, JSON.stringify(p10));
+    ok('K11) ★★★ probeDecodable：8-bit HEVC 判「得物吃」—— 反面对照，证明判据不是恒杀',
+      p8.ok === true && p8.tenBit === false, JSON.stringify(p8));
+
+    // ---- 转码路径：10-bit 必须落转码，产物必须变 8-bit ----
+    const rK = await video.toMp4(P('hevc10.mp4'), P('hevc10_out.mp4'), { log: () => {} });
+    ok('K12) ★★ toMp4 对 10-bit HEVC 必须**跳过无损转封装**、直接落转码（转封装出来还是 10-bit，白干）',
+      rK.ok === true && rK.mode === 'transcode', JSON.stringify({ ok: rK.ok, mode: rK.mode, codec: rK.codec }));
+    const pOut = await video.probeDecodable(P('hevc10_out.mp4'));
+    ok('K13) ★★ 转码产物真解析出来是 **8-bit H.264**（位深必须真的降下来，不能只看文件名）',
+      pOut.ok === true && pOut.bitDepth === 8 && /H\.264/.test(pOut.label), JSON.stringify(pOut));
+    const lineOut = ffLine(P('hevc10_out.mp4'));
+    ok('K13b) ★ 与 ffmpeg 原话对照：产物确实是 `h264 … yuv420p`',
+      /h264/.test(lineOut) && /yuv420p\b/.test(lineOut), lineOut.trim().slice(0, 110));
+  }
+
   console.log('');
   console.log('==== ' + (fail ? ('FAIL ' + fail) : 'ALL PASS') + ' ====');
   console.log('TMP: ' + TMP);

@@ -104,6 +104,35 @@ function needSourceDir(dir) {
   return dir;
 }
 
+/**
+ * ★★ 2026-10-04（用户口径，原话）：「**后续如果电脑上开着，禁止发布，提示用户需要关掉那个 excel
+ *   才能开始发布任务**」。
+ *
+ * 为什么必须**开跑之前**就拦（而不是等发完了再报）：
+ *   发布结果要**回写**到两个 Excel —— 「AI 内容报告」（B=实际执行时间 / C=执行结果）与「发布单」。
+ *   这两个文件被 Excel/WPS 打开着时，回写会抛 `EBUSY`，代码只能把结果**暂存**起来
+ *   （`pending-results.json`）、等下次运行再补写 —— 用户看到的就是「失败了，日志还写不进去」，
+ *   而**整批发布已经白跑完了**（真机实测：一次 3 条、总耗时 87.4s，结果一条都没落进报告）。
+ *   ⇒ 与其发完再告诉他「写不进去」，不如**一条都不发**就拦住，让他先关掉。
+ *
+ * ★ 判据见 wp.probeWritable（`r+` 试开，已用独占句柄对照实验验过真会红）。
+ * ★ 只 `open` + `close`，**一个字节都不写** —— 这是运营的账。
+ * ★ 报告文件不存在（`exists:false`）不算占用；路径为空直接跳过。
+ */
+async function assertExcelClosed(files) {
+  const list = (files || []).map(f => String(f || '')).filter(Boolean);
+  const busy = [];
+  for (const f of list) {
+    const p = await wp.probeWritable(f);
+    if (p.exists && p.busy) busy.push(f);
+  }
+  if (!busy.length) return { checked: list.length, busy: [] };
+  const names = busy.map(f => path.basename(f)).join('、');
+  throw new Error(`请先关掉 Excel / WPS 再开始发布：「${names}」现在正被别的程序打开着。`
+    + '发布结果要回写进这个文件，开着的话一条都写不进去（只能暂存），整批就白跑了 —— '
+    + '所以直接拦住不发。关掉它（不用保存改动，直接关窗口即可）再点「开始发布」。');
+}
+
 async function dispatch(type, args, ctx) {
   const st = () => project.get();
   switch (type) {
@@ -471,6 +500,11 @@ async function dispatch(type, args, ctx) {
     case 'publish.run': {
       const s = st();
       if (!s.publish.rows || !s.publish.rows.length) throw new Error('请先导出发布单');
+      // ★★ 2026-10-04 用户口径：**AI 内容报告被 Excel 占着就禁止发布**（见 assertExcelClosed）。
+      //   放在最前面：一条都不发就拦住，别等发完才发现结果写不进去（那是整批白跑）。
+      //   两个要回写的文件都查：报告（B/C 列）+ 发布单（结果列）。
+      const wr = await assertExcelClosed([s.publish.reportFile, s.sheet.file]);
+      if (wr.checked) logbus.info(`发布前检查：要回写的 ${wr.checked} 个 Excel 都没被占用（可以直接发）`);
       // 批次名默认取发布单文件名（真机：选 AI内容报告_xxx.xlsx → 开始批次）
       const batch = args.batchId || s.publish.batch || (s.sheet.file ? path.basename(s.sheet.file, path.extname(s.sheet.file)) : '') || ('批' + wp.stamp());
       const r = await publisher.run(Object.assign({}, s, { publish: Object.assign({}, s.publish, { batch }) }), Object.assign({}, ctx, {
@@ -512,6 +546,8 @@ async function dispatch(type, args, ctx) {
       const s = st();
       const row = (s.publish.rows || []).find(r => String(r.seq) === String(args.seq));
       if (!row) throw new Error('找不到该行');
+      // ★ 「重跑」同样是发布 ⇒ 同样要挡住「报告被 Excel 占着」（不然重跑的结果照样写不回去）
+      await assertExcelClosed([s.publish.reportFile, s.sheet.file]);
       row.result = ''; row.reason = '';
       const subset = Object.assign({}, s, { publish: Object.assign({}, s.publish, { rows: [row] }) });
       const r = await publisher.run(subset, Object.assign({}, ctx, { onRow: rw => send('publish:row', rw) }));

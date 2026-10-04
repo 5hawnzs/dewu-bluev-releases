@@ -164,12 +164,21 @@ for (const key of ['steps', 'videoSteps']) {
   //     / tvCancel="放弃"(339,1173) / tvConfirm="继续"(549,1173) / imgDraftCover 封面
   //   ★ 点「放弃」（不是「继续」）：本次要发的是**队列里那一条新内容**；
   //     「继续」会接着编旧半成品 ⇒ 发出一条没标题没正文的残次品，比卡住更糟。
-  //   ★ 幂等：按名字先删掉已有的那一步，再插到「草稿箱拦截」之后（固定顺序）。
+  //   ★ 幂等：按名字先删掉已有的那一步（前后两份都删），再按位置插（固定顺序）。
+  //   ★★★ 2026-10-04（用户口径，原话）：「**挪到最前面先点掉**」。
+  //     为什么必须**最前面也有一份**（而不是只有「草稿箱拦截之后」那一份）：
+  //       上一轮中断留下的弹窗，在**下一条刚起手时就已经在屏幕上了** —— 那时脚本还没点到
+  //       「发布新动态」，所以原来那份（排在草稿箱拦截之后）根本轮不到执行；
+  //       而越靠前的两步是**固定坐标**（底部「我」945,1869 / 相册第 1 格 166,359），
+  //       弹窗盖在上面时它们点下去全是点空/点到弹窗 ⇒ 之后每一步都在错屏上找节点，报错位置离真因很远。
+  //     ⇒ 起手第一件事就是把它点掉（「放弃」）；后面那份**保留**，因为正常发布时这个弹窗
+  //       是在点了「发布新动态」之后才弹的（两份都是 whenOn 守卫，没弹窗就整步跳过、一个像素不碰）。
   const RESUME_NAME = /未完成草稿拦截 · 点「放弃」/;
   for (let i = arr.length - 1; i >= 0; i--) if (RESUME_NAME.test(arr[i].name || '')) arr.splice(i, 1);
-  const iDraft = arr.findIndex(s => /草稿箱拦截/.test(s.name || ''));
-  const resumeStep = {
-    name: '未完成草稿拦截 · 点「放弃」（只有真弹出「是否继续编辑」时才点）',
+  const mkResume = (front) => ({
+    name: front
+      ? '未完成草稿拦截 · 点「放弃」（★ 起手先清掉上一轮留下的弹窗）'
+      : '未完成草稿拦截 · 点「放弃」（只有真弹出「是否继续编辑」时才点）',
     action: 'tapId',
     value: DEWU + ':id/tvCancel',
     whenOn: DEWU + ':id/tvCancel',
@@ -177,13 +186,19 @@ for (const key of ['steps', 'videoSteps']) {
       + '正常发布（没这个弹窗）时**整步跳过、一个像素都不碰**。'
       + '为什么点「放弃」：本次要发的是队列里那一条新内容；点「继续」会接着编上一轮中断留下的旧半成品，'
       + '发出一条没标题没正文的残次品（比卡住更糟）。'
-  };
-  if (iDraft >= 0) arr.splice(iDraft + 1, 0, resumeStep);
-  else if (!arr.some(s => RESUME_NAME.test(s.name || ''))) {
+      + '为什么有两份：这一份负责「起手时弹窗就已经在屏幕上」（上一轮中断留下的），'
+      + '草稿箱拦截之后那份负责「点了发布新动态之后才弹出来」。'
+  });
+  const iDraft = arr.findIndex(s => /草稿箱拦截/.test(s.name || ''));
+  let iIns;
+  if (iDraft >= 0) iIns = iDraft + 1;
+  else {
     // 没有草稿箱拦截步（老配置）⇒ 插在「发布新动态」之后
     const iP = arr.findIndex(s => /「发布新动态」$/.test(s.name || ''));
-    arr.splice(iP >= 0 ? iP + 1 : arr.length, 0, resumeStep);
+    iIns = iP >= 0 ? iP + 1 : arr.length;
   }
+  arr.unshift(mkResume(true));           // 最前面：起手先点掉（unshift 之后所有下标 +1）
+  arr.splice(iIns + 1, 0, mkResume(false));
 
   // ⑥ ★★ 2026-10-04（用户指出「点进所有照片之后，选择的图标路径不是很明显吗，
   //    你直接点击选择图标、然后下一步不就行了吗？」）：

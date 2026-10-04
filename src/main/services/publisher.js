@@ -599,6 +599,43 @@ async function dumpForCapture(serial, opts) {
   return Object.assign({}, d, { focus, focusNote, onPublish, viaNote });
 }
 
+/**
+ * ★★★ 2026-10-04 新增（用户口径，原话）：「**发出去了才算成功**」。
+ *
+ * 为什么必须有这一步：点完「提交发布」**不等于**发出去了。真机上「没发出去」有好几种长相，
+ * 而且**每一种在界面上都像成功**（脚本已经跑完、没有报错）：
+ *   · 得物压根没受理，还停在发布流程里（编辑页/封面页）；
+ *   · 得物把它当成**草稿**存下来了（用户原话：「我什么时候跟你说真实发布环境可以存草稿的」）；
+ *   · 提交按钮被屏幕守卫跳过（那一屏不对 ⇒ 一个 tap 都没发）。
+ * 前两种如果不判，台账就写着「发布成功」，而账号里其实什么都没有（或躺着一条草稿）。
+ *
+ * 判据（只看前台 Activity，便宜且能区分）：
+ *   **必须离开发布流程** —— 既不在 `TotalPublishProcessActivity`，也不在草稿箱 `DraftActivity`。
+ *   ★ 为什么不看「有没有发布成功页」：那要抓屏、且得物改版就废；而「有没有离开这一摊」
+ *     是从用户诉求直接翻译过来的判据，改版也稳。
+ *   ★ 读不到前台（空）时**不算离开** —— 读不到 ≠ 成功（同本项目一贯口径）。
+ *
+ * @returns {{ok:boolean, waited:number, focus:string, left:string, seen:string[]}}
+ *   `seen` = 这段时间里前台的**变化序列**，如实带回去给人看（排查「它到底停在哪一屏」全靠它）。
+ */
+async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, cancelled = null } = {}) {
+  const t0 = Date.now();
+  const seen = [];
+  let last = '', left = '';
+  for (;;) {
+    const f = String((await adb.currentFocus(serial)) || '');
+    if (f) {
+      last = f;
+      if (seen[seen.length - 1] !== f) seen.push(f);
+      if (!uimap.isPublishScreen(f) && !uimap.isDraftScreen(f)) { left = f; break; }
+    }
+    if (Date.now() - t0 >= timeoutMs) break;
+    if (typeof cancelled === 'function' && cancelled()) break;
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  return { ok: !!left, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: last, left, seen };
+}
+
 async function runReal(row, item, copyRow, serial, map, ctx) {
   const log = ctx.log || (() => {});
   const cancelled = ctx.cancelled || (() => false);
@@ -632,7 +669,10 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //     ⇒ 用户看到的「第二条永远拉不起来」。
   //   ★ 顺序：守卫在**清相册/推素材之前** ⇒ 拦下时连素材都不推（不白跑几十秒）。
   //   ★ 失败就**如实抛错**，绝不"当作没这回事继续往下点"（不知道自己在哪一屏时点固定坐标＝乱点）。
-  {
+  //   ★★ 2026-10-04（第十四次实测后）这一整段抽成 pullHome()，因为**清相册时可能把得物强停掉**
+  //     （它拿着素材的解码句柄，见 adb.clearMediaDir 的 1b 段）⇒ 强停之后要**再走一遍**这个守卫
+  //     （App 现在是死的，直接点固定坐标等于点空气）。两处调用，同一条判据。
+  const pullHome = async (why) => {
     row.status = '回主线';
     if (ctx.onRow) ctx.onRow(row);
     // ★ 别在这里自己先读一次 currentFocus —— 那会把「转场瞬间读不到」这个现场吃掉，
@@ -645,13 +685,15 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
     });
     if (!g.ok) {
-      throw new Error('起手就没能把得物拉回首页：' + (g.why || '未知原因')
+      throw new Error((why ? why + '：' : '') + '没能把得物拉回首页：' + (g.why || '未知原因')
         + ' —— 这一步不许跳过：定位表第一步是**固定坐标**点底部导航，停在别的页面上那个坐标底下不是底部导航。');
     }
     if (g.started) {
-      log(`${row.dir}：得物不在首页（之前的页面：${g.from || '读不到'}），已重新拉回首页`, 'info');
+      log(`${row.dir}：得物不在首页（之前的页面：${g.from || '读不到'}），已重新拉回首页${why ? '（' + why + '）' : ''}`, 'info');
     }
-  }
+    return g;
+  };
+  await pullHome('');
 
   // ★ 清空必须在 push **之前**：push 完再清会把这一条刚推的也一起清掉。
   row.status = '清相册';
@@ -659,17 +701,26 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   // ★★ 2026-10-04（第四十轮）用户口径：「删除完所有其他不相关的素材后，不要 bluev 了」
   //   ⇒ 清相册的**范围**从「专属目录」扩到**整个 DCIM/Camera**（得物相册的聚合视图读的就是它）。
   //   两步走：先清相册根（把别处来的、上一条的、系统截图全扫掉），再清专属目录本身。
-  const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera');
+  // ★★★ 2026-10-04（第十四次实测）**传 forceStopPkg**：
+  //   得物停在发布页/相册页时**自己拿着这批 mp4 的硬解码句柄**，此时 rm/find/mv 全报
+  //   `Text file busy`，而 `am force-stop com.shizhuang.duapp` 之后同一句立刻成功。
+  //   ⇒ 允许 clearMediaDir 在"清不掉"时把得物强停掉再重试（能过就不去造 trash 残骸）。
+  const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera', { forceStopPkg: uimap.DEWU.pkg });
   if (!clRoot.ok) {
     throw new Error('没能清干净设备相册目录（/sdcard/DCIM/Camera）：' + (clRoot.error || '未知原因')
       + ' —— 不清干净的话相册里会混着其他素材，选素材那一步会点到别的图。');
   }
   await adb.shell(serial, 'mkdir -p ' + remoteDir);
-  const cl = await adb.clearMediaDir(serial, remoteDir);
+  const cl = await adb.clearMediaDir(serial, remoteDir, { forceStopPkg: uimap.DEWU.pkg });
   if (!cl.ok) {
     throw new Error(`没能清干净设备上的专属相册（${remoteDir}）：${cl.error || '未知原因'}`
       + ' —— 不清干净的话上一条的素材会留在相册里，选素材那一步会点到上一条的图。'
       + '（这一步不许跳过：跳过的表现是「内容看着发成功了，配图却是上一条的」，最难查。）');
+  }
+  // ★★ 强停过得物 ⇒ 它现在是**死的**，必须重新拉起来并确认回到首页（否则后面全是点空气）。
+  if (clRoot.forceStopped || cl.forceStopped) {
+    log(`${row.dir}：清相册时得物正占着素材文件（Text file busy），已强制停掉它腾出句柄 —— 现在重新拉回首页`, 'warn');
+    await pullHome('清相册时强停过得物');
   }
   // ★★ 2026-10-04（第四十轮）：空目录残骸（stale 句柄锁着、删不掉也不含任何素材）**不阻断发布**，
   //   但要**如实记一笔**让人知道（否则用户看到相册目录里一堆怪名字，不知道是什么）。
@@ -793,6 +844,29 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       log(`${row.dir}：跳过「${step.name || step.value}」（屏幕守卫：${rs.why}）`, 'info');
     }
   }
+
+  // ★★★ 2026-10-04 用户口径：「**发出去了才算成功**」—— 点完「提交发布」必须**真的离开**发布流程。
+  //   不判的话，下面几种情况都会记成「发布成功」，而账号里根本没有这条内容：
+  //     · 得物没受理，还停在发布流程里；· 得物把它存成了草稿；· 提交那一步被屏幕守卫跳过。
+  //   判据与理由见 waitLeftPublishFlow 的注释。
+  //   ★ 超时走**产品真的会读**的那个配置（`postPublishWaitSec`，默认 15s）——
+  //     回归里把它调小来验「等不到就失败」，而不是在这里干等 15 秒
+  //     （干等的坏处：既慢，又会让「超时逻辑本身」没被测到 —— 改坏读取点照样绿）。
+  const waitSec = Number(c.postPublishWaitSec) > 0 ? Number(c.postPublishWaitSec) : 15;
+  const vr = await waitLeftPublishFlow(serial, { timeoutMs: waitSec * 1000, cancelled });
+  if (!vr.ok) {
+    // ★ 不许留草稿：把得物**强制关掉** —— 它侧边那条「未完成的动态」不关掉就会一直躺在草稿箱里，
+    //   下一条发布时还会弹「是否继续编辑」把流程顶偏（用户已经踩过这一次）。
+    const fsr = await adb.forceStop(serial, uimap.DEWU.pkg);
+    throw new Error('点了「提交发布」，但得物**没有离开发布流程**（等了 ' + vr.waited + 's，最后停在「'
+      + (vr.focus || '读不到') + '」；这段里前台的变化：' + (vr.seen.join(' → ') || '一直读不到') + '）'
+      + ' —— 按你的口径「发出去了才算成功」，这条记**失败**。'
+      + '（也可能是上一步「提交发布」被屏幕守卫跳过了，看上面的日志。）'
+      + (fsr.ok
+        ? '已强制关掉得物，把这条没发出去的草稿清掉（不然它会以草稿形式留在「草稿箱」里）。'
+        : '★ 想强制关掉得物清草稿但没停掉（' + (fsr.error || '未知原因') + '）—— 请手动去得物「草稿箱」检查并删掉那条草稿。'));
+  }
+  log(`${row.dir}：提交发布后已确认离开发布流程（前台 ${vr.seen.join(' → ')}，用时 ${vr.waited}s）`, 'info');
   return true;
 }
 
@@ -998,5 +1072,9 @@ module.exports = {
   devices, listDevices, scanDevices, addDevice, removeDevice,
   // ★ 间隔取值（0 = 连续发布）。导出是为了让测试能直接断言「配 0 就是 0 秒」，
   //   而不是靠"跑一遍看看会不会等"去猜 —— 那种断言在假 adb 上很容易假绿。
-  gapSecFor, secOr
+  gapSecFor, secOr,
+  // ★★ 2026-10-04：把「提交发布后有没有真的离开发布流程」也导出来。
+  //   导出理由同 runStep：这一步是**新加的红线**（用户口径「发出去了才算成功」），
+  //   要能单独喂假 adb 验正反两面，而不是只能靠跑一整条发布去间接证明。
+  waitLeftPublishFlow
 };

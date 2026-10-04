@@ -95,6 +95,135 @@ const MP4_BRANDS = new Set([
 const MP4_VIDEO_CODECS = new Set(['avc1', 'avc3', 'hvc1', 'hev1', 'hvc2', 'mp4v']);
 
 /**
+ * ★★★ 2026-10-04 真机实测（这一条是本轮最贵的发现，务必看完再改）：
+ *   **得物解不开 HEVC Main 10（10-bit）** —— 相册里那一格是**纯黑 + 一直转圈**，永远不出图；
+ *   而 `.mp4` 里装着 10-bit HEVC 时，**扩展名判据（videoExtMustBeMp4）会把它放行**，
+ *   于是它一路发到得物、发出一条「黑封面 + 转圈」的内容（用户看到的就是「全黑 0 秒视频哪来的」）。
+ *
+ *   决定性对照实验（同内容、同时长 00:14，并排推两版，真机 127.0.0.1:16384 / MuMu 12）：
+ *     · H.264 8-bit (avc1 / yuv420p)      → 缩略图**正常**
+ *     · HEVC  10-bit (hvc1 / yuv420p10le) → **纯黑格 + 一直转圈**（等 20s 不出图）
+ *   ffmpeg 探到的原始事实（用户第一条素材）：
+ *     `Video: hevc (Main 10), yuv420p10le, 1080x1920, 60 fps`（`hvc1`，41,877,376 B，14.65s）
+ *   —— 全批**只有它**是 10-bit，其余全是 H.264。⇒ 黑格不是「素材坏了」，是**解码器吃不下 10-bit**。
+ *
+ *   ⇒ 所以白名单**不够**：`hvc1` 在名单里，但 10-bit 的 `hvc1` 得物解不开。
+ *     判据必须再往下一层：**读视频轨的真实位深**（hvcC / avcC 里写着）。
+ *   ★ fail-closed：读不出来（没有 hvcC/avcC、长度不够）时**按 10-bit 处理**吗？
+ *     不 —— 那会把正常的 8-bit 也一起误杀。这里选「认不出编码 ⇒ 不合格；认得出编码但读不到
+ *     位深 ⇒ 只按编码白名单放行」并**如实说明不知道位深**（见 videoTrackInfo 的 `bitDepthKnown`）。
+ *     理由：位深读不到的 mp4 极罕见，而误杀（把好素材退回人工）比漏放一条更贵。
+ */
+const HEVC_PROFILE_MAIN10_IDC = 2;          // HEVC 的 Main 10 Profile
+const AVC_HIGH10_PROFILE_IDC = 110;         // H.264 High 10 Profile（10-bit）
+const AVC_HIGH422_IDC = 122;                // High 4:2:2（10-bit）
+const AVC_HIGH444_IDC = 244;                // High 4:4:4 Predictive（10/12/14-bit）
+const AVC_PROFILE_NAME = { 66: 'Baseline', 77: 'Main', 100: 'High', 110: 'High 10', 122: 'High 4:2:2', 244: 'High 4:4:4' };
+const HEVC_PROFILE_NAME = { 1: 'Main', 2: 'Main 10', 3: 'Main Still Picture', 4: 'Rext' };
+
+/** 在 moov 里找某个 box 的**内容**起点（box 布局 [size4][type4]，内容在 type 之后） */
+function boxContent(moov, type) {
+  if (!moov) return null;
+  const i = moov.indexOf(type, 0, 'latin1');
+  return i < 0 ? null : { i, buf: moov.subarray(i + 4) };
+}
+
+/**
+ * 视频轨信息（**纯函数**，喂一个 moov 字节流就能跑 —— 回归里用手搓的 buffer 直接测全分支）。
+ *
+ * @returns {{codec:string, profileIdc:number, profileName:string, bitDepth:number,
+ *            bitDepthKnown:boolean, tenBit:boolean, why:string}}
+ *   · codec        —— stsd 里的 sample entry（avc1 / hvc1 / …）
+ *   · bitDepth     —— 8 / 10 / 12…；读不出来时为 8 且 bitDepthKnown=false（**别把默认值当事实**）
+ *   · tenBit       —— 是否 10-bit 及以上（得物解不开的那一类）
+ */
+function videoTrackInfo(moov) {
+  const out = { codec: '', profileIdc: 0, profileName: '', bitDepth: 8, bitDepthKnown: false, tenBit: false, why: '' };
+  const codes = stsdVideoCodecs(moov);
+  // ★ 判据与 verifyMp4 一致：**白名单里**的第一个才算视频轨（音轨会给 mp4a，不能拿它当视频轨）
+  out.codec = codes.find(c => MP4_VIDEO_CODECS.has(c)) || '';
+  out.all = codes;
+  if (!out.codec) { out.why = `认不出视频轨编码（stsd 里是「${codes.join('/') || '空'}」）`; return out; }
+
+  if (out.codec === 'hvc1' || out.codec === 'hev1' || out.codec === 'hvc2') {
+    const c = boxContent(moov, 'hvcC');
+    // HEVCDecoderConfigurationRecord（内容偏移，单位字节）：
+    //   0 configurationVersion | 1 profile_space(2)+tier(1)+profile_idc(5) | 2..5 compat flags
+    //   6..11 constraint flags | 12 level_idc | 13..14 min_spatial_segmentation
+    //   15 parallelismType | 16 chromaFormat | **17 reserved(5)+bitDepthLumaMinus8(3)**
+    if (!c || c.buf.length < 19) { out.why = '没有可读的 hvcC（HEVC 配置盒），位深未知'; return out; }
+    out.profileIdc = c.buf[1] & 0x1f;
+    out.bitDepth = (c.buf[17] & 0x07) + 8;
+    out.bitDepthKnown = true;
+    out.profileName = HEVC_PROFILE_NAME[out.profileIdc] || ('profile_idc=' + out.profileIdc);
+    // ★ Main 10 的 profile_idc 就是 2；位深也独立判一次（两者任一命中都算 10-bit）
+    out.tenBit = out.profileIdc === HEVC_PROFILE_MAIN10_IDC || out.bitDepth > 8;
+    return out;
+  }
+
+  if (out.codec === 'avc1' || out.codec === 'avc3') {
+    const c = boxContent(moov, 'avcC');
+    // AVCDecoderConfigurationRecord：0 configurationVersion | **1 AVCProfileIndication**
+    if (!c || c.buf.length < 5) { out.why = '没有可读的 avcC（H.264 配置盒），位深未知'; return out; }
+    out.profileIdc = c.buf[1];
+    out.bitDepth = out.profileIdc >= AVC_HIGH10_PROFILE_IDC ? 10 : 8;
+    out.bitDepthKnown = true;
+    out.profileName = AVC_PROFILE_NAME[out.profileIdc] || ('profile_idc=' + out.profileIdc);
+    out.tenBit = out.profileIdc >= AVC_HIGH10_PROFILE_IDC;
+    return out;
+  }
+
+  // mp4v 之类：没有统一的「位深」字段，按 8-bit 放行（真机上极罕见）
+  out.why = '这个编码没有可读的位深字段（按 8-bit 处理）';
+  return out;
+}
+
+/**
+ * 得物到底吃不吃这条视频轨（**纯函数**）。
+ * 判据两层：① 编码在白名单里；② 不是 10-bit（得物解不开 10-bit）。
+ * ★ 认不出编码 ⇒ 不合格（fail-closed）；认得出但读不到位深 ⇒ 放行（避免误杀 8-bit 好素材）。
+ */
+function decoderCompat(ti) {
+  if (!ti || !ti.codec) return { ok: false, why: (ti && ti.why) || '认不出视频轨编码' };
+  if (!MP4_VIDEO_CODECS.has(ti.codec)) return { ok: false, why: `视频轨编码「${ti.codec}」不能放进 mp4（得转码）` };
+  if (ti.tenBit) {
+    const prof = ti.profileName ? ' / ' + ti.profileName : '';
+    return { ok: false, why: `视频轨是 ${ti.bitDepth}-bit（${ti.codec}${prof}）—— 得物解不开 10-bit，相册里会是黑格 + 一直转圈` };
+  }
+  return { ok: true, why: '' };
+}
+
+/** 人话标签：`10-bit HEVC (Main 10)` 这种，日志和合规报告都用它 */
+function codecLabel(ti) {
+  if (!ti || !ti.codec) return '认不出';
+  const fam = /^hvc|^hev/.test(ti.codec) ? 'HEVC' : (/^avc/.test(ti.codec) ? 'H.264' : ti.codec);
+  const bits = ti.bitDepthKnown ? `${ti.bitDepth}-bit ` : '';
+  const prof = ti.profileName ? ` (${ti.profileName})` : '';
+  return `${bits}${fam}${prof}`;
+}
+
+/**
+ * 「这个文件里的视频轨，得物能不能解」——读 moov 判，**不调 ffmpeg**（快，且不依赖 ffmpeg 在不在）。
+ * 供合规检查逐条调用。fail-closed 的边界见 decoderCompat 的注释。
+ *
+ * @returns {{ok:boolean, readable:boolean, codec:string, label:string, tenBit:boolean, why:string}}
+ *   readable=false 表示**连视频轨都没读出来**（文件坏了 / 不是 mp4）—— 调用方要区别对待：
+ *   那是「读不到」，不是「编码不兼容」。
+ */
+async function probeDecodable(src) {
+  const h = await readHead(src);
+  if (!h.moov) {
+    return { ok: false, readable: false, codec: '', label: '认不出', tenBit: false,
+      why: `读不到 moov（不是有效的 mp4/ISO-BMFF）${h.err ? '：' + h.err : ''}` };
+  }
+  const ti = videoTrackInfo(h.moov);
+  const c = decoderCompat(ti);
+  return { ok: c.ok, readable: !!ti.codec, codec: ti.codec, label: codecLabel(ti),
+    tenBit: !!ti.tenBit, profile: ti.profileName || '', bitDepth: ti.bitDepth,
+    bitDepthKnown: ti.bitDepthKnown, why: c.ok ? '' : c.why };
+}
+
+/**
  * 从文件头顺着 box 链走，拿到 `ftyp` 品牌与 `moov` 内容。
  * 与 imaging.videoDurationSec 同一套走法（mdat 只按长度跳过，不读内容，所以很快），
  * 区别是这里还要把 ftyp 一起读出来。moov 上限 8MB（同 imaging）。
@@ -168,12 +297,16 @@ async function verifyMp4(p) {
   if (!MP4_BRANDS.has(brand)) return { ok: false, reason: `ftyp 品牌「${brand}」不是 mp4 系列` };
   const duration = imaging.findMvhd(h.moov);
   if (duration == null) return { ok: false, reason: 'moov/mvhd 读不到时长' };
-  const codes = stsdVideoCodecs(h.moov);
-  const codec = codes.find(c => MP4_VIDEO_CODECS.has(c));
-  if (!codec) {
-    return { ok: false, reason: `视频轨编码「${codes.join('/') || '认不出'}」不能放进 mp4（得转码）` };
-  }
-  return { ok: true, brand, compatible: h.compatible, codec, duration, bytes: st.size };
+  // ★★ 2026-10-04：判据从「编码在白名单里」升级成 **decoderCompat**（白名单 + 位深）。
+  //   为什么必须加位深：`hvc1` 在白名单里，但**10-bit 的 hvc1 得物解不开**（相册里黑格+转圈，
+  //   真机对照实验见文件头）。不改这里的话，`toMp4` 会以为「无损转封装就够了」——
+  //   对一条 10-bit HEVC 源，`-c copy` 出来的**还是 10-bit HEVC**、校验还判它合格，
+  //   于是"转码过"的素材照样是黑封面。现在它会判不合格 ⇒ 自动落到 ② 转码。
+  const ti = videoTrackInfo(h.moov);
+  const c = decoderCompat(ti);
+  if (!c.ok) return { ok: false, reason: c.why };
+  return { ok: true, brand, compatible: h.compatible, codec: ti.codec,
+    codecLabel: codecLabel(ti), bitDepth: ti.bitDepth, duration, bytes: st.size };
 }
 
 // ---------------------------------------------------------------- 调 ffmpeg
@@ -288,6 +421,12 @@ module.exports = {
   setFfmpegPath, getFfmpegPath, setBundledFfmpegDir, getBundledFfmpegDir, bundledFfmpegPath,
   resolveFfmpegChoice, status, version, toMp4, verifyMp4, readHead, stsdVideoCodecs,
   MP4_BRANDS, MP4_VIDEO_CODECS,
+  // ★ 2026-10-04 新增：**得物解不解得开这条视频轨**（位深判据）。
+  //   · videoTrackInfo / decoderCompat / codecLabel —— **纯函数**，喂 moov buffer 就能测全分支；
+  //   · probeDecodable —— 读文件的入口，合规检查逐条调它。
+  //   为什么要独立导出：这两层判据（编码白名单 / 位深）以后还会再加维度
+  //   （例如 chroma 4:2:2），回归要能**直接**喂输入验每一维，而不是绕一大圈。
+  videoTrackInfo, decoderCompat, codecLabel, probeDecodable,
   // ★ 给 frame.js（视频抽帧）复用：**同一条 ffmpeg 通道、同一套三段解析**，别在别处另起 execFile。
   //   explain 一并导出 —— 抽帧失败时要把 ffmpeg 的原文翻成人话，措辞口径与转码那边保持一致。
   runFfmpeg, explain
