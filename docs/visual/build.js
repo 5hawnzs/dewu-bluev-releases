@@ -504,7 +504,7 @@ function pageByTab(tabs) {
 
 function renderKpis(d) {
   const items = [
-    { n: 'v' + d.pkg.version, l: '当前版本', s: `${d.git.branch} @ ${d.git.hash}${d.git.dirty ? ' · 工作区有未提交改动 ' + d.git.dirty + ' 个文件' : ' · 工作区干净'}${d.git.selfDirty ? '（文档产物自身未提交，不计入）' : ''}` },
+    { n: 'v' + d.pkg.version, l: '当前版本', s: `生成时：${d.git.branch} @ ${d.git.hash} · ${d.git.dirty ? '工作区有未提交改动 ' + d.git.dirty + ' 个文件' : '工作区干净'}${d.git.selfDirty ? '（文档产物自身未提交，不计入）' : ''}` },
     { n: d.tabs.length, l: '功能页签', s: d.tabs.filter(t => t.admin).length + ' 个仅管理员可见' },
     { n: d.ipc.total, l: 'IPC 通道', s: `${Object.keys(d.ipc.byPrefix).length} 个域 · ${d.ipc.list.filter(c => c.guard === 'admin').length} 条仅管理员` },
     { n: d.src.totalFiles, l: '源码文件', s: `${d.src.totalLoc.toLocaleString('en-US')} 行（js/html/css）` },

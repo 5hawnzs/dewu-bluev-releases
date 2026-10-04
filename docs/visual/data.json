@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-04T20:15:50.724Z",
+  "generatedAt": "2026-10-04T20:16:22.060Z",
   "version": "1.0.14",
-  "commit": "002dd16",
+  "commit": "6c615c0",
   "branch": "main",
-  "dirty": 0,
+  "dirty": 2,
   "tabs": [
     {
       "tab": 1,
@@ -80,7 +80,7 @@
   },
   "src": {
     "files": 38,
-    "loc": 16853,
+    "loc": 16880,
     "byLayer": {
       "src/renderer": {
         "files": 3,
@@ -92,7 +92,7 @@
       },
       "src/main": {
         "files": 13,
-        "loc": 3051
+        "loc": 3078
       },
       "src/main/util": {
         "files": 2,
