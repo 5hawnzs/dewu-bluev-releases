@@ -1,6 +1,6 @@
 {
   "name": "dewu-bluev-publisher",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "得物蓝V 素材发布工具 · Windows 桌面版（素材整理 / 合规检查 / 文案生成 / 货号颜色校验 / 发布单 / 模拟器发布）",
   "main": "src/main/index.js",
   "author": "蓝V",
