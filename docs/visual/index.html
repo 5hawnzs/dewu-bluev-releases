@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-gen="2026-10-05 04:14">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>得物蓝V素材发布工具 · 功能全景</title>
+<style>
+:root{
+  --bg:#080c11; --bg2:#0b1118; --panel:rgba(255,255,255,.035); --panel2:rgba(255,255,255,.055);
+  --line:rgba(255,255,255,.09); --line2:rgba(255,255,255,.16);
+  --tx:#e8eef4; --tx2:#9fb0c0; --tx3:#6d8194;
+  --ac:#22d3a5; --ac2:#38bdf8; --brand:#0f6e56;
+  --warn:#f5a524; --bad:#f26d6d; --ok:#3ddc97;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Cascadia Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--tx);
+  font-family:"Microsoft YaHei UI","微软雅黑",-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:var(--ac2)}
+code{font-family:var(--mono);font-size:.86em;background:rgba(255,255,255,.06);border:1px solid var(--line);
+  border-radius:4px;padding:.1em .38em;color:#bfe9dc}
+b{color:#fff;font-weight:600}
+.bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(900px 500px at 12% -5%,rgba(34,211,165,.16),transparent 60%),
+    radial-gradient(800px 480px at 88% 0%,rgba(56,189,248,.13),transparent 62%),
+    radial-gradient(700px 600px at 50% 110%,rgba(15,110,86,.18),transparent 60%),
+    linear-gradient(180deg,#080c11,#070a0e)}
+.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:24px;flex-wrap:wrap;
+  padding:14px 30px;backdrop-filter:blur(14px);background:rgba(8,12,17,.78);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px}
+.logo svg{width:32px;height:32px;border-radius:8px;box-shadow:0 4px 18px rgba(34,211,165,.28)}
+.bn{font-size:15px;font-weight:700;letter-spacing:.3px}
+.bs{font-size:11.5px;color:var(--tx3);letter-spacing:1.4px}
+.tmeta{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.pill{font-size:11.5px;padding:4px 10px;border-radius:999px;border:1px solid var(--line2);color:var(--tx2);background:var(--panel)}
+.pill.v{color:#04231b;background:linear-gradient(135deg,var(--ac),#6ee7c0);border-color:transparent;font-weight:700}
+.pill.ok{color:var(--ok);border-color:rgba(61,220,151,.3)}
+.pill.warn{color:var(--warn);border-color:rgba(245,165,36,.35)}
+main{position:relative;z-index:1;max-width:1240px;margin:0 auto;padding:0 30px 90px}
+section{margin:56px 0 0;padding-top:8px}
+h1{font-size:38px;line-height:1.22;margin:52px 0 10px;font-weight:800;letter-spacing:-.5px;
+  background:linear-gradient(100deg,#fff 10%,#8ff0d2 55%,#7dd3fc 95%);-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{font-size:19px;margin:0 0 6px;font-weight:700;letter-spacing:.2px;display:flex;align-items:center;gap:10px}
+h2:before{content:"";width:4px;height:16px;border-radius:2px;background:linear-gradient(180deg,var(--ac),var(--ac2))}
+.sub{color:var(--tx3);font-size:12.5px;margin:0 0 20px}
+.lede{color:var(--tx2);font-size:14.5px;margin:0 0 26px;max-width:900px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:12px}
+.kpi{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:linear-gradient(160deg,var(--panel2),var(--panel));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.kv{font-size:25px;font-weight:800;letter-spacing:-.5px;font-family:var(--mono);
+  background:linear-gradient(120deg,#fff,#8ff0d2);-webkit-background-clip:text;background-clip:text;color:transparent}
+.kl{font-size:12px;color:var(--tx2);margin-top:4px}
+.ks{font-size:11px;color:var(--tx3);margin-top:6px;line-height:1.5}
+.flow{display:flex;flex-direction:column;gap:0}
+.step{display:flex;gap:16px;border:1px solid var(--line);border-radius:14px;padding:15px 18px;background:var(--panel)}
+.sarrow{text-align:center;color:var(--tx3);font-size:14px;padding:5px 0;letter-spacing:6px}
+.snum{flex:none;width:28px;height:28px;border-radius:9px;display:grid;place-items:center;font-family:var(--mono);font-weight:700;font-size:13px;
+  color:#04231b;background:linear-gradient(135deg,var(--ac),#7ee7c4)}
+.sbody{flex:1;min-width:0}
+.shead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.shead b{font-size:15px}
+.stag{font-size:11.5px;color:var(--tx3)}
+.stab{font-size:10.5px;font-family:var(--mono);color:var(--tx2);border:1px solid var(--line2);border-radius:5px;padding:1px 6px}
+.sout{font-size:12px;color:var(--tx2);margin:3px 0 8px}
+.step ul{margin:0;padding-left:18px;color:var(--tx2);font-size:12.8px}
+.step li{margin:3px 0}
+.pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:var(--panel)}
+.page.adm{border-color:rgba(245,165,36,.3);background:linear-gradient(160deg,rgba(245,165,36,.06),var(--panel))}
+.phead{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.pico svg{width:16px;height:16px;fill:none;stroke:var(--ac);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;display:block}
+.pname{font-weight:700;font-size:14.5px}
+.pgroup{font-size:10.5px;color:var(--tx3);border:1px solid var(--line2);border-radius:5px;padding:1px 6px}
+.ptab{font-size:10.5px;font-family:var(--mono);color:var(--tx3);margin-left:auto}
+.badge{font-size:10.5px;padding:2px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--tx2);background:rgba(255,255,255,.04)}
+.badge.adm{color:var(--warn);border-color:rgba(245,165,36,.4)}
+.badge.cur{color:var(--ac);border-color:rgba(34,211,165,.4)}
+.badge.g-admin{color:var(--warn);border-color:rgba(245,165,36,.35)}
+.badge.g-login{color:#7dd3fc;border-color:rgba(56,189,248,.3)}
+.badge.g-open{color:var(--tx3)}
+.pbrief{color:var(--tx2);font-size:12.5px;margin:9px 0 0}
+.pact{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.pact span{font-size:11px;color:var(--tx2);border:1px solid var(--line);border-radius:7px;padding:2px 8px;background:rgba(255,255,255,.03)}
+.layers{display:flex;flex-direction:column;gap:14px}
+.layer{border:1px solid var(--line);border-radius:14px;padding:14px 18px;background:var(--panel)}
+.lhead{display:flex;align-items:baseline;gap:12px}
+.lhead code{background:none;border:none;color:var(--ac);font-size:13.5px;padding:0}
+.lmeta{font-size:11.5px;color:var(--tx3);margin-left:auto}
+.lnote{font-size:12.3px;color:var(--tx2);margin:4px 0 9px}
+.lbar{height:5px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden}
+.lbar i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2));border-radius:3px}
+.lfiles{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.lfiles span{font-size:11px;font-family:var(--mono);color:var(--tx2);border:1px solid var(--line);border-radius:6px;padding:1px 7px;display:inline-flex;gap:6px;align-items:center}
+.lfiles b{color:var(--tx3);font-weight:400;font-size:10.5px}
+.lfiles .more{color:var(--tx3)}
+.ipcsum{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.dim{color:var(--tx3);font-size:11.5px}
+.ipcrow{display:grid;grid-template-columns:150px 210px 1fr;gap:12px;align-items:start;
+  border-top:1px solid var(--line);padding:11px 0}
+.ipcrow:first-of-type{border-top:none}
+.ipcl code{background:none;border:none;color:var(--ac);padding:0;font-size:13px}
+.ipcc{font-size:11px;color:var(--tx3);margin-left:8px;font-family:var(--mono)}
+.ipcg{display:flex;flex-wrap:wrap;gap:5px}
+.ipchn{display:flex;flex-wrap:wrap;gap:5px}
+.chip-i{font-family:var(--mono);font-size:10.8px;color:var(--tx2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;background:rgba(255,255,255,.03)}
+.chip-i.admin{border-color:rgba(245,165,36,.3);color:#f7c977}
+.chip-i.login{border-color:rgba(56,189,248,.22)}
+table.tbl{width:100%;border-collapse:collapse;border:1px solid var(--line);border-radius:14px;overflow:hidden;font-size:12.6px}
+table.tbl th,table.tbl td{padding:11px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+table.tbl thead th{background:rgba(255,255,255,.05);color:var(--tx);font-size:12px;font-weight:600}
+table.tbl tbody th{color:var(--tx2);font-weight:500;width:130px;background:rgba(255,255,255,.02)}
+table.tbl tbody tr:last-child th,table.tbl tbody tr:last-child td{border-bottom:none}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.cardh{font-weight:700;font-size:14px;margin-bottom:10px}
+.kvlist{display:flex;flex-direction:column;gap:9px}
+.kvrow{display:grid;grid-template-columns:120px 1fr;gap:10px;font-size:12.4px;color:var(--tx2)}
+.kvrow>span{color:var(--tx3);font-size:12px}
+.vendor{display:flex;flex-direction:column;gap:11px;margin-top:10px}
+.ven{border:1px solid var(--line);border-radius:11px;padding:11px 13px;background:rgba(255,255,255,.02)}
+.vhead{display:flex;align-items:center;gap:10px}
+.vbytes{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--ac)}
+.vdir{font-size:11.4px;color:var(--tx3);margin:5px 0 7px}
+.vdir code{font-size:11px}
+.vfiles{display:flex;flex-wrap:wrap;gap:6px}
+.vfiles span{font-size:10.8px;font-family:var(--mono);color:var(--tx2);border:1px solid var(--line);border-radius:6px;padding:1px 7px;display:inline-flex;gap:6px}
+.vfiles b{color:var(--tx3);font-weight:400}
+.reghead{margin-bottom:12px}
+.regnum{font-size:15px;color:var(--tx2)}
+.regnum b{font-size:22px;font-family:var(--mono);color:#fff;margin-right:6px}
+.regnum .ok{color:var(--ok)}.regnum .bad{color:var(--bad)}.regnum.warn b{color:var(--warn)}
+.regtip{margin-top:6px;font-size:11.5px;color:var(--tx3)}
+table.regtable{width:100%;border-collapse:collapse;font-size:12.3px}
+table.regtable th{text-align:left;font-size:11px;color:var(--tx3);font-weight:500;padding:6px 10px;border-bottom:1px solid var(--line2)}
+table.regtable td{padding:8px 10px;border-bottom:1px solid var(--line);color:var(--tx2);vertical-align:middle}
+table.regtable tr.bad td{background:rgba(242,109,109,.07)}
+table.regtable code{background:none;border:none;color:var(--ac);padding:0}
+td.kind{color:var(--tx3);font-size:11.5px;white-space:nowrap}
+td.num{font-family:var(--mono);color:#fff;text-align:right;width:70px}
+td.bar{width:180px}
+td.bar i{display:block;height:5px;border-radius:3px;background:linear-gradient(90deg,var(--ac),var(--ac2))}
+.reds{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:11px}
+.red{display:flex;gap:12px;border:1px solid rgba(242,109,109,.2);border-radius:13px;padding:13px 16px;
+  background:linear-gradient(160deg,rgba(242,109,109,.05),var(--panel))}
+.rn{flex:none;width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-family:var(--mono);font-size:11.5px;
+  color:#2a0d0d;background:linear-gradient(135deg,#f7a0a0,#f26d6d);font-weight:700}
+.red b{font-size:13px}
+.red p{margin:3px 0 0;font-size:12.2px;color:var(--tx2)}
+.drift{border:1px solid rgba(245,165,36,.35);background:rgba(245,165,36,.07);border-radius:12px;padding:12px 16px;margin:0 0 14px}
+.drift b{color:var(--warn);font-size:12.5px}
+.drift ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--tx2)}
+.tl{position:relative;padding-left:22px}
+.tl:before{content:"";position:absolute;left:5px;top:8px;bottom:8px;width:1px;background:var(--line2)}
+.tli{position:relative;padding:9px 0;display:grid;grid-template-columns:124px 92px 1fr;gap:12px;align-items:baseline}
+.tldot{position:absolute;left:-21px;top:15px;width:9px;height:9px;border-radius:50%;background:var(--tx3)}
+.tli.cur .tldot{background:var(--ac);box-shadow:0 0 0 4px rgba(34,211,165,.16)}
+.tlv{font-family:var(--mono);font-weight:700;color:#fff}
+.tld{font-size:11.5px;color:var(--tx3);font-family:var(--mono)}
+.tls{font-size:12px;color:var(--tx2)}
+footer{margin-top:64px;border-top:1px solid var(--line);padding-top:26px}
+footer .dim{margin-top:16px;line-height:1.7;max-width:900px}
+@media(max-width:900px){
+  .grid2{grid-template-columns:1fr}
+  .ipcrow{grid-template-columns:1fr;gap:6px}
+  h1{font-size:29px}
+}
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<header class="top">
+  <div class="brand">
+    <span class="logo"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0f6e56"/><path d="M9.5 10l6.5 13 6.5-13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    <div><div class="bn">得物蓝V素材发布工具</div><div class="bs">项目功能全景 · 可视化文档</div></div>
+  </div>
+  <div class="tmeta">
+    <span class="pill v">v1.0.14</span>
+    <span class="pill">main @ 30b4a4e</span>
+    <span class="pill">生成于 2026-10-05 04:14</span>
+    <span class="pill warn">工作区有 1 个未提交改动</span>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>从一堆素材，到一条发出去的动态</h1>
+    <p class="lede">得物蓝V 素材发布工具 · Windows 桌面版（素材整理 / 合规检查 / 文案生成 / 货号颜色校验 / 发布单 / 模拟器发布）</p>
+    <div class="kpis"><div class="kpi"><div class="kv">v1.0.14</div><div class="kl">当前版本</div><div class="ks">main @ 30b4a4e · 工作区有未提交改动 1 个文件</div></div><div class="kpi"><div class="kv">11</div><div class="kl">功能页签</div><div class="ks">1 个仅管理员可见</div></div><div class="kpi"><div class="kv">53</div><div class="kl">IPC 通道</div><div class="ks">15 个域 · 11 条仅管理员</div></div><div class="kpi"><div class="kv">38</div><div class="kl">源码文件</div><div class="ks">16,853 行（js/html/css）</div></div><div class="kpi"><div class="kv">17</div><div class="kl">回归套件</div><div class="ks">1531 项断言（快照）</div></div><div class="kpi"><div class="kv">88.2 MB</div><div class="kl">随包内置依赖</div><div class="ks">adb / adbkeyboard / ffmpeg</div></div></div>
+  </section>
+
+  <section id="flow">
+    <h2>六段流水线</h2>
+    <p class="sub">一个人当天能跑完的一条链路：每一步的产物就是下一步的输入。</p>
+    <div class="flow"><div class="step">
+      <div class="snum">1</div>
+      <div class="sbody">
+        <div class="shead"><b>素材整理</b><span class="stag">建扁平副本</span><span class="stab">页签 1</span></div>
+        <div class="sout">产物：扁平副本目录（原素材不动）</div>
+        <ul><li>先秒级出「待整理清单」（只读元数据），再后台建扁平副本</li><li>扁平名用连接符把原层级接起来：<code>8124MT_UWG450159+灰色+达人昵称_1</code></li><li>原素材 <b>不改名、不移动</b>，只建副本</li><li>同卷优先硬链接（实测 1692 个 &lt; 2 秒），跨卷自动退化为实体复制</li><li>目录被占用（网盘/看图软件）指数退避重试；非法字符 <code>&lt; &gt; : " | ? *</code> 替换为 <code>_</code></li></ul>
+      </div>
+    </div><div class="sarrow">→</div><div class="step">
+      <div class="snum">2</div>
+      <div class="sbody">
+        <div class="shead"><b>合规检查</b><span class="stag">判定与处理分离</span><span class="stab">页签 2</span></div>
+        <div class="sout">产物：合规报告 xlsx（汇总 + 明细）+ csv</div>
+        <ul><li>图片必须 JPG；<b>边长与体积都只卡下限</b>（上限能力保留，开关 <code>enforceMaxSide</code> / <code>enforceMaxMB</code> 默认关）</li><li>边长低于下限 ⇒ 判「需更换图片」交人工（<b>不会</b>标成「等比缩放」—— 缩放函数只缩不放）</li><li>垃圾文件隔离到 <code>_rejected</code> 而<b>不是删除</b>；判定与处理分离，只处理可自动项</li><li>视频必须 mp4 且 &lt; 600 秒；非 mp4 自动转（先无损转封装、再转码兜底，内置 ffmpeg）</li><li>超时长<b>只标红不裁剪</b>（裁剪会改变内容，可能被判非原创）</li><li>支持「检查父目录」：每个子文件夹独立出一份报告并分组展示</li></ul>
+      </div>
+    </div><div class="sarrow">→</div><div class="step">
+      <div class="snum">3</div>
+      <div class="sbody">
+        <div class="shead"><b>文案生成</b><span class="stag">看图写，成句不成标签</span><span class="stab">页签 3</span></div>
+        <div class="sout">产物：<code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code></div>
+        <ul><li>把这一条素材的前几张实拍图<b>真的发给模型</b>（缩到 imageMaxSide、JPEG base64、不落盘）</li><li>标题＝产品词 + 热门词，<b>写成一句念得通的话</b>；<code>+</code> 一个字都不许出现</li><li>10 种句式骨架 T01~T10 按行轮换，每条骨架自带连接字或收尾（结构性防病句）</li><li>正文＝<b>4~5 行短句</b>（一行 8~16 字），全篇 1~3 个 emoji 放行尾</li><li>话题＝必带话题 + 品牌提示词里的 <code>#话题</code>，逐行进正文末尾的格子</li><li>连不上就停下报错，<b>绝不拿本地模板冒充 AI 文案</b></li></ul>
+      </div>
+    </div><div class="sarrow">→</div><div class="step">
+      <div class="snum">4</div>
+      <div class="sbody">
+        <div class="shead"><b>货号颜色校验</b><span class="stag">只拦「多色漏填」</span><span class="stab">页签 4</span></div>
+        <div class="sout">产物：逐行结论（一致 / 告警 / 拦截）</div>
+        <ul><li>取色来源两种：本地商品池（CSV/TSV/JSON）或接口查询（endpoint + SKU APIKey）</li><li>结论口径：颜色匹配 / 单色货号颜色可空 / 多色须指定 / 货号未查到颜色信息</li><li>额外用图片实取主色反查目录里填的色名（目录写「冠军白」但图是黑的会被抓出来）</li><li>★ 只有「<b>多色货号没填颜色</b>」会拦住发布；查不到、颜色不符都只告警、照常发布</li></ul>
+      </div>
+    </div><div class="sarrow">→</div><div class="step">
+      <div class="snum">5</div>
+      <div class="sbody">
+        <div class="shead"><b>发布单 / 导入</b><span class="stag">26 列 xlsx 闭环</span></div>
+        <div class="sout">产物：发布单 xlsx（26 列，结果回写 B/C 列）</div>
+        <ul><li>导出 26 列，校验未通过的整行标红；也能把「AI 内容报告」反向导入当发布单</li><li>★ 独立的「发布单」页签已删除（与「模拟器发布」高度重复）⇒ 导出/导入入口都在<b>「模拟器发布」页</b></li><li>叶子文件夹名写 <code>货号+颜色</code> ⇒ 报告里空着的货号/颜色自动补齐并<b>写回报告文件</b></li><li>只补空格子；报告值与目录对不上时不补（宁缺勿错）；名字不合法时不猜、点名让人改</li><li>回写时 Excel 被 WPS 占用 ⇒ 整批暂存 <code>pending-results.json</code>，下次先补写</li></ul>
+      </div>
+    </div><div class="sarrow">→</div><div class="step">
+      <div class="snum">6</div>
+      <div class="sbody">
+        <div class="shead"><b>模拟器发布</b><span class="stag">真实通道 / 模拟通道</span><span class="stab">页签 6</span></div>
+        <div class="sout">产物：publish-log.jsonl + 截图 + 结果回写</div>
+        <ul><li>真实通道（adb + uiautomator）与模拟通道（mock）两条，界面顶部一眼可见当前走哪条</li><li>发布前按 <b>MediaStore 判据</b>清空相册（得物相册是全盘聚合视图）</li><li>中文/含空格文案走 <code>ADB_INPUT_B64</code> 精确通道，<b>input 后必回读</b>校验</li><li>点完「提交发布」必须确认<b>真的离开发布流程</b>才算成功；失败先截图再 force-stop</li><li>固定/随机间隔 + 倒计时；单条记耗时；失败自动回退到干净起点</li></ul>
+      </div>
+    </div></div>
+  </section>
+
+  <section id="pages">
+    <h2>功能地图</h2>
+    <p class="sub">左侧 11 个页签（数字取自渲染层 index.html 的导航，与实际界面一致）。</p>
+    
+    <div class="pages"><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></span>
+        <span class="pname">素材整理</span>
+        <span class="pgroup">生产</span>
+        
+        
+        <span class="ptab">tab 1</span>
+      </div>
+      <div class="pbrief">秒级清单 + 后台扁平副本。原素材完全不动。</div>
+      <div class="pact"><span>选择目录</span><span>生成清单</span><span>开始整理</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.2-2.9 7.7-7 9-4.1-1.3-7-4.8-7-9V6l7-3z"/></svg></span>
+        <span class="pname">合规检查</span>
+        <span class="pgroup">生产</span>
+        
+        
+        <span class="ptab">tab 2</span>
+      </div>
+      <div class="pbrief">判定与处理分离：先出报告，只处理有问题的那批。</div>
+      <div class="pact"><span>检查父目录</span><span>开始检查</span><span>导出报告</span><span>处理可自动项</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg></span>
+        <span class="pname">文案生成</span>
+        <span class="pgroup">生产</span>
+        
+        
+        <span class="ptab">tab 3</span>
+      </div>
+      <div class="pbrief">看图写文案；标题成句、正文 4~5 行；跑完落带时间戳的报告。</div>
+      <div class="pact"><span>提示词配置</span><span>选择素材目录并启动任务</span><span>按当前素材生成</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></svg></span>
+        <span class="pname">货号颜色校验</span>
+        <span class="pgroup">生产</span>
+        
+        
+        <span class="ptab">tab 4</span>
+      </div>
+      <div class="pbrief">商品池或接口取色，主色反查；只有「多色漏填」拦发布。</div>
+      <div class="pact"><span>同步商品池</span><span>开始校验</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><path d="M20 12.5l-7.5 7.5L4 11.5V4h7.5L20 12.5z"/><circle cx="8.6" cy="8.6" r="1.5"/></svg></span>
+        <span class="pname">热词库</span>
+        <span class="pgroup">生产</span>
+        
+        <span class="badge">非管理员只读</span>
+        <span class="ptab">tab 12</span>
+      </div>
+      <div class="pbrief">8 类分组 60+ 热词，带 <code>{色}</code> 占位；材质/参数词禁入（那是教模型造假）。</div>
+      <div class="pact"><span>恢复内置</span><span>保存</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10.5 8.8l5 3.2-5 3.2V8.8z"/></svg></span>
+        <span class="pname">模拟器发布</span>
+        <span class="pgroup">执行</span>
+        
+        
+        <span class="ptab">tab 6</span>
+      </div>
+      <div class="pbrief">发布流程主入口：导入报告 → 选间隔 → 开始发布 → 结果回写。</div>
+      <div class="pact"><span>导入 AI 内容报告</span><span>导出 xlsx</span><span>连接模拟器</span><span>重导出日志</span><span>停止</span><span>开始发布</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v5h5"/></svg></span>
+        <span class="pname">运行日志</span>
+        <span class="pgroup">执行</span>
+        
+        
+        <span class="ptab">tab 10</span>
+      </div>
+      <div class="pbrief">与底部日志栏同一份数据；多出「按级别/关键字筛」与「导出 .log + .jsonl」。</div>
+      <div class="pact"><span>清空</span><span>导出日志</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2.6M12 17.9v2.6M4.9 7.8l2.2 1.3M16.9 14.9l2.2 1.3M4.9 16.2l2.2-1.3M16.9 9.1l2.2-1.3"/></svg></span>
+        <span class="pname">设置</span>
+        <span class="pgroup">其他</span>
+        
+        
+        <span class="ptab">tab 7</span>
+      </div>
+      <div class="pbrief">路径、外部依赖状态、外观（浅/深）、应用更新、账号与安全。</div>
+      <div class="pact"><span>保存</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><path d="M3 21h18"/><rect x="5" y="12" width="3.4" height="6" rx="1"/><rect x="10.3" y="7" width="3.4" height="11" rx="1"/></svg></span>
+        <span class="pname">品牌统计</span>
+        <span class="pgroup">其他</span>
+        
+        
+        <span class="ptab">tab 8</span>
+      </div>
+      <div class="pbrief">按品牌条数/成败/按天频次/执行人；7/30/90 天；「未标品牌」独立成桶。</div>
+      <div class="pact"><span>查询</span><span>导出 xlsx</span><span>导出执行日志</span><span>检测输出目录</span></div>
+    </div><div class="card page ">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><circle cx="8.2" cy="12" r="4"/><path d="M12.2 12h8.4M17.6 12v3.2"/></svg></span>
+        <span class="pname">品牌与权限</span>
+        <span class="pgroup">其他</span>
+        
+        
+        <span class="ptab">tab 9</span>
+      </div>
+      <div class="pbrief">品牌注册表 + 账号管理 + 逐账号品牌权限 + 默认品牌。</div>
+      
+    </div><div class="card page adm">
+      <div class="phead">
+        <span class="pico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.2M12 18.2v2.2M5.4 7.4l1.9 1.1M16.7 15.5l1.9 1.1"/></svg></span>
+        <span class="pname">高级设置</span>
+        <span class="pgroup">其他</span>
+        <span class="badge adm">仅管理员</span>
+        
+        <span class="ptab">tab 11</span>
+      </div>
+      <div class="pbrief">UI 定位表 / 失败恢复动作 / 文案模型 / 并发路数 / 货号颜色接口 / adb 与 ffmpeg 路径 / 云端协作。</div>
+      <div class="pact"><span>保存</span></div>
+    </div></div>
+  </section>
+
+  <section id="arch">
+    <h2>代码结构</h2>
+    <p class="sub">共 38 个文件 / 16,853 行。条长＝该层代码量占比。</p>
+    <div class="layers"><div class="layer">
+      <div class="lhead"><code>src/main/</code><span class="lmeta">13 个文件 · 3,051 行</span></div>
+      <div class="lnote">主进程：入口、窗口、IPC 白名单、账号、品牌、任务编排、日志总线、自动更新</div>
+      <div class="lbar"><i style="width:32%"></i></div>
+      <div class="lfiles"><span title="src/main/jobs.js">jobs.js<b>710</b></span><span title="src/main/auth.js">auth.js<b>382</b></span><span title="src/main/updater.js">updater.js<b>382</b></span><span title="src/main/ipc.js">ipc.js<b>372</b></span><span title="src/main/brands.js">brands.js<b>264</b></span><span title="src/main/window.js">window.js<b>244</b></span><span title="src/main/store.js">store.js<b>241</b></span><span title="src/main/index.js">index.js<b>131</b></span><span title="src/main/logexport.js">logexport.js<b>126</b></span><span title="src/main/project.js">project.js<b>107</b></span><span title="src/main/llmdefaults.js">llmdefaults.js<b>39</b></span><span title="src/main/logbus.js">logbus.js<b>30</b></span><span class="more">+1</span></div>
+    </div><div class="layer">
+      <div class="lhead"><code>src/main/services/</code><span class="lmeta">19 个文件 · 9,546 行</span></div>
+      <div class="lnote">业务服务：整理 / 合规 / 文案 / 校验 / 发布单 / 发布 / 设备 / 定位表 / 统计</div>
+      <div class="lbar"><i style="width:100%"></i></div>
+      <div class="lfiles"><span title="src/main/services/adb.js">adb.js<b>1932</b></span><span title="src/main/services/publisher.js">publisher.js<b>1235</b></span><span title="src/main/services/copywriter.js">copywriter.js<b>846</b></span><span title="src/main/services/uimap.js">uimap.js<b>716</b></span><span title="src/main/services/video.js">video.js<b>532</b></span><span title="src/main/services/report.js">report.js<b>511</b></span><span title="src/main/services/stats.js">stats.js<b>486</b></span><span title="src/main/services/compliance.js">compliance.js<b>482</b></span><span title="src/main/services/copycheck.js">copycheck.js<b>442</b></span><span title="src/main/services/cloudsync.js">cloudsync.js<b>402</b></span><span title="src/main/services/hotwords.js">hotwords.js<b>324</b></span><span title="src/main/services/imaging.js">imaging.js<b>306</b></span><span class="more">+7</span></div>
+    </div><div class="layer">
+      <div class="lhead"><code>src/main/util/</code><span class="lmeta">2 个文件 · 309 行</span></div>
+      <div class="lnote">工具：Windows 长路径与硬链接、主色反查</div>
+      <div class="lbar"><i style="width:3%"></i></div>
+      <div class="lfiles"><span title="src/main/util/winpath.js">winpath.js<b>246</b></span><span title="src/main/util/colors.js">colors.js<b>63</b></span></div>
+    </div><div class="layer">
+      <div class="lhead"><code>src/preload/</code><span class="lmeta">1 个文件 · 86 行</span></div>
+      <div class="lnote">contextBridge（contextIsolation，渲染层无 node 权限）</div>
+      <div class="lbar"><i style="width:1%"></i></div>
+      <div class="lfiles"><span title="src/preload/index.js">index.js<b>86</b></span></div>
+    </div><div class="layer">
+      <div class="lhead"><code>src/renderer/</code><span class="lmeta">3 个文件 · 3,861 行</span></div>
+      <div class="lnote">Windows 风格 UI（自绘标题栏 + 左侧页签 + 底部日志栏）</div>
+      <div class="lbar"><i style="width:40%"></i></div>
+      <div class="lfiles"><span title="src/renderer/app.js">app.js<b>3254</b></span><span title="src/renderer/styles.css">styles.css<b>391</b></span><span title="src/renderer/index.html">index.html<b>216</b></span></div>
+    </div></div>
+  </section>
+
+  <section id="ipc">
+    <h2>接口面 &amp; 权限门禁</h2>
+    <p class="sub">通道清单与门禁档位由 src/main/ipc.js 自动解析（共 53 条）。</p>
+    <div class="ipc"><div class="ipcsum">
+      <span class="badge g-admin">仅管理员 11</span>
+      <span class="badge g-login">需登录 23</span>
+      <span class="badge g-open">免登录 19</span>
+      <span class="dim">门禁在<b>主进程</b>判定，不是前端藏按钮</span>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>auth:*</code><span class="ipcc">9</span></div>
+      <div class="ipcg"><span class="badge g-open">免登录（静态/外观/窗口） × 9</span></div>
+      <div class="ipchn"><span class="chip-i open">status</span><span class="chip-i open">login</span><span class="chip-i open">logout</span><span class="chip-i open">change-password</span><span class="chip-i open">users</span><span class="chip-i open">create-user</span><span class="chip-i open">update-user</span><span class="chip-i open">reset-password</span><span class="chip-i open">remove-user</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>win:*</code><span class="ipcc">6</span></div>
+      <div class="ipcg"><span class="badge g-open">免登录（静态/外观/窗口） × 6</span></div>
+      <div class="ipchn"><span class="chip-i open">min</span><span class="chip-i open">toggle-max</span><span class="chip-i open">close</span><span class="chip-i open">is-max</span><span class="chip-i open">flash</span><span class="chip-i open">fit-gate</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>brand:*</code><span class="ipcc">5</span></div>
+      <div class="ipcg"><span class="badge g-admin">仅管理员 × 3</span><span class="badge g-login">需登录 × 2</span></div>
+      <div class="ipchn"><span class="chip-i login">list</span><span class="chip-i admin">add</span><span class="chip-i admin">update</span><span class="chip-i login">prompts</span><span class="chip-i admin">remove</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>update:*</code><span class="ipcc">5</span></div>
+      <div class="ipcg"><span class="badge g-admin">仅管理员 × 1</span><span class="badge g-login">需登录 × 4</span></div>
+      <div class="ipchn"><span class="chip-i login">status</span><span class="chip-i login">check</span><span class="chip-i login">download</span><span class="chip-i admin">set-channel</span><span class="chip-i login">install</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>cloud:*</code><span class="ipcc">5</span></div>
+      <div class="ipcg"><span class="badge g-admin">仅管理员 × 5</span></div>
+      <div class="ipchn"><span class="chip-i admin">status</span><span class="chip-i admin">sync</span><span class="chip-i admin">test</span><span class="chip-i admin">export</span><span class="chip-i admin">import</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>stats:*</code><span class="ipcc">4</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 4</span></div>
+      <div class="ipchn"><span class="chip-i login">query</span><span class="chip-i login">export</span><span class="chip-i login">exportLog</span><span class="chip-i login">checkPath</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>hotwords:*</code><span class="ipcc">3</span></div>
+      <div class="ipcg"><span class="badge g-admin">仅管理员 × 2</span><span class="badge g-login">需登录 × 1</span></div>
+      <div class="ipchn"><span class="chip-i login">get</span><span class="chip-i admin">save</span><span class="chip-i admin">reset</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>theme:*</code><span class="ipcc">3</span></div>
+      <div class="ipcg"><span class="badge g-open">免登录（静态/外观/窗口） × 3</span></div>
+      <div class="ipchn"><span class="chip-i open">get</span><span class="chip-i open">set</span><span class="chip-i open">toggle</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>job:*</code><span class="ipcc">3</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 3</span></div>
+      <div class="ipchn"><span class="chip-i login">run</span><span class="chip-i login">cancel</span><span class="chip-i login">busy</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>config:*</code><span class="ipcc">2</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 2</span></div>
+      <div class="ipchn"><span class="chip-i login">get</span><span class="chip-i login">set</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>log:*</code><span class="ipcc">2</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 2</span></div>
+      <div class="ipchn"><span class="chip-i login">history</span><span class="chip-i login">export</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>dialog:*</code><span class="ipcc">2</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 2</span></div>
+      <div class="ipchn"><span class="chip-i login">dir</span><span class="chip-i login">file</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>shell:*</code><span class="ipcc">2</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 2</span></div>
+      <div class="ipchn"><span class="chip-i login">open</span><span class="chip-i login">reveal</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>app:*</code><span class="ipcc">1</span></div>
+      <div class="ipcg"><span class="badge g-open">免登录（静态/外观/窗口） × 1</span></div>
+      <div class="ipchn"><span class="chip-i open">info</span></div>
+    </div><div class="ipcrow">
+      <div class="ipcl"><code>project:*</code><span class="ipcc">1</span></div>
+      <div class="ipcg"><span class="badge g-login">需登录 × 1</span></div>
+      <div class="ipchn"><span class="chip-i login">get</span></div>
+    </div></div>
+  </section>
+
+  <section id="pub">
+    <h2>发布通道：真机 vs 演练</h2>
+    <p class="sub">同一条流程代码，两种执行后端；界面顶部一眼可见当前走哪条。</p>
+    <table class="tbl"><thead><tr><th></th><th>真实通道（adb）</th><th>模拟通道（mock）</th></tr></thead><tbody>
+    <tr><th>触发条件</th><td>找得到 adb（手填 &gt; 内置 &gt; PATH）、设备在线、得物包名识别到、uiautomator 可用</td><td>上述任一不满足</td></tr><tr><th>做什么</th><td>推图到 <code>/sdcard/DCIM/Camera</code> + 触发媒体扫描 → uiautomator dump 抓界面 → 按定位表点击/输入</td><td>只跑流程：节奏、重试、jsonl 追加、Excel 回写</td></tr><tr><th>失败表现</th><td>报真原因（找不到节点会列出当前可见文本）+ 自动存失败截图</td><td>随机失败，仅用于演练</td></tr>
+  </tbody></table>
+    <div class="grid2">
+      <div class="card">
+        <div class="cardh">更新 &amp; 发版</div>
+        <div class="kvlist"><div class="kvrow"><span>源</span><div>腾讯云 COS 桶根目录（<code>build.publish</code>，<b>编译进包</b>）</div></div><div class="kvrow"><span>通道</span><div>正式版读 <code>latest.yml</code>、测试版读 <code>beta.yml</code>；<b>共用同一个安装包</b></div></div><div class="kvrow"><span>切通道</span><div>设置页点一下即可，不用重装；只有管理员能切，普通成员登录时自动收回并落盘</div></div><div class="kvrow"><span>检查 / 下载 / 安装</span><div>全部<b>由用户点</b>：无定时轮询、无自动下载、无自动重启</div></div><div class="kvrow"><span>安装闸门</span><div>有任务在跑时拦住安装（重启会把跑一半的发布掐断，且没有回滚）</div></div><div class="kvrow"><span>老包清理</span><div>每条通道留「当前 + 1 个可回滚历史版本」；清单与认不出的对象永不清</div></div></div>
+        <div class="dim">源：<code>https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/</code>（generic）</div>
+      </div>
+      <div class="card">
+        <div class="cardh">随包内置的外部依赖</div>
+        <p class="dim">这些二进制故意进 git：每次打包都必须有，走「构建时下载」会让没网的机器打不出包。</p>
+        <div class="vendor"><div class="ven">
+    <div class="vhead"><b>adb</b><span class="vbytes">9.2 MB</span></div>
+    <div class="vdir"><code>vendor/adb</code> → <code>resources/adb/</code></div>
+    <div class="vfiles"><span>adb.exe<b>7.9 MB</b></span><span>NOTICE.txt<b>1.1 MB</b></span><span>AdbWinApi.dll<b>105.6 KB</b></span><span>AdbWinUsbApi.dll<b>71.6 KB</b></span></div>
+  </div><div class="ven">
+    <div class="vhead"><b>adbkeyboard</b><span class="vbytes">17.0 KB</span></div>
+    <div class="vdir"><code>vendor/adbkeyboard</code> → <code>resources/adbkeyboard/</code></div>
+    <div class="vfiles"><span>ADBKeyboard.apk<b>17.0 KB</b></span></div>
+  </div><div class="ven">
+    <div class="vhead"><b>ffmpeg</b><span class="vbytes">79.0 MB</span></div>
+    <div class="vdir"><code>vendor/ffmpeg</code> → <code>resources/ffmpeg/</code></div>
+    <div class="vfiles"><span>ffmpeg.exe<b>79.0 MB</b></span><span>README-ffmpeg-static.txt<b>38.6 KB</b></span><span>LICENSE.txt<b>34.3 KB</b></span></div>
+  </div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="qa">
+    <h2>质量护栏</h2>
+    <p class="sub">17 套回归，入口 <code>node tools/run-all.js</code>。</p>
+    <div class="reghead"><div class="regnum"><b>1531</b> 项断言 · 17 套 · <span class="ok">全绿</span></div>
+       <div class="dim">来源：快照 · 2026-10-05 04:05 · 来自快照文件 E:/WORKBUDDY/2026-09-30-17-35-35/_功能全景-回归快照-20261005-2.txt</div>
+      <div class="regtip">刷新：<code>node docs/visual/build.js --run</code>（真跑一遍，几分钟）</div></div>
+    <table class="regtable"><thead><tr><th>套件</th><th>类型</th><th>覆盖</th><th>断言</th><th></th></tr></thead><tbody><tr class="">
+      <td><code>smoke</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">造临时素材跑完整流水线</td>
+      <td class="num">42</td>
+      <td class="bar"><i style="width:11%"></i></td>
+    </tr><tr class="">
+      <td><code>adbtest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">假 adb 验证真实发布通道</td>
+      <td class="num">367</td>
+      <td class="bar"><i style="width:100%"></i></td>
+    </tr><tr class="">
+      <td><code>pendingtest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">发布单被占用 → 整批暂存 → 下次补写</td>
+      <td class="num">19</td>
+      <td class="bar"><i style="width:5%"></i></td>
+    </tr><tr class="">
+      <td><code>compliancetest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">合规边界 + 导出报告 + 非 mp4 视频自动转 mp4（含 type 不被改成图片）</td>
+      <td class="num">46</td>
+      <td class="bar"><i style="width:13%"></i></td>
+    </tr><tr class="">
+      <td><code>videotest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">视频转 mp4（内置 ffmpeg 现造样本，真读产物：转封装优先 / 转码兜底 / 失败如实报错不留半成品）</td>
+      <td class="num">96</td>
+      <td class="bar"><i style="width:26%"></i></td>
+    </tr><tr class="">
+      <td><code>batchtest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">多批次并行 / 取消 / 按批次重导出日志</td>
+      <td class="num">34</td>
+      <td class="bar"><i style="width:9%"></i></td>
+    </tr><tr class="">
+      <td><code>copytest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">文案生成（看图写：真发图 / 模型名解析 / 连不上不冒充 + 带时间戳的 AI 内容报告 + 一致性核对）</td>
+      <td class="num">201</td>
+      <td class="bar"><i style="width:55%"></i></td>
+    </tr><tr class="">
+      <td><code>reporttest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">「AI 内容报告」导入 → 发布 → 回写</td>
+      <td class="num">57</td>
+      <td class="bar"><i style="width:16%"></i></td>
+    </tr><tr class="">
+      <td><code>brandtest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">品牌权限 + 按品牌统计（未标品牌单列 / 已删除品牌保留）</td>
+      <td class="num">82</td>
+      <td class="bar"><i style="width:22%"></i></td>
+    </tr><tr class="">
+      <td><code>uicheck</code></td>
+      <td class="kind">Electron 窗口</td>
+      <td class="desc">隐藏窗口加载真实渲染层（10 个页签 + 零控制台报错 + 运行日志页同步/筛选/导出）</td>
+      <td class="num">205</td>
+      <td class="bar"><i style="width:56%"></i></td>
+    </tr><tr class="">
+      <td><code>logintest</code></td>
+      <td class="kind">Electron 窗口</td>
+      <td class="desc">登录门（未登录拦截 / 口令 / 权限 / 防爆破）</td>
+      <td class="num">101</td>
+      <td class="bar"><i style="width:28%"></i></td>
+    </tr><tr class="">
+      <td><code>gatetest</code></td>
+      <td class="kind">Electron 窗口</td>
+      <td class="desc">登录门窗口尺寸（未登录收缩成小窗 / 登录后还原 / 退出再收缩）</td>
+      <td class="num">19</td>
+      <td class="bar"><i style="width:5%"></i></td>
+    </tr><tr class="">
+      <td><code>updatertest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">自动更新状态机（下载完绝不自动重启 / 便携版与开发模式如实说不可用 / 可选文件日志）</td>
+      <td class="num">50</td>
+      <td class="bar"><i style="width:14%"></i></td>
+    </tr><tr class="">
+      <td><code>releasetest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">发版工具纯逻辑（latest.yml 读错就是 404 / 便携版永不上传 / 同版本号默认拦下）</td>
+      <td class="num">65</td>
+      <td class="bar"><i style="width:18%"></i></td>
+    </tr><tr class="">
+      <td><code>prunetest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">老包清理策略（唯一会删东西的工具：读错版本号就删错包 / 源上状态不明时一个字节都不删）</td>
+      <td class="num">45</td>
+      <td class="bar"><i style="width:12%"></i></td>
+    </tr><tr class="">
+      <td><code>logtest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">运行日志导出格式（条数不许谎报 / 完整日期时间 / 行尾固定 \n / 真落盘）</td>
+      <td class="num">45</td>
+      <td class="bar"><i style="width:12%"></i></td>
+    </tr><tr class="">
+      <td><code>cloudtest</code></td>
+      <td class="kind">纯 Node</td>
+      <td class="desc">云端同步（关着不联网 / 只推增量 / 幂等头 / 不留绝对路径 / 失败不推进游标 /</td>
+      <td class="num">57</td>
+      <td class="bar"><i style="width:16%"></i></td>
+    </tr></tbody></table>
+  </section>
+
+  <section id="redline">
+    <h2>绝不许破的约束</h2>
+    <p class="sub">这些不是建议，是踩过坑之后写下来的红线（出处：AGENTS.md §一）。</p>
+    <div class="reds"><div class="red"><span class="rn">1</span><div><b>项目目录不许改名 / 移动</b><p>配置与构建产物里存的是绝对路径。改名 ⇒ 素材扫不到、发布单回写落到别处。</p></div></div><div class="red"><span class="rn">2</span><div><b>app.js / store.js 不许整文件重写</b><p>只许局部替换 —— 这两个文件可能同时有别的会话在改，整文件重写会覆盖别人的在制品。</p></div></div><div class="red"><span class="rn">3</span><div><b>每改一处必须跑回归</b><p>node tools/run-all.js。全绿 ≠ 通过：还要答得出「我改掉了哪条判断、哪条断言会变红」。</p></div></div><div class="red"><span class="rn">4</span><div><b>注释与界面文案一律中文</b><p>含日志文案、错误提示、按钮名。</p></div></div><div class="red"><span class="rn">5</span><div><b>不许造假成功</b><p>取不到就写「取不到」/「—」，未知 ≠ 0；失败必须说清「缺什么」。</p></div></div><div class="red"><span class="rn">6</span><div><b>发布前必须清空设备相册</b><p>得物相册是全盘聚合视图 ⇒ 判据是 MediaStore 清空，不是「某个目录为空」。</p></div></div><div class="red"><span class="rn">7</span><div><b>自动更新两条红线</b><p>绝不自动重启安装（会掐断正在跑的发布）；不在运行时改源地址（地址编译进包）。</p></div></div><div class="red"><span class="rn">8</span><div><b>凭据绝不入库</b><p>.env 已忽略；service_role / secret key 绝不许写进任何前端文件。</p></div></div><div class="red"><span class="rn">9</span><div><b>安装包不进 git</b><p>二进制一旦进历史就删不干净 ⇒ 走 Releases / 网盘分发。</p></div></div></div>
+  </section>
+
+  <section id="tl">
+    <h2>版本线</h2>
+    <p class="sub">权威源：<code>package.json</code> 的 <code>version</code> 字段变更史（共 17 个版本）。
+      <b>谁把版本号改成它，就是哪一次提交</b> —— 不按提交说明猜，所以不会漏（说明里常不写版本号）也不会把「补档文档」当成发布。
+      </p>
+    <div class="tl">
+    <div class="tli cur">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.14<span class="badge cur">当前</span></div>
+      <div class="tld">2026-10-05</div>
+      <div class="tls"><code>f40fa13</code> chore(发版): 1.0.14</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.13</div>
+      <div class="tld">2026-10-05</div>
+      <div class="tls"><code>00dbb9f</code> chore(发版): 1.0.13</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.12</div>
+      <div class="tld">2026-10-05</div>
+      <div class="tls"><code>c5dabff</code> fix(发布): 中文/含空格文案改走 B64 精确通道 + 输入回读校验；落草稿立刻判失败；失败先留证</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.11</div>
+      <div class="tld">2026-10-04</div>
+      <div class="tls"><code>57e91c5</code> 发 v1.0.11：版本号 1.0.10 → 1.0.11</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.10</div>
+      <div class="tld">2026-10-04</div>
+      <div class="tls"><code>37159d3</code> 发 v1.0.10：版本号 1.0.9 → 1.0.10</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.9</div>
+      <div class="tld">2026-10-03</div>
+      <div class="tls"><code>2b6710d</code> 发 v1.0.9：版本号 1.0.8 → 1.0.9（发版范围由用户当场选定「全量」）</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.8</div>
+      <div class="tld">2026-10-03</div>
+      <div class="tls"><code>fef2ef2</code> 发 v1.0.8：版本号 1.0.7 → 1.0.8 + HANDOFF 本轮记录</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.7</div>
+      <div class="tld">2026-10-03</div>
+      <div class="tls"><code>5937b96</code> 发 v1.0.7：删掉「前司」字样 / 设置页重复块 / 更新日志功能</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.6</div>
+      <div class="tld">2026-10-03</div>
+      <div class="tls"><code>6aa17f3</code> 发 v1.0.6：文案正文格式 + 话题来源 + 云端幂等修复 + 看板内置 SDK</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.5</div>
+      <div class="tld">2026-10-02</div>
+      <div class="tls"><code>6c3d56a</code> 发 v1.0.5（抓发布页 + 动画页备用通道）</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.4</div>
+      <div class="tld">2026-10-02</div>
+      <div class="tls"><code>86d095d</code> 云端协作（阶段1）：发布结果增量上云 + 只读网页看板</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.3</div>
+      <div class="tld">2026-10-02</div>
+      <div class="tls"><code>36d5c9b</code> 发 v1.0.3（登录页「窗口＝卡片」+ 视频复用图文 + 删假序列号兜底）</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.2</div>
+      <div class="tld">2026-10-02</div>
+      <div class="tls"><code>1296633</code> 登录页去黑框 + 删出厂账号提示；颜色校验不再拦发布；商品池去掉出厂示例数据（v1.0.2）</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.1</div>
+      <div class="tld">2026-10-02</div>
+      <div class="tls"><code>df82bbd</code> release: 发布正式版 1.0.1（内置 adb + 中文输入法）</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.1-beta.2<span class="badge">预览版</span></div>
+      <div class="tld">2026-10-01</div>
+      <div class="tls"><code>1ddbbca</code> feat(icon): 换成字母标 L2「深锚」，并把「三份来源」绑进断言</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.1-beta.1<span class="badge">预览版</span></div>
+      <div class="tld">2026-10-01</div>
+      <div class="tls"><code>5628c1e</code> feat: 发版脚本加「通道闸门」+ 发布 1.0.1-beta.1 到测试通道</div>
+    </div>
+    <div class="tli ">
+      <div class="tldot"></div>
+      <div class="tlv">v1.0.0</div>
+      <div class="tld">2026-09-30</div>
+      <div class="tls"><code>4622e1a</code> 首次提交：得物蓝V素材发布工具</div>
+    </div></div>
+  </section>
+
+  <footer>
+    <h2>这份文档怎么更新</h2>
+    <div class="kvlist">
+      <div class="kvrow"><span>重新生成</span><div><code>node docs/visual/build.js</code> —— 版本号 / 页签 / 通道 / 行数 / 版本线 全部自动重读</div></div>
+      <div class="kvrow"><span>刷新测试数字</span><div><code>node docs/visual/build.js --run</code> 真跑一遍回归；或用 <code>--snapshot &lt;run-all 输出.txt&gt;</code> 读已有结果</div></div>
+      <div class="kvrow"><span>改口径说明</span><div>编辑 <code>docs/visual/build.js</code> 顶部的 PIPELINE / PAGES / REDLINES / UPDATE</div></div>
+      <div class="kvrow"><span>数据快照</span><div><code>docs/visual/data.json</code> —— 每次生成同时落一份，便于 diff「这次变了什么」</div></div>
+    </div>
+    <p class="dim">文档里的数字分两类：<b>自动读</b>（版本、页签、通道、行数、套件、版本线、二进制体积）与
+    <b>人工核对</b>（流水线口径、红线、页面职责，出处见 README.md / AGENTS.md / docs/HANDOFF.md）。
+    读不到的写「—」，不编数字。</p>
+  </footer>
+</main>
+</body>
+</html>

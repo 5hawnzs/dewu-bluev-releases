@@ -1,0 +1,93 @@
+{
+  "when": "2026-10-05 04:05",
+  "total": 1531,
+  "failedSuites": [],
+  "note": "来自快照文件 E:/WORKBUDDY/2026-09-30-17-35-35/_功能全景-回归快照-20261005-2.txt（由 build.js --save-record 写入）",
+  "suites": {
+    "smoke": {
+      "pass": 42,
+      "fail": 0,
+      "ok": true
+    },
+    "adbtest": {
+      "pass": 367,
+      "fail": 0,
+      "ok": true
+    },
+    "pendingtest": {
+      "pass": 19,
+      "fail": 0,
+      "ok": true
+    },
+    "compliancetest": {
+      "pass": 46,
+      "fail": 0,
+      "ok": true
+    },
+    "videotest": {
+      "pass": 96,
+      "fail": 0,
+      "ok": true
+    },
+    "batchtest": {
+      "pass": 34,
+      "fail": 0,
+      "ok": true
+    },
+    "copytest": {
+      "pass": 201,
+      "fail": 0,
+      "ok": true
+    },
+    "reporttest": {
+      "pass": 57,
+      "fail": 0,
+      "ok": true
+    },
+    "brandtest": {
+      "pass": 82,
+      "fail": 0,
+      "ok": true
+    },
+    "uicheck": {
+      "pass": 205,
+      "fail": 0,
+      "ok": true
+    },
+    "logintest": {
+      "pass": 101,
+      "fail": 0,
+      "ok": true
+    },
+    "gatetest": {
+      "pass": 19,
+      "fail": 0,
+      "ok": true
+    },
+    "updatertest": {
+      "pass": 50,
+      "fail": 0,
+      "ok": true
+    },
+    "releasetest": {
+      "pass": 65,
+      "fail": 0,
+      "ok": true
+    },
+    "prunetest": {
+      "pass": 45,
+      "fail": 0,
+      "ok": true
+    },
+    "logtest": {
+      "pass": 45,
+      "fail": 0,
+      "ok": true
+    },
+    "cloudtest": {
+      "pass": 57,
+      "fail": 0,
+      "ok": true
+    }
+  }
+}
