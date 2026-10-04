@@ -164,13 +164,19 @@ const state = {
     /content call --uri content:\/\/media\/external\/file --method scan_file/.test(log));
   ok('点击了「发布」按钮', (log.match(/input tap 162 160/g) || []).length >= 1);
   ok('点击了相册/下一步/关联好物', /input tap 162 280/.test(log) && /input tap 920 2250/.test(log) && /input tap 220 1540/.test(log));
-  ok('中文标题走 ADBKeyboard 广播', /ADB_INPUT_TEXT --es msg "白色的鞋谁懂"/.test(log));
+  // ★★ 2026-10-04：非 ASCII 现在走 ADBKeyboard 的 **B64** 通道（见 adb.js#inputText 的注释：
+  //   `ADB_INPUT_TEXT` 那条不认 `%s`，代码把空格换成 `%s` 后照搬 ⇒ 空格会变成字面 `%s`）。
+  //   断言改成「从命令里取 base64、解回来 == 源文」——比只看通道名更硬：通道对了但内容被改写照样红。
+  ok('中文标题走 ADBKeyboard 广播（B64 通道，且解回来一字不差）',
+    log.indexOf('am broadcast -a ADB_INPUT_B64 --es msg '
+      + Buffer.from('白色的鞋谁懂', 'utf8').toString('base64')) >= 0);
   // ★★ 2026-10-04 修正：话题自带行首 `#`，**原样发**即可。
   //   上一轮「必须转义成 \#」的结论来自我自己编的夹具判据，真机逐条实测行首 # 根本不炸；
   //   而那个转义会**把反斜杠写进正文**（真机 dump 出来是 `\#品牌甲`）。⇒ 现在断言的是「原样、不加反斜杠」。
-  ok('话题也真实输入（行首 # 原样发出，不许加反斜杠）',
-    /ADB_INPUT_TEXT --es msg "#品牌甲"/.test(log) && !/\\#品牌甲/.test(log),
-    (log.match(/ADB_INPUT_TEXT --es msg "[^"]*"/g) || []).join(' | '));
+  ok('话题也真实输入（话题串原样编码送出，不许加任何反斜杠转义）',
+    log.indexOf('am broadcast -a ADB_INPUT_B64 --es msg '
+      + Buffer.from('#品牌甲', 'utf8').toString('base64')) >= 0 && !/\\#品牌甲/.test(log),
+    (log.match(/ADB_INPUT_B64 --es msg \S+/g) || []).join(' | '));
   ok('结果标为发布成功', r.rows[0].result === '发布成功', r.rows[0].result);
 
   // ★★ 2026-10-03 真机事故回归：`state.publish.uiMap` 必须**优先于**配置里的定位表。
@@ -772,8 +778,9 @@ const state = {
 
   clearCalls();
   const it2 = await adbMod.inputText('127.0.0.1:5555', 'abc123');
-  ok('⑯ 纯 ASCII 不受影响 ⇒ 走 input text（不依赖设备输入法状态）',
-    it2.ok === true && /input text "abc123"/.test(calls()) && !/ADB_INPUT_TEXT/.test(calls()),
+  ok('⑯ 纯 ASCII 不受影响 ⇒ 走 input text（不依赖设备输入法状态，也不走任何广播）',
+    it2.ok === true && /input text "abc123"/.test(calls())
+    && !/ADB_INPUT_TEXT/.test(calls()) && !/ADB_INPUT_B64/.test(calls()),
     calls().trim().split(/\r?\n/).join(' | '));
 
   // 真跑一遍发布：设备没启用输入法时，整条必须**失败**（而不是发一条空帖子还报成功）
@@ -794,9 +801,11 @@ const state = {
   clearCalls();
   Object.assign(state.publish.rows[0], { status: '排队', result: '', reason: '', retries: 0 });
   const rIme = await publisher.run(state, ctx);
-  ok('⑯ 设备启用了 ADBKeyboard ⇒ 中文走 ADB_INPUT_TEXT 广播，这一条发布成功',
-    rIme.rows[0].result === '发布成功' && /ADB_INPUT_TEXT --es msg "白色的鞋谁懂"/.test(calls()),
-    rIme.rows[0].result + ' / ' + (calls().match(/ADB_INPUT_TEXT --es msg "[^"]*"/g) || []).join(' | '));
+  ok('⑯ 设备启用了 ADBKeyboard ⇒ 中文走 ADB_INPUT_B64 广播（解回来一字不差），这一条发布成功',
+    rIme.rows[0].result === '发布成功'
+    && calls().indexOf('am broadcast -a ADB_INPUT_B64 --es msg '
+      + Buffer.from('白色的鞋谁懂', 'utf8').toString('base64')) >= 0,
+    rIme.rows[0].result + ' / ' + (calls().match(/ADB_INPUT_B64 --es msg \S+/g) || []).join(' | '));
 
   // 源码级反向断言：那条「配置说了算」的老写法不许回来
   const adbSrc = fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8');
@@ -806,9 +815,9 @@ const state = {
   ok('⑯ 源码：publisher 不再拿配置项决定中文怎么输（`c.adbKeyboard` / 传 `{ adbKeyboard }` 都已消失）',
     !/c\.adbKeyboard/.test(pubSrc) && !/inputText\(serial,\s*step\.value,\s*\{/.test(pubSrc),
     (pubSrc.match(/.*[aA]dbKeyboard.*/g) || []).map(s => s.trim()).join(' | '));
-  ok('⑯ 源码：中文走广播这条路还在，且判定依据是设备当前输入法',
-    /am broadcast -a ADB_INPUT_TEXT/.test(adbSrc) && /default_input_method/.test(adbSrc),
-    '广播 + 设备输入法判定都在');
+  ok('⑯ 源码：中文走广播这条路还在（B64 通道），且判定依据是设备当前输入法',
+    /am broadcast -a ADB_INPUT_B64/.test(adbSrc) && /default_input_method/.test(adbSrc),
+    '广播（B64）+ 设备输入法判定都在');
 
   // ---- ⑯b 2026-10-04 修正：**正文必须一字不差**（推翻上一轮「行首 # 会炸」的假 bug） --------
   //   如实记（这是我这一轮最大的教训）：上一轮我看到 `输入失败：/system/bin/sh: no closing quote`，
@@ -828,7 +837,11 @@ const state = {
       : []);
 
     // A) 纯函数：只转义 `"` / 反引号 / `$`；`#` 与反斜杠**一律不动**
-    const rawB = 'a\n#TW男装\n' + BTc + 'x\n$Y\n引号"里';
+    //   ★ 2026-10-04（双向验证时发现并补上）：源文里**必须带一个空格** —— 否则这一组断言
+    //     抓不到「空格被改写成字面 `%s`」那个真 bug（实测：把 inputText 破坏回旧写法后，
+    //     源文不含空格时 B/C 两段照样全绿 ⇒ 盲区；含空格的 ㉙ 组才红）。空格放开头，不影响
+    //     下面 A 段对 `\n#TW男装` 的检查。
+    const rawB = 'a b\n#TW男装\n' + BTc + 'x\n$Y\n引号"里';
     const esc = adbMod.shellQuoteForInputText ? adbMod.shellQuoteForInputText(rawB) : null;
     ok('⑯b ★★ 转义白名单只有 " / 反引号 / $：行首 # 与反斜杠一律不动（上一轮多转 # ⇒ 正文被污染）',
       typeof esc === 'string'
@@ -850,13 +863,13 @@ const state = {
       'ok=' + rHash.ok + ' 收到=' + JSON.stringify(String(gotB[0] == null ? '' : gotB[0]).slice(0, 50))
       + ' 源文=' + JSON.stringify(rawB.slice(0, 50)));
 
-    // C) 负向对照：亲手按「上一轮那种写法」喂一个 `\#` ⇒ 设备收到的就是**字面量 `\#`**
-    //   （证明 B 的逐字符相同不是「夹具把反斜杠吃掉了」凑出来的）
+    // C) 负向对照：喂一个**真的含反斜杠**的串 ⇒ 设备端解出来也照样带那个反斜杠
+    //   （证明 B 的「逐字符相同」不是夹具偷偷吃掉了反斜杠凑出来的；B64 通道同样如实往返）
     if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
     const wrongB = 'a\n' + BSc + '#TW男装';
     const rWrong = await adbMod.inputText('127.0.0.1:5555', wrongB);
     const gotW = readBcast();
-    ok('⑯b 负向对照：喂 `\\#` 那种写法 ⇒ 设备收到的是字面量 `\\#`（反斜杠真的会进正文）',
+    ok('⑯b 负向对照：喂含反斜杠的串 ⇒ 设备收到的原样带那个反斜杠（不被吞）',
       rWrong.ok === true && gotW.length === 1 && gotW[0].indexOf(BSc + '#') >= 0,
       JSON.stringify(String(gotW[0] == null ? '' : gotW[0])));
 
@@ -864,10 +877,11 @@ const state = {
     if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
     clearCalls();
     const rPlain = await adbMod.inputText('127.0.0.1:5555', '纯棉面料贴肤软乎');
-    ok('⑯b 负向：普通中文正文照常走广播，且设备收到的一字不差',
-      rPlain.ok === true && /ADB_INPUT_TEXT --es msg "纯棉面料贴肤软乎"/.test(calls())
+    ok('⑯b 负向：普通中文正文照常走广播（B64），且设备收到的一字不差',
+      rPlain.ok === true && calls().indexOf('am broadcast -a ADB_INPUT_B64 --es msg '
+        + Buffer.from('纯棉面料贴肤软乎', 'utf8').toString('base64')) >= 0
       && readBcast()[0] === '纯棉面料贴肤软乎',
-      (calls().match(/ADB_INPUT_TEXT[^\n]*/g) || []).join(' | '));
+      (calls().match(/ADB_INPUT_B64[^\n]*/g) || []).join(' | '));
     if (fs.existsSync(IME_ACTIVE)) fs.unlinkSync(IME_ACTIVE);
   }
 
@@ -2695,6 +2709,110 @@ const state = {
     ok('㉘ 源码级：screen 戳跟着定位表一起导入（少了它，运行时判不出「表量错了空格子」）',
       /screen:\s*j\.screen/.test(codeOnly(fs.readFileSync(path.join(base, 'src', 'main', 'jobs.js'), 'utf8'))),
       'jobs.js importMap');
+  }
+
+  // ==========================================================================
+  // ㉙ 2026-10-04 新增：**输入通道 + 「发出去没有」的判据**（今晚真机实测暴露的三个静默失败）
+  //   依据全是本机 MuMu 12 + 真得物跑出来的现场，不是推理：
+  //     · `am broadcast ADB_INPUT_TEXT --es msg "..."` 这条通道**不认 `%s`** —— 代码把空格换成
+  //       `%s`（那是 `input text` 的写法）后**照搬**到广播上 ⇒ 空格原样变成字面 `%s` 打进标题。
+  //       现场：报告标题「酒红调长袖T恤 氛围感拉满🍷」→ 发布页 dump 回读 `etTitle` =
+  //       「酒红调长袖T恤%s氛围感拉满🍷」；三条里只有它带空格，也只有它中招。
+  //     · 广播通道**永远返回成功**：中文一个字没进去 / 被改写，日志上都看不出来
+  //       （输入框空着的时候 `text` 就是占位符「添加标题」⇒ 空框与没填长得一模一样）。
+  //     · 点完「提交发布」落到草稿箱时，原来会**傻等满 15s 超时**才下结论（真机实测 1.2s 就落定了）。
+  //   这一组盯四件事：① 通道选择（含**反向对照**：ASCII 仍走 `input text` + `%s`）；
+  //   ② 行为级 —— 回读发现框里不是我们要的字 ⇒ input 步**必须抛错**（含反向对照）；
+  //   ③ 落草稿箱 ⇒ `waitLeftPublishFlow` 立刻返回 `draft:true`（含反向对照：落首页必须判成功）；
+  //   ④ 防回退：把「回读的触发条件」锁住（我当场把 `!(rs && rs.skipped)` 写反过，回读整段静默失效）。
+  // ==========================================================================
+  {
+    const adbMod29 = require(path.join(base, 'src/main/services/adb.js'));
+    const IME_FLAG = path.join(FDB, 'IME_ACTIVE');
+    const hadIme29 = fs.existsSync(IME_FLAG);
+    if (!hadIme29) fs.writeFileSync(IME_FLAG, '');
+    const FOCUS29 = path.join(FDB, 'FOCUS');
+    const savedFocus29 = fs.existsSync(FOCUS29) ? fs.readFileSync(FOCUS29, 'utf8') : null;
+    const savedWin29 = fs.readFileSync(FAKE_WINDOW, 'utf8');
+    try {
+      // ---- ① 通道选择 + 「命令里有没有 %s」 ----
+      clearCalls();
+      await adbMod29.inputText('FAKESERIAL', 'abc 123');
+      const cAscii29 = calls();
+      ok('㉙ 纯 ASCII 仍走 `input text`，空格用 `%s`（这条路线上 `%s` 是**对的**；反向对照）',
+        /input text "abc%s123"/.test(cAscii29), cAscii29.trim().slice(0, 120));
+
+      const txt29 = '酒红调长袖T恤 氛围感拉满🍷';
+      const b6429 = Buffer.from(txt29, 'utf8').toString('base64');
+      clearCalls();
+      await adbMod29.inputText('FAKESERIAL', txt29);
+      const cN29 = calls();
+      ok('㉙ ★★ 非 ASCII 走 `ADB_INPUT_B64`，且命令里**一个 `%s` 都不许有**（字面 %s 就是这么来的）',
+        cN29.includes('ADB_INPUT_B64') && !/%s/.test(cN29), cN29.trim().slice(0, 140));
+      ok('㉙ ★ 传的是**原始 UTF-8 字节的 base64** ⇒ 解回来一字不差（空格 / emoji / 换行都在）',
+        cN29.includes(b6429) && Buffer.from(b6429, 'base64').toString('utf8') === txt29, 'b64 往返一致');
+
+      // ---- ② 行为级：回读不一致 ⇒ input 步必须抛错 ----
+      const mkXml29 = (t) => '<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0">'
+        + '<node index="0" text="' + t + '" resource-id="com.shizhuang.duapp:id/etTitle"'
+        + ' class="android.widget.EditText" bounds="[0,381][900,418]" /></hierarchy>';
+      const want29 = '酒红调长袖T恤 氛围感拉满🍷';
+      const CHK29 = { log() {}, inputCheckId: 'com.shizhuang.duapp:id/etTitle' };
+
+      fs.writeFileSync(FAKE_WINDOW, mkXml29('酒红调长袖T恤%s氛围感拉满🍷'));
+      let e29 = '';
+      try {
+        await publisher.runStep('FAKESERIAL', { action: 'input', value: want29, name: '填标题' }, {}, CHK29);
+      } catch (e) { e29 = String((e && e.message) || e); }
+      ok('㉙ ★★★ 行为级：回读到框里是 `%s`（不是我们要的空格）⇒ input 步必须抛错并点名「框里实际是什么」',
+        /输入回读不一致/.test(e29) && /%s/.test(e29), e29.slice(0, 140));
+
+      fs.writeFileSync(FAKE_WINDOW, mkXml29(want29));
+      let e29b = '';
+      try {
+        await publisher.runStep('FAKESERIAL', { action: 'input', value: want29, name: '填标题' }, {}, CHK29);
+      } catch (e) { e29b = String((e && e.message) || e); }
+      ok('㉙ ★ 反向对照：框里内容与期望一致 ⇒ **不许**抛错（证明上面那条不是恒红）',
+        !e29b, e29b.slice(0, 110) || '（无异常）');
+
+      fs.writeFileSync(FAKE_WINDOW, mkXml29('添加标题'));
+      let e29c = '';
+      try {
+        await publisher.runStep('FAKESERIAL', { action: 'input', value: want29, name: '填标题' }, {}, CHK29);
+      } catch (e) { e29c = String((e && e.message) || e); }
+      ok('㉙ ★★ 行为级：框里还是占位符「添加标题」（中文一个字没进去）⇒ 同样必须抛错',
+        /输入回读不一致/.test(e29c) && /添加标题/.test(e29c), e29c.slice(0, 140));
+
+      // ---- ③ 落草稿箱 ⇒ 立刻返回 draft:true ----
+      fs.writeFileSync(FOCUS29, 'com.shizhuang.duapp/com.shizhuang.duapp.media.activity.DraftActivity');
+      const t29 = Date.now();
+      const vr29 = await publisher.waitLeftPublishFlow('FAKESERIAL', { timeoutMs: 15000 });
+      const used29 = Date.now() - t29;
+      ok('㉙ ★★ 点完发布落到**草稿箱** ⇒ 立刻返回 ok:false + draft:true（判据明确，不再傻等满 15s）',
+        vr29.ok === false && vr29.draft === true && used29 < 4000,
+        `用时 ${used29}ms / ok=${vr29.ok} / draft=${vr29.draft}`);
+
+      fs.writeFileSync(FOCUS29, 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
+      const vr29b = await publisher.waitLeftPublishFlow('FAKESERIAL', { timeoutMs: 15000 });
+      ok('㉙ ★ 反向对照：落在**首页** ⇒ ok:true 且不是草稿（证明上面那条不是恒判草稿）',
+        vr29b.ok === true && !vr29b.draft, JSON.stringify({ ok: vr29b.ok, draft: !!vr29b.draft }));
+
+      // ---- ④ 防回退：回读的**触发条件** ----
+      //   ★ 这一条是**故意写成源码级**的：我当场把它写成 `rs && !rs.skipped`，而 runStep 对 tapId 是
+      //     `return;`（**返回 undefined**）⇒ 条件恒假、回读整段静默失效，跑完整条发布都看不出来。
+      //     这是「同一个坑不会踩第二次」的护栏，不是验行为（行为在上面 ② 已经验过）。
+      const pubSrc29 = codeOnly(fs.readFileSync(path.join(base, 'src', 'main', 'services', 'publisher.js'), 'utf8'));
+      ok('㉙ 防回退：回读的触发条件必须是 `!(rs && rs.skipped)` —— 写成 `rs && !rs.skipped` 会恒假、静默失效',
+        /lastTapId\s*=\s*\(step\.action === 'tapId' && !\(rs && rs\.skipped\)\)/.test(pubSrc29),
+        'publisher.js lastTapId');
+      ok('㉙ 防回退：input 步里必须真的调用回读（adb.readTextOf），且不一致时抛错',
+        /adb\.readTextOf\(/.test(pubSrc29) && /输入回读不一致/.test(pubSrc29), 'publisher.js 回读');
+    } finally {
+      fs.writeFileSync(FAKE_WINDOW, savedWin29);
+      if (savedFocus29 === null) { try { fs.unlinkSync(FOCUS29); } catch (e) { /* 本来就没有 */ } }
+      else fs.writeFileSync(FOCUS29, savedFocus29);
+      if (!hadIme29) { try { fs.unlinkSync(IME_FLAG); } catch (e) { /* 本来就没有 */ } }
+    }
   }
 
   console.log('\n--- 日志样例 ---');

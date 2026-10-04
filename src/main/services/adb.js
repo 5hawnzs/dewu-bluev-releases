@@ -1240,6 +1240,42 @@ function lastDumpInfo() {
   return lastDump;
 }
 
+/** dump 出来的 text 属性里可能带 XML 实体（得物的 emoji 就是 `&#127863;`）⇒ 回读时必须还原成真字符 */
+function unxml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+/**
+ * ★★★ 2026-10-04 新增：**回读某个输入框里现在到底是什么**。
+ *
+ * 为什么非有不可：得物的输入框空着的时候，`text` 属性就是**占位符**（「添加标题」「添加作品描述」），
+ * ⇒「填进去了没有」在**截图和日志上都看不出来**（空框与没填长得一模一样）。今晚真机实测就有两个
+ * 静默失败都栽在这上面 —— 而它们都会被记成「发布成功」：
+ *   · 空格被改写成字面 `%s` 打进标题（见 inputText 的注释，已修）；
+ *   · 中文一个字没进去（输入法不是 ADBKeyboard 时，广播没人接），而广播照样返回成功。
+ * ⇒ 判据只能来自「输入完之后**再读一次这个框**」。
+ *
+ * 读不到（节点不存在 / dump 失败）**既不算通过也不算失败**：如实返回 `ok:false` + `why`，
+ * 由调用方决定怎么处置（本项目口径：「读不到 ≠ 成功」，见 publisher 里的处理）。
+ *
+ * @returns {Promise<{ok:boolean, text?:string, why?:string}>}
+ */
+async function readTextOf(serial, id, { pkg = '' } = {}) {
+  const want = String(id || '').trim();
+  if (!want) return { ok: false, why: '没给要回读的 resource-id' };
+  const d = await dumpEx(serial, { pkg, retries: 0 });
+  if (!d.ok) return { ok: false, why: d.why || '读不到界面结构（所以无法确认填进去没有）' };
+  const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp('<node[^>]*resource-id="' + esc + '"[^>]*>').exec(d.xml);
+  if (!m) return { ok: false, why: `这一屏上找不到「${want}」这个节点` };
+  const t = /text="([^"]*)"/.exec(m[0]);
+  return { ok: true, text: unxml(t ? t[1] : '') };
+}
+
 async function tap(serial, x, y) {
   return shell(serial, `input tap ${Math.round(x)} ${Math.round(y)}`);
 }
@@ -1377,12 +1413,14 @@ function shellQuoteForInputText(s) {
 
 async function inputText(serial, text) {
   const s = String(text == null ? '' : text);
-  // ★ 空格换成 %s：这是 `input text` 与 ADBKeyboard 广播**都**认的写法（避免整串被当成多个参数）。
-  const esc = shellQuoteForInputText(s).replace(/ /g, '%s');
   const asciiOnly = /^[\t\n\r\x20-\x7E]*$/.test(s);
 
-  // 纯 ASCII：`input text` 实测可用，而且不依赖设备上的输入法状态，优先用它
-  if (asciiOnly) return shell(serial, `input text "${esc}"`);
+  // 纯 ASCII：`input text` 实测可用，而且不依赖设备上的输入法状态，优先用它。
+  //   ★ 这里把空格换成 `%s` 是**对的** —— `input text` 认这个写法，不换的话整串会被拆成多个参数。
+  if (asciiOnly) {
+    const esc = shellQuoteForInputText(s).replace(/ /g, '%s');
+    return shell(serial, `input text "${esc}"`);
+  }
 
   const kbd = await keyboardReady(serial);
   if (!kbd.active) {
@@ -1395,7 +1433,17 @@ async function inputText(serial, text) {
         + '处理：到「模拟器发布」页点一次「一键装上中文输入法」，再重新发布。'
     };
   }
-  return shell(serial, `am broadcast -a ADB_INPUT_TEXT --es msg "${esc}"`);
+  // ★★★ 2026-10-04 真机实测修掉的一个**静默改写用户文案**的 bug：
+  //   原来这里也是 `am broadcast -a ADB_INPUT_TEXT --es msg "${esc}"`，而 `esc` 里的空格已被
+  //   换成了 `%s`。`input text` 认 `%s`，**广播这条通道不认** ⇒ 空格原样变成字面的 `%s` 打进输入框。
+  //   现场证据：报告里标题「酒红调长袖T恤 氛围感拉满🍷」（含一个空格）→ 发布页 dump 回读到的
+  //   `etTitle` 是「酒红调长袖T恤%s氛围感拉满🍷」；三条里只有这一条带空格，也只有它中招。
+  //   ⇒ 改成走 ADBKeyboard 的 **ADB_INPUT_B64**（内置 APK 实测含这个 action）：
+  //     传的是**原始 UTF-8 字节的 base64**，字母表只有 A-Za-z0-9+/=（没有空格、引号、$、反引号、
+  //     中文、换行）⇒ 设备端再怎么解析引号都不可能坏，空格/emoji/换行全部原样进去。
+  //   （`am broadcast ... --es msg <base64>` 里 base64 不含特殊字符 ⇒ 连引号都不需要。）
+  const b64 = Buffer.from(s, 'utf8').toString('base64');
+  return shell(serial, `am broadcast -a ADB_INPUT_B64 --es msg ${b64}`);
 }
 
 /**
@@ -1631,9 +1679,36 @@ async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000
   }
 
   // ④ 轮询确认真的到了
+  //   ★★★ 2026-10-04 新增「深错屏」硬恢复 —— 这是真机实测出来的**「第二条永远拉不起来」的根因**：
+  //     得物**还活着**、但停在**它自己的另一个页面**（实测是草稿箱 `DraftActivity`；发布流程页同理）时，
+  //     `am start -n <pkg>/<launchActivity>` 是**无效的** —— 那个 Activity 已经在任务栈里，
+  //     启动它只会把**原来那一页**顶到前台，于是「等了 30s，得物还是停在 DraftActivity」。
+  //   ⇒ 判据与处置：等了一个窗口（min(8s, timeout/3)）之后**仍停在得物自己的非目标页** ⇒
+  //     先 `am force-stop` 把它整个停掉，再 `am start` 一次（**只做一次**），然后继续轮询到超时。
+  //     ★ 只在「前台确实是本 App、且不是要等的那一屏」时才这么做 ⇒ 不会误伤「别的 App 在前台」的情况，
+  //       也不会在「读不到前台」时瞎启动（那两种情况各自有上面的分支处理）。
+  const hardAfterMs = Math.min(8000, Math.max(3000, timeout / 3));
+  let hardTried = false;
   for (;;) {
     focus = await readFocus();
     if (isWant(focus)) return { ok: true, focus, started, from: before, why: '' };
+    if (!hardTried && focus && isFocusOf(focus, pkg) && Date.now() - t0 >= hardAfterMs) {
+      hardTried = true;
+      await forceStop(serial, pkg);
+      await sleepMs(700);
+      if (activity) {
+        const r2 = await shell(serial, 'am start -n ' + pkg + '/' + activity);
+        if (/Error type \d+|does not exist/.test(String(r2.stdout || '') + String(r2.stderr || ''))) {
+          return { ok: false, focus, started, from: before,
+            why: `得物停在「${focus}」拉不动，强制重启它也失败了：`
+              + String(r2.stdout || '').trim().split(/\r?\n/)[0] };
+        }
+      } else {
+        await shell(serial, 'monkey -p ' + pkg + ' -c android.intent.category.LAUNCHER 1');
+      }
+      started = true;
+      continue;
+    }
     if (Date.now() - t0 >= timeout) {
       const waited = ((Date.now() - t0) / 1000).toFixed(1);
       return { ok: false, focus, started, from: before,
@@ -1817,6 +1892,7 @@ async function probe(serial) {
 module.exports = {
   execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
+  readTextOf, unxml,
   dumpAnimOff, animRestoreCmd, shellQuoteForInputText, offlineHint,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,

@@ -542,6 +542,40 @@ async function runStep(serial, step, data, ctx) {
       //   却返回成功）⇒ 帖子会发出去但标题正文是空的，日志还写「发布成功」。
       const r = await adb.inputText(serial, step.value);
       if (!r.ok) throw new Error('输入失败：' + (r.stderr || '').trim());
+      // ★★★ 2026-10-04 新增：**回读**输入框，确认这串字真的进去了。
+      //   为什么非有不可：广播通道**永远返回成功**，而「没进去」与「进去了」在截图/日志上完全一样
+      //   （框空着的时候 text 就是占位符「添加标题」）。今晚真机实测有两种静默失败都栽在这上面，
+      //   而且都会被记成「发布成功」：
+      //     · 空格被改写成**字面 `%s`** 打进标题（已修，见 adb.inputText）；
+      //     · 输入法不是 ADBKeyboard 时中文**整串丢失**，广播照样返回成功。
+      //   校验对象 = **紧邻的上一步 tapId 点的那个框**（由 runReal 传进来；只认紧邻 ⇒ 话题步不会误报）。
+      //   判据：完全一致，或以「期望串的前 12 个字符」开头（得物可能对标题做截断/规整）。
+      //   读不到结构时**既不算失败也不算通过**，如实告警（本项目口径：「读不到 ≠ 成功」）。
+      const checkId = String((ctx && ctx.inputCheckId) || '');
+      if (checkId) {
+        const want = String(step.value == null ? '' : step.value);
+        const got = await adb.readTextOf(serial, checkId, { pkg: uimap.DEWU.pkg });
+        if (!got.ok) {
+          if (ctx && ctx.log) ctx.log(`「${step.name || '输入'}」回读不到，无法确认填进去没有（${got.why}）`, 'warn');
+        } else {
+          // 比对前**先把空白全部去掉**：正文是多行的（`\n`），而 dump 把换行渲染成什么形态
+          // 不可控（`&#10;` / 真换行 / 空格）⇒ 拿原文比会**假报不一致**。
+          // 这一步要抓的是「整串丢了 / 被改写成 %s」这类**内容级**损坏，空白差异不在判据里。
+          const norm = (x) => String(x == null ? '' : x).replace(/\s+/g, '');
+          const wn = norm(want);
+          const gn = norm(got.text);
+          const head = wn.slice(0, Math.min(12, wn.length));
+          const same = gn === wn || (!!head && gn.startsWith(head));
+          if (!same) {
+            throw new Error(`输入回读不一致：「${step.name || checkId}」期望的是 `
+              + `${JSON.stringify(want.slice(0, 24))}…（共 ${want.length} 字），`
+              + `而框里实际是 ${JSON.stringify(String(got.text).slice(0, 40))}`
+              + ' —— 这串字没原样进去（常见原因：空格/emoji 被通道改写、或当前输入法不是 ADBKeyboard）。'
+              + ' 不许按「大概填上了」继续往下点，否则会发出一条标题/正文不对的帖子。');
+          }
+          if (ctx && ctx.log) ctx.log(`「${step.name || '输入'}」已回读确认填进去了（${got.text.length} 字）`, 'info');
+        }
+      }
       return;
     }
     case 'wait':
@@ -652,6 +686,13 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
     if (f) {
       last = f;
       if (seen[seen.length - 1] !== f) seen.push(f);
+      // ★★ 2026-10-04 新增：一旦落到**草稿箱**（DraftActivity）就**当场收工**，不再傻等满超时。
+      //   真机实测：点完「发布」后 1.2s 就已经在草稿箱里了（连拍两张都在 DraftActivity），
+      //   而原来的写法会一直等到 15s 超时 —— 白等 14 秒，还把「是不是草稿」这件**很确定**的事
+      //   混进了「读不到 / 停在哪都不对」的模糊结论里。判据明确 ⇒ 结论就该明确。
+      if (uimap.isDraftScreen(f)) {
+        return { ok: false, draft: true, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: f, left: '', seen };
+      }
       if (!uimap.isPublishScreen(f) && !uimap.isDraftScreen(f)) { left = f; break; }
     }
     if (Date.now() - t0 >= timeoutMs) break;
@@ -883,6 +924,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     data['goods' + (gi + 1) + 'Color'] = g.color || '';
   }
 
+  // ★★ 2026-10-04 新增：记住「紧邻的上一步点的是哪个输入框」——紧跟其后的 input 步拿它做**回读校验**
+  //   （见 runStep 的 input 分支 / adb.readTextOf）。
+  //   为什么只认「紧邻」：话题那几步（topic1..5）是往**正文框**里接着追加的，它们的上一步是另一个
+  //   input（不是 tapId）⇒ 天然不会拿正文全文去比对某一小段话题，不会误报。
+  //   被屏幕守卫跳过（rs.skipped）的步不算「点过」，所以置 ''。
+  let lastTapId = '';
   for (const raw of steps) {
     if (cancelled()) throw new Error('已取消');
     const step = uimap.fill(raw, data);
@@ -899,6 +946,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     }
     row.status = step.name;
     if (ctx.onRow) ctx.onRow(row);
+    // ★ 交给 runStep 的 input 分支做回读校验（只有紧邻的上一步真是 tapId 才非空）
+    ctx.inputCheckId = lastTapId;
     // ★★ 2026-10-04 逐步计时（用户问「为什么选择素材花了 8 秒 / 点关联好物花了 5 秒」）：
     //   不靠推理，把每一步的**真实毫秒数**量出来。只有慢到会引起注意的（≥1.5s）才说，
     //   免得日志被一堆 0.1s 淹没。计时不含日志本身的开销（纯 runStep 前后取差值）。
@@ -913,6 +962,11 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
         log(`${row.dir}：「${step.name || step.value}」耗时 ${(used / 1000).toFixed(1)}s`, 'info');
       }
     }
+    // ★ 记下这一步**实际点成功**的输入框 id（被守卫跳过的不算），供紧随其后的 input 步回读校验
+    //   ★★ 注意判据别写反：`runStep` 对 tapId/wait/input 这些分支是 `return;`（**返回 undefined**），
+    //      只有屏幕守卫跳过时才返回 `{skipped:true}`。所以「没被跳过」是 `!(rs && rs.skipped)`
+    //      —— 写成 `rs && !rs.skipped` 会**永远为假**，回读整段静默失效（这个坑我当场踩过一次）。
+    lastTapId = (step.action === 'tapId' && !(rs && rs.skipped)) ? String(step.value || '') : '';
     // ★★ 屏幕守卫（whenOn / whenNotOn）判「这一屏不对」⇒ 这一步**没发任何点击**。
     //   必须说出来：静默少点一步，真机上表现为「下一条莫名失败」，最难查。
     if (rs && rs.skipped) {
@@ -927,12 +981,28 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   ★ 超时走**产品真的会读**的那个配置（`postPublishWaitSec`，默认 15s）——
   //     回归里把它调小来验「等不到就失败」，而不是在这里干等 15 秒
   //     （干等的坏处：既慢，又会让「超时逻辑本身」没被测到 —— 改坏读取点照样绿）。
-  const waitSec = Number(c.postPublishWaitSec) > 0 ? Number(c.postPublishWaitSec) : 15;
+  const waitSec = Number(c.postPublishWaitSec) > 0 ? Number(c.postPublishWaitSec) : 30;
   const vr = await waitLeftPublishFlow(serial, { timeoutMs: waitSec * 1000, cancelled });
   if (!vr.ok) {
-    // ★ 不许留草稿：把得物**强制关掉** —— 它侧边那条「未完成的动态」不关掉就会一直躺在草稿箱里，
+    // ★★★ 2026-10-04 修：**先留证、再强停**。
+    //   原来外层的失败截图（run() 的 catch 里那个 saveShot）是在**这里 force-stop 之后**才拍的
+    //   ⇒ 今晚实测两张「失败截图」拍的全是 MuMu 桌面（得物已经被关掉了），等于没留证，
+    //   这也是我今晚一直在瞎猜「点发布那一刻屏幕上是什么」的原因。
+    await saveShot(serial, `seq${row.seq}_publish_stuck`, ctx);
+    // ★ 不许留草稿：把得物**强制关掉** —— 它侧边那条「未完成的动态」不关掉就会躺在草稿箱里，
     //   下一条发布时还会弹「是否继续编辑」把流程顶偏（用户已经踩过这一次）。
     const fsr = await adb.forceStop(serial, uimap.DEWU.pkg);
+    if (vr.draft) {
+      throw new Error('点了「提交发布」，但得物把它**存成了草稿**：前台落到了 '
+        + '`com.shizhuang.duapp.media.activity.DraftActivity`（草稿箱），'
+        + `用时 ${vr.waited}s，前台变化：${vr.seen.join(' → ') || '一直读不到'}`
+        + ' —— 按「发出去了才算成功」，这条记**失败**。'
+        + '（已经点了「提交发布」这一步，不是被屏幕守卫跳过；标题/正文是否真的填进去了，'
+        + '看上面「已回读确认填进去了」那几行。）'
+        + (fsr.ok
+          ? '已强制关掉得物，把这条草稿清掉（不然它会以草稿形式留在「草稿箱」里）。'
+          : '★ 想强制关掉得物清草稿但没停掉（' + (fsr.error || '未知原因') + '）—— 请手动去得物「草稿箱」检查并删掉那条草稿。'));
+    }
     throw new Error('点了「提交发布」，但得物**没有离开发布流程**（等了 ' + vr.waited + 's，最后停在「'
       + (vr.focus || '读不到') + '」；这段里前台的变化：' + (vr.seen.join(' → ') || '一直读不到') + '）'
       + ' —— 按你的口径「发出去了才算成功」，这条记**失败**。'
@@ -942,6 +1012,15 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
         : '★ 想强制关掉得物清草稿但没停掉（' + (fsr.error || '未知原因') + '）—— 请手动去得物「草稿箱」检查并删掉那条草稿。'));
   }
   log(`${row.dir}：提交发布后已确认离开发布流程（前台 ${vr.seen.join(' → ')}，用时 ${vr.waited}s）`, 'info');
+  // ★★ 2026-10-04（用户口径）：得物发布完成后会在主页停留一下（用户原话「大概 5 秒后完成发布，
+  //   在主页停留 10 秒左右，你就需要开始准备发布第二条素材」）。这里给一个**可配的**主页停留，
+  //   默认 10s —— 目的是让得物把这条内容在服务端落定（上传/审核排队），再把相册清空去发下一条。
+  //   ★ 配 0 = 不停留（连续发布档）；读取点只在这里，方便回归里把它调 0 跑快。
+  const dwell = secOr(c.homeDwellSec, c.postPublishDwellSec, 10);
+  if (dwell > 0) {
+    log(`${row.dir}：发布完成，按设置在主页停留 ${dwell}s 再准备下一条`, 'info');
+    await sleep(dwell * 1000, cancelled);
+  }
   return true;
 }
 

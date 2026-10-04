@@ -273,6 +273,24 @@ function makeFakeAdb(dir) {
     //     其余反斜杠**原样保留** —— 这正是「把 `#` 写成 `\#` 会污染正文」的机制。
     //   ⇒ 回归据此断言「设备收到的字 == 源文一字不差」，谁再往文案里塞反斜杠都会红。
     if (/^am broadcast /.test(cmd)) {
+      // ★★★ 2026-10-04 新增：ADBKeyboard 的**第二条输入通道** `ADB_INPUT_B64`。
+      //   产品把**非 ASCII**（中文 / emoji / 含空格或引号的文案）一律走这条 —— 传的是原始
+      //   UTF-8 字节的 base64，字母表只有 A-Za-z0-9+/=（没有空格 / 引号 / $ / 反引号 / 换行）
+      //   ⇒ 设备端 sh 再怎么解析引号都坏不了；空格与 emoji 全部原样进去。
+      //   判据来源（真机实测，不是推理）：MuMu 12 + 内置 ADBKeyboard v2.0 跑「5 轮 × 3 条」时，
+      //   标题「酒红调长袖T恤 氛围感拉满🍷」经 B64 打进发布页后，uiautomator dump **回读**
+      //   `etTitle` 得到的就是原串一字不差（含那个空格与 emoji）。
+      //   ⇒ 夹具里「设备收到的字」= **base64 解码后的 UTF-8 串**。
+      if (/-a\s+ADB_INPUT_B64\b/.test(cmd)) {
+        const mB = /--es msg\s+([^\s"]+)\s*$/.exec(cmd);
+        // 如实：不是合法 base64（含非法字符）⇒ 设备端一个字都收不到（不记）。
+        if (mB && /^[A-Za-z0-9+/]+={0,2}$/.test(mB[1])) {
+          let delivered = '';
+          try { delivered = Buffer.from(mB[1], 'base64').toString('utf8'); } catch (e) { delivered = ''; }
+          try { fs.appendFileSync(BROADCAST_LOG, JSON.stringify(delivered) + '\n'); } catch (e) {}
+        }
+        return okOut('Broadcast completed: result=0\n');
+      }
       const mm = /--es msg "([\s\S]*)"$/.exec(cmd);
       if (mm) {
         const delivered = mm[1].replace(/\\(["`$\\])/g, '$1').replace(/\\\n/g, '');
