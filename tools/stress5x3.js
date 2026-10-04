@@ -141,12 +141,19 @@ const fmt = r => r.ok
     const before = await readCounts(`R${rd}-before`);
     console.log(`第${rd}轮 发布前：${fmt(before)}`);
 
+    // ★ 2026-10-05：给每行日志打上「距本轮开始的相对时间」——
+    //   这样才能把「一次 100s 花在哪」做出一条**真时间轴**（原来只有 end-to-end 的 elapsed，
+    //   分不清是起手清相册慢、还是逐步抓屏慢）。`--timestamps` 只为可读性加前缀，数据一直记。
+    const t0row = Date.now();
     const logs = [];
     const log = (m, lv) => {
-      const line = `[${lv || 'info'}] ${m}`;
+      const dt = ((Date.now() - t0row) / 1000).toFixed(1);
+      const line = `[+${String(dt).padStart(6)}s][${lv || 'info'}] ${m}`;
       console.log(line);
       logs.push(line);
     };
+    // ★ 分步计时本来是 publisher 采好的（ctx.stepTiming），但驱动一直没落盘 ⇒ 顺手存下来。
+    const stepTiming = [];
     const runState = {
       items: (st().items || []).filter(it => useRows.some(r => r.id === it.id)),
       copyRows: (st().copyRows || []).filter(cr => useRows.some(r => r.id === cr.id)),
@@ -165,7 +172,7 @@ const fmt = r => r.ok
     let res = null;
     try {
       res = await publisher.run(runState, {
-        log, stepTiming: [],
+        log, stepTiming,
         progress: () => {},
         onRow: (r) => { if (r.result) console.log(`  → seq${r.seq} ${r.dir} : ${r.result} ${r.reason ? '(' + String(r.reason).slice(0, 100) + ')' : ''}`); },
         cancelled: () => false,
@@ -191,7 +198,7 @@ const fmt = r => r.ok
       round: rd, secs, before, after, deltaDyn: dd, deltaDraft: dm,
       rows: useRows.map(r => ({ seq: r.seq, id: r.id, title: r.title, result: r.result, reason: r.reason, elapsed: r.elapsed })),
       okCount: res ? res.okCount : null,
-      logs,
+      stepTiming, logs,
     });
 
     try { fs.mkdirSync(OUT_DIR, { recursive: true }); } catch (e) { /* 已存在即可 */ }
