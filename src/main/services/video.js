@@ -95,6 +95,36 @@ const MP4_BRANDS = new Set([
 const MP4_VIDEO_CODECS = new Set(['avc1', 'avc3', 'hvc1', 'hev1', 'hvc2', 'mp4v']);
 
 /**
+ * ★★★ 2026-10-04（第二十轮·ffmpeg 复核）**音频轨**白名单 —— 这一层以前**完全没有**，是个真缺口。
+ *
+ * 缺口是怎么被找到的（实测数字，不是推理）：拿内置 ffmpeg 现造 7 种音频 × 3 种容器，
+ * 逐条过 `toMp4` 并解析**产物**的音轨：
+ *
+ *   | 源音频 | 装进 .mov → 产物 mp4 的音轨 |
+ *   |---|---|
+ *   | aac      | `mp4a`（AAC）✅ |
+ *   | ac3      | **`ac-3`** ⚠️ |
+ *   | eac3     | **`ec-3`** ⚠️ |
+ *   | mp2      | `mp4a`（ffmpeg 把它写成了 mp3-in-mp4，安卓能放）✅ |
+ *   | opus     | **`Opus`** ⚠️ |
+ *   | pcm_s16le| **`ipcm`** ⚠️ |
+ *   | flac     | **`fLaC`** ⚠️ |
+ *
+ * 也就是说：`-c copy` 把**源音频原样**搬进 mp4，而 `verifyMp4` 只看视频轨 ⇒ 判它"合格"、
+ * 工具报「已转 MP4（无损转封装）」、用户以为万事大吉。而 mp4 里这些音轨在安卓上
+ * **不保证放得出声**（AOSP 原生只保证 AAC/MP3/Vorbis/Opus(10+)/FLAC(10+)/PCM；
+ * AC-3 / E-AC-3 多数机型没有解码器）⇒ 表现是「视频能放、没有声音」或上传被拒，
+ * 而日志一条错都没有。**同类于 10-bit 黑格**：容器对、装在里面的东西不对。
+ *
+ * 处置口径（与位深那条一致：不赌、不看扩展名）：
+ *   · 只有 `mp4a`（AAC / mp3-in-mp4）算"一定放得出声"；
+ *   · 其余一律**只重编音频**（视频仍然 `-c copy`，几十 MB 也就多花一点点时间），
+ *     统一落成 AAC —— 不为了一个音频把整条 40MB 素材重编一遍。
+ *   · 没有音轨 ⇒ 不用管（无声视频是合法的）。
+ */
+const MP4_SAFE_AUDIO = new Set(['mp4a']);
+
+/**
  * ★★★ 2026-10-04 真机实测（这一条是本轮最贵的发现，务必看完再改）：
  *   **得物解不开 HEVC Main 10（10-bit）** —— 相册里那一格是**纯黑 + 一直转圈**，永远不出图；
  *   而 `.mp4` 里装着 10-bit HEVC 时，**扩展名判据（videoExtMustBeMp4）会把它放行**，
@@ -179,6 +209,31 @@ function videoTrackInfo(moov) {
 }
 
 /**
+ * 音频轨信息（**纯函数**）。`stsdVideoCodecs` 会把 moov 里**所有** stsd 的首个 sample entry
+ * 都掏出来（视频轨 avc1/hvc1 + 音轨 mp4a/ac-3…）⇒ 不在视频白名单里的那个就是音轨。
+ *
+ * @returns {{codec:string, safe:boolean, all:string[]}}
+ *   · codec 空串 = 这条 mp4 **没有音轨**（无声视频合法，safe=true）
+ *   · safe=false ⇒ 得物/安卓不保证放得出声，`toMp4` 会只重编音频成 AAC
+ */
+function audioTrackInfo(moov) {
+  const all = stsdVideoCodecs(moov);
+  const codec = all.find(c => !MP4_VIDEO_CODECS.has(c)) || '';
+  return { codec, safe: !codec || MP4_SAFE_AUDIO.has(codec), all };
+}
+
+/** 音频轨是不是「得物一定放得出声」。人话原因供界面/报告直接用。 */
+function audioCompat(moov) {
+  const a = audioTrackInfo(moov);
+  if (!a.codec) return { ok: true, codec: '', why: '' };
+  if (a.safe) return { ok: true, codec: a.codec, why: '' };
+  return {
+    ok: false, codec: a.codec,
+    why: `音频轨是「${a.codec}」—— 得物（安卓）不保证放得出声，要转成 AAC`
+  };
+}
+
+/**
  * 得物到底吃不吃这条视频轨（**纯函数**）。
  * 判据两层：① 编码在白名单里；② 不是 10-bit（得物解不开 10-bit）。
  * ★ 认不出编码 ⇒ 不合格（fail-closed）；认得出但读不到位深 ⇒ 放行（避免误杀 8-bit 好素材）。
@@ -214,13 +269,17 @@ async function probeDecodable(src) {
   const h = await readHead(src);
   if (!h.moov) {
     return { ok: false, readable: false, codec: '', label: '认不出', tenBit: false,
+      audio: '', audioSafe: true, audioWhy: '',
       why: `读不到 moov（不是有效的 mp4/ISO-BMFF）${h.err ? '：' + h.err : ''}` };
   }
   const ti = videoTrackInfo(h.moov);
   const c = decoderCompat(ti);
+  const ac = audioCompat(h.moov);
   return { ok: c.ok, readable: !!ti.codec, codec: ti.codec, label: codecLabel(ti),
     tenBit: !!ti.tenBit, profile: ti.profileName || '', bitDepth: ti.bitDepth,
-    bitDepthKnown: ti.bitDepthKnown, why: c.ok ? '' : c.why };
+    bitDepthKnown: ti.bitDepthKnown, why: c.ok ? '' : c.why,
+    // ★ 2026-10-04：音轨单独报 —— 视频合格不代表这条文件合格（见 MP4_SAFE_AUDIO 的实测表）
+    audio: ac.codec, audioSafe: ac.ok, audioWhy: ac.why };
 }
 
 /**
@@ -305,8 +364,12 @@ async function verifyMp4(p) {
   const ti = videoTrackInfo(h.moov);
   const c = decoderCompat(ti);
   if (!c.ok) return { ok: false, reason: c.why };
+  // ★ 音轨一起报出来（**不在这里判不合格**：视频轨是好的 ⇒ 不该落整体转码，
+  //   由 toMp4 决定「只重编音频」还是「整体转码」。这里只把事实带出去。）
+  const ac = audioCompat(h.moov);
   return { ok: true, brand, compatible: h.compatible, codec: ti.codec,
-    codecLabel: codecLabel(ti), bitDepth: ti.bitDepth, duration, bytes: st.size };
+    codecLabel: codecLabel(ti), bitDepth: ti.bitDepth, duration, bytes: st.size,
+    audio: ac.codec, audioSafe: ac.ok, audioWhy: ac.why };
 }
 
 // ---------------------------------------------------------------- 调 ffmpeg
@@ -397,11 +460,33 @@ async function toMp4(src, dst, opts = {}) {
       { timeout: opts.remuxTimeoutMs || 180000, cancelled });
     if (r1.ok) {
       const v1 = await verifyMp4(dst);
-      if (v1.ok) {
+      if (v1.ok && v1.audioSafe) {
         log(`转封装（无损、只换容器）：${v1.codec} · ${v1.duration}s · ${wp.humanSize(v1.bytes)}`);
-        return { ok: true, mode: 'remux', codec: v1.codec, brand: v1.brand, duration: v1.duration, bytes: v1.bytes };
+        return { ok: true, mode: 'remux', codec: v1.codec, audio: v1.audio || '', brand: v1.brand, duration: v1.duration, bytes: v1.bytes };
       }
-      log(`转封装出来的 mp4 不合格（${v1.reason}）⇒ 改用转码`, 'warn');
+      if (v1.ok) {
+        // ★★ 2026-10-04：视频轨合格、**音频轨**是得物不保证放得出的编码
+        //   （ac-3 / ec-3 / Opus / FLAC / PCM…，见 MP4_SAFE_AUDIO 的实测表）。
+        //   只重编音频：视频仍然 `-c copy`，几十 MB 的素材也就多花一点点时间 ——
+        //   为了一个音轨把整条视频重编一遍（libx264 慢几十倍）不值当。
+        log(`转封装出来的 mp4 视频轨合格，但音频轨是「${v1.audio}」（得物/安卓不保证放得出声）`
+          + ` ⇒ 只把音频转成 AAC 再封一次`, 'warn');
+        const r1b = await runFfmpeg(common.concat(['-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-f', 'mp4', dst]),
+          { timeout: opts.remuxTimeoutMs || 180000, cancelled });
+        if (r1b.ok) {
+          const v1b = await verifyMp4(dst);
+          if (v1b.ok && v1b.audioSafe) {
+            log(`转封装 + 音频转 AAC：${v1b.codec} · ${v1b.audio} · ${v1b.duration}s · ${wp.humanSize(v1b.bytes)}`);
+            return { ok: true, mode: 'remux-audio', codec: v1b.codec, audio: v1b.audio || '', audioFrom: v1.audio,
+              brand: v1b.brand, duration: v1b.duration, bytes: v1b.bytes };
+          }
+          log(`音频转 AAC 之后仍不合格（${v1b.reason || v1b.audioWhy || '音轨还是 ' + v1b.audio}）⇒ 改用整体转码`, 'warn');
+        } else {
+          log(`音频转 AAC 失败（${r1b.killed ? '超时或被取消' : explain(r1b.stderr)}）⇒ 改用整体转码`, 'warn');
+        }
+      } else {
+        log(`转封装出来的 mp4 不合格（${v1.reason}）⇒ 改用转码`, 'warn');
+      }
     } else {
       log(`转封装失败（${r1.killed ? '超时或被取消' : explain(r1.stderr)}）⇒ 改用转码`, 'warn');
     }
@@ -420,7 +505,7 @@ async function toMp4(src, dst, opts = {}) {
     if (!v2.ok) throw new Error(`转码产物校验没过：${v2.reason}`);
     if (cancelled && cancelled()) throw new Error('已取消');
     log(`转码（H.264/AAC）：${v2.duration}s · ${wp.humanSize(v2.bytes)}`);
-    return { ok: true, mode: 'transcode', codec: v2.codec, brand: v2.brand, duration: v2.duration, bytes: v2.bytes };
+    return { ok: true, mode: 'transcode', codec: v2.codec, audio: v2.audio || '', brand: v2.brand, duration: v2.duration, bytes: v2.bytes };
   } catch (e) {
     await rmQuiet(dst);          // ★ 半成品一律清掉
     throw e;
@@ -431,6 +516,9 @@ module.exports = {
   setFfmpegPath, getFfmpegPath, setBundledFfmpegDir, getBundledFfmpegDir, bundledFfmpegPath,
   resolveFfmpegChoice, status, version, toMp4, verifyMp4, readHead, stsdVideoCodecs,
   MP4_BRANDS, MP4_VIDEO_CODECS,
+  // ★ 2026-10-04（第二十轮）**音频轨**判据：容器对、装在里面的音轨得物不保证放得出声
+  //   （ac-3 / ec-3 / Opus / fLaC / ipcm…）—— 与位深同一类问题，以前这一层完全没有。
+  MP4_SAFE_AUDIO, audioTrackInfo, audioCompat,
   // ★ 2026-10-04 新增：**得物解不解得开这条视频轨**（位深判据）。
   //   · videoTrackInfo / decoderCompat / codecLabel —— **纯函数**，喂 moov buffer 就能测全分支；
   //   · probeDecodable —— 读文件的入口，合规检查逐条调它。

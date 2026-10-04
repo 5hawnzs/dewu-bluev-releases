@@ -1680,11 +1680,24 @@ app.whenReady().then(async () => {
       saySeg.length > 0 && !/\$\{/.test(saySeg), saySeg.slice(0, 110));
 
     // ⑥ 视频没单独配时复用图文 steps（用户实测两者发布位置一样）
-
-    // ⑤ 视频没单独配时复用图文 steps（用户实测两者发布位置一样）
-    ok('★ 视频复用图文定位表（videoSteps 为空时不再抛错，直接走 steps）',
-      /const steps = isVideo \? \(vSteps\.length \? vSteps : \(map\.steps \|\| \[\]\)\) : \(map\.steps \|\| \[\]\);/.test(P3)
+    //   ★ 2026-10-04 改成**行为级**：以前这里拿正则匹配 publisher 里那一行源码
+    //     （`const steps = isVideo ? …`），结果我在别处重构时那行写法一变、语义一字没改，
+    //     测试就红了 —— 「锁死写法」的断言挡不住真问题、却每次重构都误报。
+    //     现在直接喂三种输入验语义（uimap.stepsFor 是纯函数）。
+    const uimapMod = require(path.join(ROOT, 'src/main/services/uimap.js'));
+    const MAP_NOV = { steps: [{ action: 'tapText', value: 'A' }], videoSteps: [] };
+    const MAP_WITHV = { steps: [{ action: 'tapText', value: 'A' }], videoSteps: [{ action: 'tapText', value: 'B' }] };
+    ok('★ 视频复用图文定位表：videoSteps 空 ⇒ 用 steps；配了 ⇒ 用 videoSteps；图文恒用 steps',
+      JSON.stringify(uimapMod.stepsFor(MAP_NOV, true)) === JSON.stringify(MAP_NOV.steps)
+      && JSON.stringify(uimapMod.stepsFor(MAP_WITHV, true)) === JSON.stringify(MAP_WITHV.videoSteps)
+      && JSON.stringify(uimapMod.stepsFor(MAP_WITHV, false)) === JSON.stringify(MAP_WITHV.steps)
+      // 老表/空表也不能炸（以前就是这个位置抛错，用户看到「视频条会直接失败」）
+      && JSON.stringify(uimapMod.stepsFor(null, true)) === '[]'
+      && JSON.stringify(uimapMod.stepsFor({}, true)) === '[]'
       && !/视频条会直接失败/.test(J3));
+    // 反向对照：证明这条断言真在查东西 —— 把「视频优先 videoSteps」这件事喂反，必须不成立
+    ok('★ 反向对照：图文那条路**不许**被 videoSteps 影响（否则上面那条是空==空）',
+      JSON.stringify(uimapMod.stepsFor(MAP_WITHV, false)) !== JSON.stringify(MAP_WITHV.videoSteps));
 
     // ⑦ 界面不再说「视频未配」（改成「视频复用图文」，免得用户以为还要再抓一次）
     ok('★ 界面把「视频未配」改成「视频复用图文」',

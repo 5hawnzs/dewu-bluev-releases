@@ -509,6 +509,25 @@ async function runStep(serial, step, data, ctx) {
         throw new Error(`这一步（tapXY）的坐标解析不出来：「${step.value}」—— `
           + `要写成 "540,1871" 这种 x,y 形式（多个点用分号隔开）。`);
       }
+      // ★★★ 2026-10-04 新增：**越界即拦**（坐标空间守卫的最后一道）。
+      //   为什么必须在真正发 tap 之前拦：`input tap` 对越界坐标**不报错** ——
+      //   实测在 1920x1080 的屏上 `input tap 945 1869` 返回 rc=0、一个字都不说、什么都没点到。
+      //   所以「写死的坐标落到了屏幕外」在真机上表现为**每一步都安静地点偏**，日志一条错都没有。
+      //   尺寸从 `adb.uiSize()` 取（= `dumpsys window displays` 的 `cur=`，那才是 tap 用的坐标系；
+      //   不能拿 `wm size`：它报的是自然方向尺寸，横屏时会给出相反的宽高）。
+      //   ★ 读不到尺寸（known=false）时**不拦** —— 拿一个猜的尺寸判越界就是拿幻觉当判据。
+      //   尺寸只读一次，缓存在 ctx 里（同一次发布里坐标系不会变）。
+      if (!ctx.uiSize) ctx.uiSize = await adb.uiSize(serial);
+      const badPts = uimap.outOfScreenTapPoints([step], ctx.uiSize);
+      if (badPts.length) {
+        const sz = ctx.uiSize;
+        throw new Error(`这一步（${step.name || 'tapXY'}）写死的坐标落在屏幕之外：`
+          + badPts.map(p => `${p.x},${p.y}`).join(' / ')
+          + `；当前坐标系是 ${sz.w}x${sz.h}（${sz.landscape ? '横屏' : '竖屏'}）。`
+          + `input tap 对越界坐标**不报错**（实测 rc=0、什么都没点到）⇒ 不拦就是全程静默点偏。`
+          + `多半是抓定位表时的分辨率/方向和现在不一样：把模拟器调回去，或停到得物发布页`
+          + `重新「抓取页面结构」→ 导入。`);
+      }
       const r = await adb.tapSeq(serial, pts, pts.length > 1 ? 250 : 0);
       if (!r.ok) throw new Error('点击失败：' + (r.stderr || '').trim());
       if (pts.length > 1 && ctx && ctx.log) {
@@ -596,7 +615,13 @@ async function dumpForCapture(serial, opts) {
     ? '★ 这一屏是**动画页**（uiautomator 等不到 idle，实测连试十几次全败），已自动改用 dumpsys 抓：'
       + '**控件 id / 坐标 / 是否可点**都有，但**没有文字** —— 候选表里按文字找的步骤要手动改或用 id 代替。'
     : '';
-  return Object.assign({}, d, { focus, focusNote, onPublish, viaNote });
+  // ★★ 2026-10-04 新增：把**抓取时的坐标系**一起带回去 —— 它会写进生成的定位表（`uimap.suggest` 的
+  //   `screen` 戳），运行时靠它判「这张表是不是在另一个坐标系里量的」（见 runReal 的坐标空间守卫）。
+  //   ★ 只在**确认前台是得物**时才量：坐标系跟着前台应用的方向走（得物竖屏 1080x1920 /
+  //     MuMu 桌面横屏 1920x1080，实测同一台机器两种都有）—— 不是在得物上量的尺寸，不能拿来给这张表背书。
+  //     读不到 focus 时量出来的尺寸归属不明 ⇒ 记 null，如实「没戳」，绝不编一个。
+  const screen = uimap.isDewuFocus(focus) ? await adb.uiSize(serial) : null;
+  return Object.assign({}, d, { focus, focusNote, onPublish, viaNote, screen });
 }
 
 /**
@@ -695,6 +720,41 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   };
   await pullHome('');
 
+  // ★★★ 2026-10-04 新增：**坐标空间守卫**（用户问「为啥你有具体坐标老是会点偏」）。
+  //
+  // 机制（都是本机 MuMu 12 实测出来的，不是推理）：
+  //   · 定位表里的 `tapXY` 是**写死的绝对坐标**，只在「抓表时那个坐标系」里成立；
+  //   · 那个坐标系由**当前前台应用的方向 / 模拟器分辨率**决定 —— 同一台机器上实测两种都出现过：
+  //       得物（竖屏锁定，发布全程都是它在前台）→ `dumpsys window displays` 的 `cur=1080x1920`，
+  //       同时 `screencap` 的 PNG 是 1080x1920、dump 的 bounds 最大 y=1919；
+  //       MuMu 桌面（横屏）在前台 → 同一命令变成 `cur=1920x1080`，PNG 与 bounds 全部变 1920x1080。
+  //   · **`input tap` 对越界坐标不报错** —— 实测在 1920x1080 的屏上 `input tap 945 1869` 返回 rc=0、
+  //     一个字都不说、什么都没点到。所以坐标系一旦不对，表现是「每一步都安静地点偏」，
+  //     日志上一条错都没有 —— 这正是「有具体坐标却老点偏」的机制。
+  //   ⇒ 两层，各管一半：
+  //     ① 表里记的抓取尺寸 vs 当下尺寸对不上（早报；连「坐标仍落在屏内但整体指错元素」也拦得住）；
+  //     ② 逐个坐标越界（兜底；也覆盖老表 —— 老表没有 screen 戳）。
+  //   ★ 为什么读尺寸**必须在这里**（pullHome 之后、推素材与清相册之前）：
+  //     坐标系跟着前台应用走，在得物没到前台时读会读到**桌面**的坐标系，
+  //     把一张本来正确的表判成「对不上」—— 假报警与漏报一样是灾难。
+  //     放这儿还顺带满足「fail fast」：坐标系不对时，一个像素都不点、一张素材都不推。
+  // ★ 挑哪一套步骤的判据抽到了 uimap.stepsFor（纯函数）：视频没单独配 videoSteps 就复用图文那套。
+  //   抽出去是为了让回归能**喂输入验语义**，而不是拿正则去匹配这一行长什么样（重构一次就误报一次）。
+  const steps = uimap.stepsFor(map, isVideo);
+  const fixedPts = uimap.tapPointsOf(steps);
+  if (fixedPts.length) {
+    if (!ctx.uiSize) ctx.uiSize = await adb.uiSize(serial);
+    const liveSize = ctx.uiSize;
+    const mm = uimap.screenMismatch(map.screen, liveSize);
+    if (mm.mismatch) {
+      throw new Error(`UI 定位表的坐标系和这台设备对不上：${mm.why}。`
+        + `表里 ${fixedPts.length} 个写死的坐标（tapXY）会**整体点偏**，`
+        + `而 input tap 对点偏/越界不报错（实测 rc=0，什么都不点）⇒ 这里必须拦下，不许硬点。`
+        + `两条路：① 把模拟器调回抓表时的分辨率与方向（比如得物是竖屏锁定的，让得物在前台量一次即可）；`
+        + `② 停到得物发布页重新「抓取页面结构」→ 导入（新表会带上抓取时的坐标系）。`);
+    }
+  }
+
   // ★ 清空必须在 push **之前**：push 完再清会把这一条刚推的也一起清掉。
   row.status = '清相册';
   if (ctx.onRow) ctx.onRow(row);
@@ -784,9 +844,9 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //    ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的**（入口、相册页签、编辑页同一套），
   //      所以 videoSteps 没单独配时**直接复用 steps**，不再拦下。
   //      videoSteps 仍然保留：哪天真机改版、视频那条路跟图文不一样了，单独配一套就能覆盖。
-  const vSteps = map.videoSteps || [];
-  const reuseForVideo = isVideo && !vSteps.length;
-  const steps = isVideo ? (vSteps.length ? vSteps : (map.steps || [])) : (map.steps || []);
+  //    ★ 2026-10-04：这一组 steps 在**上面坐标空间守卫**那里就已经算好了（同一个判据，只算一次）——
+  //      两处各算一遍迟早不一致（改了一处、另一处还在按老规矩挑表）。
+  const reuseForVideo = isVideo && !(map.videoSteps || []).length;
   if (reuseForVideo && steps.length) {
     log(`${row.dir}：这条是视频，UI 定位表没单独配 videoSteps —— 按「图文那套位置」发（图文与视频位置一样，实测）`, 'info');
   }

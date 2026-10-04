@@ -347,6 +347,187 @@ const sizeOf = p => (fs.existsSync(p) ? fs.statSync(p).size : -1);
       /启动不了 ffmpeg/.test(msg) && !/未知原因/.test(msg), msg.slice(0, 170));
   }
 
+  // ==========================================================================
+  // N) ★★★ 2026-10-04（第二十轮 · ffmpeg 复核）**音频轨**：容器对，但装在里面的音轨得物不保证放得出声
+  //   实测（内置 ffmpeg 现造 7 种音频 × 3 种容器，逐条过 toMp4、再解析**产物**)：
+  //     `-c copy` 会把源音频**原样**搬进 mp4 —— ac3→`ac-3`、eac3→`ec-3`、opus→`Opus`、
+  //     pcm→`ipcm`、flac→`fLaC`；而 `verifyMp4` 原来**只看视频轨** ⇒ 判它"合格"、
+  //     工具报「已转 MP4（无损转封装）」⇒ 发出去「视频能放、没有声音」，日志一条错都没有。
+  //   这一组钉四件事：
+  //     ① 纯函数 audioTrackInfo / audioCompat 的分支（含**反向对照**：mp4a 必须放行）；
+  //     ② 真样本：AC-3 源 ⇒ 必须走「只重编音频」那条路，产物音轨真解析出来是 mp4a(AAC)；
+  //     ③ 与 ffmpeg 原话对照（产物确实写着 aac）；
+  //     ④ ★★ 反向对照：AAC 源必须**仍然走 remux**，且视频轨仍是 `-c copy`（Baseline）——
+  //        证明这个修复不是「无条件重编音频/重编视频」（那会白掉音质、还变慢）。
+  // ==========================================================================
+  {
+    const stsdN = (codec) => { const b = Buffer.alloc(20); b.write('stsd', 0, 'latin1'); b.write(codec, 16, 'latin1'); return b; };
+    const moovN = (acodec) => Buffer.concat(acodec ? [stsdN('avc1'), stsdN(acodec)] : [stsdN('avc1')]);
+    /** ffmpeg 自己的原话（把第 n 条流那一行摘出来）—— 我们判的必须与它一致，不是自说自话 */
+    const ffStreamN = (p, n) => {
+      const r = require('child_process').spawnSync(FF, ['-hide_banner', '-i', p], { encoding: 'utf8' });
+      return String(r.stderr || '').split('\n').find(l => new RegExp('Stream #0:' + n).test(l)) || '';
+    };
+
+    const n1 = video.audioTrackInfo(moovN('mp4a'));
+    ok('N1) 只有 mp4a（AAC / mp3-in-mp4）算「得物一定放得出声」', n1.codec === 'mp4a' && n1.safe === true, JSON.stringify(n1));
+    for (const bad of ['ac-3', 'ec-3', 'Opus', 'fLaC', 'ipcm']) {
+      const r = video.audioTrackInfo(moovN(bad));
+      ok(`N2) 「${bad}」判不安全（安卓不保证有它的解码器）`, r.codec === bad && r.safe === false, JSON.stringify(r));
+    }
+    const n3 = video.audioTrackInfo(moovN(''));
+    ok('N3) 没有音轨 ⇒ codec 空、safe=true（无声视频是合法的，不该被当成「音频不安全」）',
+      n3.codec === '' && n3.safe === true, JSON.stringify(n3));
+    ok('N4) ★★ 反向对照：音轨**不许**把视频轨编码当成音频 —— [avc1, mp4a] 的音频必须是 mp4a',
+      video.audioTrackInfo(moovN('mp4a')).codec === 'mp4a'
+      && video.videoTrackInfo(moovN('mp4a')).codec === 'avc1'
+      && video.audioTrackInfo(moovN('')).codec === '',
+      JSON.stringify({ a: video.audioTrackInfo(moovN('mp4a')).codec, v: video.videoTrackInfo(moovN('mp4a')).codec }));
+    const n5 = video.audioCompat(moovN('ac-3'));
+    ok('N5) audioCompat 说人话，且点名是哪个编码', n5.ok === false && /ac-3/.test(n5.why) && /AAC/.test(n5.why), n5.why);
+    ok('N6) audioCompat 对 AAC 放行（反向对照：不是「有音轨就杀」）', video.audioCompat(moovN('mp4a')).ok === true);
+
+    // ---- 真样本：AC-3 音轨 / AAC 音轨 各一条 .mov，走完整 toMp4 ----
+    ff(['-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'ac3', '-shortest', '-f', 'mov', P('ac3src.mov')]);
+    ff(['-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-shortest', '-f', 'mov', P('aacsrc.mov')]);
+
+    // 前置：源确实是 AC-3（否则下面那条断言是在验一个不存在的场景）
+    const ac3ALine = ffStreamN(P('ac3src.mov'), 1);
+    ok('N7) 前置：造出来的源音轨确实是 ac-3（否则下面是在验一个不存在的场景）',
+      /ac3/.test(ac3ALine), ac3ALine.trim().slice(0, 100));
+
+    const rAc3 = await video.toMp4(P('ac3src.mov'), P('ac3out.mp4'), { log: () => {} });
+    ok('N8) ★★★ AC-3 音轨的 mov ⇒ 必须走「视频无损转封装 + 音频转 AAC」这条独立的支路',
+      rAc3.ok === true && rAc3.mode === 'remux-audio' && rAc3.audioFrom === 'ac-3',
+      JSON.stringify({ ok: rAc3.ok, mode: rAc3.mode, audio: rAc3.audio, from: rAc3.audioFrom }));
+    const pAc3 = await video.probeDecodable(P('ac3out.mp4'));
+    ok('N9) ★★★ 产物**真解析**出来音轨是 mp4a(AAC)、且 video 仍是 8-bit H.264（不看日志、不看文件名）',
+      pAc3.ok === true && pAc3.audio === 'mp4a' && pAc3.audioSafe === true && pAc3.bitDepth === 8,
+      JSON.stringify(pAc3));
+    // ★ 视频必须是 **copy** 过来的（不是重编）：libx264 ultrafast 出来的是 Constrained Baseline，
+    //   一旦落到整体转码就会变成 High（`-crf 20`）。用 profile 名把这件事钉住。
+    ok('N10) ★★ 只重编音频：产物视频轨仍是 Baseline（= 视频是 copy 过来的，没有为了一个音轨重编整条片子）',
+      /Baseline/.test(String(pAc3.label || '')), pAc3.label);
+    const outAc3Line = ffStreamN(P('ac3out.mp4'), 1);
+    ok('N11) ★ 与 ffmpeg 原话对照：产物音频流确实写着 aac（不是我们自己说的）',
+      /aac/i.test(outAc3Line), outAc3Line.trim().slice(0, 110));
+
+    // ★ 反向对照（这一条最要紧）：AAC 源**不许**被无谓重编 —— 必须还是快路径 remux。
+    const rAac = await video.toMp4(P('aacsrc.mov'), P('aacout.mp4'), { log: () => {} });
+    ok('N12) ★★ 反向对照：AAC 源仍走 remux（证明上面那条不是「一律重编音频」）',
+      rAac.ok === true && rAac.mode === 'remux' && rAac.audio === 'mp4a',
+      JSON.stringify({ mode: rAac.mode, audio: rAac.audio }));
+
+    // 无声视频：不许因为「没有音轨」被卷进音频支路
+    const rNo = await video.toMp4(P('src.mp4'), P('noaud_out.mp4'), { log: () => {} });
+    ok('N13) 反向对照：本来就 AAC/无声的 mp4 仍走 remux（不是「见过一次 ac-3 就全都重编」）',
+      rNo.ok === true && rNo.mode === 'remux', JSON.stringify({ mode: rNo.mode, audio: rNo.audio }));
+
+    // .mkv 也一样（源 moov 读不到，只有**产物**才知道音轨是什么 —— 这正是「真读产物」的意义）
+    ff(['-i', P('ac3src.mov'), '-c', 'copy', '-f', 'matroska', P('ac3src.mkv')]);
+    const rMkv = await video.toMp4(P('ac3src.mkv'), P('ac3mkv_out.mp4'), { log: () => {} });
+    const pMkv = await video.probeDecodable(P('ac3mkv_out.mp4'));
+    ok('N14) ★ mkv 里的 AC-3 一样被收拾成 AAC（源容器读不到 moov，判据落在**产物**上）',
+      rMkv.mode === 'remux-audio' && pMkv.audio === 'mp4a' && pMkv.audioSafe === true,
+      JSON.stringify({ mode: rMkv.mode, from: rMkv.audioFrom, out: pMkv.audio }));
+  }
+
+  // ==========================================================================
+  // M) ★★★ 2026-10-04（第二十轮 · 用户问「**除了 mov，其他格式比如 m4v 会不会也有可能**」）
+  //   位深漏斗到底闭没闭，**按扩展名逐个验**，而不是只信 mp4/mov 两条。
+  //   实测结论（内置 ffmpeg 现造样本、逐条解析**产物**的位深）：**闭的** ——
+  //     10-bit 的 HEVC / H.264，不管装进 .mp4 / .mov / .m4v / .mkv / .webm，
+  //     都会因为「转封装出来的还是 10-bit」而落进整体转码，产物一定是 8-bit H.264。
+  //   这一组把它钉成回归：以后谁要是改了白名单/位深判据，这里会先红。
+  //   ★ 顺带钉住 `winpath.VIDEO_EXT`：**每加一个扩展名，就必须在这个矩阵里有对应的一条**，
+  //     否则「新增了格式支持」这件事会悄悄绕过所有验证（这是最容易漏的一类）。
+  // ==========================================================================
+  {
+    const wpMod = require(path.join(ROOT, 'src', 'main', 'util', 'winpath.js'));
+    const EXTS = (wpMod.VIDEO_EXT || []).slice().sort();
+    ok('M0) 当前支持的视频扩展名清单没变（变了就要在这里补上对应的一条，别让新格式绕过验证）',
+      JSON.stringify(EXTS) === JSON.stringify(['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.webm']),
+      JSON.stringify(EXTS));
+
+    const tiny = ['-f', 'lavfi', '-i', 'testsrc=duration=1:size=160x120:rate=10'];
+    const size10 = ['-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1'];
+    const size8 = ['-c:v', 'libx265', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1'];
+    const h10 = ['-c:v', 'libx264', '-profile:v', 'high10', '-pix_fmt', 'yuv420p10le'];
+
+    // 造一条 10-bit 的「源」，再**无损装进**目标容器（模拟「达人给的文件的扩展名就是这个」）
+    const pack = (tag, codecArgs, fmt, ext) => {
+      const base = P('m_10src_' + tag + '.mp4');
+      ff(tiny.concat(codecArgs, ['-f', 'mp4', base]));
+      const f = P('m_' + tag + '.' + ext);
+      ff(['-i', base, '-c', 'copy', '-f', fmt, f]);
+      return f;
+    };
+
+    // ① 同一个 10-bit HEVC 载荷，装进四种容器 ⇒ 都必须变成 8-bit
+    const hevc10 = [['mp4', 'mp4'], ['mov', 'mov'], ['m4v', 'mp4'], ['mkv', 'matroska']];
+    for (const [ext, fmt] of hevc10) {
+      const src = pack('hevc10_' + ext, size10, fmt, ext);
+      const srcP = await video.probeDecodable(src);
+      const r = await video.toMp4(src, P('m_out_hevc10_' + ext + '.mp4'), { log: () => {} });
+      const outP = await video.probeDecodable(P('m_out_hevc10_' + ext + '.mp4'));
+      ok(`M1) ★ 10-bit HEVC 装进 .${ext} ⇒ 产物必须是 8-bit（源头 tenBit=${srcP.tenBit}）`,
+        r.ok === true && outP.ok === true && outP.bitDepth === 8 && outP.tenBit === false,
+        JSON.stringify({ mode: r.mode, out: outP.label, bits: outP.bitDepth }));
+    }
+
+    // ② 10-bit H.264（High 10）装进 mp4 / mov / m4v —— 与 HEVC 是两个不同的配置盒（avcC vs hvcC），
+    //    判据必须**两条都认**（只测 HEVC 的话，avcC 那条分支可以整段坏掉而全绿）。
+    for (const [ext, fmt] of [['mp4', 'mp4'], ['mov', 'mov'], ['m4v', 'mp4']]) {
+      const src = pack('h264ten_' + ext, h10, fmt, ext);
+      const r = await video.toMp4(src, P('m_out_h264ten_' + ext + '.mp4'), { log: () => {} });
+      const outP = await video.probeDecodable(P('m_out_h264ten_' + ext + '.mp4'));
+      ok(`M2) ★ 10-bit H.264 装进 .${ext} ⇒ 产物必须是 8-bit（avcC 那条分支真在查）`,
+        r.ok === true && outP.ok === true && outP.bitDepth === 8,
+        JSON.stringify({ mode: r.mode, out: outP.label }));
+    }
+
+    // ③ VP9（webm/mkv 里最常见的编码，mp4 白名单里没有它）⇒ 必须落转码
+    for (const [ext, fmt] of [['webm', 'webm'], ['mkv', 'matroska'], ['mp4', 'mp4']]) {
+      const vp = P('m_vp9src.mp4');
+      if (!fs.existsSync(vp)) ff(tiny.concat(['-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-f', 'mp4', vp]));
+      const src = P('m_vp9.' + ext);
+      ff(['-i', vp, '-c', 'copy', '-f', fmt, src]);
+      const r = await video.toMp4(src, P('m_out_vp9_' + ext + '.mp4'), { log: () => {} });
+      const outP = await video.probeDecodable(P('m_out_vp9_' + ext + '.mp4'));
+      ok(`M3) ★ VP9 装进 .${ext} ⇒ 必须转码成 8-bit H.264（vp09 不在 mp4 白名单里）`,
+        r.ok === true && r.mode === 'transcode' && outP.ok === true && outP.codec === 'avc1',
+        JSON.stringify({ mode: r.mode, out: outP.label }));
+    }
+
+    // ④ ProRes（iPhone 剪出来的 .mov 常见）⇒ 容器放不下 ⇒ 转码
+    {
+      const src = P('m_prores.mov');
+      ff(tiny.concat(['-c:v', 'prores_ks', '-pix_fmt', 'yuv422p10le', '-f', 'mov', src]));
+      const r = await video.toMp4(src, P('m_out_prores.mp4'), { log: () => {} });
+      const outP = await video.probeDecodable(P('m_out_prores.mp4'));
+      ok('M4) ★ ProRes 的 .mov ⇒ 必须转码成 8-bit H.264（mp4 容器装不下 ProRes）',
+        r.ok === true && r.mode === 'transcode' && outP.ok === true && outP.codec === 'avc1',
+        JSON.stringify({ mode: r.mode, out: outP.label }));
+    }
+
+    // ⑤ ★★ 反向对照：8-bit HEVC 不许被误杀 —— 它得物吃得下，就该走无损转封装（快、不重编）
+    //    没有这一条，把判据写成「见 hevc 就转码」也照样全绿，而真机上那是白白多花几分钟重编。
+    for (const [ext, fmt] of [['mp4', 'mp4'], ['mov', 'mov'], ['m4v', 'mp4'], ['mkv', 'matroska']]) {
+      const src = pack('hevc8_' + ext, size8, fmt, ext);
+      const r = await video.toMp4(src, P('m_out_hevc8_' + ext + '.mp4'), { log: () => {} });
+      const outP = await video.probeDecodable(P('m_out_hevc8_' + ext + '.mp4'));
+      ok(`M5) ★★ 反向对照：8-bit HEVC 装进 .${ext} ⇒ 必须**无损转封装**、且仍是 8-bit HEVC（不误杀、不白重编）`,
+        r.ok === true && r.mode === 'remux' && outP.ok === true && outP.bitDepth === 8 && /HEVC/.test(outP.label),
+        JSON.stringify({ mode: r.mode, out: outP.label }));
+    }
+  }
+
   console.log('');
   console.log('==== ' + (fail ? ('FAIL ' + fail) : 'ALL PASS') + ' ====');
   console.log('TMP: ' + TMP);

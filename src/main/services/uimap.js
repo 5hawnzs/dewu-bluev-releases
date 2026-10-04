@@ -88,6 +88,93 @@ function parsePoints(value) {
 }
 
 /**
+ * ★★★ 2026-10-04 新增：`tapXY` 的**坐标空间守卫**（纯函数，喂输入就能测全分支）。
+ *
+ * 为什么非要有：定位表里的 `tapXY` 是**写死的绝对坐标**，它只在「抓表时那个坐标系」里成立。
+ * 而坐标系由**当前前台应用的方向 / 模拟器分辨率**决定，会变：
+ *   · 同一台 MuMu 12，得物（竖屏锁定）在前台时 `dumpsys window displays` 是 `cur=1080x1920`；
+ *     MuMu 桌面（横屏）在前台时是 `cur=1920x1080`，`screencap` 的 PNG 与 dump 的 bounds 全部跟着变成 1920x1080。
+ *   · 更阴的一半：坐标系**变了但坐标仍落在屏内**（例如从 900x1600 的旧表 换到 1080x1920 的设备）
+ *     ⇒ 越界校验抓不住，可每一个固定坐标都指到**别的元素**上。
+ * 而 `input tap` 对越界坐标**不报错**（实测 rc=0、什么都没点到）⇒ 全程静默、日志一条错都没有。
+ *
+ * 所以分两层，各管一半：
+ *   ① `outOfScreenTapPoints` —— 坐标落在当前屏幕之外（硬错，立刻报）；
+ *   ② `screenMismatch`       —— 表里记的抓取尺寸 vs 当下尺寸对不上（另一种硬错，早报）。
+ */
+
+/** 一组步骤里**所有写死的坐标**（带出处），供越界校验与报错点名。只认 tapXY：
+ *  tapId/tapText 的坐标是**当场从 dump 读**的，天然在当前坐标系里，不需要这层守卫。 */
+function tapPointsOf(steps) {
+  const out = [];
+  for (const s of (steps || [])) {
+    if (!s || s.action !== 'tapXY') continue;
+    for (const p of parsePoints(s.value)) {
+      out.push({ name: s.name || ('tapXY ' + s.value), value: String(s.value), x: p.x, y: p.y });
+    }
+  }
+  return out;
+}
+
+/**
+ * 写死的坐标里，哪些**落在当前屏幕之外**。
+ * @param size = `adb.uiSize()` 的返回值（即 `dumpsys window displays` 的 `cur=`）。
+ *   ★ `size.known !== true` ⇒ **返回空数组**（当「不知道」处理）。
+ *   不拿猜出来的尺寸判「越界」—— 那是拿幻觉当判据，会误杀正常坐标。
+ */
+function outOfScreenTapPoints(steps, size) {
+  if (!size || size.known !== true) return [];
+  return tapPointsOf(steps).filter(p => !(p.x >= 0 && p.y >= 0 && p.x <= size.w - 1 && p.y <= size.h - 1));
+}
+
+/**
+ * 这一条内容要走的步骤列表（**纯函数**）。
+ *
+ * 判据只有一条：**视频没单独配 videoSteps 就复用图文那一套** ——
+ * 用户 2026-10-02 实测：「图文和视频的发布位置是一样的」，所以不该因为没配 videoSteps 就拦下不发。
+ *
+ * ★ 为什么把它单独抽出来（2026-10-04）：这段选择逻辑原来写在 publisher 里，
+ *   而回归里只能用**正则去匹配那一行源码**（`const steps = isVideo ? …`）。
+ *   结果我在别处重构时把那行的写法改动了一点，语义一字没变，测试却红了 ——
+ *   这类「锁死写法」的断言既挡不住真问题，又每次重构都误报（正是「浪费时间」的来源之一）。
+ *   抽成纯函数之后，测试可以直接喂三种输入验**语义**，不再依赖那行长什么样。
+ */
+function stepsFor(map, isVideo) {
+  const m = map || {};
+  const s = Array.isArray(m.steps) ? m.steps : [];
+  const v = Array.isArray(m.videoSteps) ? m.videoSteps : [];
+  return isVideo ? (v.length ? v : s) : s;
+}
+
+/**
+ * 定位表**抓取时**的坐标系 vs **当下**的坐标系，是否对不上。
+ * @param mapScreen  抓取时记下的 `{w,h}`（老表没有这个键 ⇒ judgeable=false，不拦，交给逐点越界那条）
+ * @returns {{judgeable:boolean, mismatch:boolean, swapped:boolean, why:string}}
+ */
+function screenMismatch(mapScreen, live) {
+  if (!mapScreen || !live || live.known !== true) return { judgeable: false, mismatch: false, swapped: false, why: '' };
+  const mw = Number(mapScreen.w) || 0, mh = Number(mapScreen.h) || 0;
+  if (!mw || !mh) return { judgeable: false, mismatch: false, swapped: false, why: '' };
+  if (mw === live.w && mh === live.h) return { judgeable: true, mismatch: false, swapped: false, why: '' };
+  const swapped = (mw === live.h && mh === live.w);
+  return {
+    judgeable: true, mismatch: true, swapped,
+    why: `定位表是在 ${mw}x${mh}（${mw > mh ? '横屏' : '竖屏'}）下抓的，`
+      + `现在这台设备是 ${live.w}x${live.h}（${live.landscape ? '横屏' : '竖屏'}）`
+      + (swapped ? '—— 正好差了 90°（宽高互换）' : '—— 分辨率或方向变了')
+  };
+}
+
+/**
+ * 给定位表打一个**抓取时的坐标系**戳（`publish.dump` 生成时写进去，导入时保留）。
+ * 有它，运行时才判得出「这张表是不是在另一个坐标系里量的」。
+ */
+function screenStamp(size) {
+  if (!size || size.known !== true) return null;
+  return { w: size.w, h: size.h, landscape: !!size.landscape, at: Date.now() };
+}
+
+/**
  * ★★ 「得物发布页」到底是哪一屏、怎么去 —— 真机实测（2026-10-01 / 2026-10-02，MuMu 12 / 得物 900×1600）：
  *   · 发布页 = `media.publish.activity.TotalPublishProcessActivity`，
  *     首屏是**选素材的相册**（顶部 全部 / 照片 / 视频 三个页签）。
@@ -189,7 +276,7 @@ function isDraftScreen(focus) {
 }
 
 /** 按关键词在 dump 里猜一套候选步骤，用户改改就能用 */
-function suggest(nodes, pkg) {
+function suggest(nodes, pkg, opts = {}) {
   const hit = (...keys) => nodes.filter(n => keys.some(k => n.text === k || n.desc === k || (n.text || '').includes(k)));
   const steps = [];
   const pushStep = (name, action, value, hint, extra) =>
@@ -293,6 +380,13 @@ function suggest(nodes, pkg) {
   return {
     package: pkg || (nodes[0] && nodes[0].pkg) || '',
     generatedAt: Date.now(),
+    // ★★★ 2026-10-04 新增：**抓取时的坐标系**（`dumpsys window displays` 的 `cur=`）。
+    //   为什么必须记：`tapXY` 是写死的绝对坐标，只在**这一个坐标系**里成立。
+    //   不记的话，换了分辨率/方向之后运行时**判不出来**「这张表量错了空格子」——
+    //   而 `input tap` 对越界坐标不报错（实测 rc=0），表现就是全程静默点偏。
+    //   运行时 publisher 拿它和当下的 `adb.uiSize()` 比（见 uimap.screenMismatch）。
+    //   拿不到尺寸（老 dumpsys 格式）时写 null —— 不编一个假尺寸。
+    screen: screenStamp(opts.screen),
     // 封面口径（已拍板）：用得物推荐的 —— 不点封面区、不上传封面图。
     // 但若真机版本封面区默认未选中、不点一下会卡住「下一步」，就得在 videoSteps 里补一步点它。
     videoNote: '视频封面用得物推荐的：不点封面区、不上传封面图。若真机版本封面区默认未选中挡住了「下一步」，'
@@ -615,5 +709,7 @@ module.exports = {
   parseNodes, findNode, findNodes, cardOf, countOf, parsePoints, MAX_TAP_COUNT, suggest, fill,
   normalizeSteps, STEP_ACTIONS, normalizeCond, condOk, condWhy, COND_KEYS,
   SCREEN_KEYS, normalizeScreenCond, screenCondOk,
+  // ★ 2026-10-04 新增：tapXY 的坐标空间守卫（纯函数，喂输入即可测全分支）
+  tapPointsOf, outOfScreenTapPoints, screenMismatch, screenStamp, stepsFor,
   DEWU, isDewuFocus, isPublishScreen, isHomeScreen, isDraftScreen
 };

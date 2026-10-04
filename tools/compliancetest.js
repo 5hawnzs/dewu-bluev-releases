@@ -202,5 +202,49 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
   ok('⑥ 目录里只有这一个文件（转码不留中间产物、不另起名字）',
     fs.readdirSync(v10leaf).length === 1, fs.readdirSync(v10leaf).join(' '));
 
+  // ---- ⑦ ★★★ 2026-10-04（复核 ffmpeg 那轮实测出来的**第二个**缺口：音频轨）
+  //   上一次只堵了「视频轨编码/位深」，**音频轨完全没看**。实测（见 videotest N 组的表）：
+  //   `-c copy` 会把源音频原样搬进 mp4 —— ac3→`ac-3`、eac3→`ec-3`、opus→`Opus`、
+  //   pcm→`ipcm`、flac→`fLaC`；而 `verifyMp4` 只看视频轨 ⇒ 判它"合格"。
+  //   后果与 10-bit 黑格同一类：「视频能放、**没有声音**」，且工具一条错都不报。
+  //   ⇒ 这一段钉**集成路径**：扩展名是 .mp4、视频轨完全正常的素材，只要音轨是 ac-3，
+  //     就必须被认出来、并真被收拾成 AAC（视频轨不许被重编）。
+  const aLeaf = path.join(TMP, 'flat', 'AC3-001+白+1');
+  fs.mkdirSync(aLeaf, { recursive: true });
+  execFileSync(path.join(VENDOR_FF, 'ffmpeg.exe'),
+    ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'ac3', '-shortest', path.join(aLeaf, '片段.mp4')],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  const aBefore = await vmod.probeDecodable(path.join(aLeaf, '片段.mp4'));
+  ok('⑦ 前置：造出一条**视频轨完全正常（8-bit H.264）、音轨是 ac-3** 的 .mp4',
+    aBefore.ok === true && aBefore.audio === 'ac-3' && aBefore.audioSafe === false,
+    JSON.stringify({ ok: aBefore.ok, codec: aBefore.codec, audio: aBefore.audio }));
+  const aItems = [{
+    id: 'AC3-001+白+1', dir: 'AC3-001+白+1', absDir: aLeaf, sku: 'AC3-001', color: '白',
+    files: [{ name: '片段.mp4', size: 0, type: 'video' }]
+  }];
+  const aSc = await compliance.scan(aItems, ctx());
+  const aRow = aSc.rows[0] || {};
+  ok('⑦ ★★★ 音轨得物放不出声 ⇒ 必须判成「可自动处理」并点名 ac-3（不许因为视频正常就记成合格）',
+    aRow.status === 'todo' && aRow.audioBad === true && /ac-3/.test(aRow.issue || ''),
+    JSON.stringify({ status: aRow.status, action: aRow.action, issue: aRow.issue, audioBad: aRow.audioBad }));
+  ok('⑦ 统计里单独列「音频不可解」= 1，且「编码不可解」= 0（视频是好的，两件事不许混成一列）',
+    aSc.stats.audioBad === 1 && aSc.stats.codecBad === 0, JSON.stringify(aSc.stats));
+
+  const aFx = await compliance.fix(aItems, aSc.rows, ctx());
+  const aAfter = await vmod.probeDecodable(path.join(aLeaf, '片段.mp4'));
+  ok('⑦ ★★★ fix() 必须真把音轨转成 AAC（就地替换，文件名不变）',
+    aFx.converted === 1 && aFx.failed === 0 && aAfter.audio === 'mp4a' && aAfter.audioSafe === true,
+    JSON.stringify({ converted: aFx.converted, failed: aFx.failed, audio: aAfter.audio }));
+  ok('⑦ ★★ 视频轨**不许**被一起重编：转完仍是 Baseline（= `-c:v copy`，没有为一个音轨重编整条片子）',
+    /Baseline/.test(String(aAfter.label || '')), aAfter.label);
+  ok('⑦ 处置结果里写清「为什么这条本来就叫 .mp4 的素材会被转一次」',
+    /音频/.test(aRow.result || '') && /ac-3/.test(aRow.result || '') && /AAC/.test(aRow.result || ''),
+    String(aRow.result));
+  ok('⑦ 目录里只有这一个文件（不留中间产物）', fs.readdirSync(aLeaf).length === 1, fs.readdirSync(aLeaf).join(' '));
+
   console.log('\nTMP: ' + TMP);
 })().catch(e => { console.error('COMPLIANCE TEST ERROR', e); process.exitCode = 1; });

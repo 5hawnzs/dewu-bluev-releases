@@ -82,8 +82,23 @@ async function scan(items, ctx = {}) {
               //   统计与 fix() 都靠这个标记，不靠 action 文案（文案会被改，标记不会）。
               codecBad: true
             });
+          } else if (!dec.audioSafe) {
+            // ★★ 2026-10-04 新增（复核 ffmpeg 那轮实测出来的**第二个**缺口）：
+            //   视频轨合格，但**音频轨**是 mp4 装得下、得物（安卓）不一定放得出的编码 ——
+            //   实测 `-c copy` 会原样把 `ac-3` / `ec-3` / `Opus` / `fLaC` / `ipcm` 搬进产物 mp4
+            //   （见 video.js 的 MP4_SAFE_AUDIO 实测表）。
+            //   不加这一条的话：文件被判「合格」直接发出去 ⇒ 视频能放、**没有声音**，
+            //   而工具一条错都不报。与「10-bit 黑格」同一类：容器对、装在里面的东西不对。
+            rows.push({
+              item: item.id, file: name, type: '视频',
+              issue: `音频轨是 ${dec.audio}，得物（安卓）不保证放得出声`,
+              action: video.status().usable ? '音频转 AAC' : '需手动转 AAC（程序里没找到 ffmpeg）',
+              status: video.status().usable ? 'todo' : 'manual',
+              size, duration: dur, codec: dec.codec, codecLabel: dec.label, audio: dec.audio,
+              audioBad: true
+            });
           } else {
-            rows.push({ item: item.id, file: name, type: '视频', issue: '—', action: '—', status: 'ok', size, duration: dur, codec: dec.codec || '', codecLabel: dec.label || '' });
+            rows.push({ item: item.id, file: name, type: '视频', issue: '—', action: '—', status: 'ok', size, duration: dur, codec: dec.codec || '', codecLabel: dec.label || '', audio: dec.audio || '' });
           }
         }
         continue;
@@ -155,6 +170,10 @@ async function scan(items, ctx = {}) {
     //   与 notMp4 **互斥**，别合并：一个「扩展名不对」、一个「扩展名对但编码吃不下」——
     //   混成一列的话，用户看到「非 MP4 = 0」会以为视频都没问题，而黑封面正出自这里。
     codecBad: rows.filter(r => r.codecBad).length,
+    // ★ 2026-10-04 新增：「视频轨没问题、但**音轨**得物放不出声」的条数（ac-3 / ec-3 / Opus / fLaC / ipcm）。
+    //   与 codecBad / notMp4 三者**互斥**，别合并 —— 混成一列会让用户以为「视频都没问题」，
+    //   而有声缺陷正出在这里（视频能放、没声音，最容易漏过去）。
+    audioBad: rows.filter(r => r.audioBad).length,
     total: rows.length
   };
   log(`扫描完成：${stats.total} 个文件，${stats.todo} 个待处理，${stats.manual} 个需人工定夺`, stats.manual ? 'warn' : 'ok');
@@ -162,6 +181,11 @@ async function scan(items, ctx = {}) {
   if (stats.codecBad) {
     log(`★ 其中 ${stats.codecBad} 个视频是「容器是 mp4、但里面那个编码得物解不开」（10-bit HEVC 这类）：`
       + '得物相册里会是黑格 + 一直转圈，直接发就是黑封面。点「处理」会转成 H.264 8-bit（会改素材文件）', 'warn');
+  }
+  // ★ 单独点名这一类：它比 codecBad 更难自己发现 —— 视频画面完全正常，只是**没有声音**。
+  if (stats.audioBad) {
+    log(`★ 其中 ${stats.audioBad} 个视频的**音频轨**得物（安卓）不保证放得出声（ac-3 / ec-3 / Opus / fLaC / PCM 这类）：`
+      + '直接发出去的表现是「视频能放、没有声音」，工具不报错也看不出来。点「处理」只把音频转成 AAC（视频不重编）', 'warn');
   }
   return { rows, stats };
 }
@@ -221,7 +245,7 @@ async function fix(items, rows, ctx = {}) {
         // 去掉旧链接后重写同名文件：原目录（硬链接源）不受影响
         row.status = 'done'; row.result = `压缩至 ${wp.humanSize(r.size)}（质量 ${r.quality}）`; converted++;
         syncItem(item, row, row.file, r.size);
-      } else if (row.action === '转 MP4' || /^转码/.test(String(row.action || ''))) {
+      } else if (row.action === '转 MP4' || row.audioBad || /^转码/.test(String(row.action || ''))) {
         // 视频转 mp4：先无损转封装（只换容器，秒级、画质不变），容器/编码不兼容时 video.js 自己转码。
         // 目录里已经有同名 .mp4 时**绝不覆盖**（那是另一份素材），另起一个名字。
         // ★★ 2026-10-04：这条分支现在还承担「容器已经是 mp4、但编码得物解不开」（`codecBad`）。
@@ -247,13 +271,15 @@ async function fix(items, rows, ctx = {}) {
         await wp.renameDir(tmp, dst);
         const szv = await wp.statSafe(dst);
         row.status = 'done';
-        row.result = rv.mode === 'remux'
-          ? `已转 MP4（无损转封装 · ${rv.codec} · ${rv.duration}s）`
-          : (row.codecBad
-            // ★ 把「为什么要转」写进结果里：不然用户看到一条本来就叫 .mp4 的素材被"转了一次"，
-            //   会以为工具在瞎折腾。原来的编码名（10-bit HEVC (Main 10)）必须留在案上。
-            ? `已转码 H.264 8-bit（原 ${row.codecLabel || '编码不可解'} 得物解不开）· ${rv.duration}s`
-            : `已转 MP4（转码 H.264 · ${rv.duration}s）`);
+        // ★★ 2026-10-04：结果文案按**实际走的路**写，不许笼统说「已转 MP4」——
+        //   四种情况（无损转封装 / 视频无损+音频转AAC / 整体转码 / 为什么转）都得看得出来，
+        //   否则用户看到一条本来就叫 .mp4 的素材"被转了一次"会以为工具在瞎折腾。
+        const how = rv.mode === 'remux' ? `无损转封装 · ${rv.codec}`
+          : rv.mode === 'remux-audio' ? `视频无损转封装 · 原音频 ${rv.audioFrom || '非 AAC'} 已转 AAC`
+            : row.codecBad ? `转码 H.264 8-bit（原 ${row.codecLabel || '编码不可解'} 得物解不开）`
+              : row.audioBad ? `转码（原音频 ${row.audio || '非 AAC'} 得物放不出声）`
+                : '转码 H.264';
+        row.result = `已转 MP4（${how} · ${rv.duration}s）`;
         row.duration = rv.duration;
         converted++;
         syncItem(item, row, path.basename(dst), szv ? szv.size : null, 'video');
@@ -328,6 +354,7 @@ async function scanParent(parentDir, ctx = {}) {
     notMp4: groups.reduce((a, g) => a + (g.stats.notMp4 || 0), 0),
     videoLong: groups.reduce((a, g) => a + (g.stats.videoLong || 0), 0),
     codecBad: groups.reduce((a, g) => a + (g.stats.codecBad || 0), 0),
+    audioBad: groups.reduce((a, g) => a + (g.stats.audioBad || 0), 0),
     total: rows.length
   };
   log(`父目录检查完成：${groups.length} 个子文件夹 · ${stats.total} 个文件 · ${stats.todo} 个可自动处理 · ${stats.manual} 个需人工`, stats.manual ? 'warn' : 'ok');
@@ -368,7 +395,7 @@ async function exportReport(report, opts = {}) {
       return {
         name: g.name, ok: s.ok || 0, todo: s.todo || 0, manual: s.manual || 0, isolate: s.isolate || 0,
         scaled: s.scaled || 0, tooSmall: s.tooSmall || 0, notMp4: s.notMp4 || 0,
-        codecBad: s.codecBad || 0, videoLong: s.videoLong || 0, total: s.total || 0
+        codecBad: s.codecBad || 0, audioBad: s.audioBad || 0, videoLong: s.videoLong || 0, total: s.total || 0
       };
     })
     : null;
@@ -392,10 +419,11 @@ async function exportReport(report, opts = {}) {
       { header: '隔离', key: 'isolate', width: 10 }, { header: '等比缩放', key: 'scaled', width: 10 },
       { header: '尺寸不足', key: 'tooSmall', width: 10 }, { header: '非 MP4', key: 'notMp4', width: 10 },
       { header: '编码不可解', key: 'codecBad', width: 12 },
+      { header: '音频不可解', key: 'audioBad', width: 12 },
       { header: '视频超时', key: 'videoLong', width: 10 }, { header: '合计', key: 'total', width: 10 }
     ];
     if (summary) summary.forEach(r => ws1.addRow(r));
-    ws1.addRow({ name: '全部', ok: stats.ok || 0, todo: stats.todo || 0, manual: stats.manual || 0, isolate: stats.isolate || 0, scaled: stats.scaled || 0, tooSmall: stats.tooSmall || 0, notMp4: stats.notMp4 || 0, codecBad: stats.codecBad || 0, videoLong: stats.videoLong || 0, total: stats.total || 0 }).font = { bold: true };
+    ws1.addRow({ name: '全部', ok: stats.ok || 0, todo: stats.todo || 0, manual: stats.manual || 0, isolate: stats.isolate || 0, scaled: stats.scaled || 0, tooSmall: stats.tooSmall || 0, notMp4: stats.notMp4 || 0, codecBad: stats.codecBad || 0, audioBad: stats.audioBad || 0, videoLong: stats.videoLong || 0, total: stats.total || 0 }).font = { bold: true };
 
     const ws2 = wb.addWorksheet('明细', { views: [{ state: 'frozen', ySplit: 1 }] });
     ws2.columns = [

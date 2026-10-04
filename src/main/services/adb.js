@@ -1462,6 +1462,46 @@ async function currentFocus(serial) {
 }
 
 /**
+ * ★★★ 2026-10-04 新增：**当前点击坐标系**下的屏幕尺寸（就是 `input tap` 与 dump `bounds` 共用的那个空间）。
+ *
+ * 为什么不能拿 `wm size` 代替（本机 MuMu 12 实测，两个数**不相等**）：
+ *   · `wm size` 报的是**物理/自然方向**尺寸：`Physical size: 1080x1920` —— 它**不随旋转变**；
+ *   · `dumpsys window displays` 里 `init=1080x1920 … cur=1920x1080` —— **`cur=` 才是当前坐标系**；
+ *   · 实测同一次会话里三处数字互相印证：MuMu 桌面（横屏）时 `cur=1920x1080`，
+ *     `screencap` 得到的 PNG 也是 1920x1080，`uiautomator dump` 的 bounds 最大 x=1920 / y=1080；
+ *     把得物拉到前台（它是竖屏锁定的）后同一命令立刻变成 `cur=1080x1920`。
+ *   ⇒ 拿 `wm size` 去校验坐标会**判反**：横屏时它会说 1080x1920，而真实坐标系是 1920x1080。
+ *
+ * 为什么非要读它：`input tap x y` 对**越界坐标不会报错**（实测 `input tap 945 1869` 在
+ * 1920x1080 的屏上 rc=0，一个字都不说，什么都没点到）。定位表里的 `tapXY` 是写死的绝对值，
+ * 一旦抓表时的坐标系和当下不一致（换设备 / 改过模拟器分辨率 / 前台应用方向变了），
+ * 每一步都会**安静地点偏**，而日志上一条错都没有 —— 这正是「有具体坐标却老点偏」的机制。
+ *
+ * @returns {{known:boolean, w:number, h:number, initW:number, initH:number,
+ *            landscape:boolean, portrait:boolean, rotated:boolean, raw:string}}
+ *   known=false 表示**没读到**（老版本 dumpsys 格式不同 / 命令失败）—— 调用方必须**当不知道处理**，
+ *   绝不许拿一个猜出来的尺寸去判「坐标越界」（那是拿幻觉当判据）。
+ */
+async function uiSize(serial) {
+  const out = { known: false, w: 0, h: 0, initW: 0, initH: 0, landscape: false, portrait: false, rotated: false, raw: '' };
+  const r = await shell(serial, 'dumpsys window displays');
+  const s = String(r.stdout || '');
+  if (!r.ok || !s) return out;
+  const cur = s.match(/\bcur=(\d+)x(\d+)/);
+  if (!cur) return out;
+  const init = s.match(/\binit=(\d+)x(\d+)/);
+  out.w = Number(cur[1]); out.h = Number(cur[2]);
+  if (init) { out.initW = Number(init[1]); out.initH = Number(init[2]); }
+  out.landscape = out.w > out.h;
+  out.portrait = out.w < out.h;
+  // 旋转过 = 当前坐标系与自然方向**不平行**（竖屏设备转成横屏，或反过来）
+  out.rotated = !!(init) && ((out.initW > out.initH) !== (out.w > out.h));
+  out.known = out.w > 0 && out.h > 0;
+  out.raw = (cur[0] || '') + (init ? ' ' + init[0] : '');
+  return out;
+}
+
+/**
  * ★★ 2026-10-04 新增：`dumpsys activity top` 里**栈顶**那个 Activity（整栈 dump，必须只取第一条）。
  *
  * 为什么不用 `currentFocus` 就够：两者取的是不同来源 —— `mCurrentFocus` 是窗口焦点，
@@ -1781,5 +1821,6 @@ module.exports = {
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
   installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus,
+  uiSize,
   ensureApp, isFocusOf, frontActivity, topActivityMatching
 };

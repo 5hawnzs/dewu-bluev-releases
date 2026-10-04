@@ -614,6 +614,20 @@ function makeFakeAdb(dir) {
     // ★★ 2026-10-04 新增：`input tap` 的现场开关 TAP_FOCUS 见上面第 24x 行 ——
     //   它**必须**写在已有的 `input (tap|keyevent|text)` 那一支里；另起一个分支就是死代码
     //   （前面那条已经 return 了。写这一条时我自己踩过一次，如实记在这儿）。
+    // ★★★ 2026-10-04 新增：**当前点击坐标系**（`init=` / `cur=`）。必须排在通用 `dumpsys window`
+    //   之前 —— 那条已经 return 了，写在它后面就是死代码（这条坑我自己踩过一次，记在这儿）。
+    //   真机依据（MuMu 12 / 1080x1920，本机实测）：
+    //     · 得物（竖屏锁定）在前台 → `init=1080x1920 280dpi cur=1080x1920 app=1080x1920`
+    //     · MuMu 桌面（横屏）在前台 → 同一命令变成 `cur=1920x1080`，且 screencap / dump bounds 全是 1920x1080
+    //   ⇒ 默认给**竖屏**（发布全程都是得物在前台，实测就是这个值）。
+    //   现场开关 UISIZE：写 `宽x高`（例如 `1920x1080`）就让这一行报那个尺寸 ——
+    //   用来验「定位表的坐标系和这台设备对不上 ⇒ 必须拦下、不许硬点」那条守卫。
+    if (/^dumpsys window displays/.test(cmd)) {
+      const fsz = path.join(dir, 'UISIZE');
+      const rawsz = fs.existsSync(fsz) ? read(fsz, Buffer.from('')).toString('utf8').trim() : '';
+      const sz = /^\d+x\d+$/.test(rawsz) ? rawsz : '1080x1920';
+      return okOut(`  init=1080x1920 280dpi cur=${sz} app=${sz} rng=1080x1038-1080x1878\n`);
+    }
     if (/^dumpsys window/.test(cmd)) {
       const f = path.join(dir, 'FOCUS');
       const exists = fs.existsSync(f);

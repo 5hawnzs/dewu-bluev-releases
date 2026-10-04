@@ -2588,6 +2588,115 @@ const state = {
       snap1 === snap2, snap1 === snap2 ? '两次完全一致' : '第二次内容变了');
   }
 
+  // ==========================================================================
+  // ㉘ 2026-10-04 新增：**tapXY 的坐标空间守卫**（用户问「为啥你有具体坐标老是会点偏」）
+  //   真机实测依据（MuMu 12 / 本机 adb）：
+  //     · `input tap` 对**越界坐标不报错** —— 在 1920x1080 的屏上 `input tap 945 1869` 返回 rc=0，
+  //       一个字都不说、什么都没点到 ⇒ 坐标系不对时表现是「全程安静地点偏」，日志一条错都没有。
+  //     · 坐标系随**当前前台应用的方向 / 模拟器分辨率**变：得物（竖屏锁定）在前台
+  //       → `dumpsys window displays` 的 `cur=1080x1920`；MuMu 桌面（横屏）在前台 → `cur=1920x1080`，
+  //       同一时刻 screencap 的 PNG 与 dump 的 bounds 也全是 1920x1080（三处互相印证）。
+  //     · `wm size` 报的是**自然方向**尺寸（`Physical size: 1080x1920`，不随旋转变）——
+  //       拿它校验坐标会判反，所以必须读 `cur=`（见 adb.uiSize 的长注释）。
+  //   这一组盯三件事：① 纯函数分支（含**反向对照**，证明不是「见坐标就杀」）；
+  //   ② adb.uiSize 真去解析 `cur=`；③ 行为级 —— 坐标系对不上时 runStep **必须不发出任何 tap**。
+  // ==========================================================================
+  {
+    const STEPS28 = [
+      { action: 'tapText', value: '发布新动态' },                       // 没有绝对坐标，不该被算进来
+      { action: 'tapXY', value: '945,1869', name: '底部「我」' },
+      { action: 'tapId', value: 'com.shizhuang.duapp:id/flThumbSelect', count: '2' },
+      { action: 'tapXY', value: '985,1843;166,359', name: '下一步 / 相册第1格' }
+    ];
+    const pts28 = uimap.tapPointsOf(STEPS28);
+    ok('㉘ tapPointsOf：只摘 tapXY 的写死坐标（tapText / tapId 的坐标是当场从 dump 读的，天然在当前坐标系里）',
+      pts28.length === 3 && pts28.map(p => p.x + ',' + p.y).join(' ') === '945,1869 985,1843 166,359',
+      JSON.stringify(pts28.map(p => p.x + ',' + p.y)));
+
+    const portrait28 = { known: true, w: 1080, h: 1920, initW: 1080, initH: 1920, landscape: false, portrait: true, rotated: false };
+    const landscape28 = { known: true, w: 1920, h: 1080, initW: 1080, initH: 1920, landscape: true, portrait: false, rotated: true };
+    ok('㉘ 定位表在竖屏 1080x1920 下 ⇒ 一个都不算越界（反向对照：不是「有坐标就报」）',
+      uimap.outOfScreenTapPoints(STEPS28, portrait28).length === 0,
+      JSON.stringify(uimap.outOfScreenTapPoints(STEPS28, portrait28).map(p => p.x + ',' + p.y)));
+    // ★ 这一条就是真机上「点偏」的机制：同一张表放到横屏 1920x1080 上，
+    //   y=1869 / 1843 全都超过屏高 1079 ⇒ 每一次 tap 都落在屏幕外，而 rc=0 不报错。
+    const bad28 = uimap.outOfScreenTapPoints(STEPS28, landscape28);
+    ok('㉘ ★★ 同一张表放到 1920x1080 上 ⇒ 竖屏那两个 y≈1850 的坐标必须被认成越界（这就是「静默点偏」）',
+      bad28.length === 2 && bad28.every(p => p.x + ',' + p.y !== '166,359'),
+      JSON.stringify(bad28.map(p => p.x + ',' + p.y)));
+    ok('㉘ 边界是**含**最后一像素：x=1079 / y=1919 算屏内，x=1080 / y=1920 算屏外（差一个像素就是两个世界）',
+      uimap.outOfScreenTapPoints([{ action: 'tapXY', value: '1079,1919' }], portrait28).length === 0
+      && uimap.outOfScreenTapPoints([{ action: 'tapXY', value: '1080,1919' }], portrait28).length === 1
+      && uimap.outOfScreenTapPoints([{ action: 'tapXY', value: '1079,1920' }], portrait28).length === 1,
+      'ok');
+    ok('㉘ ★ 读不到尺寸（known=false）时**不拦** —— 拿猜出来的尺寸判越界就是拿幻觉当判据',
+      uimap.outOfScreenTapPoints(STEPS28, { known: false, w: 0, h: 0 }).length === 0
+      && uimap.outOfScreenTapPoints(STEPS28, null).length === 0, '空数组');
+
+    // 表里记的抓取尺寸 vs 当下尺寸
+    const same28 = uimap.screenMismatch({ w: 1080, h: 1920 }, portrait28);
+    ok('㉘ 抓取尺寸与当下一致 ⇒ 不报 mismatch（反向对照：证明这条判据不是恒红）',
+      same28.judgeable === true && same28.mismatch === false, JSON.stringify(same28));
+    const swap28 = uimap.screenMismatch({ w: 1080, h: 1920 }, landscape28);
+    ok('㉘ ★★ 抓取是竖屏 1080x1920、现在是横屏 1920x1080 ⇒ 必须报 mismatch 并点名「差了 90°」',
+      swap28.mismatch === true && swap28.swapped === true && /90°/.test(swap28.why), swap28.why);
+    const scale28 = uimap.screenMismatch({ w: 900, h: 1600 }, portrait28);
+    ok('㉘ ★★ 老表是 900x1600、设备是 1080x1920 ⇒ 也必须报 mismatch（**坐标仍落在屏内**，越界那条抓不住它）',
+      scale28.mismatch === true && scale28.swapped === false && /900x1600/.test(scale28.why), scale28.why);
+    ok('㉘ 老表没有 screen 戳 ⇒ judgeable=false（判不出就不拦，交给逐点越界那条兜底）',
+      uimap.screenMismatch(null, portrait28).judgeable === false
+      && uimap.screenMismatch({}, portrait28).judgeable === false, '不拦');
+    ok('㉘ 尺寸读不到时屏幕戳记 null、不编一个假尺寸出来',
+      uimap.screenStamp(null) === null && uimap.screenStamp({ known: false, w: 0, h: 0 }) === null
+      && uimap.screenStamp(portrait28).w === 1080, JSON.stringify(uimap.screenStamp(portrait28)));
+
+    // ---- adb.uiSize：真去解析 `cur=`（夹具默认给竖屏） ----
+    const UI28 = path.join(FDB, 'UISIZE');
+    try { fs.unlinkSync(UI28); } catch (e) { /* 本来就没有 */ }
+    const sz28 = await adbMod.uiSize('127.0.0.1:5555');
+    ok('㉘ adb.uiSize 从 `dumpsys window displays` 读到竖屏 1080x1920（得物在前台时的真实值）',
+      sz28.known === true && sz28.w === 1080 && sz28.h === 1920 && sz28.portrait === true && sz28.rotated === false,
+      JSON.stringify(sz28));
+    fs.writeFileSync(UI28, '1920x1080');
+    const sz28b = await adbMod.uiSize('127.0.0.1:5555');
+    ok('㉘ 现场开关 UISIZE=1920x1080 ⇒ uiSize 如实报横屏，且认出「与自然方向不平行（rotated）」',
+      sz28b.known === true && sz28b.w === 1920 && sz28b.h === 1080 && sz28b.landscape === true
+      && sz28b.rotated === true && sz28b.initW === 1080,
+      JSON.stringify(sz28b));
+
+    // ---- 行为级：坐标系对不上时，runStep **必须一个 tap 都不发** ----
+    //   这是本组最要紧的一条：只断言「抛了错」是不够的（抛错也可能已经点过了）——
+    //   所以去数 calls.log 里的 `input tap` 行数，必须是 **0**。
+    clearCalls();
+    let err28 = '';
+    try {
+      await publisher.runStep('127.0.0.1:5555',
+        { action: 'tapXY', value: '945,1869', name: '底部「我」（越界样本）' }, {}, { log() {} });
+    } catch (e) { err28 = String(e && e.message || e); }
+    const taps28 = calls().split(/\r?\n/).filter(l => /input tap/.test(l));
+    ok('㉘ ★★★ 行为级：坐标越界时 runStep 必须抛错**且一个 tap 都不发**（不是「先点再报错」）',
+      !!err28 && /落在屏幕之外/.test(err28) && /1920x1080/.test(err28) && taps28.length === 0,
+      'err=' + err28.slice(0, 90) + ' / input tap 条数=' + taps28.length);
+    // ★ 反向对照：把 UISIZE 拿掉（回到竖屏）之后同一步必须真的点下去 ——
+    //   否则上面那条「0 个 tap」可能是「这一步本来就点不动」凑出来的（空==空 的假通过）。
+    fs.unlinkSync(UI28);
+    clearCalls();
+    let err28b = '';
+    try {
+      await publisher.runStep('127.0.0.1:5555',
+        { action: 'tapXY', value: '945,1869', name: '底部「我」' }, {}, { log() {} });
+    } catch (e) { err28b = String(e && e.message || e); }
+    const taps28b = calls().split(/\r?\n/).filter(l => /input tap/.test(l));
+    ok('㉘ ★ 反向对照：同样这一步，在竖屏下必须**真的点下去**（证明上面那条不是恒拦）',
+      !err28b && taps28b.length === 1 && /input tap 945 1869/.test(taps28b[0]),
+      'err=' + (err28b || '（无）') + ' / ' + taps28b.join(' | '));
+
+    // ---- 表级守卫：runReal 开头那条（screen 戳对不上就拦，且**在推素材之前**）----
+    ok('㉘ 源码级：screen 戳跟着定位表一起导入（少了它，运行时判不出「表量错了空格子」）',
+      /screen:\s*j\.screen/.test(codeOnly(fs.readFileSync(path.join(base, 'src', 'main', 'jobs.js'), 'utf8'))),
+      'jobs.js importMap');
+  }
+
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));
 })().catch(e => { console.error('ADB TEST ERROR', e); process.exitCode = 1; });

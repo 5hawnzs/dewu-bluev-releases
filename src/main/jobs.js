@@ -459,7 +459,9 @@ async function dispatch(type, args, ctx) {
       if (d.viaNote) logbus.warn(d.viaNote);
       const xml = d.xml;
       const nodes = require('./services/uimap').parseNodes(xml);
-      const map = require('./services/uimap').suggest(nodes);
+      // ★ 把**抓取时的坐标系**传给 suggest，写进生成的表（screen 戳）：
+      //   运行时拿它和当下的 adb.uiSize() 比 —— 对不上就拦下来，别让写死的 tapXY 静默点偏。
+      const map = require('./services/uimap').suggest(nodes, undefined, { screen: d.screen });
       const outDir = path.join(store.get('paths.output'), 'dumps');
       await wp.mkdirp(outDir);
       const tag = wp.stamp();
@@ -468,8 +470,12 @@ async function dispatch(type, args, ctx) {
       await fs.promises.writeFile(wp.toLong(xmlFile), xml, 'utf8');
       await fs.promises.writeFile(wp.toLong(mapFile), JSON.stringify(map, null, 2), 'utf8');
       logbus.ok(`已抓取 ${nodes.length} 个节点 → ${path.basename(xmlFile)}`);
+      // ★ 说清这张表是在哪个坐标系里量的：以后换了分辨率/方向，运行时就能据此拦住「整体点偏」。
+      if (map.screen) logbus.info(`这张表记下了抓取时的坐标系：${map.screen.w}x${map.screen.h}`);
+      else logbus.warn('★ 没读到当前屏幕尺寸（dumpsys 没给出 cur=），这张表不会带坐标系戳 —— '
+        + '换了分辨率或方向之后，运行时就判不出「表是按另一个坐标系量的」，写死的坐标会静默点偏');
       logbus.warn(`已生成候选定位表 ${path.basename(mapFile)}：steps 是按关键词猜的，改对后再导入（视频默认复用这套，不用单独配）`);
-      return { xmlFile, mapFile, nodeCount: nodes.length, steps: map.steps.length, videoSteps: (map.videoSteps || []).length, focus: d.focus, via: d.via, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
+      return { xmlFile, mapFile, nodeCount: nodes.length, steps: map.steps.length, videoSteps: (map.videoSteps || []).length, focus: d.focus, via: d.via, screen: map.screen || null, preview: nodes.filter(n => n.text).slice(0, 12).map(n => n.text) };
     }
     case 'publish.importMap': {
       const raw = await fs.promises.readFile(wp.toLong(args.file), 'utf8');
@@ -484,6 +490,11 @@ async function dispatch(type, args, ctx) {
       const uiMap = {
         package: j.package || '',
         generatedAt: j.generatedAt || 0,
+        // ★★ 2026-10-04 新增：**抓取时的坐标系**必须跟着表一起走 ——
+        //   少了它，运行时就判不出「这张表是在另一个分辨率/方向下量的」，
+        //   写死的 tapXY 会静默点偏（input tap 对越界坐标不报错，实测 rc=0）。
+        //   老表没有这个键 ⇒ null ⇒ 运行时退到「逐点越界」那条兜底判据（不误拦）。
+        screen: j.screen || null,
         steps,
         videoSteps,
         videoNote: j.videoNote || ''
