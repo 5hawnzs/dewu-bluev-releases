@@ -72,7 +72,7 @@ function bundledStatus() {
   };
 }
 
-function execAdb(args, { timeout = 20000, binary = false } = {}) {
+function execAdbOnce(args, { timeout = 20000, binary = false } = {}) {
   return new Promise(resolve => {
     execFile(active().path, args, {
       timeout, windowsHide: true, maxBuffer: 64 * 1024 * 1024,
@@ -84,6 +84,43 @@ function execAdb(args, { timeout = 20000, binary = false } = {}) {
       code: err ? err.code : null
     }));
   });
+}
+
+/**
+ * ★★ 2026-10-04 新增：**adb 服务类瞬时故障自愈**（真机实测踩出来的）。
+ *
+ * 现象（真机连续发布 3 条时实测）：跑着跑着某一条突然整条失败，报的却是
+ *   `adb: device '127.0.0.1:16384' not found` 或 `cannot connect to daemon` ——
+ * 而**同一秒**手工再执行一遍同样的命令就好了。根因是 MuMu 12 自带的 adb server（36.0.0）
+ * 与随包内置的 adb（37.0.1）会**抢 5037 端口**：谁后启动谁把 server 换掉，
+ * 于是正在跑的这条链路会撞上「server 刚被换走」那一瞬间。
+ *
+ * ★ 关键区分（别把业务错误也当服务错误去重试）：
+ *   · **服务类**（`cannot connect to daemon` / `failed to start daemon` / `server out of date` /
+ *     `Could not install *smartsocket*` / `device '...' not found` / `device not found`）
+ *     ⇒ 是可自愈的：`start-server` + `connect <net-serial>` 之后**原样重试一次**；
+ *   · **业务类**（例：`ls: No such file or directory`、`Activity class does not exist`）
+ *     ⇒ **原样返回、绝不重试**（重试只会浪费时间、还可能掩盖真错误）。
+ *
+ * ★ 实测一个反直觉的点：只 `start-server` **不足以**恢复 —— 设备是**网络端口**（127.0.0.1:16384），
+ *   server 重启后那条 `-s <host:port>` 通道就没了 ⇒ 必须**再 connect 一次**。
+ *   （只 start-server 的版本实测仍然失败；补 connect 后才真正自愈。）
+ */
+const ADB_SERVICE_ERR = /daemon still not running|cannot connect to daemon|failed to start daemon|adb server (?:is )?out of date|Could not install \*smartsocket\*|device '[^']*' not found|device not found/i;
+const NET_SERIAL = /^[\w.\-]+:\d+$/;
+async function execAdb(args, opts = {}) {
+  const first = await execAdbOnce(args, opts);
+  if (first.ok) return first;
+  const blob = `${first.stderr || ''}${first.stdout || ''}`;
+  if (!ADB_SERVICE_ERR.test(blob)) return first;   // 业务错误：原样返回，不重试
+  await execAdbOnce(['start-server'], { timeout: 20000 });
+  const arr = Array.isArray(args) ? args : [];
+  const si = arr.indexOf('-s');
+  const serial = si >= 0 ? String(arr[si + 1] || '') : '';
+  if (serial && NET_SERIAL.test(serial)) {
+    await execAdbOnce(['connect', serial], { timeout: 20000 });
+  }
+  return execAdbOnce(args, opts);
 }
 
 const withS = (serial, args) => (serial ? ['-s', serial] : []).concat(args);
@@ -286,6 +323,8 @@ async function clearMediaDir(serial, remoteDir) {
   //   已经干净」。判据必须和末尾那处一致：**命令成功（ok）且输出非空** 才算「有残留」。
   //   · 读不到 ≠ 没有；· 目录不存在 ≠ 目录是空的（虽然两者都算「这次不用换名」）。
   const hasLeftover = s => !!(s && s.ok && String(s.stdout || '').trim());
+  // ★★ 非致命的备注（例：只剩几个清不掉的空目录残骸）—— 不阻断发布，但要如实带回去给人看。
+  let dirNote = '';
 
   // 1) 先试「原地清内容」（绝大多数情况能过；只有 stale 句柄时才会失败）
   await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
@@ -302,8 +341,94 @@ async function clearMediaDir(serial, remoteDir) {
       await shell(serial, 'rm -rf ' + trash + ' 2>/dev/null', { timeout: 60000 });
       stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
       left = String(stage.stdout || '').trim();
-    } else if (!error) {
-      error = '专属目录既清不掉也改不了名：' + String(mv.stderr || '').trim();
+    } else {
+      // ★★ 2026-10-04（第三十八轮）真机实测修正：**整个目录换名可能失败**。
+      //   `mv /storage/emulated/0/DCIM/Camera <trash>` 回
+      //     `mv: bad '.../DCIM/Camera/': Device or resource busy`
+      //   —— Camera 是 sdcardfs 的**挂载点级目录**，它自己不能被改名（bluev 这种子目录才行）。
+      //   但用户的诉求是「清空整个 Camera」，不能因为"整个换不了名"就整体放弃。
+      //   ⇒ 退一步：**逐个子项处理**。每个子项自己试 `mv <child> <child>_trash_<ts>` ——
+      //     子目录（bluev_trash_* 那些）能改名，改完就绕过了它的 stale 句柄；
+      //     单个文件能 rm 就直接 rm。
+      //   ★ 逐项循环有上限（防止目录里是垃圾海时无限跑）——上限内清不完就如实报 error，
+      //     绝不假装干净。
+      const kids = String(left || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      // ★★ 2026-10-04（第三十九轮）**判据矛盾修复 —— 这是「第二条起必失败」的真根因**。
+      //   现象（真机复现，seq8 成功后 seq9/seq10 连续失败）：
+      //     `没能清干净设备相册目录（/sdcard/DCIM/Camera）：目录里有 11 个子项清不掉也改不了名`
+      //   而**同一时刻** `find /sdcard/DCIM/Camera -type f` = **0 个文件** ⇒ 相册里其实一条素材都没有。
+      //   根因：这里把「清不掉的子项」（全是历次 `mv` 换名留下的**空目录残骸** `X_gone_TS…`）
+      //   直接写进了 `error`；而函数末尾（另一个判据）又说「`find -type f` 为空 = 干净」。
+      //   两个判据**自相矛盾**，而这里的 error 优先级更高 ⇒ 末尾那条正确的判据被它废掉了。
+      //   更糟的是它**会累积**：每次发布都新增一个残骸 ⇒ 越跑越多 ⇒ 第 N 条之后**永远失败**。
+      //   ⇒ 修正：**空目录残骸**只算「备注」不算失败；只有「里面真剩着文件」才是失败。
+      //     判据统一成一句话：**递归找不到任何文件 = 干净**（得物相册只认文件，空目录不进相册）。
+      const survivors = [];       // = 清不掉但**确认里面没有文件**的空目录残骸（只记 note）
+      const withFiles = [];       // = 清不掉且**里面还有文件**的子项（真失败）
+      for (let i = 0; i < kids.length && i < 200; i++) {
+        const child = dir.replace(/\/+$/, '') + '/' + kids[i];
+        // ★ 逐项最多试两轮：第一轮 rm（删内容 + 删空目录）；删不掉就换名绕开句柄；
+        //   换名后的垃圾名再进下一轮（循环会重新 `ls -A` 拿到新名字）。
+        const rmv = await shell(serial, 'rm -rf ' + child + ' 2>/dev/null', { timeout: 30000 });
+        let probe = child;   // 探哪个路径：没换名 = 原名；换了名 = 新名（原路径已经不存在了）
+        let stillThere = await shell(serial, 'ls -d ' + child + ' 2>/dev/null', { timeout: 20000 });
+        if (String(stillThere.stdout || '').trim()) {
+          // ★★★ 2026-10-04（第三十九轮）**不再对「空目录」换名 —— 换名是残骸的元凶**。
+          //   真机实测：残骸目录名会**一路加后缀直到 255 字符**（Linux 文件名上限）——
+          //   到那时 `mv` 必然报 `File name too long`、`rm` 又删不掉 ⇒ **永久卡死**。
+          //   而它之所以会滚成那样，正是因为老代码「只要 rm 不掉就换名」：
+          //   每次清相册都给残骸再加一截 `_gone_<ts>`，越滚越长、越多，还**每条发布都新增**。
+          //   ⇒ 修正：**先看里面有没有文件**——
+          //     · 没有文件（纯空目录残骸）⇒ 只试 `rm``rmdir`，**绝不换名**（换名只会把名字撑爆）；
+          //     · 真有文件删不掉 ⇒ 这时才值得换名（文件必须先离开相册，名字长短无所谓）。
+          const fin0 = await shell(serial, 'find ' + child + ' -type f 2>/dev/null', { timeout: 20000 });
+          const childHasFiles = !!String(fin0.stdout || '').trim();
+          if (childHasFiles) {
+            const ctrash = child + '_gone_' + Date.now();
+            const cmv = await shell(serial, 'mv ' + child + ' ' + ctrash, { timeout: 30000 });
+            if (cmv.ok) {
+              // 换名成功后，把垃圾名也顺手删一次（大多删不掉，但不影响正确性）
+              await shell(serial, 'rm -rf ' + ctrash + ' 2>/dev/null', { timeout: 60000 });
+              probe = ctrash;
+              stillThere = await shell(serial, 'ls -d ' + ctrash + ' 2>/dev/null', { timeout: 20000 });
+            }
+          } else {
+            // 空目录：补一次 rmdir（stale 句柄偶尔会被 rmdir 而不是 rm 放行，实测有效）
+            await shell(serial, 'rmdir ' + child + ' 2>/dev/null', { timeout: 20000 });
+            stillThere = await shell(serial, 'ls -d ' + child + ' 2>/dev/null', { timeout: 20000 });
+          }
+        }
+        // ★ 换名也没清掉 ⇒ 看看它**里面到底还有没有文件**，按这个定性质（不是按「目录还在」定）。
+        if (String(stillThere.stdout || '').trim()) {
+          const fin = await shell(serial, 'find ' + probe + ' -type f 2>/dev/null', { timeout: 20000 });
+          if (String(fin.stdout || '').trim()) withFiles.push(kids[i]);
+          else survivors.push(kids[i]);
+        }
+        void rmv;
+      }
+      // ★ 反复扫到「没有变化」为止：换名会**造出新的垃圾目录名**（`X_gone_TS`），
+      //   它们下一轮才会被看见 ⇒ 单趟扫不干净。最多 4 轮，每轮都要有进展，
+      //   否则如实报 error（绝不假装干净）。
+      for (let round = 0; round < 4; round++) {
+        stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+        const now = String(stage.stdout || '').trim();
+        if (!now) break;
+        await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
+        const after = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+        if (String(after.stdout || '').trim() === now) break;   // 没进展 ⇒ 停
+      }
+      stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
+      left = String(stage.stdout || '').trim();
+      // ★★ 只有「里面**真还有文件**」的子项才算清不干净（= 相册里可能还挂着素材 ⇒ 必须失败）。
+      //   空目录残骸（stale 句柄锁着、改名也删不掉）**不算失败**，如实记进 note ——
+      //   详见上面第三十九轮的说明：把空目录当失败，会让残骸累积到「第二条起永远发不出去」。
+      if (withFiles.length && !error) {
+        error = '目录里有 ' + withFiles.length + ' 个子项里面的文件删不掉（前几个：'
+          + withFiles.slice(0, 3).join(' , ') + '）';
+      }
+      if (survivors.length && !dirNote) {
+        dirNote = '另有 ' + survivors.length + ' 个清不掉的空目录残骸（stale 句柄锁着，不含任何素材）';
+      }
     }
   }
   // 3) 兜底重试：换名后仍残留（极罕见）⇒ 再原地清两次
@@ -348,10 +473,31 @@ async function clearMediaDir(serial, remoteDir) {
   }
   if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error };
   if (left) {
-    return { ok: false, removed: removed, files: hit.map(h => h.file),
-      error: '专属目录清完仍残留（' + left.split(/\r?\n/).length + ' 项）：' + left.split(/\r?\n/).slice(0, 3).join(' , ') };
+    // ★★★ 2026-10-04（第三十八轮）**判据修正：看「还有没有文件」，不是「目录 listing 空不空」**。
+    //   真机实测（MuMu 12 / sdcardfs）：`mv` 换名法能把**内容**搬走、也造出了全新的空目录，
+    //   但被换名的那批垃圾目录（`X_trash_TS`）**永远删不掉**（stale 句柄跟着 inode 走，
+    //   改名后照样锁着）⇒ `ls -A` 永远非空、越清越多，父目录（Camera 根）**结构上就不可能空**。
+    //   而 `find <dir> -type f` 实测**一个文件都没有**（`du -a` 每项 0 字节）——
+    //   也就是**一个字节的媒体都没剩**。得物相册只认**文件**（空目录不进 MediaStore、相册里不显示格），
+    //   所以「目录 listing 非空」≠「相册还有素材」。
+    //   ⇒ 判据换成：**递归找不到任何文件 = 干净**；只剩空目录那堆残骸，记一条 warn 照常放行。
+    //     （若不这么判，用户设备上积了几百个空垃圾目录之后，**每一条都发不出去** —— 那才是真误杀。）
+    const fchk = await shell(serial, 'find ' + dir + ' -type f 2>/dev/null', { timeout: 30000 });
+    const filesLeft = String(fchk.stdout || '').trim();
+    if (!fchk.ok) {
+      if (!error) error = String(fchk.stderr || '').trim() || 'find -type f 校验失败（读不到目录，不敢判干净）';
+    } else if (filesLeft) {
+      return { ok: false, removed: removed, files: hit.map(h => h.file),
+        error: '目录里还有 ' + filesLeft.split(/\r?\n/).length + ' 个文件没删掉（前几个：'
+          + filesLeft.split(/\r?\n/).slice(0, 3).join(' , ') + '）' };
+    } else {
+      // 只剩空目录残骸（stale 句柄锁着、改名也删不掉）⇒ 不影响相册，如实记一笔放行
+      const n = left.split(/\r?\n/).length;
+      const note = dirNote || ('只剩 ' + n + ' 个空目录残骸（stale 句柄锁着，删不掉但不含任何素材）');
+      return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note };
+    }
   }
-  return { ok: true, removed: removed, files: hit.map(h => h.file), error: '' };
+  return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note: dirNote };
 }
 
 async function screencap(serial, outFile) {
@@ -764,8 +910,159 @@ async function packages(serial, filter) {
 async function currentFocus(serial) {
   const r = await shell(serial, 'dumpsys window | grep mCurrentFocus');
   const s = String(r.stdout || '').trim();
-  const m = s.match(/mCurrentFocus=Window\{[^}]*?\s([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)\}/);
+  // ★★ 2026-10-04 实测修正：`mCurrentFocus` 有两种**真实**写法，老正则只认一种：
+  //   · 发布页这类：`com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity`（全类名）
+  //   · 首页这类：  `com.shizhuang.duapp/.modules.home.ui.HomeActivity`（**短类名**，斜杠后有点）
+  //   老正则写成 `\/[A-Za-z0-9_.$]+`，斜杠后**不许有点** ⇒ 首页被解析成空串 ⇒
+  //   「回主线」守卫每次都以为「读不到前台」⇒ 每条都白拉一次 App（实测白等十几秒）。
+  //   ⇒ 放宽成 `/\.?[A-Za-z0-9_.$]+`（斜杠后允许一个可选的前导点）。
+  const m = s.match(/mCurrentFocus=Window\{[^}]*?\s([A-Za-z0-9_.]+\/\.?[A-Za-z0-9_.$]+)\}/);
   return m ? m[1] : '';
+}
+
+/**
+ * ★★ 2026-10-04 新增：`dumpsys activity top` 里**栈顶**那个 Activity（整栈 dump，必须只取第一条）。
+ *
+ * 为什么不用 `currentFocus` 就够：两者取的是不同来源 —— `mCurrentFocus` 是窗口焦点，
+ * 有些转场/无窗口场景读不到；`dumpsys activity top` 是整栈 dump。实测两者互补。
+ * ★ 坑：`dumpsys activity top` 会**把整个 task 栈打出来**（多个 `ACTIVITY ` 行），
+ *   只有**第一行**是栈顶。老写法直接 `grep ACTIVITY` 会拿到底下那个（上一屏）⇒ 判错。
+ *   ⇒ 用 `grep -m1` 在**设备端**先筛（既取第一行、又省传输）。
+ */
+async function frontActivity(serial) {
+  const r = await shell(serial, 'dumpsys activity top | grep -m1 "ACTIVITY "');
+  const s = String(r.stdout || '').trim();
+  return s;
+}
+
+/** `dumpsys activity top` 里含指定 Activity 名的**栈顶**那条（名字先消毒，避免拼进 shell） */
+async function topActivityMatching(serial, want) {
+  const safe = String(want || '').replace(/[^A-Za-z0-9_.$]/g, '');
+  if (!safe) return '';
+  const r = await shell(serial, 'dumpsys activity top | grep -m1 "' + safe + '"');
+  return r.ok ? String(r.stdout || '').trim() : '';
+}
+
+/** focus 字符串是不是属于某个 Activity 名（`pkg/全名` 与 `pkg/.短名` 都认） */
+function isFocusOf(focus, activity) {
+  const a = String(activity || '').replace(/^\//, '');
+  if (!a) return false;
+  const f = String(focus || '');
+  if (!f) return false;
+  // 去掉包名前缀后再比：pkg/.modules.home.ui.HomeActivity → .modules.home.ui.HomeActivity
+  const cls = f.replace(/^[^/]*\//, '');
+  const shortA = a.replace(/^.*\.([A-Za-z0-9_$]+)$/, '$1');
+  const shortF = cls.replace(/^.*\.([A-Za-z0-9_$]+)$/, '$1');
+  return cls === a || cls.replace(/^\./, '') === a || shortF === shortA
+    || cls.indexOf(a) >= 0 || (!!shortA && shortF === shortA);
+}
+
+/**
+ * ★★ 2026-10-04 新增：**把 App 拉回指定的一屏，并确认它真的到了**。
+ *
+ * 为什么非做不可（真机实测）：一条内容发完之后，得物停在哪儿是**不确定的**
+ *   （个人主页 / 相册页 / 发布成功页），而下一条的第一步是「底部点『我』」那个**固定坐标**
+ *   —— 只有 App 在首页时它底下才是底部导航。停在别处时那个坐标点下去就是乱点（实测点空、
+ *   甚至点到别的入口）⇒ 用户看到的「第二条永远拉不起来」。
+ *
+ * 行为：
+ *   ① 先轮询前台，若**已经在 want 那一屏** ⇒ 直接返回 {ok:true, started:false}（**一次都不拉**，
+ *      不白花十几秒冷启动 —— 这是实测里最大的提速点）；
+ *   ② 读不到前台（`mCurrentFocus` 空）时，改用 `dumpsys activity top` 兜底判断；
+ *   ③ 需要拉时用 `am start -n <pkg>/<activity>`（**Activity 名前导点必须原样保留**，
+ *      去掉点真机报 `Error type 3 / Activity class does not exist`）；
+ *   ④ 拉完**再轮询确认真的到了** want 那一屏，等不到就**如实失败**（绝不硬点）；
+ *   ⑤ 报 `Error type N / does not exist` 时**点名**是哪个 Activity 不存在，绝不退回 monkey
+ *      （monkey 是"随便开个入口"，会掩盖配置错误）；只有压根没给 activity 才退回 monkey。
+ *
+ * @returns {{ok:boolean, focus:string, started:boolean, why:string}}
+ */
+async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000 } = {}) {
+  const t0 = Date.now();
+  const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000;
+  const isWant = (focus) => {
+    if (!want) return !!focus;
+    if (typeof judge === 'function') { try { return !!judge(focus); } catch (e) { return false; } }
+    return isFocusOf(focus, want);
+  };
+  const readFocus = async () => {
+    let f = await currentFocus(serial);
+    if (!f && want) {
+      const top = await topActivityMatching(serial, want);
+      const m = /ACTIVITY\s+([^\s]+)/.exec(top);
+      if (m) f = m[1];
+    }
+    return f;
+  };
+
+  // ① 已经在目标屏 ⇒ 不拉
+  //   ★★ 转场瞬间的容错（真机实测）：`mCurrentFocus=null` 会**偶发一瞬间**（窗口焦点交接中）。
+  //   这不是「App 不在前台」⇒ 若这一刻直接 `am start` 就是**瞎启动**（打断正在进行的转场）。
+  //   ⇒ 判据：
+  //     · 起手**一次就读得干净**、且不是目标屏 ⇒ 明确知道它停在别处 ⇒ 该拉（走 ③）；
+  //     · 起手**读不到**（空）⇒ 说明正处在转场/未知态 ⇒ **不在这一瞬瞎启动**：
+  //         继续轮询等待它就位 —— 等到是目标屏就放行；等到读得出来却是别屏 ⇒ 也不瞎拉，
+  //         直接往下走（后续每一步自己的屏幕守卫仍会拦住乱点）；一直读不到 ⇒ 超时如实失败。
+  let focus = await readFocus();
+  const firstReadEmpty = !focus;
+  if (!focus) {
+    for (let i = 0; i < 4 && !focus; i++) {
+      await sleepMs(300);
+      focus = await readFocus();
+    }
+    if (!focus) {
+      // 起手一直读不到 ⇒ 等到超时就如实失败（读不到 ≠ 知道自己在哪一屏）
+      for (;;) {
+        focus = await readFocus();
+        if (isWant(focus)) return { ok: true, focus, started: false, from: '', why: '' };
+        if (Date.now() - t0 >= timeout) {
+          const waited = ((Date.now() - t0) / 1000).toFixed(1);
+          return { ok: false, focus: '', started: false, from: '',
+            why: `等了 ${waited}s，连「当前前台是哪个窗口」都读不到 —— 读不到就不许猜着点，先确认设备是不是掉线了` };
+        }
+        await sleepMs(300);
+      }
+    }
+  }
+  if (isWant(focus)) return { ok: true, focus, started: false, from: '', why: '' };
+  // ★ 起手那次是「读不到」⇒ 这一趟**不启动 App**（不知道自己在哪一屏时，am start 是瞎启动）。
+  //   直接放行：后续每一步自己的 `whenOn/whenNotOn` 屏幕守卫仍会在真错屏上拦住乱点。
+  if (firstReadEmpty) return { ok: true, focus, started: false, from: '', why: '' };
+  const before = focus;
+
+  // ③ 需要拉：先试 am start（带前导点）；报 does not exist 就点名报错
+  let started = false;
+  let lastErr = '';
+  if (activity) {
+    const r = await shell(serial, 'am start -n ' + pkg + '/' + activity);
+    const blob = String(r.stdout || '') + String(r.stderr || '');
+    if (/Error type \d+|does not exist|Activity class \{/.test(blob)) {
+      return { ok: false, focus: before, started: false, from: before,
+        why: '启动命令失败了：' + blob.trim().split(/\r?\n/).slice(0, 2).join(' / ')
+          + `（要启动的是「${pkg}/${activity}」—— Activity 名对不对？前导点不能丢）` };
+    }
+    if (!r.ok && !/Warning/i.test(blob)) lastErr = blob.trim();
+    started = true;
+  } else {
+    const r = await shell(serial, 'monkey -p ' + pkg + ' -c android.intent.category.LAUNCHER 1');
+    if (!r.ok) lastErr = String(r.stderr || '').trim();
+    started = true;
+  }
+
+  // ④ 轮询确认真的到了
+  for (;;) {
+    focus = await readFocus();
+    if (isWant(focus)) return { ok: true, focus, started, from: before, why: '' };
+    if (Date.now() - t0 >= timeout) {
+      const waited = ((Date.now() - t0) / 1000).toFixed(1);
+      return { ok: false, focus, started, from: before,
+        why: focus
+          ? `等了 ${waited}s，得物还是停在「${focus}」，不是要等的「${want || '(任一前台)'}」`
+          : `等了 ${waited}s，连「当前前台是哪个窗口」都读不到 —— 读不到就不许猜着点，先确认设备是不是掉线了`
+            + (lastErr ? `（最近一次报错：${lastErr}）` : '') };
+    }
+    await sleepMs(300);
+  }
 }
 
 /**
@@ -941,5 +1238,6 @@ module.exports = {
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
-  installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus
+  installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus,
+  ensureApp, isFocusOf, frontActivity, topActivityMatching
 };

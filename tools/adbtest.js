@@ -1705,6 +1705,329 @@ const state = {
       /find ' \+ dir \+ ' -mindepth 1 -delete/.test(adbSrc), '（找不到 find 删内容）');
     ok('清相册 ⑨ 源码级：目录不存在要判成干净（否则第一条内容永远发不出去）',
       /No such file or directory/.test(adbSrc), '（找不到「目录不存在＝干净」的判据）');
+
+    // ------------------------------------------------------------------
+    // D6) ★★★ 2026-10-04（第四十轮）两个真机现场：
+    //   ① 清**相册根** `/sdcard/DCIM/Camera`（用户口径「清空整个 DCIM/Camera」）——
+    //      「清 Camera 根」这条分支以前**根本没被跑过**（夹具只认 bluev）。
+    //   ② 相册根下累积的**顽固空目录残骸** —— 真机实测那批名字滚到 255 字符、
+    //      rm 不掉、mv 也不生效的垃圾目录。它们**不含任何素材**，绝不能被判成失败：
+    //      一旦判失败，用户设备上存了十几个残骸之后，**每一条都发不出去**（真误杀）。
+    //   这两条是「第二条起必失败」的真根因所对应的回归防线。
+    // ------------------------------------------------------------------
+    const CAMERA_DIR = fakeExec.__cameraDirPath;
+    const cameraDirState = fakeExec.__dirs[CAMERA_DIR];
+    const stubbornFlag = path.join(FDB, 'DIR_EMPTY_STUBBORN');
+    const resetRoot = () => { cameraDirState.exists = true; cameraDirState.files = []; cameraDirState.renames = []; };
+    const clearFlags = () => {
+      [staleFlag, stubbornFlag].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); });
+    };
+    clearFlags();
+
+    // D6a) 清**相册根**：根目录里有上一条留下的素材（含子目录里的）⇒ 必须清空到无文件
+    resetRoot();
+    dirState.exists = true; dirState.files = ['上一条.mp4'];
+    cameraDirState.files = ['上一条在根上的.jpg'];
+    r = await adb.clearMediaDir('FAKESERIAL', CAMERA_DIR);
+    const rootFileChk = await adb.shell('FAKESERIAL', 'find ' + CAMERA_DIR + ' -type f');
+    ok('清相册 ⑩ ★ 清**相册根**（整个 DCIM/Camera）：清完递归找不到任何文件',
+      r.ok && !String(rootFileChk.stdout || '').trim(),
+      `ok=${r.ok} 根残留=${JSON.stringify(cameraDirState.files)} find=${JSON.stringify(String(rootFileChk.stdout || '').trim())}`);
+
+    // D6b) ★★ 核心红线：根目录下累积**顽固空目录残骸**（rm/mv 都不生效、但里面没文件）
+    //   ⇒ 必须 `ok:true` + 带 note（记一笔放行），**绝不许**判成失败。
+    //   这条如果写成失败：用户设备上残骸一多就「每一条都发不出去」。
+    clearFlags();
+    resetRoot();
+    dirState.exists = true; dirState.files = [];
+    cameraDirState.files = [];
+    fs.writeFileSync(stubbornFlag, '3');   // 摆 3 个顽固空残骸（模拟 255 字符垃圾目录）
+    cameraDirState.files = ['X_gone_1759500000000…（255字符）', 'bluev_trash_1759500000001…（255字符）',
+      '废目录_gone_1759500000002…（255字符）'];
+    r = await adb.clearMediaDir('FAKESERIAL', CAMERA_DIR);
+    ok('清相册 ⑪ ★★ 相册根只剩「顽固空目录残骸」时必须放行（ok:true）——否则残骸一多就每条都发不出去',
+      r.ok === true && !r.error,
+      `ok=${r.ok} err=${(r.error || '').slice(0, 60)} note=${(r.note || '').slice(0, 40)}`);
+    ok('清相册 ⑪b 放行时必须**如实记一笔**（note 非空，不能悄悄放过去）',
+      !!r.note, `note=${JSON.stringify(r.note || '')}`);
+
+    // D6c) ★ 反向对照：同样是「目录 listing 非空」，但里面**真有文件** ⇒ 必须判失败。
+    //   没有这条，D6b 就可能退化成「只要 listing 非空就放行」的假绿（正反不分）。
+    clearFlags();
+    fs.writeFileSync(staleFlag, '1');      // stale：rm 删不掉
+    resetRoot();
+    dirState.exists = true; dirState.files = [];
+    cameraDirState.files = [];
+    // 用真实的 push 往**相册根**放一个文件（夹具的 find -type f 以 pushed 为准）
+    const CAM_FILE = CAMERA_DIR + '/真的删不掉的.mp4';
+    await adb.push('FAKESERIAL', path.join(itemDir, '1.jpg'), CAM_FILE);
+    r = await adb.clearMediaDir('FAKESERIAL', CAMERA_DIR);
+    ok('清相册 ⑫ ★ 反向对照：同样「listing 非空」，但里面有**真文件** ⇒ 必须判失败（不许一刀切放行）',
+      r.ok === false && !!r.error,
+      `ok=${r.ok} err=${(r.error || '').slice(0, 60)}`);
+    // 正向对照：把同一个文件在「没有 stale」时清一次 ⇒ 必须 ok（证明上面那条不是恒红）
+    clearFlags();
+    resetRoot(); dirState.exists = true; dirState.files = [];
+    await adb.push('FAKESERIAL', path.join(itemDir, '1.jpg'), CAM_FILE);
+    const rOk = await adb.clearMediaDir('FAKESERIAL', CAMERA_DIR);
+    ok('清相册 ⑫b 正向对照：同目录、无 stale ⇒ 必须清干净（证明 ⑫ 不是恒红）',
+      rOk.ok === true, `ok=${rOk.ok} err=${(rOk.error || '').slice(0, 60)}`);
+    clearFlags();
+
+    // D6d) ★ 残骸**不再累积**：源码级 —— 「空目录」分支里**不许**出现换名（mv / _gone_）。
+    //   老写法的元凶就是「只要 rm 不掉就换名」，每清一次残骸名字就加一截 _gone_<ts>，
+    //   一路滚到 255 字符 ⇒ mv 报 File name too long、rm 又删不掉 ⇒ 永久卡死。
+    //   ★ 判据要抠**准**：换名只允许出现在 `if (childHasFiles) { ... }` 分支里
+    //     （真有文件才换名）；`else`（空目录）分支必须只有 rm/rmdir。
+    const eIdx = adbSrc.indexOf('} else {', adbSrc.indexOf('childHasFiles'));
+    const emptyBranch = eIdx >= 0 ? adbSrc.slice(eIdx, eIdx + 400) : '';
+    ok('清相册 ⑬ ★ 源码级：空目录残骸分支（else）里只许 rm/rmdir、不许换名（换名会把名字滚到 255 字符永久卡死）',
+      emptyBranch.length > 0 && !/\bmv\b/.test(emptyBranch) && !/_gone_/.test(emptyBranch),
+      emptyBranch ? ('空目录分支 = ' + emptyBranch.split(/\n/).filter(l => l.trim()).slice(0, 3).join(' / ').slice(0, 120)) : '（找不到空目录分支）');
+    ok('清相册 ⑬b 正向对照：真有文件的分支（if childHasFiles）里**必须**有换名 —— 否则 ⑬ 是空==空',
+      /childHasFiles[\s\S]{0,400}?_gone_/.test(adbSrc), '（真有文件却没换名）');
+  }
+
+  // ==========================================================================
+  // E) ★★「回主线」守卫（2026-10-04 用户报「第二条永远拉不起来」的另一半）
+  //    一条内容发完之后，得物停在哪儿是**不确定的**（个人主页 / 相册页 / 发布成功页），
+  //    而下一条的第一步是「底部点『我』」那个**固定坐标** —— 只有 App 在首页时它底下
+  //    才是底部导航。⇒ 每条开始前必须先把 App 拉回首页，并**确认它真的到了**。
+  //    这一组盯三件事：① 不在首页时会去拉；② 已经在首页时**一次都不拉**（不许白启动）；
+  //    ③ 拉不起来**如实失败、绝不硬点**（负向；这一条是红线）。
+  // ==========================================================================
+  {
+    const FOCUSE = path.join(FDB, 'FOCUS');
+    const hadE = fs.existsSync(FOCUSE) ? fs.readFileSync(FOCUSE, 'utf8') : null;
+    const PUB_FOCUS = 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity';
+    const HOME_FOCUS = 'com.shizhuang.duapp/.modules.home.ui.HomeActivity';
+    const stuckE = path.join(FDB, 'SPLASH_STUCK');
+    const stashE = fs.readFileSync(FAKE_WINDOW, 'utf8');
+    try {
+      // E1) 停在**发布页**（＝发完一条之后最可能的残状）⇒ 必须拉回首页，且起点是「底部我」
+      fs.writeFileSync(FOCUSE, PUB_FOCUS);
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: null } });
+      clearCalls();
+      const stE = mkAlbumState(2);
+      const lgE = [];
+      const rE = await publisher.run(stE, {
+        log: (m, l) => lgE.push((l || 'info') + ': ' + m),
+        progress: () => {}, cancelled: () => false, onRow: () => {}
+      });
+      const logE = calls();
+      // ★ 断言要看**语义**：真的调了 `am start -n <得物>/<启动页>`。
+      //   第一版把正则写成 `com\.shizhuang\.duapp\/\.modules`（带点）⇒ 命令里是斜杠后直接跟
+      //   包内路径（`duapp/modules.home...`，不带点）⇒ 匹配 0 次，是**假红**（测试写法错，不是产品错）。
+      ok('回主线 ① 停在得物发布页（上一条发完的残状）⇒ 起手先把 App 拉回首页',
+        /am start -n com\.shizhuang\.duapp\/\.?modules\.home\.ui\.SplashActivity/.test(logE)
+        && /dumpsys window/.test(logE),
+        (logE.match(/.*(am start|monkey).*/g) || []).join(' | ') || '（一次都没拉）');
+      ok('回主线 ① 拉回来了 ⇒ 这条照常发出去（不是靠"跳过守卫"发出去的）',
+        rE.rows[0].result === '发布成功', rE.rows[0].result + ' / ' + (rE.rows[0].reason || ''));
+      ok('回主线 ① 拉过之后首页再被确认到（真机是 SplashActivity → HomeActivity 的转场，要等它真到）',
+        fs.readFileSync(FOCUSE, 'utf8') === HOME_FOCUS, fs.readFileSync(FOCUSE, 'utf8'));
+      ok('回主线 ① 日志里说清了「之前停在哪儿」（不闷着不说）',
+        lgE.some(l => /不在首页/.test(l)), lgE.filter(l => /不在首页/.test(l))[0] || '（没写）');
+
+      // E1b) ★★ 关键补充（写反向验证时才发现的**假绿**）：
+      //   上面 ① 虽然验了「会去拉」，但**没有一条用例真的走到「守卫判成功」那一刻**
+      //   —— 因为夹具 `am start` 成功之后必然落到首页。
+      //   ⇒ 于是「首页判据」(`isHomeScreen`) 和「前台读取的解析」(`currentFocus`) 这两处
+      //     在守卫这条路上**从来没被检查过**：把它们破坏掉（B5/B8 实测，见 tools/_brk.js）
+      //     adbtest 照样全绿。这里直接**行为级**验这两处，让破坏一定变红。
+      //
+      //   E1b-1：前台是**得物的非首页**（个人主页）⇒ 守卫**必须去拉**、不许当成「已经在首页放行」。
+      //     （把 isHomeScreen 放宽成「在得物里就行」⇒ 这一步就不会拉 ⇒ 这条红。）
+      const ME_FOCUS = 'com.shizhuang.duapp/.modules.user.ui.MyActivity';
+      fs.writeFileSync(FOCUSE, ME_FOCUS);
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 0 } });
+      clearCalls();
+      const rE1b = await publisher.run(mkAlbumState(2),
+        { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      ok('回主线 ①b ★ 前台是得物的**非首页**（个人主页）⇒ 必须拉回首页，不许当成「已经在首页」放行',
+        /am start -n com\.shizhuang\.duapp/.test(calls()) && rE1b.rows[0].result === '发布成功',
+        (calls().match(/.*am start.*/g) || []).join(' | ') || '（没拉 ⇒ 判据被放太宽了）');
+
+      //   E1b-2：前台是**首页的短名写法**（`pkg/.modules.home.ui.HomeActivity` —— 得物首页
+      //     真机实测就是这种格式）⇒ 守卫必须认出来「已经在首页」、**一次都不拉**。
+      //     （把 currentFocus 的正则退回「斜杠后不许有点」⇒ 解析成空串 ⇒ 守卫以为不在首页
+      //       ⇒ 会去拉一次 ⇒ 这条红。）
+      fs.writeFileSync(FOCUSE, HOME_FOCUS);
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 0 } });
+      clearCalls();
+      const rE1c = await publisher.run(mkAlbumState(2),
+        { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      ok('回主线 ①c ★ 首页那种**短名**写法必须被认出来（认不出就会每次白拉一次 App）',
+        !/am start|monkey/.test(calls()) && rE1c.rows[0].result === '发布成功',
+        (calls().match(/.*(am start|monkey).*/g) || []).join(' | ') || '（没拉，正确）');
+
+      // E2) 已经**在首页** ⇒ 一次都不许拉（免得每条都白走一遍启动流程）
+      //    ★ 这是「不该做的事不做」的负向断言：没有它，把守卫写成「无条件 am start」照样全绿。
+      fs.writeFileSync(FOCUSE, HOME_FOCUS);
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: null } });
+      clearCalls();
+      const stE2 = mkAlbumState(2);
+      const rE2 = await publisher.run(stE2, { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      const logE2 = calls();
+      ok('回主线 ② ★ 已经在首页时**一次都不拉**（不许每条都白启动一遍 App）',
+        !/am start|monkey/.test(logE2) && rE2.rows[0].result === '发布成功',
+        (logE2.match(/.*(am start|monkey).*/g) || []).join(' | ') || '（没拉，正确）');
+
+      // E3) 负向红线：启动页**卡住转不过去**（等不到首页）⇒ 如实失败、**一个 tap 都不发**
+      //    ★ 超时用**产品真的会读**的那个配置（`ensureAppTimeoutMs`）调到 1.2 秒，
+      //      而不是在这里干等 30 秒 —— 等 30 秒既慢，又会让「超时逻辑本身」没被测到
+      //      （改坏 `timeoutMs` 的读取点，这条断言不该照旧绿）。
+      fs.writeFileSync(FOCUSE, PUB_FOCUS);
+      fs.writeFileSync(stuckE, '1');
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 1200 } });
+      clearCalls();
+      const stE3 = mkAlbumState(2);
+      const rE3 = await publisher.run(stE3, { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      const logE3 = calls();
+      ok('回主线 ③ ★ 等不到首页 ⇒ 失败（负向：不许当作没这回事继续往下点）',
+        rE3.rows[0].result === '失败' && /首页/.test(rE3.rows[0].reason || ''),
+        rE3.rows[0].result + ' / ' + (rE3.rows[0].reason || '').slice(0, 110));
+      ok('回主线 ③ ★ 拦下时**一个 tap 都不发**（停在错页面上点固定坐标＝乱点）',
+        !/input tap/.test(logE3), (logE3.match(/input tap .*/g) || []).join(' | ') || '（没有 tap）');
+      ok('回主线 ③ ★ 拦下时连素材都不推（守卫在清相册/推素材**之前**，不白跑几十秒）',
+        !/\bpush\b/.test(logE3), (logE3.match(/.*\bpush\b.*/g) || []).join(' | ') || '（没有 push）');
+      fs.unlinkSync(stuckE);
+
+      // E4a) 转场瞬间**读不到**前台（真机 `mCurrentFocus=null` 就这一下）⇒ 这只是设备把光标
+      //    交给了别的窗口，**不是**「得物不在前台」，更不是「App 停了」。
+      //   夹具语义：FOCUS='-' ⇒ 这一次读不到，下一次读就正常（见 fakeadb 里那段注释）。
+      //   ★ 断言只盯「有没有瞎启动 App」：转场之后得物**可能本来就在首页**，
+      //     那种情况下不启动才是对的 —— 拿「没启动」当唯一判据就把两件事混成一件了。
+      fs.writeFileSync(FOCUSE, '-');
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 8000 } });
+      clearCalls();
+      const rE4a = await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      const logE4a = calls();
+      ok('回主线 ④a 转场瞬间读不到一次前台 ⇒ 不当成「App 不在」而瞎启动，照常往下走',
+        !/am start|monkey/.test(logE4a) && rE4a.rows[0].result === '发布成功',
+        (logE4a.match(/.*(am start|monkey).*/g) || []).join(' | ') + ' / ' + rE4a.rows[0].result);
+
+      // E4b) ★ 负向红线：**永远**读不到前台 ⇒ 必须如实报错、且绝不瞎启动、绝不发任何 tap。
+      //   为什么这条重要：读不到 ≠ 不在得物。当成「不在」去 am start，可能把用户正在用的
+      //   别的 App 盖掉，而且启动完**照样不知道自己在哪一屏** ⇒ 后面固定坐标点下去就是乱点。
+      const unreadE = path.join(FDB, 'FOCUS_UNREADABLE');
+      // ★ 夹具语义对齐真机：「永远读不到」= 得物**就在前台**，只是这一行读不出来。
+      //   所以 FOCUS 要写**得物自己**（前台是得物），而不是 '-' —— 写 '-' 等于测
+      //   「设备整体读不到光标」，那不是我们要防的那件事。
+      //   ★★ 而且必须写**首页**：写发布页时，守卫会先 `am start` 拉一次（那是**对的**：
+      //     前台读不出来 ≠ 知道自己在哪一屏），后面 `dumpsys activity top` 又碰巧露出了
+      //     HomeActivity 堆栈 ⇒ 守卫合法地判定「到了」并继续 —— 发布成功是**正确行为**，
+      //     不是漏拦。写首页则一定读不出来 ⇒ 只能如实失败。（写成发布页时这三条会假红。）
+      fs.writeFileSync(FOCUSE, HOME_FOCUS);
+      fs.writeFileSync(unreadE, '1');
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 1200 } });
+      clearCalls();
+      const tE4 = Date.now();
+      const rE4 = await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      const logE4 = calls();
+      fs.unlinkSync(unreadE);
+      ok('回主线 ④b ★ 前台读不出来 ⇒ 如实失败（读不到 ≠ 知道自己在哪一屏）',
+        rE4.rows[0].result === '失败' && /读不到/.test(rE4.rows[0].reason || ''),
+        rE4.rows[0].result + ' / ' + (rE4.rows[0].reason || '').slice(0, 110));
+      ok('回主线 ④b ★ 读不到前台时**不许乱点**（这才是红线：不知道自己在哪一屏，固定坐标点下去就是乱点）',
+        !/input tap/.test(logE4),
+        (logE4.match(/input tap .*/g) || []).join(' | ') || '（没有 tap，正确）');
+      // ★★ 实测结论（写测试时踩到，如实记下来）：
+      //   「一次都不许 am start」是**错的**预期 —— 读不到前台时**不知道自己在哪一屏**，
+      //   拉一次 App 是**合理且必要**的动作（拉完再确认；确认不了才失败）。
+      //   真正要防的是：① 反复拉（每次都白花一次冷启动）；② **没确认到就不管不顾往下点**。
+      //   ⇒ 所以这里断言的是「最多拉一次」，而不是「不许拉」。
+      //   （第一版就是按「不许拉」写的 —— 那会把正确行为判成 bug。）
+      const starts4b = (logE4.match(/am start|monkey/g) || []).length;
+      ok('回主线 ④b ★ 读不到时最多只拉**一次** App（不许一轮一轮反复拉、白花冷启动）',
+        starts4b <= 1, starts4b + ' 次启动');
+      ok('回主线 ④b 等不到就按自己的超时收工（不是无限等）', Date.now() - tE4 < 8000, (Date.now() - tE4) + 'ms');
+
+      // E5) 源码级：守卫必须在**清相册之前** —— 顺序反了会在「App 根本没起来」时白推一遍素材
+      const pubSrcE = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
+      const iGuard = pubSrcE.indexOf('ensureApp(');
+      const iClear = pubSrcE.indexOf('clearMediaDir(');
+      ok('回主线 ⑤ 源码级：守卫（ensureApp）必须在清相册（clearMediaDir）**之前**',
+        iGuard >= 0 && iClear >= 0 && iGuard < iClear, `ensureApp@${iGuard} / clearMediaDir@${iClear}`);
+      // ★★ ⑤b **行为级**（写反向验证时补的）：只看源码里两行的先后**证明不了**执行顺序 ——
+      //   B3 实测：把守卫那一整段挪到清相册之后，源码里 `ensureApp(` 依然排在 `clearMediaDir(`
+      //   前面（那只是字符串位置），源码级断言照样绿 ⇒ 是**假绿**。
+      //   真判据是**执行序**：守卫拦下时，一次 push / 清相册动作都不该发生。
+      //   ⇒ 用 E3（守卫被拦下那一轮）真实的调用日志来定序，而不是读源码。
+      ok('回主线 ⑤b 行为级：守卫拦下时**清相册也没被执行**（判据是执行序，不是源码位置）',
+        !/find .* -mindepth 1 -delete|ls -A .*bluev|content delete/.test(logE3),
+        (logE3.match(/.*(mindepth|ls -A|content delete).*/g) || []).join(' | ') || '（没动相册，正确）');
+
+      // E6) 超时**行为级**：把 `ensureAppTimeoutMs` 配大 ⇒ 同一条路径真的等更久。
+      //   为什么不用源码级：我自己的规矩是「源码里有这行字 ≠ 它真解决了问题」——
+      //   改坏 timeoutMs 的读取点（比如硬编码 1000）时，源码级断言照样绿，行为级会红。
+      fs.writeFileSync(FOCUSE, PUB_FOCUS);
+      fs.writeFileSync(stuckE, '1');
+      const tE6a = Date.now();
+      await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      const fastE6 = Date.now() - tE6a;
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 3000 } });
+      const tE6b = Date.now();
+      await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      const slowE6 = Date.now() - tE6b;
+      ok('回主线 ⑥ 超时配置真的被读到（1.2s 档 vs 3s 档，实测耗时差 ≥ 1s）',
+        slowE6 - fastE6 >= 1000, `1.2s 档 ${fastE6}ms / 3s 档 ${slowE6}ms`);
+      fs.unlinkSync(stuckE);
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 1200 } });
+
+      // E7) 单独的 ensureApp：Activity 名写错时必须**点名**（本机实测 `.MainActivity` 不存在）
+      //   ★ 先把前台挪到**别的 App**：不挪的话「得物已经在首页」会先命中成功分支直接返回，
+      //     根本走不到启动那一步（第一版就是这么写的，报错信息是空的 = 假红）。
+      fs.writeFileSync(FOCUSE, 'com.android.launcher/com.android.launcher2.Launcher');
+      const badAct = await adbMod.ensureApp('127.0.0.1:5555',
+        { pkg: 'com.shizhuang.duapp', activity: '.MainActivity', want: 'modules.home.ui.HomeActivity', timeoutMs: 1200 });
+      ok('回主线 ⑦ Activity 名不存在 ⇒ 点名报错（本机实测得物的 `.MainActivity` 就是不存在）',
+        badAct.ok === false && /does not exist|resolve-activity/.test(badAct.why), String(badAct.why).slice(0, 120));
+      // E8) 不给 activity ⇒ 退回 monkey（不硬编码第二处 Activity 名）
+      fs.writeFileSync(FOCUSE, 'com.android.launcher/com.android.launcher2.Launcher');
+      clearCalls();
+      const noAct = await adbMod.ensureApp('127.0.0.1:5555',
+        { pkg: 'com.shizhuang.duapp', activity: '', want: 'modules.home.ui.HomeActivity', timeoutMs: 3000 });
+      ok('回主线 ⑧ 没给 launchActivity ⇒ 退回 monkey 启动默认入口（不写死第二个 Activity 名）',
+        /monkey -p com\.shizhuang\.duapp/.test(calls()) && noAct.ok === true,
+        (calls().match(/.*monkey.*/g) || []).join(' | ') || '（没走 monkey）');
+
+      // E9) ★★ 前台格式回归（**真机可复现的真 bug**，2026-10-04 修）
+      //   `dumpsys window` 里 Activity 有两种写法：`pkg/完整类名` 与 `pkg/.短类名`。
+      //   得物**首页**实测是后者（`com.shizhuang.duapp/.modules.home.ui.HomeActivity`），
+      //   而发布页是前者 —— 老正则的 `/` 后面**不许有点** ⇒ 首页那一行匹配 0 次、返回空串。
+      //   后果：①「抓取前先说清停在哪一屏」对首页误报「读不到」；
+      //        ②「回主线」守卫每次都以为 App 不在首页、反复拉起（多花一次冷启动）。
+      //   ⇒ 两种格式都必须能解析出来，且解析出来的就是原文那一整段。
+      const focusCases = [
+        ['com.shizhuang.duapp/.modules.home.ui.HomeActivity', 'com.shizhuang.duapp/.modules.home.ui.HomeActivity'],
+        ['com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity',
+          'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity'],
+        ['app.lawnchair/.LawnchairLauncher', 'app.lawnchair/.LawnchairLauncher'],
+        // ★ 这一格**故意用别的包**（`app.lawnchair/.LawnchairLauncher` 已覆盖「短名」这一支）：
+        //   得物的 SplashActivity 不能拿来测 —— 夹具会在**下一次读前台时**把它转成 HomeActivity
+        //   （模拟启动页转场，那是守卫要等的语义），读到的会是转场后的值。第一版就踩了，
+        //   表现为 `SplashActivity → HomeActivity`，看着像正则又错了，其实是被夹具转走了。
+        ['com.tencent.mm/.plugin.appbrand.ui.AppBrandUI', 'com.tencent.mm/.plugin.appbrand.ui.AppBrandUI']
+      ];
+      const badFocus = [];
+      for (const [written, want2] of focusCases) {
+        fs.writeFileSync(FOCUSE, written);
+        const got = await adbMod.currentFocus('127.0.0.1:5555');
+        if (got !== want2) badFocus.push(`${written} → ${JSON.stringify(got)}（应为 ${want2}）`);
+      }
+      ok('回主线 ⑨ ★ 前台两种写法都要能解析（首页是 `pkg/.短名`、发布页是 `pkg/全名`）',
+        badFocus.length === 0, badFocus.join(' | ') || '4 种写法全部解析正确');
+    } finally {
+      if (fs.existsSync(stuckE)) fs.unlinkSync(stuckE);
+      const unreadF = path.join(FDB, 'FOCUS_UNREADABLE');
+      if (fs.existsSync(unreadF)) fs.unlinkSync(unreadF);
+      // ★ 还原成「不生效」（0），**不是 null** —— store.set 是 mergeDeep，null 删不掉键（见 E4b 的注释）
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 0 } });
+      fs.writeFileSync(FAKE_WINDOW, stashE);
+      if (hadE == null) { if (fs.existsSync(FOCUSE)) fs.unlinkSync(FOCUSE); }
+      else fs.writeFileSync(FOCUSE, hadE);
+    }
   }
 
   console.log('\n--- 日志样例 ---');

@@ -272,7 +272,13 @@ async function saveShot(serial, tag, ctx) {
 async function screenGuard(serial, step, ctx, preferAnimOff) {
   const ids = String(step.whenOn || '').split(',').map(s => s.trim()).filter(Boolean)
     .concat(String(step.whenNotOn || '').split(',').map(s => s.trim()).filter(Boolean));
-  const d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, preferAnimOff: !!preferAnimOff });
+  // ★★ 2026-10-04 提速实测：守卫的 dump 原来默认 `retries:1`（失败多等一轮），
+  //   而相册页这类「永不 idle」的屏每轮要白等 ~11s（实测 11.4s/次）⇒ 一条内容里几个守卫步
+  //   叠加起来就是几十秒的纯等待（用户投诉「整体速度为什么那么慢」）。
+  //   ⇒ 守卫**不重试**（retries:0），并把「这一屏要不要关动画」交给**按步骤名学习**的缓存：
+  //     同一个步骤名（定位表里写死的，不随数据变）第一次撞上就关动画抓、抓完记下来，
+  //     后面每一条内容的同一步直接走「关动画」路径（实测关动画后 ~2s 就能抓到）。
+  const d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: !!preferAnimOff });
   if (!d.ok) {
     throw new Error(`「${step.name || step.value}」这一步要先看当前这一屏有没有 `
       + `${ids.join(' / ')}，但拿不到界面结构：${d.why}`);
@@ -284,7 +290,9 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
   if (!g.ok && ctx && ctx.log) ctx.log(`屏幕守卫拦下这一步：${g.why}`, 'info');
   // ★ 2026-10-03 提速：把刚抓到的那份结构**带回去**给同一步的点击用（见 runStep 的 reusedXml）。
   //   一个守卫步原来要抓两次屏（守卫一次 + tapId 一次，实测 ~2×1-2s），现在只抓一次。
-  return Object.assign({}, g, { xml: d.xml });
+  // ★★ 2026-10-04：把 `animOff`（这一屏抓的时候是不是关着动画）也带回去 ⇒ runStep 把它记进
+  //   `animOffSteps[stepKey]`，下一条内容走到同一步就不用再撞一次。
+  return Object.assign({}, g, { xml: d.xml, animOff: !!d.animOff });
 }
 
 async function runStep(serial, step, data, ctx) {
@@ -302,6 +310,9 @@ async function runStep(serial, step, data, ctx) {
     const g = await screenGuard(serial, step, ctx, wantAnimOff);
     if (!g.ok) return { skipped: true, why: g.why };
     reusedXml = g.xml || null;
+    // ★★ 2026-10-04：守卫这一屏是关着动画抓到的 ⇒ 记下这个步骤名，本批后面同一步直接走关动画
+    //   （实测相册页那类屏，不关动画每轮白等 ~11s；关掉后 ~2s 就抓到）。
+    if (g.animOff && animOffSteps && stepKey && !animOffSteps[stepKey]) animOffSteps[stepKey] = true;
   }
   switch (step.action) {
     case 'tapText': case 'tapId': case 'tapDesc': case 'tapCardText': {
@@ -554,14 +565,57 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   const remoteDir = '/sdcard/DCIM/Camera/bluev';
   const remotes = [];
 
+  // ★★ 2026-10-04（第四十轮）**0b) 「回主线」守卫 —— 必须排在清相册之前**。
+  //   为什么非做不可（真机实测）：一条内容发完之后，得物停在哪儿是**不确定的**
+  //     （个人主页 / 相册页 / 发布成功页），而下一条的第一步是「底部点『我』」那个**固定坐标**
+  //     —— 只有 App 在首页时它底下才是底部导航。停在别处时那个坐标点下去就是乱点。
+  //     ⇒ 用户看到的「第二条永远拉不起来」。
+  //   ★ 顺序：守卫在**清相册/推素材之前** ⇒ 拦下时连素材都不推（不白跑几十秒）。
+  //   ★ 失败就**如实抛错**，绝不"当作没这回事继续往下点"（不知道自己在哪一屏时点固定坐标＝乱点）。
+  {
+    row.status = '回主线';
+    if (ctx.onRow) ctx.onRow(row);
+    // ★ 别在这里自己先读一次 currentFocus —— 那会把「转场瞬间读不到」这个现场吃掉，
+    //   让守卫误判成「明确知道停在别处」从而瞎启动 App。守卫返回的 `from` 就是它看到的起点。
+    const g = await adb.ensureApp(serial, {
+      pkg: uimap.DEWU.pkg,
+      activity: uimap.DEWU.launchActivity,
+      want: uimap.DEWU.homeActivity,
+      judge: (f) => uimap.isHomeScreen(f),
+      timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
+    });
+    if (!g.ok) {
+      throw new Error('起手就没能把得物拉回首页：' + (g.why || '未知原因')
+        + ' —— 这一步不许跳过：定位表第一步是**固定坐标**点底部导航，停在别的页面上那个坐标底下不是底部导航。');
+    }
+    if (g.started) {
+      log(`${row.dir}：得物不在首页（之前的页面：${g.from || '读不到'}），已重新拉回首页`, 'info');
+    }
+  }
+
   // ★ 清空必须在 push **之前**：push 完再清会把这一条刚推的也一起清掉。
   row.status = '清相册';
   if (ctx.onRow) ctx.onRow(row);
+  // ★★ 2026-10-04（第四十轮）用户口径：「删除完所有其他不相关的素材后，不要 bluev 了」
+  //   ⇒ 清相册的**范围**从「专属目录」扩到**整个 DCIM/Camera**（得物相册的聚合视图读的就是它）。
+  //   两步走：先清相册根（把别处来的、上一条的、系统截图全扫掉），再清专属目录本身。
+  const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera');
+  if (!clRoot.ok) {
+    throw new Error('没能清干净设备相册目录（/sdcard/DCIM/Camera）：' + (clRoot.error || '未知原因')
+      + ' —— 不清干净的话相册里会混着其他素材，选素材那一步会点到别的图。');
+  }
+  await adb.shell(serial, 'mkdir -p ' + remoteDir);
   const cl = await adb.clearMediaDir(serial, remoteDir);
   if (!cl.ok) {
     throw new Error(`没能清干净设备上的专属相册（${remoteDir}）：${cl.error || '未知原因'}`
       + ' —— 不清干净的话上一条的素材会留在相册里，选素材那一步会点到上一条的图。'
       + '（这一步不许跳过：跳过的表现是「内容看着发成功了，配图却是上一条的」，最难查。）');
+  }
+  // ★★ 2026-10-04（第四十轮）：空目录残骸（stale 句柄锁着、删不掉也不含任何素材）**不阻断发布**，
+  //   但要**如实记一笔**让人知道（否则用户看到相册目录里一堆怪名字，不知道是什么）。
+  if (clRoot.note || cl.note) {
+    log(`${row.dir}：相册目录里有清不掉的空目录残骸（不含任何素材，不影响发布；需要彻底清掉要重启模拟器）：`
+      + (clRoot.note || '') + (cl.note ? '；' + cl.note : ''), 'info');
   }
   if (cl.removed) log(`${row.dir}：专属相册已清空，删掉上一条留下的 ${cl.removed} 个素材`, 'info');
 

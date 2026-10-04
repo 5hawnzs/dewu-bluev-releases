@@ -98,6 +98,17 @@ function parsePoints(value) {
 const DEWU = {
   pkg: 'com.shizhuang.duapp',
   publishActivity: 'media.publish.activity.TotalPublishProcessActivity',
+  // ★★ 2026-10-04 真机实测：「回主线」守卫用它把 App 拉回首页。
+  //   本机实测两个事实：
+  //     ① 得物的启动入口是 `.modules.home.ui.SplashActivity`（`cmd package resolve-activity --brief`
+  //        查到的是它；`am start -n` 它即可，它自己会转 `HomeActivity`）；
+  //     ② **`MainActivity` 不存在** —— 实测报 `Error type 3: Activity class does not exist`
+  //        （差点就把它写进来了：写错了的表现是「每条都拉不起 App」，而报错看着像得物坏了）。
+  //   ⇒ 只认这一个实测过的真名；守卫拿不到它时退回 `monkey`（绝不硬编码第二处）。
+  launchActivity: '.modules.home.ui.SplashActivity',
+  // 首页判据：定位表第一步是「底部点『我』」那个**固定坐标** —— 只有 App 在首页时，
+  // 那个坐标底下才是底部导航。停在别的页时同一坐标底下是别的东西 ⇒ 必须先把 App 拉回首页。
+  homeActivity: 'modules.home.ui.HomeActivity',
   // 路线①（老路径，保留下来作备用）
   entryId: 'com.shizhuang.duapp:id/ivCamera',
   // 路线②（推荐）：底部「我」→ 右上角「主页」→ 个人主页里的「发布新动态」
@@ -129,6 +140,17 @@ const DEWU = {
 function isDewuFocus(focus) { return /shizhuang|duapp/i.test(String(focus || '')); }
 /** 当前前台是不是**得物发布页**（而不是首页 / 别的页） */
 function isPublishScreen(focus) { return /TotalPublishProcessActivity/.test(String(focus || '')); }
+/**
+ * 当前前台是不是**得物首页**（「回主线」守卫的判据）。
+ * ★ 为什么必须限定「首页」而不是「在得物里就行」：定位表第一步是**固定坐标**点的底部「我」，
+ *   而那个坐标只在首页上才是底部导航 —— 停在个人主页/相册页时同一坐标底下是别的东西。
+ * ★ 只看 Activity 名，不去解析页面结构：这里要的是「可不可以开始点」这个**便宜**的判断，
+ *   真每屏都抓一次结构就白花 1~2 秒（一屏抓一次的成本见 publisher 里 tapXY 那段实测）。
+ */
+function isHomeScreen(focus) {
+  const s = String(focus || '');
+  return isDewuFocus(s) && s.indexOf(DEWU.homeActivity) >= 0;
+}
 
 /** 按关键词在 dump 里猜一套候选步骤，用户改改就能用 */
 function suggest(nodes, pkg) {
@@ -542,5 +564,5 @@ module.exports = {
   parseNodes, findNode, findNodes, cardOf, countOf, parsePoints, MAX_TAP_COUNT, suggest, fill,
   normalizeSteps, STEP_ACTIONS, normalizeCond, condOk, condWhy, COND_KEYS,
   SCREEN_KEYS, normalizeScreenCond, screenCondOk,
-  DEWU, isDewuFocus, isPublishScreen
+  DEWU, isDewuFocus, isPublishScreen, isHomeScreen
 };

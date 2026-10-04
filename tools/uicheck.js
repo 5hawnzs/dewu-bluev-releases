@@ -188,6 +188,71 @@ app.whenReady().then(async () => {
     ok(`页签 ${i}「${TABS[i - 1]}」能渲染`, info.size > 20 && info.title === TABS[i - 1], `标题「${info.title}」· ${info.size} 字节`);
   }
 
+  // ---- 工程状态 / 配置「不是数据」时，renderAll 不许白屏（2026-10-04 新增）----
+  // 根因：主进程 guard() 拒绝时**返回 `{ok:false,error}`、不抛异常**，而 config:get / project:get
+  //   都走这个 guard ⇒ 渲染层那句 `state.config = await appApi.configGet()` 会把**拒绝对象当成配置**
+  //   存下来（会话失效 / 账号被停用后点「连接/使用设备」就会走到）。各页渲染又直接读深层字段
+  //   （`project.compliance.stats` / `config.copy.rotateStrategy` / `config.publish.intervalSec`），
+  //   读一层就抛 ⇒ **整页白屏、一句话都不给**。
+  //   实测崩溃页数（tools/_rv-projectnull.js，11 页逐个 renderAll）：project=null 6 页 /
+  //   config=null 5 页 / project=拒绝 2 页 / config=拒绝 2 页。
+  // ★ 断言分三层，缺一层就是假绿：
+  //   ① 正向对照：真值下同一圈遍历必须**每页都真渲染**（证明遍历真跑了，不是空==空）；
+  //   ② 四种坏形状下逐页 renderAll 都不许抛；
+  //   ③ 坏形状下每页都得有交代（写清原因的壳 或 登录页），不许留白。
+  const shield = await win.webContents.executeJavaScript(`(() => {
+    const DENY = { ok: false, error: '未登录或登录已过期，请重新登录' };
+    const ALL = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12];
+    const good = { project: JSON.parse(JSON.stringify(state.project)), config: JSON.parse(JSON.stringify(state.config)) };
+    const clone = o => JSON.parse(JSON.stringify(o));
+    const run = (proj, cfg) => {
+      const res = { threw: [], shell: 0, gate: 0, rendered: 0, said: '' };
+      const keep = { p: state.project, c: state.config, t: state.tab };
+      state.project = proj; state.config = cfg;
+      for (const k of ALL) {
+        if (!TABS[k]) continue;
+        state.tab = k;
+        try {
+          renderAll();
+          const paneTxt = (document.querySelector('#pane') || {}).textContent || '';
+          if (document.body.classList.contains('locked')) res.gate++;
+          else if (/先不渲染/.test(paneTxt)) { res.shell++; if (!res.said) res.said = paneTxt.slice(0, 60); }
+          else res.rendered++;
+        } catch (e) { res.threw.push(k + ':' + ((e && e.message) || e)); }
+      }
+      state.project = keep.p; state.config = keep.c; state.tab = keep.t;
+      return res;
+    };
+    const out = {
+      good: run(clone(good.project), clone(good.config)),
+      pNull: run(null, clone(good.config)),
+      cNull: run(clone(good.project), null),
+      pDeny: run(DENY, clone(good.config)),
+      cDeny: run(clone(good.project), DENY),
+      back: run(clone(good.project), clone(good.config))
+    };
+    renderAll();
+    return JSON.stringify(out);
+  })()`);
+  const sh = JSON.parse(shield);
+  const bads = [['project=null', sh.pNull], ['config=null', sh.cNull], ['project=拒绝对象', sh.pDeny], ['config=拒绝对象', sh.cDeny]];
+  ok('★ 正向对照：真值下 11 页**每页都真渲染**、一条异常都没有（证明下面那圈遍历真在跑，不是空==空）',
+    sh.good.threw.length === 0 && sh.good.rendered === 11,
+    `渲染 ${sh.good.rendered}/11 · 异常 ${sh.good.threw.length}${sh.good.threw.length ? ' → ' + sh.good.threw.join(',') : ''}`);
+  ok('★★ 工程状态/配置「不是数据」时，renderAll 一页都不许抛（原来 project=null 崩 6 页、config=null 崩 5 页）',
+    bads.every(([, r]) => r.threw.length === 0),
+    bads.map(([n, r]) => `${n}:${r.threw.length ? '崩' + r.threw.length + '(' + r.threw[0] + ')' : '0'}`).join(' · '));
+  ok('★★ 每种坏形状下每一页都要有交代（说清原因的壳 或 登录页）—— 不许留白',
+    bads.every(([, r]) => r.shell + r.gate === 11),
+    bads.map(([n, r]) => `${n}:壳${r.shell}+登录${r.gate}`).join(' · '));
+  ok('★ 壳里把**原因**写出来了（拒绝的要说"未登录/已过期"，没读到的要说"还没读到"），不是一句"暂无数据"糊弄',
+    sh.pDeny.said.indexOf('未登录') >= 0 && sh.cDeny.said.indexOf('未登录') >= 0
+      && /还没读到/.test(sh.pNull.said) && /还没读到/.test(sh.cNull.said),
+    JSON.stringify(bads.map(([n, r]) => [n, r.said])));
+  ok('★ 自证还原：把真值放回去后 11 页照常渲染、零异常（这套探针自己没把界面弄坏）',
+    sh.back.threw.length === 0 && sh.back.rendered === 11,
+    `渲染 ${sh.back.rendered}/11 · 异常 ${sh.back.threw.length}`);
+
   // ---- 页签 12「热词库」：真读 DOM 断言（不是看源码里有没有那行字）----
   // ★ BLUEV_NO_LOGIN 下没有账号 ⇒ isAdmin=false ⇒ 这一页应当是**只读**的。
   //   「可编辑」那一支由 logintest 用管理员会话覆盖 —— 两边合起来才算把两个分支都测到。
@@ -373,8 +438,10 @@ app.whenReady().then(async () => {
     await new Promise(r => setTimeout(r, 150));
     const setHeads = await win.webContents.executeJavaScript(
       `[...document.querySelectorAll('#pane h3')].map(h => h.textContent.trim())`);
-    ok('★ 设置页确实渲染出来了（有「路径」「外部依赖」，不是空页面）',
-      setHeads.includes('路径') && setHeads.includes('外部依赖'), JSON.stringify(setHeads));
+    // ★ 2026-10-04：「路径」块已按用户要求撤掉 ⇒ 这条「页面渲染出来了」的兜底判据换成
+    //   仍真在的「外部依赖」（拿已撤掉的块当对照，就是「空==空」).
+    ok('★ 设置页确实渲染出来了（有「外部依赖」这一块，不是空页面）',
+      setHeads.includes('外部依赖'), JSON.stringify(setHeads));
     ok('★ 设置页里**不再有**「外观」这一块（用户要求：与顶栏主题按钮重复）',
       !setHeads.includes('外观'), JSON.stringify(setHeads));
     ok('★ 但「运行环境」没跟着一起丢（已挪进「外部依赖」）',
@@ -624,7 +691,10 @@ app.whenReady().then(async () => {
       await new Promise(r => setTimeout(r, 200));
       out.admin = {
         updBox: !!document.querySelector('#pane #updBox'),
-        head: (document.querySelector('#head') || {}).textContent || ''
+        head: (document.querySelector('#head') || {}).textContent || '',
+        // ★ 2026-10-04：管理员视角也要查「路径」块在不在 —— 用户要求的是「对所有人隐藏」，
+        //   所以两个视角都得覆盖，不能只验普通成员那一支。
+        hasPathBlock: /输出目录|隔离目录/.test(document.querySelector('#pane').textContent)
       };
       // ② 切成普通成员再重画：整块必须消失，副标题也不许再提「应用更新」
       state.auth = { requireLogin: true, isAdmin: false, user: { username: 'u1', displayName: '普通成员', role: 'user' } };
@@ -637,9 +707,13 @@ app.whenReady().then(async () => {
         paneText: pane.textContent,
         head: head.textContent,
         h3: [...pane.querySelectorAll('.box h3')].map(e => e.textContent),
-        // 正向对照：这一页必须**还在正常渲染**，不是白页
-        hasPaths: /输出目录|隔离目录/.test(pane.textContent),
+        // ★ 2026-10-04：原来这里用「有路径块」当「这一页还在正常渲染」的正向对照。
+        //   现在路径块按用户要求撤了 ⇒ 对照改用「外部依赖 + 保存按钮 + 页脚提示」；
+        //   同时把它翻成**负向**判据：这一页恰恰不许再出现「输出目录 / 隔离目录」。
+        hasPathBlock: /输出目录|隔离目录/.test(pane.textContent),
         hasDeps: /外部依赖/.test(pane.textContent),
+        hasFooter: /品牌与权限/.test(pane.textContent),
+        descText: (document.querySelector('#head') || {}).textContent || '',
         saveBtn: !!document.querySelector('[data-act="cfg:save"]')
       };
       // ③ 还原登录态，别污染后面的套件
@@ -663,12 +737,48 @@ app.whenReady().then(async () => {
     ok('★ 非管理员设置页副标题也不再提「应用更新」（界面文字得跟界面上真有的东西对得上）',
       !!gate && !/应用更新/.test(gate.nonadmin.head),
       gate ? JSON.stringify((gate.nonadmin.head || '').replace(/\s+/g, ' ').slice(0, 110)) : '');
-    ok('★ 正向对照：非管理员这一页**照常渲染**（路径 / 外部依赖 / 保存 都在，不是白页）—— 防「空==空」假绿',
-      !!gate && gate.nonadmin.hasPaths && gate.nonadmin.hasDeps && gate.nonadmin.saveBtn,
-      gate ? 'paths=' + gate.nonadmin.hasPaths + ' deps=' + gate.nonadmin.hasDeps + ' save=' + gate.nonadmin.saveBtn : '');
+    // ★★ 2026-10-04 用户要求：设置页整块「路径」（输出目录 / 隔离目录 + 两个「修改」按钮）对所有人隐藏。
+    //   两个视角各一条 —— 只验非管理员那一支会漏掉「管理员还看得见」这种半拉子改法。
+    ok('★★ 设置页（管理员视角）：整块「路径」已撤掉 —— 页面里不许再出现「输出目录 / 隔离目录」',
+      !!gate && gate.admin.hasPathBlock === false,
+      gate ? 'hasPathBlock=' + gate.admin.hasPathBlock : 'gate=null');
+    ok('★★ 设置页（普通成员视角）：同样看不到「路径」块（对所有人隐藏，不是只对某一种角色）',
+      !!gate && gate.nonadmin.hasPathBlock === false,
+      gate ? 'hasPathBlock=' + gate.nonadmin.hasPathBlock : 'gate=null');
+    ok('★ 设置页副标题跟着改口：不再提「路径」（界面文字得跟界面上真有的东西对得上）',
+      !!gate && !/路径、/.test(gate.admin.head + gate.nonadmin.descText),
+      gate ? JSON.stringify((gate.nonadmin.descText || '').replace(/\s+/g, ' ').slice(0, 90)) : '');
+    ok('★ 正向对照：非管理员这一页**照常渲染**（外部依赖 / 保存 / 页脚提示 都在，不是白页）—— 防「空==空」假绿',
+      !!gate && gate.nonadmin.hasDeps && gate.nonadmin.saveBtn && gate.nonadmin.hasFooter,
+      gate ? 'deps=' + gate.nonadmin.hasDeps + ' save=' + gate.nonadmin.saveBtn + ' footer=' + gate.nonadmin.hasFooter : '');
     ok('测试自己收尾：还原登录态后「应用更新」又回来了（证明上面的消失是权限造成的，不是渲染坏了）',
       !!gate && gate.restored.updBox === true && gate.restored.canAdmin === true,
       JSON.stringify(gate && gate.restored));
+
+    // ★★ 2026-10-04：上面几条验的是「渲染出来看不见」。再补源码级两条 ——
+    //   ① 入口与处理器都删干净（**只查代码行**：注释里正解释这件事，全文搜必然自命中）；
+    //   ② ★ **底层读取链一条都没动** —— 这次是「撤界面入口」不是「删功能」。
+    //      真把配置读取点删了，导出报告 / 运行日志 / 统计会当场报「没有配置输出目录」（静默丢数据的反例）。
+    {
+      // ★ 这里要连 **HTML 注释**（`<!-- … -->`）一起剥 —— app.js 的界面是模板字符串拼出来的，
+      //   说明性注释写成 HTML 形式；只剥 `/* */` 与 `//` 时，注释里的 `cfg:path` 会把断言误判成红
+      //   （实测第一版就是这么红的：报 cfg:path=true，而代码里其实一处都没有）。
+      const codeOnly = t => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '')
+        .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+      const uiCode = codeOnly(fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8'));
+      ok('★★ 设置页「路径」的入口与处理器都从源码里删干净（没留下没人调用的 data-act / action 死代码）',
+        !/cfg:path/.test(uiCode) && !/<h3>路径<\/h3>/.test(uiCode) && !/c\.paths/.test(uiCode),
+        'cfg:path=' + /cfg:path/.test(uiCode) + ' h3路径=' + /<h3>路径<\/h3>/.test(uiCode) + ' c.paths=' + /c\.paths/.test(uiCode));
+      const rd = 'store\\.get\\(\'paths\\.(output|rejected)\'\\)';
+      const chain = ['src/main/ipc.js', 'src/main/jobs.js', 'src/main/services/compliance.js',
+        'src/main/services/sheet.js', 'src/main/services/stats.js', 'src/main/services/runlog.js'];
+      const broken = chain.filter(rel => !new RegExp(rd).test(fs.readFileSync(path.join(ROOT, rel), 'utf8')));
+      const storeSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'store.js'), 'utf8');
+      ok('★★ 撤的只是界面入口：**两个目录的读取链与出厂默认值都还在**（报告 / 日志 / 统计 / 隔离照旧读配置）',
+        broken.length === 0 && /paths:\s*\{\s*output:\s*d\.output,\s*rejected:\s*d\.rejected\s*\}/.test(storeSrc),
+        broken.length || !/paths:\s*\{\s*output:\s*d\.output/.test(storeSrc)
+          ? '已读不到配置：' + (broken.join(' / ') || 'store 默认值接线断了') : '');
+    }
 
     // 版本号：左上角 app 名字后面那枚 chip
     const ver = await win.webContents.executeJavaScript(`(() => {

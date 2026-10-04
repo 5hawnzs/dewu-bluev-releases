@@ -149,6 +149,15 @@ app.whenReady().then(async () => {
   ok('标题栏显示当前账号与角色', /管理员/.test(inApp.user), inApp.user);
   const allowed = await js(`(async () => { const c = await window.api.configGet(); return !!(c && c.paths && c.paths.output); })()`);
   ok('登录后业务通道放行（能读到配置）', allowed === true);
+
+  // ★★ 2026-10-04 测试隔离修复：**把输出目录指到本次的临时 TMP 里**。
+  //   根因（真机实测复现）：`paths.output` 的默认值是 `~/输出/得物`（winpath.js#defaults），
+  //   而统计那一组要读 `<output>/publish-log.jsonl`。本机跑过真机发布后，那个**真实目录**里
+  //   有历史日志（本机实测 51 条，其中 30 条 brandId 为空）⇒ 断言
+  //   「未标品牌 = 0 条」必然红 —— 而它红的原因**跟被测代码毫无关系**，纯粹是测试没隔离。
+  //   这种红最坏：会让人去翻 stats/brands 的代码（我就是先怀疑了自己那几处改动）。
+  //   ⇒ 在这一组之前把 output 指进 TMP；后面所有 __t 调用都走这份隔离配置。
+  await js(`(async () => { await window.api.configSet({ paths: { output: ${JSON.stringify(path.join(TMP, 'output'))} } }); return true; })()`);
   const tabs = await js(`(async () => {
     const titles = [];
     // ★ 页签号与个数都**从 DOM 上数出来**，不要写死：
@@ -585,6 +594,54 @@ app.whenReady().then(async () => {
     `untagged=${st.untagged && st.untagged.rows} 品牌数=${(st.brands || []).length}`);
   ok('统计里「只看未标品牌」筛选可用',
     (await js(`window.api.statsQuery({ days: 0, brandId: '__none__' })`)).brands.length === 0);
+
+  // ---- ⑧-0 会话失效（guard 返回拒绝对象）时：回登录门并说明原因，**不许白屏** ----
+  // 根因：主进程 guard() 拒绝时**返回 `{ok:false,error}` 而不是抛异常**，而 config:get / project:get
+  //   都走 guard ⇒ 渲染层 `state.config = await appApi.configGet()` 这句裸赋值会把**拒绝对象当成配置**
+  //   存下来（pub:useDev / pub:useFound 里改设备时真会走到）。各页渲染又直接读深层字段
+  //   （`project.compliance.stats` / `config.copy.rotateStrategy`），读一层就抛 ⇒
+  //   表现是**整页白屏、一句话都不给**。这条用例就是那次真实顺序：掉线 → 切到「合规检查」。
+  // ★ 正向对照在同一段里做（会话还在时必须照常渲染、不许误弹登录门），否则「弹了登录门」可能只是恒真。
+  const denyCase = await js(`(async () => {
+    const before = { p: state.project, c: state.config, t: state.tab };
+    // ① 正向对照：会话还在，同样切到「合规检查」——必须照常渲染、不许锁屏
+    let ctrlThrew = '';
+    state.tab = 2;
+    try { renderAll(); } catch (e) { ctrlThrew = (e && e.message) || String(e); }
+    const ctrlLocked = document.body.classList.contains('locked');
+    // ② 真的把主进程侧会话退掉 ⇒ 再读 project / config 拿到的就是 guard 的拒绝对象
+    await window.api.authLogout();
+    const p = await window.api.projectGet();
+    const c = await window.api.configGet();
+    state.project = p; state.config = c;     // 模拟 pub:useDev / pub:useFound 里那句裸赋值
+    state.tab = 2;
+    let threw = '';
+    try { renderAll(); } catch (e) { threw = (e && e.message) || String(e); }
+    const res = {
+      ctrlThrew, ctrlLocked,
+      pDenied: !!(p && p.ok === false), cDenied: !!(c && c.ok === false),
+      threw,
+      locked: document.body.classList.contains('locked'),
+      gateShown: getComputedStyle(document.getElementById('gate')).display !== 'none',
+      err: (document.getElementById('lgErr') || {}).textContent || ''
+    };
+    // 还原（后面 ⑧⑨ 还要用）：值放回去；登录态交给下面的 ⑧ 用例处理
+    state.project = before.p; state.config = before.c; state.tab = before.t;
+    return res;
+  })()`);
+  ok('⑧-0 正向对照：会话还在时切到「合规检查」照常渲染、不锁屏（证明下面那条不是恒真）',
+    denyCase.ctrlThrew === '' && denyCase.ctrlLocked === false,
+    `threw=${denyCase.ctrlThrew || '无'} locked=${denyCase.ctrlLocked}`);
+  ok('⑧-0 前提成立：退掉会话后，主进程确实回的是拒绝对象（不是我以为的「应该会拒」）',
+    denyCase.pDenied === true && denyCase.cDenied === true,
+    JSON.stringify({ p: denyCase.pDenied, c: denyCase.cDenied }));
+  ok('⑧-0 ★★ 拿着拒绝对象切页**不许抛异常**（原来这里直接 Cannot read properties of undefined）',
+    denyCase.threw === '', denyCase.threw || '无异常');
+  ok('⑧-0 ★★ 掉线时回登录门（而不是把业务界面留成一片空白）',
+    denyCase.locked === true && denyCase.gateShown === true,
+    JSON.stringify({ locked: denyCase.locked, gateShown: denyCase.gateShown }));
+  ok('⑧-0 ★ 登录页上把原因写出来（用户得知道是"掉线了"，不是"这页坏了"）',
+    /未登录|过期/.test(denyCase.err || ''), denyCase.err);
 
   // ---- ⑧ 退出登录 → 回到登录门，业务通道再次被拦 ----
   const out = await js(`__t.logout()`);

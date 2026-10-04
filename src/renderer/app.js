@@ -767,12 +767,13 @@ TABS[7] = {
   title: '设置',
   // ★ desc 支持函数（renderAll 里求值）：非管理员这一页没有「应用更新」那块，
   //   副标题就不该提它 —— 界面文字得跟界面上真有的东西对得上。
+  // ★ 2026-10-04：副标题里原来的「路径、」也一并去掉 —— 那一块已经从页面上撤掉，
+  //   副标题再提它就是「界面文字跟界面上真有的东西对不上」（见下面那条注释的同一条原则）。
   desc: () => (canAdmin()
-    ? '路径、内容校验、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'
-    : '路径、内容校验、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'),
+    ? '内容校验、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'
+    : '内容校验、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'),
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
-    const c = state.config;
     const info = state.info || {};
     const dep = [
       ['图片处理 / 取色', info.engine === 'sharp' ? 'sharp + libvips（含 HEIC）' : 'jpeg-js + pngjs（纯 JS 降级）', info.engine === 'sharp' ? ['ok', '内置'] : ['warn', '降级']],
@@ -791,11 +792,13 @@ TABS[7] = {
       ['得物商品池', info.pool ? `${info.pool.size} 个货号 · ${info.pool.source}` : '—', info.pool && info.pool.size ? ['ok', '已导入'] : ['warn', '待同步']]
     ];
     return `
-      <div class="box">
-        <h3>路径</h3>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">输出目录</span><input class="inp mono" value="${esc(c.paths.output)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.output">修改</button></div>
-        <div class="row"><span class="lbl">隔离目录</span><input class="inp mono" value="${esc(c.paths.rejected)}" readonly><button class="btn sm" data-act="cfg:path" data-key="paths.rejected">修改</button></div>
-      </div>
+      <!-- ★★ 2026-10-04 用户要求：整块「路径」（输出目录 / 隔离目录 + 两个「修改」按钮）
+           对所有人隐藏 —— 挂在设置页最上面纯属干扰。
+           ★ 只撤界面入口，**底层读取链一条都没动**：两个目录的出厂默认值在 winpath.js，
+             合规报告 / 运行日志 / 品牌统计 / 隔离被拒素材照旧读 paths.output / paths.rejected。
+             （「隐藏」不等于「删功能」—— 删了读取链，导出报告和日志会直接报「没有配置输出目录」。）
+           ★ 同时删掉的还有 data-act="cfg:path" 那个 action 处理器：入口没了还留着处理器就是死代码，
+             将来有人会以为「这功能还在，只是没显示」。 -->
       <!-- ★ 原先这里有一整块「外观」（主题说明 + 运行环境）—— 2026-10-03 按用户要求撤掉：
            主题入口只留顶栏那一个，设置里再复述一遍纯属重复（两处状态迟早各说各话）；
            「运行环境」那行没丢，挪到下面「外部依赖」里了。 -->
@@ -1698,13 +1701,58 @@ function bindLogPane() {
 }
 
 /* ---------------- 渲染入口 ---------------- */
+/**
+ * ★★ 2026-10-04：`state.project` / `state.config` 会有两种「不是数据」的形状，而各页渲染是
+ *    **直接读深层字段**的（`project.compliance.stats` / `config.copy.rotateStrategy` /
+ *    `config.publish.intervalSec` / `project.items.length`）：
+ *      · `null` —— 还没读到（只有绕过 enterApp 直接驱动渲染层的脚本会造出来）；
+ *      · `{ok:false,error}` —— ★ 主进程的 guard() 在「没登录 / 会话失效 / 账号被停用」时
+ *        **不抛异常，而是返回这个对象**；而 config:get / project:get 都走 guard ⇒
+ *        渲染层那句 `state.config = await appApi.configGet()` 会把**拒绝对象当成配置存下来**。
+ *    实测（tools/_rv-projectnull.js，11 个页签逐个 renderAll）：project=null ⇒ 6 页抛；
+ *    config=null ⇒ 5 页抛；project=拒绝 ⇒ 2 页抛；config=拒绝 ⇒ 2 页抛。
+ *    表现是**整页白屏、一句话都不给** —— 用户没法判断到底是「还没数据」还是「已经掉线」。
+ *    ⇒ 入口先判这两个值能不能用：拒绝（＝掉线）就回登录页并原样说出原因；
+ *      还没读到就只画一句人话。绝不让里层去读缺字段的深路径。
+ */
+const PROJ_KEYS = ['items', 'compliance', 'verify', 'sheet', 'publish'];      // 真值一定带（主进程 blank() 保证）
+const CFG_KEYS = ['paths', 'flatten', 'compliance', 'copy', 'verify', 'publish']; // 真值一定带（store.defaults() 保证）
+
+function stateGate() {
+  const denyOf = v => (v && typeof v === 'object' && v.ok === false) ? (v.error || '读取被拒绝') : null;
+  const shapeBad = (v, keys) => !v || typeof v !== 'object' || keys.some(k => v[k] === undefined);
+  const dp = denyOf(state.project), dc = denyOf(state.config);
+  if (dp || dc) {
+    return { kind: 'denied', why: [dp && ('工程状态：' + dp), dc && ('配置：' + dc)].filter(Boolean).join('；') };
+  }
+  const mp = shapeBad(state.project, PROJ_KEYS), mc = shapeBad(state.config, CFG_KEYS);
+  if (mp || mc) {
+    return { kind: 'missing', why: [mp && '工程状态', mc && '配置'].filter(Boolean).join(' 与 ') + '还没读到' };
+  }
+  return null;
+}
+
 function renderAll() {
   syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 编号在 5 处留了空位。老配置里存过 tab=5、
   //   或按 Ctrl+5 按到空位时，必须兜回第 1 页 —— 否则 t 是 undefined，下面读 t.title 直接崩（整页白屏）。
   if (!TABS[state.tab]) state.tab = 1;
   const t = TABS[state.tab];
+  const g = stateGate();
+  // 掉线（拒绝对象）不是「这一页没数据」，是「你已经不在登录状态」⇒ 回登录页，把原因原样带过去。
+  // 免登录模式（requireLogin=false）不会有拒绝对象，所以这里不会误踢人。
+  if (g && g.kind === 'denied' && state.auth && state.auth.requireLogin) { showGate(g.why); return; }
   document.querySelectorAll('.nav').forEach(el => el.classList.toggle('on', Number(el.dataset.tab) === state.tab));
+  if (g) {
+    // 只画一句人话：各页的 desc/actions/render 全都要读 project/config 的深层字段，缺了就是白屏
+    $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(g.why)}</p></div>`;
+    $('#pane').innerHTML = `<div class="empty">${esc(g.why)} —— 这一页先不渲染。<br><br>
+      各页都要读工程状态 / 配置里的深层字段（比如合规检查要读「扫描统计」、文案生成要读「并发路数」），
+      缺字段时硬读会直接白屏、还不说明原因，所以这里先把原因写出来。<br>
+      等这一步完成（重新登录 / 重启应用）后，这里会自动恢复。</div>`;
+    sideStatus();
+    return;
+  }
   $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(typeof t.desc === 'function' ? t.desc() : t.desc)}</p></div>
     <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}" data-act="${a.act}" ${a.disabled ? 'disabled' : ''}>${esc(a.label)}</button>`).join('')}</div>`;
   const scroll = $('#pane').scrollTop;
@@ -3014,16 +3062,10 @@ const ACTS = {
     renderAll();
   },
 
-  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },  'cfg:path': async (el) => {
-    const key = el.dataset.key;
-    const field = key.split('.')[1];
-    // 起点用这个字段**自己的当前值**（原来一律拿「素材根目录」当起点，跟要改的字段没关系）
-    const d = await appApi.pickDir({ title: '选择目录', defaultPath: (state.config.paths && state.config.paths[field]) || '' });
-    if (!d) return;
-    await appApi.configSet({ paths: { [field]: d } });
-    state.config = await appApi.configGet();
-    renderAll();
-  }
+  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); }
+  // ★ 2026-10-04：「cfg:path」（选输出目录 / 隔离目录）随设置页那一块一起删 ——
+  //   界面上已经没有任何 data-act="cfg:path" 的入口，留着处理器就是死代码。
+  //   两个目录改走出厂默认值（winpath.js），主进程的读取点（合规报告 / 日志 / 统计 / 隔离）全都没动。
 };
 
 async function saveCfgFromDom() {
