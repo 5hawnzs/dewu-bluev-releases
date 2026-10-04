@@ -210,7 +210,13 @@ function collectGit() {
   const head = sh('git log -1 --format=%h%x09%ad%x09%s --date=short');
   const [hash = '', date = '', subject = ''] = head.split('\t');
   const branch = sh('git rev-parse --abbrev-ref HEAD');
-  const dirty = sh('git status --porcelain').split('\n').filter(Boolean).length;
+  // 未提交改动数：**排除 docs/visual 自身**。
+  // ★ 否则这个指标会自指：文档一生成，产物就相对 HEAD 变成「已修改」，
+  //   于是它永远显示「工作区有 1 个未提交改动」——而那 1 个就是它自己，纯噪声。ignored 单独记下来。
+  const porcelain = sh('git status --porcelain').split('\n').filter(Boolean);
+  const selfArtifacts = porcelain.filter(l => l.includes('docs/visual/')).length;
+  const dirty = porcelain.length - selfArtifacts;
+  const selfDirty = selfArtifacts;
   const raw = sh('git log -200 --format=%h%x09%ad%x09%s --date=short');
   const all = raw.split('\n').filter(Boolean).map(l => {
     const [h, d, s] = l.split('\t');
@@ -227,7 +233,7 @@ function collectGit() {
   //   并在数据里标 src='subject-heuristic'，让文档能如实说明这份版本线是怎么来的。
   const vline = collectVersions();
   const timeline = vline.list;
-  return { hash, date, subject, branch, dirty, timeline, vlineSrc: vline.src, recent: all.slice(0, 12) };
+  return { hash, date, subject, branch, dirty, selfDirty, timeline, vlineSrc: vline.src, recent: all.slice(0, 12) };
 }
 
 /** 版本线：优先读 package.json 的真实版本变更史；读不到才退回提交说明启发式 */
@@ -498,7 +504,7 @@ function pageByTab(tabs) {
 
 function renderKpis(d) {
   const items = [
-    { n: 'v' + d.pkg.version, l: '当前版本', s: `${d.git.branch} @ ${d.git.hash}${d.git.dirty ? ' · 工作区有未提交改动 ' + d.git.dirty + ' 个文件' : ' · 工作区干净'}` },
+    { n: 'v' + d.pkg.version, l: '当前版本', s: `${d.git.branch} @ ${d.git.hash}${d.git.dirty ? ' · 工作区有未提交改动 ' + d.git.dirty + ' 个文件' : ' · 工作区干净'}${d.git.selfDirty ? '（文档产物自身未提交，不计入）' : ''}` },
     { n: d.tabs.length, l: '功能页签', s: d.tabs.filter(t => t.admin).length + ' 个仅管理员可见' },
     { n: d.ipc.total, l: 'IPC 通道', s: `${Object.keys(d.ipc.byPrefix).length} 个域 · ${d.ipc.list.filter(c => c.guard === 'admin').length} 条仅管理员` },
     { n: d.src.totalFiles, l: '源码文件', s: `${d.src.totalLoc.toLocaleString('en-US')} 行（js/html/css）` },
