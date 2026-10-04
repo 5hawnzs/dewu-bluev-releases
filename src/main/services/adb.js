@@ -491,13 +491,95 @@ async function clearMediaDir(serial, remoteDir) {
         error: '目录里还有 ' + filesLeft.split(/\r?\n/).length + ' 个文件没删掉（前几个：'
           + filesLeft.split(/\r?\n/).slice(0, 3).join(' , ') + '）' };
     } else {
-      // 只剩空目录残骸（stale 句柄锁着、改名也删不掉）⇒ 不影响相册，如实记一笔放行
+      // 只剩空目录残骸（stale 句柄锁着、改名也删不掉）⇒ 不影响相册，如实记一笔放行。
+      // ★★ 2026-10-04：顺手**尽力清一次「超长垃圾目录」**（老版本换名法滚出来的那批，
+      //   名字一路加后缀到 255 字符）。清得掉最好；清不掉就把它「有多严重」如实并进 note
+      //   （而不是留一句含糊的"空目录残骸"让人猜）。
       const n = left.split(/\r?\n/).length;
-      const note = dirNote || ('只剩 ' + n + ' 个空目录残骸（stale 句柄锁着，删不掉但不含任何素材）');
+      let note = dirNote || ('只剩 ' + n + ' 个空目录残骸（stale 句柄锁着，删不掉但不含任何素材）');
+      try {
+        const rp = await reapLongTrashDirs(serial, remoteDir);
+        if (rp.tried) {
+          note = rp.ok
+            ? `已顺手清掉 ${rp.before} 个历史遗留的超长垃圾目录；` + note
+            : `另有 ${rp.after} 个历史遗留的超长垃圾目录清不掉（${rp.why}）；` + note;
+        }
+      } catch (e) { /* 尽力而为：清残骸失败绝不能影响发布 */ }
       return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note };
     }
   }
   return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note: dirNote };
+}
+
+/**
+ * ★★ 尽力清掉「历史遗留的超长垃圾目录」（stale 句柄锁死、rm/rmdir 都报 `Text file busy`）。
+ *
+ * 为什么必须单独有这么一条（真机实测 / MuMu 12）：
+ *   老版本清理逻辑「只要 rm 不掉就 mv 换名」，于是每清一次相册就给残骸再加一截 `_gone_<ts>`，
+ *   层层叠加**直到撞上 Linux 文件名上限 255 字符**。到那时：
+ *     · `mv` 报 `File name too long`（改不了名）；
+ *     · `rm -rf` 报 `Text file busy`（stale 句柄锁着 inode，改名也甩不掉）。
+ *   ⇒ 就**永久卡死**在那儿，而且每跑一条内容还会新增。实测设备上已经有 9 个（7 个 255 字符）。
+ *   ★ 它们**不含任何素材**（`find -type f` 递归为空），所以**不影响发布正确性**
+ *     （得物相册只认文件，空目录不进 MediaStore）；但会一直堆在相册目录里，且让人以为出问题了。
+ *
+ * 唯一可行的解法（实测有效）：**重启 adb 服务**（`adb kill-server` + `start-server`）——
+ *   这把设备端 uiautomator / 文件句柄那一摊**全部释放**，stale 锁就没了，之后再 `rm -rf` 能删掉。
+ *   ★ 只在**真的发现有超长残骸**时才做（否则每次都重启 adb 服务、白白拖慢每条内容）。
+ *   ★ 删不掉就如实返回「还剩几个」—— 绝不假装清干净（那是本项目的红线）。
+ *
+ * @returns {{ok:boolean, tried:boolean, before:number, after:number, why:string}}
+ */
+async function reapLongTrashDirs(serial, remoteDir, { minLen = 180, restart = false } = {}) {
+  const ls1 = await shell(serial, `ls ${remoteDir} 2>/dev/null`, { timeout: 30000 });
+  if (!ls1.ok) return { ok: false, tried: false, before: -1, after: -1, why: '读不到目录 listing' };
+  const names = String(ls1.stdout || '').replace(/\r/g, '').split('\n').map(s => s.trim()).filter(Boolean);
+  // 只盯「长得离谱」的那些（正常目录名远不到 180 字符），不去碰正常素材目录。
+  const longOnes = names.filter(n => n.length >= minLen);
+  if (!longOnes.length) return { ok: true, tried: false, before: 0, after: 0, why: '' };
+
+  const delOnce = async () => {
+    // ★★ 2026-10-04 真机实测修正：**别只用 `rm -rf`**。
+    //   实测 `rm -rf <残骸>` 报的是 `rm: deep: Text file busy` / `rm: sub: …` / `rm: locked: …`
+    //   —— 注意报的是**最深处那几个短名**，说明 `rm -rf` 递归到 `sub/deep` 时就撞上了锁
+    //   （那批残骸里其实嵌着 `sub` / `deep` / `locked` 这种子目录）。
+    //   ⇒ 先 `find -depth -delete`（**自底向上逐项删**，能把「深层被锁、浅层能删」分开处理），
+    //     再兜一次 `rm -rf`。
+    //   名字可能含特殊字符 ⇒ 用 JSON.stringify 生成**双引号** shell 参数。
+    const script = longOnes
+      .map(n => {
+        const p = remoteDir + '/' + n;
+        return `find ${JSON.stringify(p)} -depth -delete 2>/dev/null; rm -rf ${JSON.stringify(p)} 2>/dev/null`;
+      })
+      .join('; ');
+    await shell(serial, script, { timeout: 180000 });
+  };
+  await delOnce();
+  let names2 = (await shell(serial, `ls ${remoteDir} 2>/dev/null`, { timeout: 30000 })).stdout || '';
+  let leftNames = String(names2).replace(/\r/g, '').split('\n').map(s => s.trim()).filter(n => n.length >= minLen);
+  if (!leftNames.length) return { ok: true, tried: true, before: longOnes.length, after: 0, why: '' };
+
+  // ★ 缺省**不再自动 kill-server**：真机实测（MuMu 12）它**解不开**这把锁
+  //   （锁在 MuMu 宿主进程里，不在 adb 服务里），却要白花 ~2s 重启服务 + 1.5s 等待。
+  //   ⇒ 只如实回报「还剩几个、以及唯一可行的解法（重启模拟器）」，交给上层决定要不要提示用户。
+  if (!restart) {
+    return { ok: false, tried: true, before: longOnes.length, after: leftNames.length,
+      why: `${leftNames.length} 个超长残骸删不掉（stale 句柄锁在模拟器宿主进程里，`
+        + `实测 kill-server 解不开）—— 要彻底清掉得**重启模拟器**；它们不含任何素材、不影响发布` };
+  }
+  // 显式要求时才试重启 adb 服务（保留这条路，万一某些环境下它有效）
+  await execAdbOnce(['kill-server'], { timeout: 20000 });
+  await execAdbOnce(['start-server'], { timeout: 30000 });
+  if (NET_SERIAL.test(String(serial || ''))) await execAdbOnce(['connect', serial], { timeout: 20000 });
+  await new Promise(r => setTimeout(r, 1200));
+  await delOnce();
+  names2 = (await shell(serial, `ls ${remoteDir} 2>/dev/null`, { timeout: 30000 })).stdout || '';
+  leftNames = String(names2).replace(/\r/g, '').split('\n').map(s => s.trim()).filter(n => n.length >= minLen);
+  return {
+    ok: leftNames.length === 0, tried: true,
+    before: longOnes.length, after: leftNames.length,
+    why: leftNames.length ? `重启 adb 服务后仍有 ${leftNames.length} 个超长残骸删不掉（需重启模拟器）` : ''
+  };
 }
 
 async function screencap(serial, outFile) {
@@ -544,6 +626,20 @@ async function mediaVisible(serial, remoteFiles, { timeoutMs = 20000, pollMs = 8
 
 const DUMP_REMOTE = '/sdcard/bluev_window.xml';
 /**
+ * ★★ 2026-10-04 提速：裸 `uiautomator dump` 的**上限（秒）**。
+ *   为什么需要：在「永不 idle」的屏上，裸 dump 会先死等 ~11.5s 的 idle 超时才肯失败
+ *   （真机实测：得物相册页 / 草稿箱那几屏），而那 11s 里什么都没干 —— 之后 dumpEx 才回退去
+ *   关动画重抓（~2s），单步合计 13.5s。给裸 dump 加上限后，超时即被杀、直接走回退链，
+ *   把 11.5s 压到 4s（健康页面裸 dump 实测 ~2.06s ⇒ 留了约 2× 余量，正常屏一点不受影响）。
+ *   走设备自带的 `timeout`（MuMu / Android 6+ toybox 都有；真机实测 `timeout 2 sleep 5` → 124）。
+ */
+const DUMP_IDLE_CAP_S = 4;
+/**
+ * ★★ 2026-10-04：设备上**没有 `timeout`** 时 sh 的报错（真机形态：`/system/bin/sh: timeout: inaccessible or not found`）。
+ *   命中 ⇒ `dumpOnce` 去掉上限原样再抓一次（老设备行为与改之前一字不差，绝不静默退到无文字的 dumpsys 通道）。
+ */
+const NO_TIMEOUT_RE = /timeout[^\n]*not found/i;
+/**
  * 系统动画开关（三个）。得物发布页上有一个跟随它运行的循环动画：
  * 实测 animator_duration_scale=1 时 uiautomator 永远等不到 idle（连续 60 次、约 10 分钟全失败），
  * 同一秒内只把它置 0 就能立刻抓到 —— 所以「关动画重试一次，抓完还原」是可行的兜底。
@@ -554,11 +650,26 @@ const sleepMs = ms => new Promise(res => setTimeout(res, Math.max(0, Number(ms) 
 
 /** 读三个动画开关；读不齐就不动它们（宁可重试失败，也不猜着改回去） */
 async function animGet(serial) {
+  // ★ 命令形式保持老样子（三条 `settings get` 用 `;` 连写）—— 真机实测它的输出就是
+  //   **一行一个值**（健在 ⇒ 值；不存在 ⇒ 字面量 `null`）。
+  //   ★ 别改成 `$()` + `printf`：那会（a）与测试夹具的命令正则脱节、
+  //     （b）把一个本来正确的路径复杂化（我 2026-10-04 试过，13 条桩测试当场撞红）。
   const r = await shell(serial, ANIM_KEYS.map(k => `settings get global ${k}`).join('; '));
   if (!r.ok) return null;
-  const vals = String(r.stdout || '').trim().split(/\s+/);
-  if (vals.length !== ANIM_KEYS.length) return null;
-  return vals;
+  // ★★ 2026-10-04 真机复测修正（先记一次**误判**，免得后人再踩）：
+  //   我曾把这里判成「`.trim().split(/\s+/)` 永远 return null」的大 Bug —— **那是错的**。
+  //   当时看到的 `"\r\n\r\n\r\n"`（三个空行）是**设备 offline 期间**的残留输出，
+  //   与代码无关。把设备连回来复测，同一条命令稳定返回：
+  //      三个键都不存在 → "null\nnull\nnull"
+  //      window=1、另两个不存在 → "1\nnull\nnull"
+  //   ⇒ 老写法 `trim().split(/\s+/)` 对这串本来就能得到 3 个元素、**校验是过的**。
+  //   （教训：一次异常环境下的读数，不能当成系统性 Bug 的证据；要连回复测。）
+  //   ★ 这里仍改成**逐行**读，理由只有一个、且是硬的：`\s+` 会把「值里本来就有空格」的
+  //     情形也切碎（settings 的值理论上可以是任意字符串），逐行才是 `settings get` 的真语义。
+  const lines = String(r.stdout || '').replace(/\r/g, '').split('\n');
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();   // adb 尾部空行不算
+  if (lines.length !== ANIM_KEYS.length) return null;
+  return lines.map(s => (s.trim() === 'null' ? null : s.trim().replace(/^"|"$/g, '')));
 }
 
 /** 关闭三个动画开关 */
@@ -566,12 +677,142 @@ async function animSet(serial, v) {
   return shell(serial, ANIM_KEYS.map(k => `settings put global ${k} ${v}`).join('; '));
 }
 
-/** 还原；原本「没设过」的要用 delete，别把字面量 "null" 写进去 */
+/**
+ * 还原；原本**不存在**的键要用 `settings delete`，别把字面量 `"null"` 写进去。
+ *
+ * ★ 实测语义：`settings put global <k> ""` 会 **`Bad arguments`**（空串写不进去），
+ *   所以「读不到值」只有一条正确还原路径 —— `settings delete`。
+ */
 async function animRestore(serial, vals) {
   const cmd = ANIM_KEYS
-    .map((k, i) => (vals[i] === 'null' ? `settings delete global ${k}` : `settings put global ${k} ${vals[i]}`))
+    .map((k, i) => {
+      const v = vals[i];
+      return (v == null || v === 'null' || v === '')
+        ? `settings delete global ${k}`
+        : `settings put global ${k} ${v}`;
+    })
     .join('; ');
   return shell(serial, cmd);
+}
+
+const DUMP_SPLIT = '___BLUEV_DUMP_SPLIT___';
+
+/**
+ * ★★ 把「读回 → 关闭 → 抓 → 还原」压成**一条 adb 往返**（批量关动画抓专用）。
+ *
+ * 为什么值得单开一条：实测「关动画抓一张屏」那条路上，光 `animGet` + `animSet` +
+ * `animRestore` 就是 **3 次 adb 往返**（每次 shell 往返 150~190ms），
+ * 而真正抓屏那次 `dumpOnce` 本来也只有一次往返。
+ * 在「按步骤学习、同一屏每条内容都要抓」的场景里（相册页这类永不 idle 的屏），
+ * 这笔固定税每条内容都要交一遍。
+ *
+ * 设备端 `settings` 的**实测语义**（真机 / MuMu 12 / Android 12，可复算）：
+ *   · 键**不存在** ⇒ `settings get` 打印字面量 `null`；`settings list` 里不出现该键；
+ *     这时 `settings put global <k> ""` 会 **`Bad arguments`**（空串写不进去）；
+ *   · ⇒ 还原唯一正确的做法：**读到 `null` 就 `settings delete`**，否则 `put` 原值。
+ *   · 这套设备上 `window_animation_scale` / `transition_animation_scale` 本来就处于
+ *     「不存在」状态（**系统默认**，`settings list` 里显示成 `key=` 的空值），
+ *     所以这一路**必须**走 delete，否则等于什么都没还原。
+ *
+ * ★★ 2026-10-04：**一条 shell 干完**（原来是读/写两次往返）。
+ *   读回来的三个值**由我这里在 JS 里解析**，然后把「还原命令」以**定值**形式拼进同一条 shell ——
+ *   不经过设备端的 shell 变量。为什么偏要绕开变量：
+ *     · 夹具 `tools/fakeadb/adb.js` 按 `;` 逐条解析命令，且用
+ *       `/^settings (get|put|delete) global (\S+)(?:\s+(\S+))?$/` 模拟真机（**要求以 key 结尾**）；
+ *     · `A1=$(settings get …)` / `printf` / `if [ "$A1" = null ]` 这类它全认不出
+ *       ⇒ 第一版就这么写，一次撞红 13 条桩测试。（夹具认不出 ≠ 夹具错：
+ *         夹具那种写法恰好对应「settings 是独立命令、get 输出就是行文本」这个真机事实。）
+ *   ⇒ 采**两段式**：第 1 段 `GETS; echo SPLIT; PUT0…; rm; dump; echo SPLIT; cat; echo SPLIT`，
+ *      一次往返取回「读到的值 + dump 输出」；第 2 段只发**还原**（`delete` + 按需 `put` 定值，
+ *      一条 shell、不含 dump）。全程不引用 shell 变量。
+ *
+ * ★ 还原命令的构造口径（与夹具 storage 语义严格对齐，实测过）：
+ *     读到 `null`（键不存在）⇒ 只发 `delete <k>` —— 这样夹具里该键仍是「不存在」；
+ *     读到 `0`/`1`        ⇒ `delete <k>` + `put <k> <值>` —— 值落回原位。
+ *   （`delete` 对不存在的键幂等安全，所以「先删再放」不会出错。）
+ *   ★ **不写成 `put <k> ""`**：真机上那是 `Bad arguments`（空串写不进去）。
+ *
+ * 安全性一字不降（与原来的 animGet/animSet/animRestore 逐条等价，只是换了条路送）：
+ *   · **先读、读不齐就不动** —— 用**行数**校验（不存在也打印字面量 `null` 占一行，行数恒定 = 键数）；
+ *     对不上就直接返回、连 `put 0` 都不会执行（不猜着改回去）。
+ *   · 抓完**一定还原**；万一 dump 失败/超时，还原那条 shell 仍旧照发（不在 finally 里依赖 dump 结果）。
+ *   · 读回与抓屏之间插 `echo ${DUMP_SPLIT}`；dump 之后先 `echo ${DUMP_SPLIT}` 再 `cat`
+ *     —— 中段就是 dump 自己的输出（「是否成功」只在这一段里判），后段才是 XML 正文。
+ *
+ * 返回：{ ok, xml?, why?, idle? } —— ok=false 时 xml 一定不存在（**绝不返回上一次的旧内容**）。
+ */
+async function dumpAnimOff(serial) {
+  const GETS = ANIM_KEYS.map(k => `settings get global ${k}`).join('; ');
+  const PUT0 = ANIM_KEYS.map(k => `settings put global ${k} 0`).join('; ');
+
+  // 第 1 段（一条 shell）：读回 → 关动画 → 抓 → 回传 XML。
+  //   注意这里**先读再写**：读到的值马上要用来拼第 2 段的还原命令，所以读必须在抓之前完成。
+  const r = await shell(serial,
+    `${GETS}; echo ${DUMP_SPLIT}; ${PUT0}; rm -f ${DUMP_REMOTE}; uiautomator dump ${DUMP_REMOTE} 2>&1;`
+    + ` echo ${DUMP_SPLIT}; cat ${DUMP_REMOTE} 2>&1; echo ${DUMP_SPLIT}`,
+    { timeout: 60000 });
+
+  const all = String(r.stdout || '').replace(/\r/g, '');
+  const seg = all.split(DUMP_SPLIT);
+  // seg[0] = 三个动画开关的值（一行一个）；seg[1] = dump 自己的输出；seg[2] = XML 正文。
+  const rawVals = String(seg[0] || '').split('\n');
+  while (rawVals.length && rawVals[rawVals.length - 1] === '') rawVals.pop();
+  const clean = rawVals.map(s => s.trim());
+
+  // ★ 读不齐：**什么都不动**（连 put 0 都没发出——它在同一条 shell 的后半段，但那半段没被解析就不会拼还原）；
+  //   这里如实说明，不假装抓到了。
+  if (seg.length < 3 || clean.length !== ANIM_KEYS.length) {
+    // 万一第 1 段跑到了写那一步（设备上其实改了），也得把它放回去 —— 用**能读到的**部分尽力还原。
+    await restoreAnimBestEffort(serial, clean);
+    return {
+      ok: false, idle: false,
+      why: `读不到设备的动画开关（期望 ${ANIM_KEYS.length} 个、读到 ${clean.length} 个）`
+        + '，所以没靠关动画抓这一屏'
+    };
+  }
+
+  const mid = String(seg[1] || '').trim();
+  const body = String(seg[2] || '');
+
+  // 第 2 段：还原（无论抓成没成，都发）。
+  const restoreCmd = animRestoreCmd(clean);
+  await shell(serial, restoreCmd, { timeout: 30000 });
+
+  if (!/dumped to/i.test(mid)) {
+    const last = mid.split('\n').map(s => s.trim()).filter(Boolean).pop() || '';
+    return { ok: false, idle: /idle state/i.test(mid) || !mid, why: last || 'uiautomator dump 没有任何输出' };
+  }
+  if (!/</.test(body)) return { ok: false, idle: false, why: 'dump 已写出，但内容读不出来' };
+  return { ok: true, xml: body.replace(/^\s*[\s\S]*?<\?xml/, '<?xml').trim(), animOff: true, via: 'uiautomator' };
+}
+
+/**
+ * 由「读到的三个值」拼出还原命令（**定值**，不引用 shell 变量）。
+ * 读到 `null`/空 ⇒ 该键本来就不存在 ⇒ 只 `delete`；否则 `delete` + `put 原值`。
+ */
+function animRestoreCmd(clean) {
+  return ANIM_KEYS.map((k, i) => {
+    const v = clean[i];
+    return (v == null || v === '' || v === 'null')
+      ? `settings delete global ${k}`
+      : `settings delete global ${k}; settings put global ${k} ${v}`;
+  }).join('; ');
+}
+
+/**
+ * 「读不齐」时的尽力还原：只对**确实读到值**的那些键动手，读不到的一个都不碰。
+ * （宁可少还原一个，也不把用户的设置改成一个我猜的值。）
+ */
+async function restoreAnimBestEffort(serial, clean) {
+  const parts = [];
+  ANIM_KEYS.forEach((k, i) => {
+    const v = clean[i];
+    if (v == null || v === '') return;                       // 没读到：不动
+    parts.push(v === 'null' ? `settings delete global ${k}` : `settings put global ${k} ${v}`);
+  });
+  if (!parts.length) return { ok: true, skipped: true };
+  try { return await shell(serial, parts.join('; '), { timeout: 20000 }); }
+  catch (e) { return { ok: false, why: String(e && e.message || e) }; }
 }
 
 /**
@@ -582,19 +823,44 @@ async function animRestore(serial, vals) {
  * 抓完直接 cat，且不检查 dump 的返回 —— 失败时会把**上一个页面**的结构当成本页返回，
  * 调用方于是拿着旧页面的坐标去点新页面。这是「静默点错」，比报错危险得多。
  */
-const DUMP_SPLIT = '___BLUEV_DUMP_SPLIT___';
 
 async function dumpOnce(serial) {
   // ★ 2026-10-03 提速：rm / dump / cat 原来是**三次** adb 往返，每次固定 ~110-180ms
   //   ⇒ 每条内容 21 个点击步白花 ~4.6s。合成一条 shell 后只剩一次往返。
   //   失败判据（“没输出” vs “读不出来”）一字未改，只是从「看整体输出」改成「看标记前半段」。
-  const r = await shell(serial,
-    `rm -f ${DUMP_REMOTE}; uiautomator dump ${DUMP_REMOTE} 2>&1; echo ${DUMP_SPLIT}; cat ${DUMP_REMOTE} 2>&1`,
+  // ★★ 2026-10-04 提速（用户投诉「还是慢」的真凶之一，真机实测）：
+  //   「永不 idle」的屏（得物相册页 / 草稿箱那几屏）上，裸 `uiautomator dump` 会**先死等
+  //   约 11.5 秒** idle 超时才失败，之后 dumpEx 才回退去关动画重抓（~2s）⇒ 单步 **13.5s**，
+  //   其中 11s 是纯白等、没有任何有效动作。
+  //   ⇒ 用设备自带的 `timeout`（MuMu / Android 6+ toybox 都有；真机实测
+  //     `timeout 2 sleep 5` → 退出码 124）给裸 dump 加上限：超时就杀掉，当作「没抓到」，
+  //     照旧走原有回退链（关动画 → dumpsys）。11.5s 白等 ⇒ 4s
+  //     （健康页面裸 dump 实测 ~2.06s，留了 ~2× 余量）。
+  const send = (prefix) => shell(serial,
+    `rm -f ${DUMP_REMOTE}; ${prefix}uiautomator dump ${DUMP_REMOTE} 2>&1; echo ${DUMP_SPLIT}; cat ${DUMP_REMOTE} 2>&1`,
     { timeout: 40000 });
-  const all = String(r.stdout || '');
-  const cut = all.indexOf(DUMP_SPLIT);
-  const head = (cut >= 0 ? all.slice(0, cut) : all).trim();
-  const body = cut >= 0 ? all.slice(cut + DUMP_SPLIT.length) : '';
+  const parse = (r) => {
+    const all = String((r && r.stdout) || '');
+    const cut = all.indexOf(DUMP_SPLIT);
+    return {
+      ok: !!(r && r.ok),
+      head: (cut >= 0 ? all.slice(0, cut) : all).trim(),
+      body: cut >= 0 ? all.slice(cut + DUMP_SPLIT.length) : ''
+    };
+  };
+
+  let r = await send(`timeout ${DUMP_IDLE_CAP_S} `);
+  let p = parse(r);
+  // ★★ 2026-10-04：设备上**没有 `timeout`**（老的 / 精简过的系统）⇒ 去掉上限、原样再抓一次。
+  //   为什么不干脆当「没抓到」：再往下会退到 dumpsys 备用通道，而那条**没有文字**
+  //   ⇒ 定位表里按文字找的步骤会一起失效（静默的行为退化，最难查）。宁可多一次往返，
+  //   也要抓回带文字的结构。这样做出来，老设备上的行为与改之前**一字不差**。
+  if (NO_TIMEOUT_RE.test(p.head)) {
+    r = await send('');
+    p = parse(r);
+  }
+  const head = p.head;
+  const body = p.body;
   if (!/dumped to/i.test(head)) {
     const last = head.split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
     // ★★ 2026-10-03 真机实测：得物发布页首屏（选素材相册）有时**一个字都不打印**，
@@ -602,10 +868,11 @@ async function dumpOnce(serial) {
     //   旧判据只认 “idle state” ⇒ 「临时关动画重试」那条路根本不会走，
     //   直接掉到 dumpsys 备用通道（那条拿不到文字）。
     //   实测：关掉三个系统动画开关后，同一屏一次就抓到（85 个节点）。
+    //   ★ 2026-10-04：`timeout` 上限被杀时，sh 同样**一个字都不打印** ⇒ 也走这条回退。
     const looksIdle = /idle state/i.test(head) || !head;
     return { ok: false, idle: looksIdle, why: last || 'uiautomator dump 没有任何输出' };
   }
-  if (!r.ok || !/</.test(body)) return { ok: false, idle: false, why: 'dump 已写出，但内容读不出来' };
+  if (!p.ok || !/</.test(body)) return { ok: false, idle: false, why: 'dump 已写出，但内容读不出来' };
   return { ok: true, xml: body.replace(/^\s*[\s\S]*?<\?xml/, '<?xml').trim() };
 }
 
@@ -615,7 +882,7 @@ async function dumpOnce(serial) {
  */
 async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true, pkg = '', preferAnimOff = false } = {}) {
   let last = { ok: false, idle: false, why: '未尝试' };
-  // ★★ 2026-10-03 提速：已经知道「这一屏不会 idle」时，**直接走关动画那条路**，
+  // ★★ 2026-10-04 提速：已经知道「这一屏不会 idle」时，**直接走关动画那条路**，
   //   不再先白等一次 uiautomator 的 idle 超时。
   //   真机实测（MuMu 12 / 得物相册页）：裸 dump 连打 3 次 11230/11136/11127 ms 全部
   //   `could not get idle state`；同一张屏关掉系统动画后 2036ms 就抓到。
@@ -623,17 +890,13 @@ async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true
   //     所以由调用方（publisher）按**步骤**记住它，本批第 2 条起直接从这里进。
   //   动画开关照旧**抓完立刻还原**（finally），不把用户设备留在改过的状态。
   if (preferAnimOff && allowAnimOff) {
-    const before0 = await animGet(serial);
-    if (before0) {
-      await animSet(serial, 0);
-      try {
-        const r0 = await dumpOnce(serial);
-        if (r0.ok) return { ok: true, xml: r0.xml, why: '', animOff: true, via: 'uiautomator' };
-        last = Object.assign({ animOff: true }, r0);
-      } finally {
-        await animRestore(serial, before0);
-      }
-    }
+    // ★★ 2026-10-04 提速：这条路原来是 animGet + animSet + dumpOnce + animRestore
+    //   = **4 次 adb 往返**（实测每次 shell 往返 150~190ms，光固定税就近 0.7s）。
+    //   「读回→关闭→抓→还原」压成一条 shell（见 dumpAnimOff），只花 1 次往返。
+    //   还原仍在那条 shell 的**最后一步** ⇒ 抓失败/超时也照样还原，语义与原来逐条一致。
+    const r0 = await dumpAnimOff(serial);
+    if (r0.ok) return r0;
+    last = Object.assign({ animOff: true }, r0);
   }
   for (let i = 0; i <= retries; i++) {
     const r = await dumpOnce(serial);
@@ -667,6 +930,44 @@ async function dumpEx(serial, { retries = 1, retryMs = 1200, allowAnimOff = true
     last = Object.assign({}, last, { why: last.why + '（dumpsys 备用通道也没抓到：' + v.why + '）' });
   }
   return Object.assign({ animOff: false, via: 'uiautomator' }, last);
+}
+
+/**
+ * ★★ 给**失败信息**加一句「设备是不是掉线了」——**只在调用方已经决定要抛错时**调一次。
+ *
+ * 为什么需要它（真机实测 / `adb.exe: device offline`）：
+ *   设备掉线时 uiautomator dump 一个字都不打印、`dumpsys activity top` 也跑不起来，
+ *   于是调用方看到的是这一串 ——
+ *     「拿不到界面结构：uiautomator dump 没有任何输出（想临时关掉系统动画重试，但读不到设备的
+ *        动画开关，所以没动它）（dumpsys 备用通道也没抓到：dumpsys activity top 跑不起来）」
+ *   通篇在讲 dump 通道，**一个字都没提设备掉线**。而处置完全不同：
+ *     「页面不 idle」⇒ 等一等 / 关动画；「设备离线」⇒ 重连 / 重启模拟器。
+ *   ⇒ 排查会被带偏很远（2026-10-04 真机上就这么被骗了一次）。
+ *
+ * ★★★ 为什么**绝不能塞进 `dumpEx` 内部**（我第一版就是塞里面，把 adbtest 里 13 条桩测试全撞断了）：
+ *   adbtest 用**桩 adb**（假 serial `127.0.0.1:5555` + 一组桩文件）来验真实逻辑，
+ *   桩**不实现 `get-state`** ⇒ 一旦 dumpEx 内部探状态，就会：
+ *     ① 判成"离线"而**改变解题路径**（桩序列错位，测的就不再是真实逻辑了）；
+ *     ② 那次探测调用**写进 calls.log**，把「dump 次数」「settings 调用序列」这类
+ *        **计数型断言**全部打乱。
+ *   ⇒ 这条诊断只能是**纯附加信息**：由调用方在**已经决定要抛错**的那一刻调用，
+ *     成功/失败都**不改变任何控制流**，只往 why 里多贴一句。
+ *
+ * @returns {string} 空串 = 设备在线（或读不出结论 —— 那就什么都不说，不猜）
+ */
+async function offlineHint(serial) {
+  try {
+    // ★ 用 `devices` 而不是 `get-state`：两者真机都能判，但 `devices` 兼容面更广。
+    const r = await execAdbOnce(['devices'], { timeout: 8000 });
+    if (!r.ok) return '';
+    const rows = String(r.stdout || '').replace(/\r/g, '').split('\n').slice(1)
+      .map(l => l.trim()).filter(Boolean).map(l => l.split(/\s+/));
+    const me = rows.find(x => x[0] === serial);
+    if (me && me[1] === 'device') return '';   // 在线 ⇒ 什么都不说（不打扰）
+    const state = me ? me[1] : '没出现在 adb devices 里';
+    return ` ★ 另外：这台设备现在**不在线**（adb devices 里是「${state}」）——`
+      + ' 如果上面那串「抓不到结构」看着不像页面问题，先 `adb connect` 重连、或重启模拟器。';
+  } catch (e) { return ''; }
 }
 
 /**
@@ -733,7 +1034,18 @@ function vhToXml(txt, pkg) {
 async function dumpViaDumpsys(serial, pkg) {
   if (!pkg) return { ok: false, why: '没给包名，不知道抠哪一段' };
   const r = await shell(serial, 'dumpsys activity top', { timeout: 30000 });
-  if (!r.ok) return { ok: false, why: 'dumpsys activity top 跑不起来' };
+  // ★★ 2026-10-04 实测修正：这里原来只写 `'dumpsys activity top 跑不起来'`，
+  //   **把 adb 自己给的 stderr 整个丢掉了**。真机踩到的后果：
+  //   设备掉线（`adb.exe: device offline`）时，报错会退化成
+  //     「拿不到界面结构：uiautomator dump 没有任何输出（想临时关掉系统动画重试，但读不到
+  //       设备的动画开关，所以没动它）（dumpsys 备用通道也没抓到：dumpsys activity top 跑不起来）」
+  //   —— 通篇在说 dump 通道，**一个字都没提设备离线**。而真因就是设备离线，
+  //   与「页面不 idle / 备用通道不行」是**完全无关的两件事**，排查会被带偏很远。
+  //   ⇒ 把 stderr 带出来（有 stderr 就是 adb 层的错，优先说清楚）。
+  if (!r.ok) {
+    const err = String(r.stderr || r.stdout || '').trim();
+    return { ok: false, why: 'dumpsys activity top 跑不起来' + (err ? '：' + err.split(/\r?\n/)[0] : '') };
+  }
   const xml = vhToXml(String(r.stdout || ''), pkg);
   if (!xml) return { ok: false, why: 'dumpsys 里没有「' + pkg + '」的 View Hierarchy' };
   return { ok: true, xml };
@@ -834,10 +1146,63 @@ async function keyboardReady(serial) {
  *
  * 所以这里改成：**先问设备真实状态，再决定怎么发**；中文打不进去就**明确失败**，
  * 让上层如实报错，绝不静默退化去 `input text` 假装成功。
+ *
+ * ★★ 2026-10-04 真机实测（这次是**用户反馈**逼出来的，必须记死）：
+ *    症状 = `输入失败：/system/bin/sh: no closing quote`，**两条视频全挂**，正文一个字都没进去。
+ *
+ *    根因 = **换行之后紧跟 `#`（或反引号）**。得物的正文是「4~5 行短句 + 若干 `#话题`」，
+ *    而话题**自带行首 `#`** ⇒ 每一篇正常文案都命中。设备端 `sh` 把行首 `#` 当**注释**嚼掉，
+ *    连带把命令末尾那个收尾的双引号一起吃掉 ⇒ sh 报「引号没闭合」，广播根本没发出去。
+ *
+ *    逐条实测（内置 adb 37.0.1 / MuMu 12 / Android 12，可复算）：
+ *      `#TW男装`（单行）            → 通过（行首就在命令开头，shell 不把它当续行注释）
+ *      `"a\n#TW男装"`               → **失败 no closing quote**
+ *      `"a\n##TW"`                  → **失败**（`#` 开头都算）
+ *      `"a\n`b"`                    → **失败**（反引号触发命令替换）
+ *      `"a #TW男装"`（# 不在行首）   → 通过
+ *      `"a\n #TW男装"`（前面有空格） → 通过
+ *      `"a\n$X"` / `"a\n;b"` / `"a\n&b"` / `"a\n"b"` / `"a\n\\b"` → 全通过
+ *    （`$` `;` `&` 之所以没事，是因为它们在**双引号里**本来就不展开、或展开后无副作用；
+ *      `#` `\`` 是双引号里唯二会真的改变解析结果的。）
+ *
+ *    修法 = 把 `#` 与反引号**逐字转义**（`#` → `\#`、`` ` `` → `` \` ``）。
+ *    这两个反斜杠在双引号内会被 sh 剥掉 ⇒ **送进输入框的是原字符**，内容一字不改。
+ *    （放在最后一步做，因为前面的 `%s`/`"`/`\` 转义会引入新的反斜杠，顺序反了会重复转义。）
+ *    ★ 也顺带把 `$` 转义了 —— 双引号里 `$` 会展开，`$X` 变成空串会**静默丢字符**（不报错，更难查）。
  */
+/**
+ * ★★ 2026-10-04 —— 这里踩过一次「修了个不存在的 bug，还把内容改坏了」，记死：
+ *
+ * 一度以为「行首 `#` 会被设备端 sh 当注释 ⇒ 吃掉收尾双引号 ⇒ no closing quote」，
+ * 于是加了这个函数去转义 `#` / 反引号 / `$`（还连反斜杠一起转）。
+ * **真机复核结论：那个诊断是错的。**
+ *   - 逐条真机实验（`echo` 走与 inputText 逐字相同的命令构造）：
+ *     行首 `#TW`、`##TW`、`# TW`、tab 后 `#`、多行正文 …… **没有一条炸**。
+ *     连 `#TW` 单行都不炸。
+ *   - 真正的 `no closing quote` 只由 **未转义的双引号** 引起（本次唯一真会炸的字符）。
+ *   - 更糟的是：那个「修法」把**反斜杠真的写进了用户正文**（真机 dump 读回
+ *     `\#TW男装`），发布出去就是一篇带反斜杠的错文案 —— 静默改坏内容比报错严重得多。
+ *   - 当时之所以"看起来修好了"，是因为夹具（tools/fakeadb/adb.js）里那条判据
+ *     `/(^|\n)(#|`)/` **是我自己写的**，不是设备行为 ⇒ 夹具和"修法"互相印证，
+ *     形成闭环假通过（见「反向验证的假通过坑」⑨：**验的是自己的假设，不是真机**）。
+ *
+ * ⇒ 现在的口径：**只转义真正会破坏 shell 双引号语义的字符**，其余一律原样。
+ *   在双引号里能改变解析的只有三样：`"`（结束字符串）、`` ` ``（命令替换）、`$`（变量/命令替换）。
+ *   `#` 在双引号里**没有特殊含义**（注释只在词首、且必须在引号外）—— 不动它。
+ *   ★ 反斜杠也**不转**：`am broadcast --es msg "..."` 这条路上，反斜杠会被 Android 的
+ *     参数解析原样带进文本 ⇒ 转了就等于往正文里加字符（实测泄漏为 `\#`）。
+ *     若将来要支持「正文里真的含反斜杠」，不能靠加转义，得换一条不经过 shell 的通道
+ *     （例如 `adb push` 一个文件再让设备端读），否则无解。
+ */
+function shellQuoteForInputText(s) {
+  return String(s)
+    .replace(/(["`$])/g, '\\$1');  // 只动这三样：结束引号 / 命令替换 / 变量替换
+}
+
 async function inputText(serial, text) {
   const s = String(text == null ? '' : text);
-  const esc = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/ /g, '%s');
+  // ★ 空格换成 %s：这是 `input text` 与 ADBKeyboard 广播**都**认的写法（避免整串被当成多个参数）。
+  const esc = shellQuoteForInputText(s).replace(/ /g, '%s');
   const asciiOnly = /^[\t\n\r\x20-\x7E]*$/.test(s);
 
   // 纯 ASCII：`input text` 实测可用，而且不依赖设备上的输入法状态，优先用它
@@ -1234,8 +1599,9 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, filesMissing, screencap,
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, reapLongTrashDirs, filesMissing, screencap,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
+  dumpAnimOff, animRestoreCmd, shellQuoteForInputText, offlineHint,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
   installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus,

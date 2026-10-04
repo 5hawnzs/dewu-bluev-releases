@@ -280,14 +280,33 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
   //     后面每一条内容的同一步直接走「关动画」路径（实测关动画后 ~2s 就能抓到）。
   const d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: !!preferAnimOff });
   if (!d.ok) {
+    // ★★ 2026-10-04：**已经决定要抛错了**，这时候才附带一句「设备在不在线」——
+    //   设备掉线时那串「dump 没有任何输出 / 备用通道也跑不起来」会把排查带偏到「页面不 idle」上，
+    //   而真因是设备掉了（处置完全不同：重连 / 重启模拟器）。
+    //   ★ 只在**这一条报错路径**上调，成功路径一个字节都不变（也免得污染调用序列）。
+    const hint = await adb.offlineHint(serial);
     throw new Error(`「${step.name || step.value}」这一步要先看当前这一屏有没有 `
-      + `${ids.join(' / ')}，但拿不到界面结构：${d.why}`);
+      + `${ids.join(' / ')}，但拿不到界面结构：${d.why}${hint}`);
   }
   if (d.via === 'dumpsys' && ctx && ctx.log) {
     ctx.log('屏幕守卫走的是 dumpsys 备用通道（只有 id / 坐标，没有文字）', 'warn');
   }
   const g = uimap.screenCondOk(step, uimap.parseNodes(d.xml));
   if (!g.ok && ctx && ctx.log) ctx.log(`屏幕守卫拦下这一步：${g.why}`, 'info');
+  // ★★ 2026-10-04 提速（用户投诉「选择素材太慢」的直接来源）：
+  //   「这一屏不 idle」是**屏幕的性质**，与「守卫条件成不成立」无关 —— 所以**在成功和失败两条
+  //   路径上都要把它学下来**。原来只在成功路径记（runStep 里 `if (g.ok)` 之后），而弹窗守卫
+  //   （「未完成草稿拦截 · 点放弃」）绝大多数情况下**条件不成立 ⇒ 直接 return skipped**，
+  //   于是每一条内容走到这一步都要**重新白等一次 idle 超时**。真机实测：该步每条 **13.5s**，
+  //   而这 13.5s 里没有任何有效动作（就是在等一个永远不来的 idle）。
+  //   ⇒ 只要 dump 这次是**关着动画**才抓到的（`d.animOff`），当场记进按步骤名共享的缓存。
+  if (d.animOff && ctx && ctx.animOffSteps && step.name && !ctx.animOffSteps[step.name]) {
+    ctx.animOffSteps[step.name] = true;
+    if (ctx.log) {
+      ctx.log('页面一直不 idle，已临时关掉系统动画抓到结构（抓完已还原）；'
+        + '本批后面再遇到这一步就直接走关动画，不再白等那 ~11 秒', 'warn');
+    }
+  }
   // ★ 2026-10-03 提速：把刚抓到的那份结构**带回去**给同一步的点击用（见 runStep 的 reusedXml）。
   //   一个守卫步原来要抓两次屏（守卫一次 + tapId 一次，实测 ~2×1-2s），现在只抓一次。
   // ★★ 2026-10-04：把 `animOff`（这一屏抓的时候是不是关着动画）也带回去 ⇒ runStep 把它记进
@@ -348,7 +367,8 @@ async function runStep(serial, step, data, ctx) {
         if (!d.ok) {
           lastWhy = `拿不到界面结构：${d.why}${d.idle ? '（这个页面一直不 idle）' : ''}`;
           if (attempt < 2) { await sleep(450); continue; }
-          throw new Error(lastWhy);
+          // ★★ 2026-10-04：要抛错了，这时才附带一句「设备在不在线」（见 adb.offlineHint）。
+          throw new Error(lastWhy + (await adb.offlineHint(serial)));
         }
         if (d.animOff) {
           // ★ 把「这一步这一屏不会 idle」记下来（键 = 步骤名）。本批后面再遇到同一步就直接
@@ -392,6 +412,46 @@ async function runStep(serial, step, data, ctx) {
           throw new Error(`找到了「${step.value}」，但没有任何一张「${step.card}」把它包住 —— `
             + `结果页的版式变了，或者 card 写错了。不瞎点（点错卡＝挂错商品）。`);
         }
+        // ★★★ 2026-10-04 真机实测（用户指出）：得物贴完文案后会**自动识别视频中的好物**，
+        //   识别期间「关联好物」那一行是 `clickable=true` 但 **`enabled=false`** ——
+        //   系统不响应任何点击（点左侧文字区、点右侧箭头都一样），
+        //   而表现是「点了没反应 → 400ms 后抓屏还是这一屏 → 后面那步报找不到搜索框」，
+        //   报错指向的位置离真因很远。
+        //   ⇒ 这一步若写了 `waitEnabled:true`：
+        //     **有节点但不可用 = 还没到能点的时候**，继续等（不点、不报错）；
+        //     等到可用再点。等不到仍如实报「一直处于禁用状态」——不硬点。
+        //   ★ 等待次数可配（`waitEnabledTries`，缺省 3）：得物自动识别视频好物实测要十几秒，
+        //     默认那 3 次（≈8s）根本不够 ⇒ 好物这一步会「等不到」而失败。
+        //   ★★ 这一分支**不能用外层 for 的 attempt<3 限制** —— 那 3 次是给「节点还没渲染出来」用的，
+        //     和「节点在、但禁用中」是两件事。这里自己数次数、自己等。
+        if (step.waitEnabled) {
+          const tries = Number(step.waitEnabledTries) > 0 ? Number(step.waitEnabledTries) : 3;
+          let waitedForEnable = 0;
+          for (;;) {
+            hit = (step.action === 'tapCardText'
+              ? rawHit.map(h => uimap.cardOf(nodes, h, step.card)).filter(x => x && x.center)
+              : rawHit);
+            const usableNow = hit.filter(n => n.enabled !== false);
+            if (usableNow.length >= want) { hit = usableNow; break; }   // 可用且够数 ⇒ 出去点
+            if (!hit.length && attempt < 2) break;                       // 节点都没出现 ⇒ 交给外层重试
+            if (waitedForEnable >= tries) {
+              throw new Error(`「${step.value}」等 ${(waitedForEnable * 0.7).toFixed(1)}s 仍是禁用状态`
+                + `（enabled=false，得物正在自动识别视频中的好物，识别期间这一行不可点）。`
+                + `不硬点。要么识别卡住了，要么得物改版了。`);
+            }
+            waitedForEnable++;
+            if (ctx && ctx.log && (waitedForEnable === 1 || waitedForEnable % 3 === 0)) {
+              ctx.log(`「${step.value}」还不可点（得物正在自动识别视频好物）——已等 `
+                + `${(waitedForEnable * 0.7).toFixed(1)}s，继续等`, 'info');
+            }
+            await sleep(700);
+            const d2 = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff });
+            if (d2.ok) { nodes = uimap.parseNodes(d2.xml); rawHit = uimap.findNodes(nodes, cond).filter(x => x && x.center); }
+          }
+        }
+        hit = (step.action === 'tapCardText'
+          ? rawHit.map(h => uimap.cardOf(nodes, h, step.card)).filter(x => x && x.center)
+          : rawHit);
         if (hit.length >= want) { node = hit[0]; break; }
         lastFound = hit.length;
         if (attempt < 2) {
@@ -713,7 +773,20 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     }
     row.status = step.name;
     if (ctx.onRow) ctx.onRow(row);
-    const rs = await runStep(serial, step, data, ctx);
+    // ★★ 2026-10-04 逐步计时（用户问「为什么选择素材花了 8 秒 / 点关联好物花了 5 秒」）：
+    //   不靠推理，把每一步的**真实毫秒数**量出来。只有慢到会引起注意的（≥1.5s）才说，
+    //   免得日志被一堆 0.1s 淹没。计时不含日志本身的开销（纯 runStep 前后取差值）。
+    const tStep = Date.now();
+    let rs;
+    try {
+      rs = await runStep(serial, step, data, ctx);
+    } finally {
+      const used = Date.now() - tStep;
+      if (ctx.stepTiming) ctx.stepTiming.push({ name: step.name || step.value, ms: used, row: row.dir });
+      if (used >= 1500) {
+        log(`${row.dir}：「${step.name || step.value}」耗时 ${(used / 1000).toFixed(1)}s`, 'info');
+      }
+    }
     // ★★ 屏幕守卫（whenOn / whenNotOn）判「这一屏不对」⇒ 这一步**没发任何点击**。
     //   必须说出来：静默少点一步，真机上表现为「下一条莫名失败」，最难查。
     if (rs && rs.skipped) {
@@ -749,6 +822,9 @@ async function run(state, ctx = {}) {
   // ★ 2026-10-03 提速：批次内共享「哪一步这一屏不会 idle」的缓存（见 runStep 的 wantAnimOff）。
   //   只在这一次发布里有效，不落盘 —— 下次发布会重新学一遍（设备/App 版本变了也自然失效）。
   if (!ctx.animOffSteps) ctx.animOffSteps = {};
+  // ★ 2026-10-04：逐步计时用的收集器（调用方传进来就写进去；不传就是一个丢弃用的数组）。
+  //   界面上「本次发布各步耗时」那张表读的就是它。
+  if (!ctx.stepTiming) ctx.stepTiming = [];
   const progress = ctx.progress || (() => {});
   const cancelled = ctx.cancelled || (() => {});
   const onRow = ctx.onRow || (() => {});

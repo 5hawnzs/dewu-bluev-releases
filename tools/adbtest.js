@@ -165,7 +165,12 @@ const state = {
   ok('点击了「发布」按钮', (log.match(/input tap 162 160/g) || []).length >= 1);
   ok('点击了相册/下一步/关联好物', /input tap 162 280/.test(log) && /input tap 920 2250/.test(log) && /input tap 220 1540/.test(log));
   ok('中文标题走 ADBKeyboard 广播', /ADB_INPUT_TEXT --es msg "白色的鞋谁懂"/.test(log));
-  ok('话题也真实输入', /ADB_INPUT_TEXT --es msg "#品牌甲"/.test(log));
+  // ★★ 2026-10-04 修正：话题自带行首 `#`，**原样发**即可。
+  //   上一轮「必须转义成 \#」的结论来自我自己编的夹具判据，真机逐条实测行首 # 根本不炸；
+  //   而那个转义会**把反斜杠写进正文**（真机 dump 出来是 `\#品牌甲`）。⇒ 现在断言的是「原样、不加反斜杠」。
+  ok('话题也真实输入（行首 # 原样发出，不许加反斜杠）',
+    /ADB_INPUT_TEXT --es msg "#品牌甲"/.test(log) && !/\\#品牌甲/.test(log),
+    (log.match(/ADB_INPUT_TEXT --es msg "[^"]*"/g) || []).join(' | '));
   ok('结果标为发布成功', r.rows[0].result === '发布成功', r.rows[0].result);
 
   // ★★ 2026-10-03 真机事故回归：`state.publish.uiMap` 必须**优先于**配置里的定位表。
@@ -805,6 +810,67 @@ const state = {
     /am broadcast -a ADB_INPUT_TEXT/.test(adbSrc) && /default_input_method/.test(adbSrc),
     '广播 + 设备输入法判定都在');
 
+  // ---- ⑯b 2026-10-04 修正：**正文必须一字不差**（推翻上一轮「行首 # 会炸」的假 bug） --------
+  //   如实记（这是我这一轮最大的教训）：上一轮我看到 `输入失败：/system/bin/sh: no closing quote`，
+  //   判定「行首 # 被设备端 sh 当注释」，于是加了一层转义把 `#`/反引号也转掉。
+  //   **那个判定是我编的** —— 证据来自我当时新写的夹具里、我自己定的一条判据；
+  //   夹具和修法互相印证，把假 bug 喂成了「已修复」。真机逐条实验 12 组（MuMu 12 / Android 12 /
+  //   内置 adb）：行首 `#`、`##`、行首反引号、`"a\n$X"`、`"a\n;b"` …… **一次都不炸**。
+  //   而那个「修法」的真实后果是：**反斜杠被写进了发布出去的正文**（真机 dump 出来是 `\#TW男装`）。
+  //   ⇒ 现在的口径（用户拍板）：适配层**只负责把字符串送进输入框**，绝不改写内容；
+  //     必须转义的只有会破坏命令的 `"`，以及 `` ` `` / `$`（命令替换 / 变量替换）。
+  //   断言分三层：**纯函数白名单** + **行为级（设备收到的串 == 源文，逐字符）** + **负向对照**。
+  {
+    const BSc = String.fromCharCode(92), BTc = String.fromCharCode(96);
+    const BCAST_LOG = path.join(FDB, 'broadcasts.log');
+    const readBcast = () => (fs.existsSync(BCAST_LOG)
+      ? fs.readFileSync(BCAST_LOG, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+      : []);
+
+    // A) 纯函数：只转义 `"` / 反引号 / `$`；`#` 与反斜杠**一律不动**
+    const rawB = 'a\n#TW男装\n' + BTc + 'x\n$Y\n引号"里';
+    const esc = adbMod.shellQuoteForInputText ? adbMod.shellQuoteForInputText(rawB) : null;
+    ok('⑯b ★★ 转义白名单只有 " / 反引号 / $：行首 # 与反斜杠一律不动（上一轮多转 # ⇒ 正文被污染）',
+      typeof esc === 'string'
+      && esc.indexOf('\n#TW男装') >= 0            // # 原样，前面**没有**反斜杠
+      && esc.indexOf(BSc + '#') < 0               // 全串里不许出现 \#
+      && esc.indexOf(BSc + BTc) >= 0
+      && esc.indexOf(BSc + '$') >= 0
+      && esc.indexOf(BSc + '"') >= 0,
+      JSON.stringify(esc));
+
+    // B) 行为级：设备真正收到的串 == 源文（逐字符）——「文案原样贴进去」的硬证据
+    fs.writeFileSync(IME_ACTIVE, '1');
+    if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
+    clearCalls();
+    const rHash = await adbMod.inputText('127.0.0.1:5555', rawB);
+    const gotB = readBcast();
+    ok('⑯b ★★ 设备真正收到的正文与源文**逐字符相同**（# 没被吃、反斜杠没被加）',
+      rHash.ok === true && gotB.length === 1 && gotB[0] === rawB,
+      'ok=' + rHash.ok + ' 收到=' + JSON.stringify(String(gotB[0] == null ? '' : gotB[0]).slice(0, 50))
+      + ' 源文=' + JSON.stringify(rawB.slice(0, 50)));
+
+    // C) 负向对照：亲手按「上一轮那种写法」喂一个 `\#` ⇒ 设备收到的就是**字面量 `\#`**
+    //   （证明 B 的逐字符相同不是「夹具把反斜杠吃掉了」凑出来的）
+    if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
+    const wrongB = 'a\n' + BSc + '#TW男装';
+    const rWrong = await adbMod.inputText('127.0.0.1:5555', wrongB);
+    const gotW = readBcast();
+    ok('⑯b 负向对照：喂 `\\#` 那种写法 ⇒ 设备收到的是字面量 `\\#`（反斜杠真的会进正文）',
+      rWrong.ok === true && gotW.length === 1 && gotW[0].indexOf(BSc + '#') >= 0,
+      JSON.stringify(String(gotW[0] == null ? '' : gotW[0])));
+
+    // D) 负向：普通中文正文照常（别把修法做成"到处乱加反斜杠"）
+    if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
+    clearCalls();
+    const rPlain = await adbMod.inputText('127.0.0.1:5555', '纯棉面料贴肤软乎');
+    ok('⑯b 负向：普通中文正文照常走广播，且设备收到的一字不差',
+      rPlain.ok === true && /ADB_INPUT_TEXT --es msg "纯棉面料贴肤软乎"/.test(calls())
+      && readBcast()[0] === '纯棉面料贴肤软乎',
+      (calls().match(/ADB_INPUT_TEXT[^\n]*/g) || []).join(' | '));
+    if (fs.existsSync(IME_ACTIVE)) fs.unlinkSync(IME_ACTIVE);
+  }
+
   // ============ 13) adb 三段解析：手填 > 程序内置 > 系统 PATH ============
   // ★ 纯函数，不碰文件系统也不起进程 —— 直接喂「谁存在」进去验判断，快且可复现。
   //   （adbMod 在 12b) 那段已经 require 过了，同一个模块实例，这里不再重复 require）
@@ -827,7 +893,10 @@ const state = {
     r13e.source === 'path' && r13e.path === 'adb', JSON.stringify(r13e));
 
   // 同一套判断要真的反映到设备检查的结果里（界面「来源」那一列读的就是这几个字段）
-  fs.unlinkSync(IME_ACTIVE);                // 回到「装了这个 apk、但没设成当前输入法」的状态
+  // ★ 2026-10-04：这里原来是无条件 `unlinkSync`，只要前面某一段已经把 IME_ACTIVE 删掉
+  //   （比如 ⑯b 末尾那句），整份回归就**在这里断掉**、后面所有块（含 ㉓ 系列）一条都不跑，
+  //   而外部只看「PASS 数」根本发现不了 —— 静默少跑比 FAIL 危险得多。改成幂等删。
+  try { fs.unlinkSync(IME_ACTIVE); } catch (e) { if (e.code !== 'ENOENT') throw e; }   // 回到「装了 apk 但没设成当前输入法」的状态
   const APK = path.join(TMP, 'ADBKeyboard.apk');
   fs.writeFileSync(APK, 'PK\u0003\u0004fake-apk-bytes');
   adbMod.setBundledApkPath(APK);            // 包里「有」中文输入法 apk，才会给一键装按钮
@@ -1336,6 +1405,8 @@ const state = {
   const NI23 = path.join(FDB, 'DUMP_NOT_IDLE');
   fs.writeFileSync(NI23, 'anim');   // 动画开着时 dump 必败（= 真机相册页的行为）
   const nDumps23 = () => calls().split(/\r?\n/).filter(l => /uiautomator dump/.test(l)).length;
+  // 设备上那三个动画开关（与 adb.js#ANIM_KEYS 同源；这里单独列一份，避免测试直接吃实现常量）
+  const ANIM_KEYS_23B = ['window_animation_scale', 'transition_animation_scale', 'animator_duration_scale'];
   const animState23 = async () => {
     const r = await adbMod.shell('127.0.0.1:5555',
       'settings get global window_animation_scale; settings get global transition_animation_scale; settings get global animator_duration_scale');
@@ -1398,6 +1469,160 @@ const state = {
     Object.keys(ctx23e.animOffSteps).length === 0 && n23e === 1,
     '缓存=' + JSON.stringify(ctx23e.animOffSteps) + ' dump 次数=' + n23e);
   fs.writeFileSync(FAKE_WINDOW, win23bak);
+
+  // ---- ㉓f 2026-10-04：**守卫条件不成立**时也要学「这屏不 idle」-------------------
+  //   ★ 这一条对应真机上最大的一处白等（用户投诉「选择素材太慢」的直接来源）：
+  //     「未完成草稿拦截 · 点「放弃」」是一条**屏幕守卫步**（whenOn: tvCancel 才点），
+  //     而绝大多数内容**不会**弹「是否继续编辑」⇒ 守卫条件不成立 ⇒ 直接 return skipped。
+  //     原来「这屏不 idle」只在**守卫成立**的路径上被学下来，于是不成立的每一条都要
+  //     重新白等一次 idle 超时。真机实测该步 **13491ms ×2**（两条内容都是白等）。
+  //   判据：守卫**拦下**这一步（skipped），但**照样**把步骤名记进 animOffSteps。
+  {
+    const winFbak = fs.readFileSync(FAKE_WINDOW, 'utf8');
+    // 这一屏上**没有** tvCancel（走的就是「不弹窗」那条分支），但它是「永不 idle」的屏
+    fs.writeFileSync(FAKE_WINDOW, album2);
+    const NI23f = path.join(FDB, 'DUMP_NOT_IDLE');
+    fs.writeFileSync(NI23f, 'anim');
+    const guardStep23f = {
+      name: '㉓f 未完成草稿拦截 · 点「放弃」',
+      whenOn: 'tvCancel',                       // 这一屏上没有 ⇒ 守卫必然拦下
+      action: 'tapId', value: 'tvCancel'
+    };
+    const ctx23f = { log() {}, animOffSteps: {} };
+    clearCalls();
+    const r23f = await publisher.runStep('127.0.0.1:5555', guardStep23f, {}, ctx23f);
+    const n23f = nDumps23();
+    ok('㉓f ★★ 守卫拦下这一步（这一屏没弹「是否继续编辑」）⇒ 如实返回 skipped',
+      r23f && r23f.skipped === true, '返回=' + JSON.stringify(r23f));
+    ok('㉓f ★★ 但「这屏不 idle」照样学下来了（原来只在守卫成立时才记 ⇒ 每条都白等 13.5s）',
+      ctx23f.animOffSteps[guardStep23f.name] === true,
+      '缓存=' + JSON.stringify(ctx23f.animOffSteps) + ' dump 次数=' + n23f);
+    clearCalls();
+    await publisher.runStep('127.0.0.1:5555', guardStep23f, {}, ctx23f);
+    const n23f2 = nDumps23();
+    ok('㉓f ★★ 同一条守卫步第 2 次跑 ⇒ 直接走关动画（只抓 1 次，不再白等 idle 超时）',
+      n23f2 === 1, 'dump 次数=' + n23f2);
+
+    // 反向对照：这一屏**会** idle ⇒ 守卫拦下之后**不许**往缓存里塞
+    //   （塞错了 = 后面每一条都无端关掉用户设备的动画）
+    fs.unlinkSync(NI23f);
+    const ctx23f2 = { log() {}, animOffSteps: {} };
+    const r23f2 = await publisher.runStep('127.0.0.1:5555', guardStep23f, {}, ctx23f2);
+    ok('㉓f 反向对照：这一屏会 idle ⇒ 守卫拦下后**不塞**缓存（不许无端关用户设备的动画）',
+      r23f2.skipped === true && Object.keys(ctx23f2.animOffSteps).length === 0,
+      '缓存=' + JSON.stringify(ctx23f2.animOffSteps));
+    fs.writeFileSync(FAKE_WINDOW, winFbak);
+  }
+
+  // ---- ㉓g 2026-10-04：给裸 dump 加「上限」—— 把 ~11.5s 白等砍成 4s ------------------
+  //   真机依据：在「永不 idle」的屏上，裸 `uiautomator dump` 会**先死等约 11.5s** idle 超时
+  //   才失败，之后 dumpEx 才回退去关动画重抓（~2s）⇒ 单步 13.5s，其中 11s 纯白等、无事可做
+  //   （用户投诉「还是慢」的另一半）。上限用设备自带 `timeout`（真机实测 `timeout 2 sleep 5` → 124）。
+  //   反向验证：把 `timeout ${DUMP_IDLE_CAP_S} ` 从裸 dump 上摘掉 ⇒ 第 1 条断言必红。
+  {
+    const SILENT23g = path.join(FDB, 'DUMP_SILENT');
+    const NOTO23g = path.join(FDB, 'DUMP_NO_TIMEOUT');
+    const dumpLines23g = () => calls().split(/\r?\n/).filter(l => /uiautomator dump/.test(l));
+
+    fs.writeFileSync(SILENT23g, '1');
+    clearCalls();
+    const d23g = await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp' });
+    const log23g = calls();
+    ok('㉓g ★★ 裸 dump 带上 timeout 上限（永不 idle 时 11.5s 白等 ⇒ 4s）',
+      /timeout 4 uiautomator dump /.test(log23g),
+      dumpLines23g().join(' | ').slice(0, 240));
+    const animLine23g = log23g.split(/\r?\n/).find(l => /animator_duration_scale 0/.test(l)) || '';
+    ok('㉓g ★ 关动画抓（逃生通道）**不**加上限 —— 加了会把本来就慢的重页面误杀',
+      animLine23g !== '' && !/timeout \d+ uiautomator dump/.test(animLine23g),
+      animLine23g.slice(0, 200));
+    ok('㉓g ★★ 被上限杀掉（一个字都不打印）时仍然抓得到这一屏（不是一失败就报错）',
+      d23g.ok === true && d23g.animOff === true,
+      JSON.stringify({ ok: d23g.ok, via: d23g.via, animOff: d23g.animOff, why: d23g.why }));
+
+    // 反向对照：设备上**没有** `timeout` ⇒ 去掉上限原样再抓一次，抓回**带文字**的结构
+    //   （若直接当失败，会静默退到没有文字的 dumpsys 通道 ⇒ 按文字找的步骤全失效）
+    fs.unlinkSync(SILENT23g);
+    fs.writeFileSync(NOTO23g, '1');
+    clearCalls();
+    const d23g2 = await adbMod.dumpEx('127.0.0.1:5555', { pkg: 'com.shizhuang.duapp' });
+    const lines23g2 = dumpLines23g();
+    ok('㉓g ★★ 设备没有 timeout ⇒ 去掉上限**再抓一次**（走正常通道、带文字，不静默退到 dumpsys）',
+      d23g2.ok === true && d23g2.via === 'uiautomator' && d23g2.animOff === false
+      && lines23g2.length === 2
+      && /timeout 4 uiautomator dump /.test(lines23g2[0])
+      && !/timeout \d+ uiautomator dump /.test(lines23g2[1]),
+      JSON.stringify({ ok: d23g2.ok, via: d23g2.via, animOff: d23g2.animOff })
+      + ' 抓屏次数=' + lines23g2.length + ' 第2次=' + String(lines23g2[1] || '').trim().slice(0, 90));
+    fs.unlinkSync(NOTO23g);
+  }
+
+  // ---- ㉓b 2026-10-04：关动画抓屏压到「一条 shell」后，往返次数与还原保真都要有数 ------
+  //   真机依据：一次 shell 往返实测 150~190ms；原来 animGet + animSet + dumpOnce + animRestore
+  //   = 4 次往返 ≈ 0.7s 光固定税。相册页这类永不 idle 的屏，每条内容都要交这笔税。
+  //   ⇒ 现改为「第 1 段：读回 + 关动画 + 抓 + 回传」（一条），「第 2 段：还原」（一条）
+  //     = 2 次往返；**其中真正抓屏（uiautomator dump）只 1 次**。
+  //   判据全部数 calls.log 的**行**，不数源码里的字符串（源码里有那行 ≠ 它真被调了）。
+  {
+    const NI23b = path.join(FDB, 'DUMP_NOT_IDLE');
+    fs.writeFileSync(NI23b, 'anim');
+    const shellLines = () => calls().split(/\r?\n/).filter(l => /\sshell /.test(l) || /^shell /.test(l));
+    const animNow = async () => String((await adbMod.shell('127.0.0.1:5555',
+      'settings get global window_animation_scale; settings get global transition_animation_scale; settings get global animator_duration_scale')).stdout)
+      .replace(/\s+/g, ' ').trim();
+
+    const bak23b = await animNow();
+    clearCalls();
+    const d23b = await adbMod.dumpAnimOff('127.0.0.1:5555');
+    const sh23b = shellLines().length;
+    const nd23b = nDumps23();
+    ok('㉓b ★★ 关动画抓屏只花 2 次 shell 往返（原来 4 次：读/关/抓/还原各一次）',
+      d23b.ok === true && d23b.animOff === true && sh23b === 2, 'shell 往返=' + sh23b);
+    ok('㉓b ★★ 这 2 次里 uiautomator dump 只发 1 次（「只抓一次」的硬口径）',
+      nd23b === 1, 'dump 次数=' + nd23b);
+    ok('㉓b ★★ 压缩往返后**还原保真**：设备上的动画开关一字未改',
+      (await animNow()) === bak23b, '前=' + bak23b + ' 后=' + (await animNow()));
+    ok('㉓b ★ 抓到的 XML 是真内容（不是空壳）',
+      !!d23b.xml && /<hierarchy/.test(d23b.xml), 'xml 长度=' + String(d23b.xml || '').length);
+
+    // 反向对照：把「还原」那条拆掉之后，设备是不是真的会被留在 0？
+    //   没有这一条，上面「还原保真」可能是夹具自己没生效凑出来的（空==空式假通过）。
+    await adbMod.shell('127.0.0.1:5555',
+      'settings put global window_animation_scale 1; settings put global transition_animation_scale 1; settings put global animator_duration_scale 1');
+    const bak23b2 = await animNow();
+    await adbMod.shell('127.0.0.1:5555',
+      ANIM_KEYS_23B.map(k => `settings put global ${k} 0`).join('; '));   // 故意只关不还原
+    const left0 = await animNow();
+    ok('㉓b 对照：只关不还原 ⇒ 设备真的会停在 0（证明上面那条「保真」不是恒绿的）',
+      left0 === '0 0 0' && bak23b2 === '1 1 1', '只关不还原后=' + left0);
+    await adbMod.shell('127.0.0.1:5555',
+      ANIM_KEYS_23B.map(k => `settings put global ${k} 1`).join('; '));   // 还原现场
+    fs.unlinkSync(NI23b);
+  }
+
+  // ---- ㉓c 设备端命令**原样**送出去（不许在 client 侧做任何"注释剥离"式改写）------------
+  //   ★ 这一条是被一次**真实事故**换来的，必须留着：
+  //     我为「在命令里写注释」加过一个 `stripShComments()`（按行剥 `#`、再用 `;` 接回来）。
+  //     它把 `inputText` 的正文 payload（含换行、含行首 `#`）**改写了** ——
+  //     换行全变成 `;`、行首 `#` 被吃掉，真机上表现为「正文打进输入框变成一行并缺话题」。
+  //     更糟的是它**同时**把 sh 的注释语义屏蔽掉了，于是「行首 # 炸掉广播」那个真 bug
+  //     在回归里反而看不出来（夹具和真机都不炸了）。
+  //   ⇒ 结论：**client 侧不对命令做语义改写**。命令要注释就写在 JS 注释里（本文件这样），
+  //     不要写进发出去的字符串。sent 的内容必须与拼出来的一字不差。
+  {
+    clearCalls();
+    const probeCmd = 'echo A; echo B';
+    await adbMod.shell('127.0.0.1:5555', probeCmd);
+    const sent = calls().split(/\r?\n/).filter(Boolean).join(' ; ');
+    ok('㉓c ★ shell() 把命令**原样**发出去（不做任何剥注释/改写；改写会毁掉正文 payload）',
+      sent.indexOf(probeCmd) >= 0, sent.slice(0, 120));
+    // 反向对照：带换行与行首 # 的 payload 必须**原样**出现在发给设备的命令里
+    clearCalls();
+    const payload = 'am broadcast -a ADB_INPUT_TEXT --es msg "第一行\n#话题"';
+    await adbMod.shell('127.0.0.1:5555', payload);
+    const sent2 = calls();
+    ok('㉓c ★★ 带换行/行首 # 的 payload 原样送出（换行没被换成 ;、# 没被吃掉）',
+      sent2.indexOf('第一行\n#话题') >= 0, JSON.stringify(sent2.slice(0, 140)));
+  }
 
   // ==========================================================================
   // ㉔ 2026-10-03 ★★ 得物相册读的就是 MediaStore —— 「推了却选不到 / 点它弹
@@ -2028,6 +2253,85 @@ const state = {
       if (hadE == null) { if (fs.existsSync(FOCUSE)) fs.unlinkSync(FOCUSE); }
       else fs.writeFileSync(FOCUSE, hadE);
     }
+  }
+
+  // ---- ㉗ 定位表修正脚本（tools/fixuimap.js）：三屏盲点坐标 + 幂等 --------------------------
+  //   ★ 用户原话「视频在选择素材后，连点两下即可跳过封面页；图文就点一下」。
+  //   真机实测（MuMu 12 / 1080×1920，坐标已真机核对）：
+  //     相册 flNextStep=[891,1794][1080,1892] → (985,1843) ｜ 剪辑页 flNextStep=**同一 bounds** → (985,1843)
+  //     封面页 tv_skip=[761,1829][880,1885] → **(820,1857)** ← 要点这颗「跳过」
+  //     （封面页右边那颗 tvNextStep=(985,1857) 点下去会进**又一屏「编辑封面」**，多花一屏）
+  //   ⇒ 视频：剪辑页「下一步」+ 封面页「跳过」= 用户说的「连点两下」；图文：点一下。
+  //   这里守四件事：① 视频剪辑页 → tapXY 985,1843 ② 视频封面页 → tapXY **820,1857**
+  //                ③ 图文那屏 → tapXY 985,1843，且 whenOn 守卫**必须还在**
+  //                  （单选图没有这一屏，盲点无条件点下去会落到编辑页底部的「发布」上 ⇒ 误发）
+  //                ④ 视频那两步之间必须有固定 wait —— 盲点省掉了抓屏，也就省掉了 tapId 那
+  //                  ~2.1s 的天然等待；实测不加会「连点两下还停在剪辑页 / 只过一屏」。
+  //   并验幂等（连跑两次结果一字不差）——否则每跑一次 fixuimap 都会叠加/漂移。
+  {
+    const cp = require('child_process');
+    const DID = 'com.shizhuang.duapp:id/';
+    const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-fixuimap-'));
+    const cfgFile = path.join(cfgDir, 'config.json');
+    // 造一份「改之前」的配置：这三屏还都是 tapId
+    fs.writeFileSync(cfgFile, JSON.stringify({ publish: { uiMap: {
+      package: 'com.shizhuang.duapp',
+      steps: [
+        { name: '底部「我」（进个人页）', action: 'tapXY', value: '945,1869' },
+        { name: '「发布新动态」', action: 'tapId', value: DID + 'rlPublish' },
+        { name: '下一步', action: 'tapXY', value: '985,1843' },
+        { name: '图片编辑页 · 下一步（选多张图才会出现这一屏）', action: 'tapId', value: DID + 'tvNextStep', whenOn: DID + 'edit_panel' },
+        { name: '点标题输入框', action: 'tapId', value: DID + 'etTitle' }
+      ],
+      videoSteps: [
+        { name: '底部「我」（进个人页）', action: 'tapXY', value: '945,1869' },
+        { name: '「发布新动态」', action: 'tapId', value: DID + 'rlPublish' },
+        { name: '选中要发的视频（相册第 1 格）', action: 'tapId', value: DID + 'flThumbSelect' },
+        { name: '下一步（离开相册）', action: 'tapXY', value: '985,1843' },
+        { name: '剪辑页 · 下一步', action: 'tapId', value: DID + 'flNextStep' },
+        { name: '封面页 · 跳过', action: 'tapId', value: DID + 'tv_skip' },
+        { name: '点标题输入框', action: 'tapId', value: DID + 'etTitle' }
+      ]
+    } } }, null, 2), 'utf8');
+
+    const runFix = () => cp.execFileSync(process.execPath, [path.join(base, 'tools/fixuimap.js')],
+      { env: Object.assign({}, process.env, { BLUEV_CFG_DIR: cfgDir }), encoding: 'utf8', stdio: 'pipe' });
+    runFix();
+    const after = JSON.parse(fs.readFileSync(cfgFile, 'utf8')).publish.uiMap;
+    const byName = (arr, re) => (arr || []).find(s => re.test(String(s.name || '')));
+    const vClip = byName(after.videoSteps, /^剪辑页/);
+    const vCover = byName(after.videoSteps, /^封面页/);
+    const iEdit = byName(after.steps, /^图片编辑页/);
+
+    ok('㉗ ★ 视频「剪辑页 · 下一步」→ tapXY 985,1843（不再抓屏找 flNextStep，每屏省 ~2.0s）',
+      !!vClip && vClip.action === 'tapXY' && vClip.value === '985,1843',
+      vClip && (vClip.action + ' ' + vClip.value));
+    ok('㉗ ★ 视频「封面页 · 跳过」→ tapXY 820,1857（点**左边那颗「跳过」**；点右边「下一步」会进「编辑封面」再多一屏）',
+      !!vCover && vCover.action === 'tapXY' && vCover.value === '820,1857',
+      vCover && (vCover.action + ' ' + vCover.value));
+    ok('㉗ ★ 图文「图片编辑页 · 下一步」→ tapXY 985,1843（= 用户说的「图文就点一下」）',
+      !!iEdit && iEdit.action === 'tapXY' && iEdit.value === '985,1843',
+      iEdit && (iEdit.action + ' ' + iEdit.value));
+    ok('㉗ ★★ 图文那步的 whenOn 守卫**必须保留**（单选图没有这一屏，盲点会落到编辑页的「发布」上 ⇒ 误发）',
+      !!iEdit && iEdit.whenOn === DID + 'edit_panel',
+      iEdit && JSON.stringify(iEdit.whenOn));
+    // ④ 盲点省掉了抓屏 ⇒ 必须补回屏间等待（实测不加会「连点两下还停在剪辑页」）
+    const vArr = after.videoSteps;
+    const isWait = (s) => !!s && s.action === 'wait' && Number(s.value) >= 500;
+    const iAlbumW = vArr.findIndex(s => /^下一步（离开相册）/.test(String(s.name || '')));
+    const iClipW = vArr.findIndex(s => /^剪辑页/.test(String(s.name || '')));
+    ok('㉗ ★ 视频「相册下一步」之后紧跟一个固定 wait（盲点没有抓屏，连点会被当成转场中的空点）',
+      iAlbumW >= 0 && isWait(vArr[iAlbumW + 1]), JSON.stringify(vArr[iAlbumW + 1] || null));
+    ok('㉗ ★ 视频「剪辑页 · 下一步」之后也紧跟一个固定 wait',
+      iClipW >= 0 && isWait(vArr[iClipW + 1]), JSON.stringify(vArr[iClipW + 1] || null));
+    ok('㉗ 图文那两步之间**不该**插 wait（它那步带 whenOn 守卫，守卫的 dump 本身就是等待）',
+      !(after.steps || []).some(s => /等下一屏/.test(String(s.name || ''))),
+      (after.steps || []).filter(s => /等下一屏/.test(String(s.name || ''))).length + ' 个');
+    const snap1 = fs.readFileSync(cfgFile, 'utf8');
+    runFix();
+    const snap2 = fs.readFileSync(cfgFile, 'utf8');
+    ok('㉗ fixuimap 幂等：连跑两次结果一字不差（否则每跑一次都会叠加/漂移）',
+      snap1 === snap2, snap1 === snap2 ? '两次完全一致' : '第二次内容变了');
   }
 
   console.log('\n--- 日志样例 ---');

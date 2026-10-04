@@ -57,6 +57,9 @@ function makeFakeAdb(dir) {
   // 实际被执行的「可执行文件」逐个记下来（calls.log 只记 argv）。
   // 用来证明「留空 adb 路径时，真的去执行了内置的那份 resources/adb/adb.exe」。
   const FILES = path.join(dir, 'files.log');
+  // ★ 2026-10-04：设备端 `am broadcast --es msg "…"` **真正收到的字符串**（按 sh 双引号语义解出来）。
+  //   用途：回归里断言「设备收到的字 == 源文一字不差」——这是「文案原样贴进去」唯一硬证据。
+  const BROADCAST_LOG = path.join(dir, 'broadcasts.log');
   const WINDOW_XML = path.join(dir, 'window.xml');
   const SHOT_PNG = path.join(dir, 'shot.png');
   const NOT_IDLE_FLAG = path.join(dir, 'DUMP_NOT_IDLE');
@@ -64,6 +67,9 @@ function makeFakeAdb(dir) {
   //   有时**一个字都不打印**（不是 could not get idle state）。
   //   建 DUMP_SILENT 文件 → 系统动画还开着时返回**空输出**；关掉动画就成功（同真机）。
   const SILENT_FLAG = path.join(dir, 'DUMP_SILENT');
+  // ★ 2026-10-04：模拟「设备上没有 `timeout`」（老的 / 精简过的系统）。
+  //   真机 sh 会打印 not found、命令根本不执行 ⇒ 用来验「这种情况也要照旧走关动画回退」。
+  const NO_TIMEOUT_FLAG = path.join(dir, 'DUMP_NO_TIMEOUT');
   // `dumpsys activity top` 的夹具 = 真机抓下来的得物发布页 View Hierarchy
   //（前面**故意**垫了两段别的 App，用来证明过滤是按包名做的，不是「取第一段」）。
   // 现场开关：建 NO_DEWU_TOP 文件 → 返回一份**不含得物**的输出（测「备用通道也没抓到」）。
@@ -183,17 +189,47 @@ function makeFakeAdb(dir) {
     //   原来不剥 ⇒ `uiautomator dump X 2>&1` 用 split().pop() 取「输出文件」取到了 `2>&1`
     //   （把结构写进一个叫 2>&1 的文件），接着 `cat X 2>&1` 又去 cat 一个叫 `2>&1` 的文件
     //   ⇒ 只要上游把「抓屏 + 回传」合并成一条 shell，整条链路就全部认不出来（adbtest 一次挂 35 条）。
-    const cmd = sub.trim()
+    let cmd = sub.trim()
       .replace(/\s*\d?>&\s*\d+/g, '')
       .replace(/\s*\d?>\s*\/dev\/null/g, '')
       .trim();
+    // ★ 2026-10-04：模拟「设备上没有 `timeout`」——真机 sh 会打印 not found、命令根本不执行。
+    //   用来证明「没有 timeout 的老设备」上行为退回改之前（照旧走关动画回退），
+    //   **不会**被误判成「这一屏抓到了、只是读不出内容」而跳过回退。
+    if (/^timeout\s+\d+\s+/.test(cmd) && fs.existsSync(NO_TIMEOUT_FLAG)) {
+      return okOut('/system/bin/sh: timeout: inaccessible or not found\n');
+    }
+    // ★ 2026-10-04：真机上给裸 dump 加了 `timeout <秒>` 上限（超时被杀 ⇒ 当"没抓到"）。
+    //   夹具必须认这个前缀，否则 `/^uiautomator dump /` 匹配不上 ⇒ 整条抓屏链路变空操作
+    //   （那是**假绿**：测试全过，真机上却什么都没抓）。
+    //   夹具里 uiautomator dump 是立即返回的，谈不上超时；「被杀」的症状由 DUMP_SILENT
+    //   （空输出、关动画后成功）如实复现 —— 与真机 timeout 杀进程后的可观测结果一致。
+    cmd = cmd.replace(/^timeout\s+\d+\s+/, '').trim();
     if (!cmd) return okOut('');
     // 真 sh 的 echo：合并抓屏那条命令里用它当中段分隔标记
     if (/^echo\b/.test(cmd)) return okOut(cmd.replace(/^echo\s*/, '') + '\n');
     if (cmd === 'wm size') return okOut('Physical size: 1080x2400\n');
     if (cmd === 'input') return okOut('usage: input [<source>] <command>\n');
     if (/^input (tap|keyevent|text) /.test(cmd)) return okOut('');
-    if (/^am broadcast /.test(cmd)) return okOut('Broadcast completed: result=0\n');
+    // ★★ 2026-10-04 修正（推翻了我上一轮**自己编出来**的「行首 # 会让命令炸」）：
+    //   真机逐条实验 12 组（MuMu 12 / Android 12 / 内置 adb）——
+    //     `"a\n#TW"` / `"a\n##TW"` / `"a\n\`b"` / `"a #TW"` / `"a\n #TW"` / `"a\n$X"` /
+    //     `"a\n;b"` / `"a\n&b"` / `"a\n\\b"` —— **一次 `no closing quote` 都没有**，行首 `#` 照发。
+    //   旧夹具里那条「行首 #/反引号 ⇒ no closing quote」判据是**我自己定的**，它和当时的
+    //   「转义修法」互相印证，把假 bug 喂成了「已修复」，代价是**真的把反斜杠写进了正文**
+    //   （真机 dump 出来是 `\#TW男装`）。⇒ 夹具**不得**再复现那个不存在的症状。
+    //   改为**如实模拟 sh 的双引号语义**，把设备端真正收到的串记下来：
+    //     sh 双引号内真正的转义只有 `\"` `` \` `` `\$` `\\` 和「反斜杠+换行」；
+    //     其余反斜杠**原样保留** —— 这正是「把 `#` 写成 `\#` 会污染正文」的机制。
+    //   ⇒ 回归据此断言「设备收到的字 == 源文一字不差」，谁再往文案里塞反斜杠都会红。
+    if (/^am broadcast /.test(cmd)) {
+      const mm = /--es msg "([\s\S]*)"$/.exec(cmd);
+      if (mm) {
+        const delivered = mm[1].replace(/\\(["`$\\])/g, '$1').replace(/\\\n/g, '');
+        try { fs.appendFileSync(BROADCAST_LOG, JSON.stringify(delivered) + '\n'); } catch (e) {}
+      }
+      return okOut('Broadcast completed: result=0\n');
+    }
     if (/^rm -f /.test(cmd)) {
       cmd.split(/\s+/).slice(2).forEach(p => devFiles.delete(p));
       return okOut('');

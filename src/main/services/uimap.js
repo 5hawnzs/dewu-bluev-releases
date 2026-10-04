@@ -21,6 +21,11 @@ function parseNodes(xml) {
       cls: attr.class || '',
       pkg: attr.package || '',
       clickable: attr.clickable === 'true',
+      // ★★ 2026-10-04：必须保留 enabled —— 得物「关联好物」那一行在**自动识别视频好物**期间
+      //   是 `clickable=true` 但 **`enabled=false`**（真机实测 t0/t1 两屏都是）。
+      //   少了这个字段就没法判「它现在到底能不能点」⇒ 点了没反应，而报错会指向后面那一步
+      //   （离真因很远）。见 publisher 的 waitEnabled。
+      enabled: attr.enabled !== 'false',   // 属性缺省时 uiautomator 的语义就是可用
       bounds: attr.bounds || '',
       box,
       center: box ? { x: Math.round((box.x1 + box.x2) / 2), y: Math.round((box.y1 + box.y2) / 2) } : null
@@ -130,6 +135,25 @@ const DEWU = {
     titleId: 'com.shizhuang.duapp:id/iv_draft_title',
     exitId: 'com.shizhuang.duapp:id/fl_publish'
   },
+  // ★★ 2026-10-04 真机实测（新增）：**「是否继续编辑」拦截弹窗**。
+  //   上一轮因为某种原因**没走完就中断**（比如中途报错、app 被杀、干跑到编辑页就停），
+  //   得物会留下一条"未编辑完的视频动态"。之后再点「发布新动态」时它先弹这个窗：
+  //     · 标题 tv_title   text="是否继续编辑"
+  //     · 正文 tvContent  text="你有未编辑完的视频动态，是否继续？"（还带一张 imgDraftCover 封面）
+  //     · 左   tvCancel   text="放弃"  (339,1173)-(531,1247)
+  //     · 右   tvConfirm  text="继续"  (549,1173)-(741,1247)
+  //   ⇒ 不处理的后果：整个脚本卡在这一屏、后面每一步都找不到节点，
+  //     最后报「找不到 tvGoHomePage；当前可见文本：是否继续编辑 / …」（报错位置离真因很远）。
+  //   为什么选「放弃」：我们要发的是**新内容**（队列里那一条），
+  //     而"继续"是把那条**中断的旧半成品**接着编 —— 那不是本次要发的东西，
+  //     接着编会发出一条没标题没正文的残次品（比卡住更糟）。
+  //   ★ 判据用 tvContent 的**独有文字**（比 id 稳：tv_title/tvContent/tvCancel 在别的弹窗里也常见）。
+  resumeDialog: {
+    titleText: '是否继续编辑',
+    hintText: '你有未编辑完的视频动态',
+    dismissId: 'com.shizhuang.duapp:id/tvCancel',
+    dismissText: '放弃'
+  },
   entryHow: '两条路都到同一个发布页：① 动态流右上角相机图标（1 跳，但图标没文字）；'
     + '② 底部「我」→ 右上角「主页」→「发布新动态」（3 跳，推荐）。'
     + '到了发布页（首屏是选素材的相册，顶部有 全部/照片/视频 三个页签）再点「抓取页面结构」。'
@@ -193,6 +217,19 @@ function suggest(nodes, pkg) {
 
   pushStep('草稿箱拦截 · 点底部「发布新动态」出到相册（只有真落到草稿箱时才点）', 'tapId',
     DEWU.draft.exitId, DRAFT_HINT, { whenOn: DEWU.draft.titleId });
+  // ★★ 2026-10-04 真机实测新增：「是否继续编辑」拦截弹窗（见 DEWU.resumeDialog）。
+  //   上一轮中断（报错/被杀/干跑停在编辑页）会留下"未编辑完的视频动态"，
+  //   下次点「发布新动态」先弹它。不处理 ⇒ 整条卡住，报错还指不到这里。
+  //   ★ 选「放弃」：本次要发的是**队列里那一条新内容**，「继续」会接着编旧半成品
+  //     （发出一条没标题没正文的残次品，比卡住更糟）。
+  //   ★ 带屏幕守卫（whenOn=tvContent 不成立就整步跳过、**一个像素都不碰**）。
+  const RESUME_HINT = '★ 带屏幕守卫（whenOn=' + DEWU.resumeDialog.dismissId + ' 所在的这一屏）：'
+    + '只有当前这一屏真出现「' + DEWU.resumeDialog.hintText + '」才点「' + DEWU.resumeDialog.dismissText + '」；'
+    + '正常发布（没这个弹窗）时**整步跳过**。'
+    + '为什么要点「放弃」：本次要发的是**队列里那一条新内容**；点「继续」会接着编上一轮中断留下的旧半成品，'
+    + '发出一条没标题没正文的残次品（比卡住更糟）。';
+  pushStep('未完成草稿拦截 · 点「放弃」（只有真弹出「是否继续编辑」时才点）', 'tapId',
+    DEWU.resumeDialog.dismissId, RESUME_HINT, { whenOn: DEWU.resumeDialog.dismissId });
   pushStep('从相册选图', 'tapText', '相册', '选图入口，按实际页面改');
   pushStep('确认选图', 'tapText', '下一步', '部分版本叫 完成/确定');
   pushStep('填标题', 'input', '${title}', '占位符在运行时替换为生成好的标题');
@@ -227,6 +264,8 @@ function suggest(nodes, pkg) {
   // ★ 视频走的是**同一条入口** ⇒ 同样会被草稿箱接走，这一步必须也带上。
   vpush('草稿箱拦截 · 点底部「发布新动态」出到相册（只有真落到草稿箱时才点）', 'tapId',
     DEWU.draft.exitId, DRAFT_HINT, { whenOn: DEWU.draft.titleId });
+  vpush('未完成草稿拦截 · 点「放弃」（只有真弹出「是否继续编辑」时才点）', 'tapId',
+    DEWU.resumeDialog.dismissId, RESUME_HINT, { whenOn: DEWU.resumeDialog.dismissId });
   vpush('切到视频页签', 'tapText', '视频', '相册页顶部的「视频」页签，部分版本叫 短片/全部，按实际页面改');
   vpush('选中要发的视频', 'tapText', '${videoName}', '${videoName} 是**推上去之后**的文件名（含中文的名字会被清洗成下划线）；相册里只有缩略图没有文字时，改成 tapId/tapDesc 或按实际页面改');
   vpush('确认选视频', 'tapText', '下一步', '部分版本叫 完成/确定');
