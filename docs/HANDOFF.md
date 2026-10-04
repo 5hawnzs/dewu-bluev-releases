@@ -11,12 +11,17 @@
 
 新建任务时：
 
-1. 工作区打开为 **`/Users/shuo/CodeBuddy/得物蓝v发布app`**（工程在子目录 `dewu-bluev-publisher`，不要打开到工程里面，
+> ★★ **路径口径（2026-10-04 本机实测，以这条为准）**
+> 工程 = `D:\work\dewu-bluev-publisher`；workspace 根 = `D:\work`（打开这一层，工程在子目录里）。
+> 下文残留的 `/Users/shuo/CodeBuddy/得物蓝v发布app` 是**macOS 那台机器的历史路径**，
+> **Windows 上照抄会全错**（那是 §10 首次提交时的环境）。
+
+1. 工作区打开为 **`D:\work`**（工程在子目录 `dewu-bluev-publisher`，不要打开到工程里面，
    这样本文档、快照、工程都在视野内）；
 2. 把下面这段粘进去当第一条消息：
 
 ```text
-接手 /Users/shuo/CodeBuddy/得物蓝v发布app/dewu-bluev-publisher（Electron，Windows 素材发布工具）。
+接手 D:\work\dewu-bluev-publisher（Electron，Windows 素材发布工具）。
 
 第一步：完整读 dewu-bluev-publisher/docs/HANDOFF.md 与 README.md，按里面的约束和待办干活。
 特别记住四件事：
@@ -32,8 +37,11 @@
 
 > 想更"重"一点也行：把 §1 的完整会话直接粘贴。**但优先推荐上面这种**——文档改了提示词不用改，单一事实来源。
 >
-> **在 Windows + 雷电模拟器上测整体流程**：本文档 §0~§3 里的工作区路径与环境坑都是 macOS 侧的，
+> **在 Windows + MuMu 模拟器上测整体流程**：本文档 §1~§3 里的"环境坑"多数是 **macOS 侧的历史记录**
+> （`xattr` / `codesign` / darwin 版 sharp 那几行只在 macOS 上成立）；Windows 侧的环境清单与逐环节步骤
 > 直接照 [`WINDOWS-E2E.md`](WINDOWS-E2E.md) 走（那份第 0 节有给 Windows 端 WorkBuddy 的第一条消息）。
+> ★ 2026-10-04 实测：本机模拟器是 **MuMu 12**（`D:\MUMU\MuMuPlayer\nx_main`），**没有雷电**；
+> 设备串以 `adb devices` 真名为准（同一台机器会同时报 `127.0.0.1:16384` 与 `emulator-5554`）。
 
 ---
 
@@ -45,8 +53,8 @@
 ```text
 接手「得物蓝V 素材发布工具」后续开发。
 
-【工作区】/Users/shuo/CodeBuddy/得物蓝v发布app
-工程在子目录 dewu-bluev-publisher。先读 dewu-bluev-publisher/docs/HANDOFF.md 全文，再读 README.md，最后看 src/。
+【工作区】D:\work（工程在子目录 dewu-bluev-publisher；clone 地址见 docs/WINDOWS-E2E.md 第 0 节）
+先读 dewu-bluev-publisher/docs/HANDOFF.md 全文，再读 README.md，最后看 src/。
 
 【硬约束，先看再动手】
 1. 这个文件夹不要改名、不要移动。应用配置与构建产物里存的是绝对路径，改名会让工作区/快捷方式/config.json 的 paths.* 全部失效。
@@ -54,13 +62,16 @@
    编辑前先确认归属；只用局部替换，禁止对这两个文件整文件重写。
 3. 另一个任务的产物请勿改动：src/main/auth.js、index.js、ipc.js、preload/index.js、renderer/index.html、renderer/styles.css
    （本机登录门，auth:* 通道，guard() 会拦截未登录的任务调用）。跑自动化测试时用环境变量 BLUEV_NO_LOGIN=1 绕过登录。
-4. 回滚点：/Users/shuo/CodeBuddy/得物蓝v发布app/_snapshot-20260930-1447.tar.gz（含 src + package.json + README）。
+4. 回滚点：本机（Windows）没有 tar 快照 —— 那两个 _snapshot-*.tar.gz 只在 macOS 那台机器上，D:\work 下实测找不到。
+   Windows 上回滚以 git 为准：git log --oneline 选点 → git switch -c fix/xxx <commit>；
+   不要用 git checkout -- <file>（它会抹掉未提交的在制品）。
 
 【环境】
-- node 20.18.0：export PATH="/Users/shuo/.workbuddy/binaries/node/versions/20.18.0/bin:$PATH"
-- 本机 Electron 二进制会因签名问题被 SIGKILL，需要先：
+- Node：C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2\node.exe
+  （本机只装了这一个版本；macOS 那台是 20.18.0，脚本兼容两者）
+- 下面这条只对 macOS 成立（Windows 不需要，也不要用）：Electron 二进制会因签名问题被 SIGKILL，需要先
   xattr -cr node_modules/electron/dist/Electron.app && codesign --force --sign - node_modules/electron/dist/Electron.app
-- 打 Windows 包：npm run dist:win（会先取 win32 版 sharp 预编译包，macOS 上可交叉打包）
+- 打 Windows 包：npm run dist:win（会先取 win32 版 sharp 预编译包）
 
 【已完成，不要重做】
 见文档 §4。
@@ -84,10 +95,13 @@
 
 ## 2. 硬约束（先看）
 
-1. **不要给 `得物蓝v发布app` 改名/移动**。应用内保存的是绝对路径（`config.json` 的 `paths.output/rejected`、
+1. **不要给工程目录改名 / 移动** —— Windows 上就是 `D:\work\dewu-bluev-publisher`（macOS 那台当年叫 `得物蓝v发布app`）。
+   应用内保存的是绝对路径（`config.json` 的 `paths.output/rejected`、
    `project.json` 的 `sourceDir/sheet.file`、输出目录下的 `pending-results.json`）；Windows 快捷方式也是绝对路径。
    改名会导致：素材整理扫不到、隔离目录不存在、发布单回写落到别处、暂存结果"看不见"。
-   万一改了，重建软链接即可：`ln -sfn "/新路径/dewu-bluev-publisher" "/Users/shuo/CodeBuddy/20260929152625/dewu-bluev-publisher"`
+   万一改了：**把目录改回 `D:\work\dewu-bluev-publisher` 就好**，别折腾软链接。
+   （历史备注：macOS 那台当年是用软链接折的 —— `ln -sfn "/新路径/dewu-bluev-publisher" "/Users/shuo/CodeBuddy/20260929152625/dewu-bluev-publisher"`；
+   Windows 上的对应物是目录联接 `mklink /J`，但**本机从来没建过**，改名回来最省事。）
 2. **另一个任务在同一棵树上工作**，重叠文件是 `src/renderer/app.js`（~51KB）、`src/main/store.js`。
    只用局部替换，**禁止整文件重写**这两个文件；同一时间只允许一方编辑 `app.js`。
 3. **它的产物不要动**：`src/main/auth.js`、`index.js`、`ipc.js`、`preload/index.js`、`renderer/index.html`、`renderer/styles.css`
@@ -156,9 +170,13 @@
 
 ## 3. 环境与已知坑
 
+> ★ **本节多数条目是 macOS 侧的**（`xattr` / `codesign` / darwin 版 sharp 那几行只在那台机器上成立）。
+> Windows 侧的环境清单与逐环节步骤看 [`WINDOWS-E2E.md`](WINDOWS-E2E.md)；
+> 两边共同的口径（硬约束、环境位置、做不到的事）看仓库根 **`AGENTS.md`**。
+
 | 坑 | 表现 | 处置 |
 | --- | --- | --- |
-| 本机没有 node | `command not found` | `export PATH="/Users/shuo/.workbuddy/binaries/node/versions/20.18.0/bin:$PATH"` |
+| 本机没有 node | `command not found` | **Windows**：直接用 `C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2\node.exe`（本机只装了这一个版本）。<br>macOS（历史）：`export PATH="/Users/shuo/.workbuddy/binaries/node/versions/20.18.0/bin:$PATH"` |
 | Electron 二进制被杀 | 启动即 `SIGKILL`（无其它输出） | `xattr -cr` + `codesign --force --sign - node_modules/electron/dist/Electron.app` |
 | 交叉打 Windows 包 | 包里带的是 macOS 版 sharp → Windows 上 HEIC 失效 | 已用 `npm run addon:win` 强制取 `@img/sharp-win32-x64`，`npmRebuild:false` |
 | 渲染层白屏 | `Identifier 'api' has already been declared` | `window.api` 是不可配置属性，顶层 `const api` 会冲突 → 用 `appApi` |
@@ -2117,7 +2135,9 @@ npm i tesseract.js
 
 - PRD：https://c325414b53f748618ec865de0d865c08.app.workbuddy.host/#prd
 - 原型：http://127.0.0.1:8010/index.html
-- 原始录屏：`/Users/shuo/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_suwsgc0k0fh222_93b5/msg/video/2026-09/afea0e69ff6a2b45099f3f28c6b98fe7_raw.mp4`
+- 原始录屏：★ **只存在于 macOS 那台机器上**（微信的容器目录里，Windows 本机取不到）——
+  `/Users/shuo/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_suwsgc0k0fh222_93b5/msg/video/2026-09/afea0e69ff6a2b45099f3f28c6b98fe7_raw.mp4`
+  （结论已固化在本文 §7/§8，**不需要重跑 OCR**；真要看原片得回那台机器。）
 
 ---
 
