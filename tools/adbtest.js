@@ -2900,6 +2900,69 @@ const state = {
       snap1b === snap2b ? '两次完全一致' : '第二次内容变了');
   }
 
+  // ==========================================================================
+  // ㉛ ★★ 2026-10-05（第四十二轮）—— 用户原话：「检查有没有图片就行，空目录有什么关系？」
+  //   真机：DCIM/Camera 里躺着 8 个**删不掉**的超长空目录残骸（`sub/deep` 撞 `Text file busy`；
+  //   `adb kill-server` 解不开，**重启模拟器也解不开** —— 实测 Android uptime 75s 后照样在）
+  //   ⇒ `ls -A` **永远非空** ⇒ 老流程**每一条内容**都必然走完：
+  //     强停得物 → 重删 → mv 换名（Camera 是 sdcardfs 挂载点，必失败）→ 逐子项循环
+  //     （每子项 4~6 次 shell）→ 4 轮扫描 → 兜底 2 轮（含 1.6s 纯 sleep）→ reapLongTrashDirs
+  //   实测这一段 **15.3s**，而它想删的文件**一个都不存在**（`find -type f` = 0）。
+  //   ★ 更糟的连带损失：白白强停掉得物 ⇒ 后面还要再花 4.4s 把它重新拉回首页。
+  //   ⇒ 修正：清完一遍后**先数文件**，数出来 0 个就立刻放行（不强停、不换名、不 reap）。
+  //     真机实测：clearMediaDir(DCIM/Camera) **15266ms → 4449ms**。
+  //   这组盯四件事（前三条行为级、最后一条源码级防回退）：
+  //     ① 只剩空目录残骸 ⇒ **一次都不许强停得物**（没文件要删，强停纯属白干）；
+  //     ② 只剩空目录残骸 ⇒ **不许换名**（换名会把残骸名字一路滚到 255 字符永久卡死）；
+  //     ③ note 必须**如实说清**是「空目录残骸、0 个文件」（不许悄悄放过去）；
+  //     ④ 源码级：这段「先数文件」必须排在「1b) 强停得物」**之前**（顺序反了等于没改）。
+  //   ★ 「有真文件时必须照原样清」这条**不用新写**：上面 ⑫ 就是它的反向对照
+  //     （有真文件 ⇒ 必须判失败），⑫ 保持绿 ⇒ 证明这次提速没把真文件放过去。
+  // ==========================================================================
+  {
+    const fakeExecX = require('child_process').execFile;
+    const adbX = require(path.join(base, 'src/main/services/adb.js'));
+    const DEWU_PKG = 'com.shizhuang.duapp';
+    const camX = fakeExecX.__dirs[fakeExecX.__cameraDirPath];
+    const stubbornX = path.join(FDB, 'DIR_EMPTY_STUBBORN');   // 让「空目录」真的 rm/mv 不掉
+    const resetX = () => {
+      try { if (fakeExecX.__appReset) fakeExecX.__appReset(); } catch (e) { /* 夹具没这个钩子就算了 */ }
+      if (fs.existsSync(stubbornX)) fs.unlinkSync(stubbornX);
+      const s = fakeExecX.__appStops || [];
+      s.length = 0;
+      return s;
+    };
+    resetX();
+
+    // 夹具 = 真机上见过的那个状态：`ls -A` 有条目，**但 `find -type f` 一个文件都没有**；
+    //   且这两个条目**删不掉也改不了名**（stubborn），所以一定会走进「先数文件」那段。
+    //   ★ 不写 stubborn 的话，第一步 `find -mindepth 1 -delete` 就把它们清掉了 ⇒
+    //     `ls -A` 变空 ⇒ 根本走不到被测的那段 ⇒ 断言会**假绿**（空==空）。
+    fs.writeFileSync(stubbornX, '2');
+    camX.exists = true;
+    camX.files = ['X_gone_1759500000000…（243字符）', 'bluev_trash_1759500000001…（255字符）'];
+    camX.renames = [];
+    clearCalls();
+    const rX = await adbX.clearMediaDir('FAKESERIAL', fakeExecX.__cameraDirPath, { forceStopPkg: DEWU_PKG });
+    const stopsX = fakeExecX.__appStops || [];
+    ok('㉛ ★★ 相册里只剩**空目录残骸**（find -type f = 0）⇒ **一次都不许强停得物**'
+      + '（没文件要删；老写法会白白强停，还要再花 4.4s 把得物拉回首页）',
+      rX.ok === true && rX.forceStopped === false && !stopsX.includes(DEWU_PKG),
+      `ok=${rX.ok} 强停=${rX.forceStopped} stops=${JSON.stringify(stopsX)}`);
+    ok('㉛ ★ 同上：也不许走 mv 换名（换名会把残骸名字一路滚到 255 字符、永久卡死）',
+      (camX.renames || []).length === 0, `换名次数=${(camX.renames || []).length}`);
+    ok('㉛ ★ 同上：note 必须**如实写清**是「空目录残骸 / 0 个文件」（不许悄悄放过去）',
+      /空目录残骸/.test(String(rX.note || '')) && /0 个文件/.test(String(rX.note || '')),
+      (rX.note || '（没有 note）').slice(0, 140));
+    // 源码级防回退：先数文件的那段必须在「1b) 强停」之前
+    const iEarly = adbSrc.indexOf("'find ' + dir + ' -type f 2>/dev/null'", adbSrc.indexOf('第四十二轮'));
+    const i1b = adbSrc.indexOf('1b) 2026-10-04 第十四次实测修正');
+    ok('㉛ ★ 源码级：「先数文件」的那段必须排在「1b) 强停得物」**之前**（顺序反了等于没改）',
+      iEarly >= 0 && i1b >= 0 && iEarly < i1b,
+      `数文件@${iEarly} / 强停@${i1b}`);
+    resetX();
+  }
+
   console.log('\n--- 日志样例 ---');
   logs.slice(-4).forEach(l => console.log('  ' + l));
 })().catch(e => { console.error('ADB TEST ERROR', e); process.exitCode = 1; });

@@ -372,6 +372,35 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
   await shell(serial, 'rm -rf ' + dir + '/* ' + dir + '/.[!.]* 2>/dev/null', { timeout: 60000 });
   let stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
   let left = String(stage.stdout || '').trim();
+  // ★★★ 2026-10-05（第四十二轮）★ 先数「还有没有文件」——没有就**立刻收工**，别为空气做功。
+  //   用户原话：「检查有没有图片就行，空目录有什么关系？」
+  //
+  //   为什么必须提前（真机实测，可复算）：得物相册 = MediaStore，**只认文件**；
+  //   空目录（哪怕里面套着 sub/deep）一条都进不去 ⇒「目录 listing 非空」根本不代表「相册还有素材」。
+  //   而这块设备上躺着 8 个**删不掉**的超长残骸空目录（`rm -rf` 撞 `Text file busy`；
+  //   `adb kill-server` 解不开，**重启模拟器也解不开** —— 实测 Android uptime 75s 后照样在）。
+  //   ⇒ 按老流程，这 8 个残骸会让**每一条内容**都必然走完下面这一整套：
+  //     强停得物 → 重删 → mv 换名（Camera 是 sdcardfs 挂载点，必失败）→ 逐子项循环
+  //     （每个子项 4~6 次 shell）→ 4 轮扫描 → 兜底 2 轮（含 1.6s 纯 sleep）→ reapLongTrashDirs
+  //   实测这一段 **15.3s**，而它想删的东西（文件）**一个都不存在**。
+  //   ★ 更糟的连带损失：白白把得物**强停**掉 ⇒ 发布流程后面还要再花 4.4s 把它重新拉回首页。
+  //
+  //   ⇒ 判据：只要 `find <dir> -type f` 数出来是 **0 个文件**，就地判干净
+  //     —— **不强停得物、不换名、不 reap**，直接返回。
+  //   ★★ 红线不变（不许为了快而造假）：**读不到 ≠ 空**。`find` 自身失败时**不放行**，
+  //     照样往下走原流程（原流程会去 `ls`、会如实报错）。有文件时行为与以前一字不差。
+  if (hasLeftover(stage)) {
+    const fchk0 = await shell(serial, 'find ' + dir + ' -type f 2>/dev/null', { timeout: 30000 });
+    const filesNow0 = String(fchk0.stdout || '').trim();
+    if (fchk0.ok && !filesNow0) {
+      const n0 = String(stage.stdout || '').trim().split(/\r?\n/).length;
+      return {
+        ok: true, removed: removed, files: hit.map(h => h.file), error: '', forceStopped: false,
+        note: dirNote || ('只剩 ' + n0 + ' 个删不掉的空目录残骸（find -type f 数出来 '
+          + '0 个文件，不含任何素材）—— 得物相册只认文件 ⇒ 不强停得物、不换名、直接放行')
+      };
+    }
+  }
   if (hasLeftover(stage)) {
     // ★★★ 1b) 2026-10-04 第十四次实测修正（★ 本轮用户报的「第 2/3 篇直接提示没能清干净」的真解）：
     //   先别急着 mv 换名 —— **先看清是什么在锁**。
