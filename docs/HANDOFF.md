@@ -2388,3 +2388,36 @@ const map = c.uiMap;      // 只读配置
   真因是**两次数法不同**（PowerShell 数了 `.bin` / `.package-lock.json`，`ls` 不数点文件），
   `ls -a` = 315 = 311 + 4 ⇒ **没有发生联接被穿透删除**。关键依赖（electron / electron-builder /
   @electron/asar / @img / sharp）+ `electron.exe`（180849624 B）+ smoke 全部复核通过。
+
+### ★ 发 v1.0.15（2026-10-05）—— 主图排序 + 导入校验修复 + 另一路文案/合规整批
+
+★ **发版范围由用户当场选定「全量」**：本版把工作区里**另一路会话**已停的全部未提交改动一起带上
+（沿用 v1.0.6 / v1.0.9 的先例），不是「只推本会话这一条」。
+
+| 项 | 实测值 |
+| --- | --- |
+| 提交 | `fdfd83d`（另一路 19 文件 / +593 −175，句式骨架 T01~T15 + emoji 色系判据 + 页签 4 仅管理员 + `promptFilter`→`promptWrite`）、`62340ea`（chore(发版): 1.0.15）、`30dfcd8`（docs(visual) 刷新）。★ `git ls-remote origin refs/heads/main` == `git rev-parse HEAD` == `30dfcd8344331fa3c49bea6607ed96cffa513891` |
+| 版本号为什么是 1.0.15 | 正式通道停在 `1.0.11`、本机已装副本是 `1.0.13`，而 `dist/` 里躺着一个 **13:47 打的 1.0.14 老包**（在「主图排序」「导入校验修复」两个提交**之前**打的，从未上传）⇒ 沿用同号会出现两个内容不同的 1.0.14 |
+| 打包 | 干净 `git worktree` 快照 `D:/work/_rel1015`（detached @ `30dfcd8`）+ `node_modules` 目录联接；`env -u ELECTRON_RUN_AS_NODE node node_modules/electron-builder/cli.js --win --x64 --publish never` |
+| 产物 | `得物蓝V素材发布工具-1.0.15-x64-win.exe` = **107095416 B**（1.0.14 = 107091467 B，**+3949 B** ⇒ 无新增内置二进制）；`win-unpacked/locales/` 仍**恰好 2 个 pak**（`en-US.pak` / `zh-CN.pak`，瘦身未回退） |
+| 包内核对 | `tools/verifypack.js` **24/24 通过**；另跑一次**整包扫描**（`asar.extractAll` → 全树读，**真读到 2155 个文件 / 48.6 MB**）：临时/回退文件 **0 个**、`promptFilter` 只出现在 `src/renderer/app.js`（见下方「已知残留」）、`src/` 里硬编码设备串 **0**、四块新东西的反向断言全在 |
+| 快照回归 | ★ 在**打包用的同一份字节**上跑 `tools/run-all.js` ⇒ **17 套 1622 项全绿**（与提交前工作树那次**数字一致**） |
+| 公网核对 | `latest.yml` = **`1.0.15`**、size = `107095416`、sha512 `2SjwRigs…`（与本地快照一致）；安装包 **HTTP 200 / Content-Length 107095416**；`beta.yml` **未动**（仍 `1.0.1-beta.2`） |
+| 归档 | 主仓 `dist/` 里 13:47 打的 1.0.14 两件（107091467 B）已**挪**到 `D:\work\_dist-archive\1.0.14-by-me-20261005-1347\`；`dist/` 现**恰好 1 个 exe**；`dist/win-unpacked` 也一并刷到 1.0.15 |
+| 本机已装副本 | **没换 asar**（`D:\bluevbeta\dewu-bluev-publisher` 仍是 1.0.13）。★ 这是**照 SOP 办**：`发版流程SOP.md` 写明「必须是你自己点下载和安装 —— 这两步没有任何自动化路径」 |
+| 看板 | 本次**没改** `web/` ⇒ 不用重新部署 |
+
+★ **已知残留（未修，不影响行为）**：`src/renderer/app.js:2643` 还留着一行 `const promptFilter = val('#bmFilter');`，
+并在 `brandAdd(...)` 里继续传 `promptFilter`。`#bmFilter` 这个输入框**已经从品牌弹窗里删掉** ⇒ `val()` 恒返回 `''`；
+主进程 `brands.add` 显式挑字段，不会把这个值存进品牌对象（`brandtest` ⑨「`promptFilter` 彻底不在品牌对象里」实测通过）。
+⇒ 属「删功能没连读取链一起删」的**遗留一行**。**本轮没动它**：动它要重打包 + 重跑回归，会让已经验完的包作废；
+留待下一版清理（或另一路自己收尾时顺手删）。
+
+★ **本轮踩到的两个「自己写错断言」**（同一类，留档）：
+
+1. `verifypack.js` 的 `--need "file=sub"` 是**按最后一个 `=` 切**的 ⇒ 我写
+   `--need 'src/renderer/index.html=data-admin="1"'` 被切成 file=`…html=data-admin`、sub=`"1"` ⇒
+   **文件读不到、报 FAIL**。不是包的问题。⇒ 子串里带 `=` 时换个不含 `=` 的子串（改用 `data-admin`）。
+2. 整包扫描里断言源码含 `[A-Za-z0-9_.]+:[A-Za-z0-9_.]+/` ⇒ **假红**：源码里那个 `/` 是**转义的 `\/`**
+   （`/^[A-Za-z0-9_.]+:[A-Za-z0-9_.]+\/[A-Za-z0-9_.]+$/`）。⇒ 断言串要照抄**转义后的**写法。
+   （与 `bilateral-fix-verification` §3.4b「破坏脚本自己的期望也会写错」同一类坑。）
