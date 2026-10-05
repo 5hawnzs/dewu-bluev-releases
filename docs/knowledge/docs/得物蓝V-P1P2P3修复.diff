@@ -1,0 +1,147 @@
+diff --git a/src/main/jobs.js b/src/main/jobs.js
+index 3772a4d..0d38ef1 100644
+--- a/src/main/jobs.js
++++ b/src/main/jobs.js
+@@ -152,14 +152,23 @@ async function dispatch(type, args, ctx) {
+       const pc = store.get('publish') || {};
+       const intervalSec = pc.mock ? (pc.mockIntervalSec || 5) : (pc.intervalMinSec || 60);
+       const r = await sheet.exportSheet(s, Object.assign({ intervalSec }, args || {}));
+-      const pubRows = r.rows.map((row, i) => ({
+-        seq: i + 1, id: s.items[i] ? s.items[i].id : String(i + 1), dir: row[1],
+-        goods: row[11] ? (row[13] ? 2 : 1) : 1,
+-        images: 0, startAt: '', status: '排队',
+-        expect: row[17], title: row[4], goods1: row[11] ? (row[11] + (row[12] ? ' / ' + row[12] : '')) : '',
+-        result: row[20] === '校验未通过' ? '校验未通过' : '',
+-        retries: 0, reason: row[21] || ''
+-      }));
++      // 导出发布单会重建 publish.rows，必须把上一批的「Excel 行号」按 id 带过来：
++      // 从「AI 内容报告」导进来的行靠 reportRow 才能把发布结果回写进原报告，
++      // 丢了它 → 回写时被过滤成空集 → 界面显示「已回写报告：0 行」且不报错（静默失效）。
++      const prevById = new Map((s.publish.rows || []).map(x => [String(x.id), x]));
++      const pubRows = r.rows.map((row, i) => {
++        const id = s.items[i] ? s.items[i].id : String(i + 1);
++        const prev = prevById.get(String(id)) || {};
++        return {
++          seq: i + 1, id, dir: row[1],
++          goods: row[11] ? (row[13] ? 2 : 1) : 1,
++          images: 0, startAt: '', status: '排队',
++          expect: row[17], title: row[4], goods1: row[11] ? (row[11] + (row[12] ? ' / ' + row[12] : '')) : '',
++          result: row[20] === '校验未通过' ? '校验未通过' : '',
++          retries: 0, reason: row[21] || '',
++          reportRow: Number(prev.reportRow || 0)      // 0 = 不是从报告导进来的，回写时会被跳过
++        };
++      });
+       project.patch({ sheet: { file: r.file, rowCount: r.rowCount, colCount: r.colCount, locked: false, exportedAt: Date.now() }, publish: Object.assign({}, s.publish, { rows: pubRows, batch: path.basename(r.file, '.xlsx') }) });
+       return r;
+     }
+@@ -286,6 +295,8 @@ async function dispatch(type, args, ctx) {
+         const m = await sheet.mergeResults(s.sheet.file, r.results);
+         if (m.busy) {
+           logbus.warn(`Excel 仍被占用，${m.pending} 条结果已暂存，下次再试（可只读打开但不建议编辑保存）`);
++        } else if (m.error) {
++          logbus.error(`回写发布单失败：${m.error}`);   // 不是「被占用」，别假装写进去了
+         } else {
+           logbus.ok(`已合并回写发布单：${m.updated} 行${m.flushed ? `（含补写上次的 ${m.flushed} 条）` : ''}`);
+         }
+@@ -295,8 +306,13 @@ async function dispatch(type, args, ctx) {
+         const mr = await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
+         if (mr.busy) {
+           logbus.warn(`报告仍被占用，${mr.pending} 条已暂存，下次导入/发布时先补写`);
+-        } else if (mr.updated || mr.skipped) {
++        } else if (mr.error) {
++          logbus.error(`回写报告失败：${mr.error}`);     // 例如报告表头缺列：不可恢复，必须直说
++        } else if (mr.updated) {
+           logbus.ok(`已回写报告：${mr.updated} 行${mr.flushed ? `（含补写上次的 ${mr.flushed} 条）` : ''} → ${path.basename(s.publish.reportFile)}`);
++        } else if (mr.skipped) {
++          // 这条以前会打成「已回写报告：0 行」——看着像成功，其实一条都没写
++          logbus.info(`本次结果没有可回写的报告行（${mr.skipped} 条不是从这份报告导进来的），跳过回写`);
+         }
+       }
+       notify('发布批次结束', `成功 ${r.okCount} / ${r.total} 条，记得回查审核状态`);
+diff --git a/src/main/services/imaging.js b/src/main/services/imaging.js
+index 3e56f83..43dc8d5 100644
+--- a/src/main/services/imaging.js
++++ b/src/main/services/imaging.js
+@@ -17,7 +17,13 @@ function init() {
+   try {
+     sharp = require('sharp');
+     sharp.concurrency(2);              // PRD：按内存限流，避免 4000×4000 RGBA 开满把内存打爆
+-    sharp.cache({ memory: 64 });
++    // files:0 —— 关掉 libvips 的「输入文件缓存」。
++    // 默认 files:20 会让 libvips 在处理完一张图后仍持有源文件句柄，
++    // Windows 上紧接着 unlink 源文件必报 EPERM（合规「等比缩放 / 压缩 / 转 JPG」都是
++    // 「先写临时文件 → 删原文件 → 改名」三步，会稳定踩到）。实测三组对照：
++    //   默认(files:20) → unlink 失败；files:0 → 成功；cache(false) → 成功。
++    // 内存缓存照留，性能不受影响（操作缓存 items 也保留）。
++    sharp.cache({ memory: 64, files: 0 });
+     engine = 'sharp';
+   } catch (e) {
+     sharp = null;
+diff --git a/src/main/services/report.js b/src/main/services/report.js
+index 5b9b057..9b230d1 100644
+--- a/src/main/services/report.js
++++ b/src/main/services/report.js
+@@ -350,6 +350,13 @@ async function mergeResults(file, results, meta = {}) {
+     sheet.putPending('report', []);
+     return { updated, pending: 0, flushed: backlog.length, skipped };
+   } catch (e) {
++    // 只有「文件被别的程序占着」才谈得上「暂存、下次再试」。
++    // 表头缺列 / 文件损坏这类逻辑错误重试一万次也不会好，暂存只会让人一直等一个补不进去的队列，
++    // 所以原样报出来，并说清是哪里不对 —— 不能拿「报告仍被占用」糊过去。
++    if (!wp.isFileLockError(e)) {
++      logbus.error(`回写报告失败（${all.length} 条未写入）：${e.message}`);
++      return { updated: 0, pending: 0, busy: false, skipped, error: e.message };
++    }
+     sheet.putPending('report', all);
+     logbus.warn(`报告仍被占用，${all.length} 条结果已暂存，下次再试（可只读打开但不建议编辑保存）`);
+     return { updated: 0, pending: all.length, busy: true, skipped, error: e.message };
+diff --git a/src/main/services/sheet.js b/src/main/services/sheet.js
+index a538237..3801886 100644
+--- a/src/main/services/sheet.js
++++ b/src/main/services/sheet.js
+@@ -227,6 +227,10 @@ async function mergeResults(file, results, target = 'sheet') {
+     return { updated, pending: 0, flushed: backlog.length };
+   } catch (e) {
+     // 真机日志原话：Excel 仍被占用，暂存保留，下次再试（可只读打开但不建议编辑保存）
++    // —— 但只有「被占用」才配这句。文件不存在/损坏这类错误暂存也补不进去，得原样报出来。
++    if (!wp.isFileLockError(e)) {
++      return { updated: 0, pending: 0, busy: false, error: e.message };
++    }
+     putPending(target, all);
+     return { updated: 0, pending: all.length, busy: true, error: e.message };
+   }
+diff --git a/src/main/util/winpath.js b/src/main/util/winpath.js
+index b42223b..1752db4 100644
+--- a/src/main/util/winpath.js
++++ b/src/main/util/winpath.js
+@@ -73,6 +73,21 @@ async function mkdirp(dir) {
+   await fs.promises.mkdir(toLong(dir), { recursive: true });
+ }
+ 
++/** 「文件被别的程序占着」这类可重试的锁错误（WPS/Excel 打开着发布单时就是这种） */
++const LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE']);
++/**
++ * 判断异常是不是「被占用」。
++ * 用途：结果回写时，**只有**这类错误才该「整批暂存、下次再试」；
++ * 像「报告表头缺列」这种逻辑错误重试一万次也不会好，必须原样报出来 ——
++ * 否则会把不可恢复的错误伪装成「仍被占用」，让人以为关掉 Excel 就能补写。
++ */
++function isFileLockError(e) {
++  const code = String((e && e.code) || '');
++  if (LOCK_CODES.has(code)) return true;
++  const msg = String((e && e.message) || '');
++  return /EBUSY|EPERM|EACCES|being used by another process|permission denied|the process cannot access|cannot access the file|被占用|正在使用|拒绝访问/i.test(msg);
++}
++
+ async function readdirSafe(dir) {
+   try {
+     return await fs.promises.readdir(toLong(dir), { withFileTypes: true });
+@@ -161,7 +176,7 @@ function defaultPaths() {
+ }
+ 
+ module.exports = {
+-  isWin, toLong, toDisplay, pathRisk, sameVolume, retry,
++  isWin, toLong, toDisplay, pathRisk, sameVolume, retry, isFileLockError,
+   mkdirp, readdirSafe, statSafe, exists, linkOrCopy, copyFile, renameDir, moveFile,
+   isJunk, ext, isMedia, isVideo, stamp, humanSize, defaultPaths,
+   MEDIA_EXT, VIDEO_EXT

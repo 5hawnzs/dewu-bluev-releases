@@ -1,0 +1,1612 @@
+diff --git a/README.md b/README.md
+index cdd76e6..a02cd04 100644
+--- a/README.md
++++ b/README.md
+@@ -37,7 +37,7 @@ npm run dist:win
+ | 非法字符 | 目录名里的 `< > : " | ? *` 自动替换为 `_` |
+ | 系统整合 | 任务栏进度条（`setProgressBar`）、完成通知、需要关注时窗口闪烁、单实例锁、AppUserModelID |
+ | 卸载 | NSIS `deleteAppDataOnUninstall=false`，配置与商品池保留在 `%APPDATA%\dewu-bluev-publisher` |
+-| 快捷键 | `Ctrl+1…7` 切换模块 |
++| 快捷键 | `Ctrl+1…8` 切换模块（8 = 品牌统计） |
+ 
+ ## 模块实现说明
+ 
+@@ -113,7 +113,7 @@ npm run dist:win
+ | 出厂管理员 | `admin` / `BlueV@2026`（登录页会提示，进去后建议立刻改掉） |
+ | 记住登录 | 勾了写进 `auth.json`，7 天内免输入；不勾则关掉工具就要重新登录 |
+ | 防爆破 | 同一账号连错 6 次锁定 5 分钟（进程内计数，重启清零） |
+-| 权限 | 管理员能建/停用/删/重置其他账号；普通成员只能改自己的密码 |
++| 权限 | 管理员能建/停用/删/重置其他账号，并给每个账号**分配品牌**；普通成员只能改自己的密码、只能用被分配到的品牌 |
+ 
+ ### 发出去之前换成你自己的管理员
+ 
+@@ -129,13 +129,35 @@ npm run dist:win
+ 
+ 要临时免登录开发：`BLUEV_NO_LOGIN=1 npm start`。
+ 
+-登录门有回归守护（改动这块之前先跑）：`./node_modules/.bin/electron tools/logintest.js` —— 32 项断言，
++登录门有回归守护（改动这块之前先跑）：`./node_modules/.bin/electron tools/logintest.js` —— 48 项断言，
+ 覆盖「未登录时业务通道在主进程侧就被拦」（不是前端藏起来）、口令只存 scrypt 哈希、记住登录重启免密、
+ 普通成员看不到账号列表、停用后不能登录、不能停用/删自己、连错 6 次锁定 5 分钟。
+ 
+ > 加了登录之后 **需要重新打一次包**（`npm run dist:win`），旧安装包里没有这个功能。
+ > 卸载重装不会丢账号（NSIS `deleteAppDataOnUninstall=false`）。
+ 
++## 品牌权限与按品牌统计（2026-10-01 新增）
++
++品牌多、要分人管，所以品牌不是「一个全局设置」，而是**按账号分配的权限**。
++
++| 项 | 说明 |
++| --- | --- |
++| 品牌存哪 | `config.json` 里的 `brands: [{id, name, enabled}]`；账号上存的是 **id 列表**（`auth.json` 的 `user.brands`）——**改品牌名不会把已分配的权限弄丢** |
++| 谁能管品牌 | 只有管理员能增 / 删 / 改 / 停用（「设置 → 品牌管理」）；普通成员连注册表都改不了 |
++| 管理员 | 默认可以用**全部启用中的品牌**，也能看到全部品牌的统计 |
++| 普通成员 | 只能用被分配到的品牌；在「设置 → 账号管理」里逐个账号勾选 |
++| 只分到 1 个品牌 | 自动选中，不必每次手动选（发布时不会漏标品牌） |
++| 分到多个品牌 | **不替你挑** —— 没选就拦下并列出可选项（挑错了归属就是错的） |
++| 产出类任务 | 文案生成 / 报告导入 / 发布单导出 / 发布 / 重跑 **必须有品牌归属** |
++| 老记录 | 没有品牌的历史记录算「**未标品牌**」，品牌已被删除的算「**已删除的品牌**」；两者**各占一行、绝不并进任何品牌**，也绝不丢 |
++| 统计维度 | 新增第 8 个页签「品牌统计」：各品牌的条数 / 成功失败 / 按天频次条 / 执行人，跨品牌汇总，执行人汇总；可切 7 / 30 / 90 天 |
++| 执行日志 | 落盘到 `输出目录/run-log.jsonl`（原来 `logbus` 只在内存里留 500 条、重启即失，所以另存一份）；**故意不做自动轮转** |
++| 导出 | 「导出统计」出 xlsx，4 个表：品牌汇总 / 按天频次 / 品牌×执行人 / 执行日志 |
++
++> ⚠️ **本机权限不是安全边界。** `auth.json` / `config.json` 就在本机 `%APPDATA%` 下，
++> 能进这台机器的人可以直接改它们。这套权限的实际作用是**防误操作 + 让统计能对账**，
++> 不是防内部的恶意越权；真要隔离得上服务端（当前没有服务端）。
++
+ ## 依赖状态
+ 
+ - 图片引擎：优先 `sharp`（支持 HEIC、libvips 多核）；原生模块加载失败时自动降级为纯 JS 引擎（`jpeg-js` + `pngjs`），降级状态显示在「设置 → 外部依赖」。sharp 是 N-API 预编译包，**不需要 electron-rebuild**。
+@@ -145,10 +167,10 @@ npm run dist:win
+ 
+ ## 开发期自检
+ 
+-测试都在仓库里（`tools/`），一条命令跑完全部 **199** 项断言：
++测试都在仓库里（`tools/`），一条命令跑完全部 **294** 项断言：
+ 
+ ```bash
+-bash tools/run-all.sh          # 六套主进程测试 + 两个隐藏窗口套件（界面自检 / 登录门）
++bash tools/run-all.sh          # 七套主进程测试 + 三个隐藏窗口套件（界面自检 / 登录门 / 窗口几何）
+ ```
+ 
+ > ⚠️ 跑回归**不要**设 `BLUEV_NO_LOGIN=1`：登录门那套断言的就是「这个变量没设」，设了会失败并挂住。
+@@ -161,8 +183,10 @@ bash tools/run-all.sh          # 六套主进程测试 + 两个隐藏窗口套
+ | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 不会把好图搬进 `_rejected`；「导出报告」两个工作表 + csv 带 BOM | 16 |
+ | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、恢复动作保存与校验 | 22 |
+ | `tools/reporttest.js` | 「AI 内容报告」导入：列名匹配（列顺序打乱）、行↔叶子一一对应与数量不等报错、标题/文案空则生成、好物 1~9 带全、**发图文还是发视频按「内容类型」列判定**（没标则按目录推断；图和视频都有又没标 → 标「校验未通过」不静默丢）、发布结果回写 B/C 列、被占用→暂存→补写 | 32 |
+-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、7 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置（`userData` 指到临时目录，不动本机数据） | 19 |
+-| `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定 | 32 |
++| `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删品牌**排空授权**但**不动历史记录**；按品牌统计（「未标品牌」「已删除的品牌」各自成桶、绝不并进真实品牌）；执行日志落盘且重启后仍在；xlsx 四个工作表 | 58 |
++| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置（`userData` 指到临时目录，不动本机数据） | 23 |
++| `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员改不了品牌注册表、看统计的范围被限死、不能借别人的品牌 id 越权） | 48 |
++| `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮在卡片边框内、卡片外无可见元素 | 17 |
+ 
+ **没测到的**：真机上的得物 App 页面结构（发布页按钮文本 / resource-id 各版本不同，
+ **视频发布页与图文不是一套界面，`videoSteps` 必须真机抓一次**）、Android 媒体扫描后相册刷新的真实耗时
+@@ -176,8 +200,10 @@ src/main/index.js        入口（单实例锁、AppUserModelID）
+ src/main/window.js       无边框窗口 + 尺寸记忆
+ src/main/ipc.js          IPC 白名单（业务通道统一做登录门禁）
+ src/main/auth.js         本机账号：scrypt 口令哈希 / 登录会话 / 账号管理
++src/main/brands.js       品牌注册表 + 按账号的品牌权限判定（权限记 id，改名不丢）
+ src/main/jobs.js         任务编排（任务实例化：进度/日志/取消/运行中批次/任务栏进度/通知）
+ src/main/services/       flatten / compliance / copywriter / verify / sheet / report / publisher / pool / imaging
++                         runlog（执行日志落盘）/ stats（按品牌统计 + 导出）
+ src/main/util/winpath.js Windows 长路径 · 硬链接 · 占用重试
+ src/preload/index.js     contextBridge（contextIsolation，渲染层无 node 权限）
+ src/renderer/            Windows 风格 UI
+diff --git a/docs/HANDOFF.md b/docs/HANDOFF.md
+index a365b45..fd279a5 100644
+--- a/docs/HANDOFF.md
++++ b/docs/HANDOFF.md
+@@ -139,6 +139,48 @@
+ - **2026-10-01 真机实测修掉两个静默隐患**：`adb.dump()` 抓不到结构时会拿**上一个页面**的 XML 冒充本页
+   （后果是按旧坐标连点 + 报「发布成功」）；得物发布页长期不 idle 导致抓不到。
+   两条防线 + 关动画兜底（并还原）见 §5「本次顺手修掉的隐患」。
++- **2026-10-01 登录页去留白（界面改动）**：未登录时不再开一个 1280×820 的空壳窗，而是
++  **收缩成刚好装下登录卡片的小窗**（`window.js` 的 `setLoginMode()` / `fitGate()`：渲染层量出卡片实际高度后回调收紧，
++  提示行显隐导致的高度变化也跟得上）。登录成功自动还原成登录前的尺寸/位置（含最大化状态），退出登录再收回；
++  **登录门期间的临时尺寸不写进 `config.json`**，免得「退出登录一次、下次启动窗口就变小了」。
++  新增 `tools/gatetest.js`（13 项）守住这条链。
++- **2026-10-01 登录成功后窗口会被推出屏幕（真 bug，已修）**：登录小窗是 `win.center()` 摆在屏幕正中的，
++  登录成功还原时只 `setBounds({width,height})`、**位置还停在小窗的居中点上** ⇒ 尺寸一跳回 1280×820，
++  窗口右下整块甩到屏幕外（1280×784 屏实测超出右 450px / 下 258px），主界面右边和底部被屏幕边缘切掉。
++  新增 `fitToWorkArea()`：还原前把几何夹回所在显示器工作区（没记过位置就居中，尺寸超过工作区就缩到工作区），
++  开场建窗时也先夹一次。`tools/gatetest.js` 补 2 条断言（行为级「登录后窗口完整在工作区内」+ 单元级
++  「离谱几何必被夹回」），拆掉修复时两条都变红。
++- **2026-10-01 登录页：卡片外的标题带 / 关闭按钮挪进卡片内（界面改动）**：上一版给无边框小窗加的那条
++  独立标题带（左上角标题 + 右上角 ×）是 `position:absolute` 挂在**窗口顶部**的，而登录卡片自己有边框 ⇒
++  这两处醒目地浮在卡片边框外面（用户实测反馈「这两个地方没有在灰色边框内」）。
++  改法：删掉标题带；窗口拖拽区改用整块 `.gate` 遮罩（交互控件显式 `no-drag`，否则输入框点不进去）；
++  关闭口缩进**卡片内部**右上角（`.gx`，24×24，距卡片边框四边各 17px）。
++  卡片里的品牌行本来就写着「得物蓝V 素材发布工具」，那条标题带属于重复信息。
++  `tools/gatetest.js` 补 2 条断言（「关闭按钮四边都落在卡片边框内」+「卡片外没有任何**可见**元素」），
++  把「在卡片外再挂个浮层」这类改法永久拦住 —— 装回旧标题带时这两条必红。
++
++- **2026-10-01 品牌权限 + 按品牌统计（发布频次 / 数量 / 执行日志）**：品牌很多，需要**按账号分配品牌权限**，
++  管理员据此查看各品牌的发布频次、数量与执行日志。新增四块：
++  - `src/main/brands.js` —— 品牌注册表 + 权限判定。品牌存 **id**（`brd_…`）、**名字随时可改**，
++    账号上挂的是 id 列表 ⇒ 改名不会把已分配的权限弄丢；管理员 = 全部启用中的品牌。
++    `resolveFor(user, wantedId, { required })` 是唯一的权限闸门：**指定的品牌必须存在、且必须是这个账号能用的**，
++    否则报「没有「X」的操作权限」。产出类任务（`copy.generate / report.import / sheet.export / publish.run / publish.rerun`）
++    **必须有品牌归属**：账号只分到一个品牌时自动带上（不让他每次都选），多于一个时**不替他挑**、明确要求先选。
++  - `src/main/services/runlog.js` —— 执行日志落盘到 `<输出目录>/run-log.jsonl`。原来的 `logbus` **只在内存里、只留 500 条**，
++    重启就没了，要按品牌查历史必须落盘。**故意不做自动轮转**（日志被悄悄删掉，比多占点磁盘严重得多）。
++  - `src/main/services/stats.js` —— 按品牌聚合 + 导出。除了各品牌自己的条数 / 成功失败 / 按天频次 / 执行人，
++    还有**「未标品牌」与「已删除的品牌」两个独立的桶**：历史记录里没有品牌的、以及品牌已被删掉的，
++    **各占一行、绝不并进任何品牌**（合并就等于替它编一个归属）。`totals` 直接从累加器取，不是拿明细再求和
++    （否则一加筛选，汇总和明细就对不上）。`exportXlsx` 出 4 个表：品牌汇总 / 按天频次 / 品牌×执行人 / 执行日志。
++  - 归属记录贯通：`jobs.js` 在**实例化任务之前**就解析好品牌与执行人（被权限拦下的任务不会留下一条假日志），
++    再一路带进 `ctx.brand` / `ctx.actor`、日志、`jobs.list()`、发布单批次，以及 `publisher` 写出的
++    `publish-log.jsonl` **每一条**（含执行人）。**老记录没有品牌就是「未标品牌」，如实标出来，绝不拿某个品牌顶上。**
++  - 界面：新增第 8 个页签「品牌统计」（**故意编号 8**，不动设置 / 测试页的既有编号）——品牌维度的条数 / 成功失败 / 按天频次条、
++    「谁发的」、跨品牌汇总、执行人汇总；标题栏加品牌下拉（单品牌自动选中、没有可用品牌时变黄提示）。
++    「设置 → 品牌管理」增删改品牌；「设置 → 账号管理」给每个账号勾选品牌。
++  - ⚠️ **本机权限不是安全边界**：`auth.json` / `config.json` 就在本机 `%APPDATA%` 下，能进这台机器的人可以直接改。
++    这套权限的真正作用是**防误操作 + 让统计能对账**，不是防内部的恶意越权；真要隔离得上服务端（当前没有服务端）。
++  - 回归：新增 `tools/brandtest.js`（58 项）；`uicheck` 19→23、`logintest` 32→48；合计 **216 → 294** 项断言。
+ 
+ ## 5. 待做（按优先级）
+ 
+@@ -173,12 +215,12 @@
+ | # | 真机怎么做 | 我们现在 | 建议 | 成本 |
+ | --- | --- | --- | --- | --- |
+ | 6 | ~~**环节之间用 Excel 交接**：上游产出 `AI内容报告_<ISO时间戳>.xlsx`，颜色预检读它、并把结果写回「执行结果」列~~ | ✅ **已实现「导入 AI 内容报告」**（见下方说明） | — | 已完成 |
+-| 7 | **品牌管理**：多品牌可新增/编辑/删除（`skechers`…） | 一个输入框（`copy.brand`，`store.js:31`） | 改成 `copy.brands: [{name, pool}]` + 设置页列表；文案生成按选中品牌取词 | 小 |
++| 7 | ~~**品牌管理**：多品牌可新增/编辑/删除（`skechers`…）~~ | ✅ **已实现，且做成了「按账号分配品牌权限 + 按品牌统计」**（见 §4 最后一条与下方说明） | — | 已完成 |
+ | 8 | 文案结果预览顶部「**共发现 46 个有效文件夹**」，每行带媒介与条数（`图 图文 10` / `口 视频 2`） | 表格只有目录/货号/标题/状态 | 加一行汇总；每行统计 `files` 里的 image / video 数量 | 小 |
+ | 9 | 合规页有「**取消检查 / 重新选择目录 / 打开文件夹**」 | 只有 4 个按钮（`app.js` TABS[2]）；取消得去发布页 | 给 `job:cancel` 加个按钮（通道 `job:cancel` 已存在，不用动 ipc） | 小 |
+ | 10 | 素材整理页有「选择素材根目录」+「**选择目标输出目录**」 | 扁平副本固定放在**源目录同级** `flat_<时间戳>`（`flatten.js:114`） | 可加目标目录，但必须提示：**跨卷会从硬链接退化成实体复制**（慢、双倍占用）；默认保持同级 | 小 |
+ | 11 | 发布单有「**素材来源**」列 | `sheet.js` COLUMNS 有「素材路径」，没有「来源」 | 加一列（`buildRows`） | 小 |
+-| 12 | 顶部固定「**推荐流程**」步骤条：素材整理 → 素材合规检查 → AI文案生成 → 好物货号颜色预检 → 自动发布 | 左侧 7 个页签，没有步骤引导/完成态 | 侧栏加步骤序号与状态（数据都在 `project` 里，可算出来） | 小 |
++| 12 | 顶部固定「**推荐流程**」步骤条：素材整理 → 素材合规检查 → AI文案生成 → 好物货号颜色预检 → 自动发布 | 左侧 8 个页签，没有步骤引导/完成态 | 侧栏加步骤序号与状态（数据都在 `project` 里，可算出来） | 小 |
+ | 13 | 措辞：「**好物货号颜色预检**」「**自动发布**」「**必须为 JPG**」 | 「货号颜色校验」「模拟器发布」 | 纯文案对齐，减少与运营的沟通成本 | 极小 |
+ 
+ > **第 6 项已完成（2026-09-30）——「导入 AI 内容报告」**（`src/main/services/report.js` + `report.import`）：
+@@ -195,8 +237,15 @@
+ >   （`pending-results.json` 按目标分队列：`sheet` / `report`，互不覆盖）；
+ > - 回归：`tools/reporttest.js`（28 项）。
+ 
+-> ⚠️ 上表 **#7~#13 是「产品功能待办」**（真机有、我们还没有），**不属于测试范围**；
+-> 本次 Windows E2E 轮按「只测不改」的原则**没有实现**它们。要做请另开一轮，并按 §6 每改一处跑一遍 `node tools\run-all.js`。
++> **第 7 项已完成（2026-10-01）——「品牌权限 + 按品牌统计」**：真机那版是「在设置里维护一份品牌清单」，
++> 我们按实际需求做成了**按账号分配品牌权限**（品牌多、要分人管）+ 品牌维度的统计。
++> 实现清单与取舍见 §4 最后一条。**这里刻意没照抄它建议的 `copy.brands: [{name, pool}]`**，两个理由：
++> ① 商品池（`pool`）已经存在，品牌不需要再挂一份，两者本来就不是一回事；
++> ② 那版要的是「一个全局品牌清单」，而这次真正要的是**每个账号能操作哪些品牌**（权限），不是换个地方列品牌。
++> 所以做成 **扁平的 `brands: [{id, name, enabled}]`（权限记 id、名字可改）+ 账号上的 `user.brands: [id]`**。
++
++> ⚠️ 上表剩下的 **#8~#13 是「产品功能待办」**（真机有、我们还没有），**不属于测试范围**；
++> 要做请另开一轮，并按 §6 每改一处跑一遍 `node tools\run-all.js`。
+ > 其中 #11（发布单加「素材来源」列）已由 WINDOWS-E2E §6 的结论确认「暂不加」，理由见那张表。
+ 
+ > 录屏里**已经对齐**的（不用再做）：扁平命名 `_` 连接、原素材完全不动、合规四条规则、父目录分组、「导出报告」、
+@@ -331,10 +380,12 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
+ | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 绝不把它搬进 `_rejected`；「导出报告」xlsx（汇总+明细）+ csv（带 BOM） | 16 |
+ | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
+ | `tools/reporttest.js` | 「AI 内容报告」导入 → 发布 → 回写：列名匹配（列顺序打乱）、行↔叶子配对与数量不等报错、标题文案空则生成、好物带全、**发图文还是发视频按「内容类型」列判定**（没标按目录推断；图+视频都有又没标 → 「校验未通过」）、报告被占用→暂存→补写 | 32 |
+-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、7 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置 | 19 |
+-| `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定 | 32 |
++| `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删除品牌**排空授权**且**不动历史记录**；按品牌统计（「未标品牌」与「已删除的品牌」各自成桶、绝不与真实品牌合并）；执行日志落盘且重启后仍在；xlsx 四个工作表 | 58 |
++| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置 | 23 |
++| `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权） | 48 |
++| `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮四边都在卡片边框内、卡片外没有任何**可见**元素 | 17 |
+ 
+-合计 **199** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 19 + 32 = 199`）。`logintest.js` / `uicheck.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
++合计 **294** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 58 + 23 + 48 + 17 = 294`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+ `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
+ 
+ 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
+@@ -505,7 +556,7 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
+ | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
+ | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
+ | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
+-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：八套测试，共 199 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
++| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：十套测试，共 294 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+ | `docs/WINDOWS-E2E.md` | Windows + 雷电模拟器的端到端测试手册（怎么跑、每步预期、坑、问题回传） |
+ | `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好并生效 |
+ 
+diff --git a/docs/WINDOWS-E2E.md b/docs/WINDOWS-E2E.md
+index eccb5db..3a5bde5 100644
+--- a/docs/WINDOWS-E2E.md
++++ b/docs/WINDOWS-E2E.md
+@@ -4,7 +4,7 @@
+ > 素材整理 → 合规检查 → AI 文案生成 → 货号颜色预检 → 发布单 / 导入 AI 内容报告 → 自动发布 → 结果回写。
+ >
+ > 配套文档：`docs/HANDOFF.md`（设计与硬约束、真机口径）、`README.md`（模块说明）、本文件（动手测什么）。
+-> 回归现状：**8 套 199 项断言全绿**（`node tools\run-all.js`）。
++> 回归现状：**10 套 294 项断言全绿**（`node tools\run-all.js`）。
+ >
+ > 预计耗时：环境 + 回归 ≈ 20 分钟；手动全流程 ≈ 40~60 分钟（发布环节每条 65~80 秒，按条数算）。
+ 
+@@ -30,7 +30,7 @@ git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+ 1. 完整读 docs/HANDOFF.md 与 docs/WINDOWS-E2E.md，再读 README.md；
+ 2. 按 WINDOWS-E2E 第 2 节备环境、第 3 节跑自动化回归：
+      node tools\run-all.js
+-   预期最后一行「全部通过，共 199 项断言。」——先跑绿再动别的；
++   预期最后一行「全部通过，共 294 项断言。」——先跑绿再动别的；
+ 3. 再按第 4 节逐条做手动全流程，每步记录「预期 / 实际」。
+ 
+ 硬约束（必须遵守）：
+@@ -106,7 +106,7 @@ cd /d D:\work\dewu-bluev-publisher
+ node tools\run-all.js
+ ```
+ 
+-预期最后一行：**`全部通过，共 199 项断言。`**
++预期最后一行：**`全部通过，共 294 项断言。`**
+ 
+ > ⚠️ **不要** `set BLUEV_NO_LOGIN=1 && node tools\run-all.js`：`logintest` 断言的就是「这个变量没设」
+ > （实测设了会 3 条 FAIL 并挂住不退出；`uicheck` 自己会在进程内设好，外面不用管）。
+@@ -430,6 +430,43 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就
+ | --- | --- | --- |
+ | P6 抓前不删远端文件 | `adbtest` 1 条红（`46→45`） | 0 红 |
+ | P7 没有关动画兜底 | `adbtest` 3 条红（`46→43`） | 0 红 |
++
++---
++
++### 追加（2026-10-01）：登录页去留白（窗口收缩 + 窗口尺寸回归）
++
++**问题**：未登录时窗口是正常大窗（1280×820），登录卡片只占中间 340×372，**留白占比 87.4%**。
++
++**改法**：`src/main/window.js` 增加登录门几何管理 ——
++
++- `createWindow(locked)`：未登录直接以 380 宽的小窗开场（避免「先大后小」闪一下），并**先记住「正常几何」**；
++- `setLoginMode(on)`：开 = 记住当前几何 → 收缩居中小窗（禁拉伸 / 禁最大化）；关 = 还原尺寸、位置与最大化状态；
++- `fitGate(cardHeight)`：渲染层量出卡片实际高度后回调，把窗口高度收到「卡片 + 上下各 18」；
++- 登录门期间的 `resized` / `moved` / `maximize` **一律不落盘**（`save()` 在 `loginMode` 下直接返回）。
++- 渲染层：`index.html` / `styles.css` 给这个无边框小窗补了一条可拖拽的细标题带 + 关闭按钮；
++  `app.js` 的 `showGate()` 量高后调 `fitGate`；报错行改为「**有错才长高**」（原来恒定预留 17px 空行）。
++
++**实测**（`webContents.capturePage()` + `getBounds()`，同一台机器）：
++
++| 情形 | 窗口 | 卡片 | 每侧留白 | 留白占比 |
++| --- | --- | --- | --- | --- |
++| 改前 | 1280×784 | 340×372 | 左右 470 / 上下 206 | **87.4%** |
++| 改后（新装、有出厂提示） | 380×386 | 340×349 | 左右 20 / 上下 19 | **19.1%** |
++| 改后（真实账号库、无提示） | 380×340 | 340×302 | 左右 20 / 上下 19 | **20.3%** |
++
++**★ 改的过程中 `tools/gatetest.js` 抓到一个真 bug**：开场就以小窗启动时 `normalGeo` 没被记住，
++`setLoginMode(false)` 没有还原目标 ⇒ **登录成功后窗口一直卡在 380 宽**（行为测试 2 项红）。
++修法：`createWindow()` 里先算出「正常几何」再建窗。修完 **13/13 全绿**。
++
++**回归 199 → 212**（新增 `gatetest` 13 项），全绿。
++**2026-10-01 补修：登录后窗口右下会出屏。** 登录小窗居中摆放，登录成功只改尺寸不改位置 ⇒
++1280×784 屏上窗口右下超出 450×258，主界面被屏幕边缘切掉（观感就是「文字冲出边框」）。
++新增 `window.js#fitToWorkArea()` 把还原几何夹回工作区；`gatetest` 补 2 条（现 15 项）。
++**回归 212 → 214**，全绿；反向拆掉修复时这 2 条必红。
++**2026-10-01 再修：卡片外的标题带 / × 挪进卡片。** 上一版给无边框小窗挂了一条绝对定位的标题带，
++卡片又自带边框 ⇒ 标题与 × 明显浮在边框外面（观感就是「没在框内」）。现改为：整块遮罩当窗口拖拽区、
++× 缩进卡片右上角**内部**，卡片外不再有任何可见元素。`gatetest` 补 2 条（现 17 项）。
++**回归 214 → 216**，全绿；装回旧标题带时这 2 条必红。
+ | P8 关动画后不还原 | `adbtest` 1 条红（`46→45`） | 0 红 |
+ | **P6+P9（真正的改前版：复用文件 + 不检查成功）** | `adbtest` **6** 条红（`46→40`），含 ⑪「`dump()` 返回残留 XML」与 ⑩「抓不到却连点 5 次并报发布成功」 | 0 红 |
+ 
+diff --git a/src/main/index.js b/src/main/index.js
+index 3dbe5f7..ddb94d3 100644
+--- a/src/main/index.js
++++ b/src/main/index.js
+@@ -32,7 +32,8 @@ if (!app.requestSingleInstanceLock()) {
+     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
+     ipc.register();
+ 
+-    const w = winmod.createWindow();
++    const st = auth.status();
++    const w = winmod.createWindow(st.requireLogin && !st.user);   // 未登录：直接以「登录小窗」开场
+     winmod.attach();
+ 
+     logbus.info(`工具就绪 · ${wp.isWin() ? 'Windows' : process.platform} · 图片引擎 ${imaging.engineName()}`);
+@@ -41,7 +42,6 @@ if (!app.requestSingleInstanceLock()) {
+     }
+     logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
+ 
+-    const st = auth.status();
+     logbus.info(st.requireLogin
+       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')
+       : '登录校验已关闭（BLUEV_NO_LOGIN=1）');
+@@ -50,7 +50,8 @@ if (!app.requestSingleInstanceLock()) {
+ 
+     app.on('activate', () => {
+       if (BrowserWindow.getAllWindows().length === 0) {
+-        const nw = winmod.createWindow();
++        const s = auth.status();
++        const nw = winmod.createWindow(s.requireLogin && !s.user);
+         winmod.attach(nw);
+       }
+     });
+diff --git a/src/main/ipc.js b/src/main/ipc.js
+index 24b3229..c736409 100644
+--- a/src/main/ipc.js
++++ b/src/main/ipc.js
+@@ -1,13 +1,17 @@
+ 'use strict';
+ const { ipcMain, dialog, shell, app, BrowserWindow, nativeTheme } = require('electron');
++const path = require('path');
+ const store = require('./store');
+ const project = require('./project');
+ const logbus = require('./logbus');
+ const jobs = require('./jobs');
+ const auth = require('./auth');
++const brands = require('./brands');
+ const imaging = require('./services/imaging');
+ const pool = require('./services/pool');
++const stats = require('./services/stats');
+ const wp = require('./util/winpath');
++const winmod = require('./window');
+ 
+ function win() {
+   const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+@@ -23,11 +27,43 @@ function guard(fn) {
+   };
+ }
+ 
++/** 再上一层：只有管理员能调（改品牌、看全部品牌的统计都属于这一类）。免登录开发模式放行 */
++function guardAdmin(fn) {
++  return guard(async (e, ...args) => {
++    const u = auth.current();
++    if (auth.enabled() && (!u || u.role !== 'admin')) return { ok: false, error: '只有管理员能做这个操作' };
++    return fn(e, ...args);
++  });
++}
++
++/**
++ * 统计/日志能看多大范围：管理员=全部（null），普通成员=自己名下的品牌。
++ * 这个范围**在主进程算**，不信渲染层传上来的 scopeIds —— 否则改一下前端就能看别家的账。
++ */
++function scopeOf() {
++  const u = auth.current();
++  // 没有当前账号只可能是免登录开发模式（auth.enabled() 为真时 guard 已经把未登录拦掉了）。
++  // 这时候不给「空数组」—— 空数组的含义是「一个品牌都不许看」，会把统计全滤成 0，
++  // 看起来像「真的一条都没有」，那是假信息
++  if (!u) return null;
++  const a = brands.allowed(u);
++  return a.all ? null : a.ids;
++}
++
+ function register() {
+   // ---- 账号与登录：登录页本身要用，不设门禁 ----
+   ipcMain.handle('auth:status', () => auth.status());
+-  ipcMain.handle('auth:login', (_e, u, p, remember) => auth.login(u, p, remember));
+-  ipcMain.handle('auth:logout', () => auth.logout());
++  // 登录成功 → 窗口从「登录小窗」还原成正常尺寸；退出登录 → 重新收回小窗
++  ipcMain.handle('auth:login', (_e, u, p, remember) => {
++    const r = auth.login(u, p, remember);
++    if (r && r.ok) winmod.setLoginMode(false);
++    return r;
++  });
++  ipcMain.handle('auth:logout', () => {
++    const r = auth.logout();
++    winmod.setLoginMode(true);
++    return r;
++  });
+   ipcMain.handle('auth:change-password', (_e, oldP, newP) => auth.changePassword(oldP, newP));
+   ipcMain.handle('auth:users', () => auth.listUsers());
+   ipcMain.handle('auth:create-user', (_e, input) => auth.createUser(input));
+@@ -35,6 +71,55 @@ function register() {
+   ipcMain.handle('auth:reset-password', (_e, id, newP) => auth.resetPassword(id, newP));
+   ipcMain.handle('auth:remove-user', (_e, id) => auth.removeUser(id));
+ 
++  // ---- 品牌注册表 ----
++  // 读取对所有登录用户开放（发布侧要拉品牌下拉），但只回「这个人能用的」那部分 id；
++  // 注册表本身（全部品牌名）要给管理员管，所以整体只对管理员回全量。
++  ipcMain.handle('brand:list', guard(() => {
++    const u = auth.current();
++    const a = brands.allowed(u);
++    return {
++      ok: true,
++      isAdmin: a.all,
++      brands: brands.list().map(b => ({ id: b.id, name: b.name, enabled: b.enabled, note: b.note })),
++      mine: a.all ? brands.enabledList().map(b => b.id) : a.ids,
++      defaultBrandId: store.get('copy.defaultBrandId') || ''
++    };
++  }));
++  ipcMain.handle('brand:add', guardAdmin((_e, input) => {
++    const r = brands.add(input);
++    if (r.ok) logbus.ok(`已新增品牌「${r.brand.name}」`);
++    return r;
++  }));
++  ipcMain.handle('brand:update', guardAdmin((_e, id, patch) => {
++    const r = brands.update(id, patch);
++    if (r.ok) logbus.ok(`品牌已更新：${r.brand.name}${r.brand.enabled ? '' : '（已停用）'}`);
++    return r;
++  }));
++  ipcMain.handle('brand:remove', guardAdmin((_e, id) => {
++    const b = brands.byId(id);
++    const r = brands.remove(id);
++    if (!r.ok) return r;
++    // 顺手清掉账号上的悬空授权，并把默认品牌指回空
++    const p = auth.purgeBrand(id);
++    if (store.get('copy.defaultBrandId') === String(id)) store.set({ copy: { defaultBrandId: '' } });
++    logbus.warn(`已删除品牌「${b ? b.name : id}」${p.ok && p.users ? `，同时清掉了 ${p.users} 个账号上的该品牌授权` : ''}`);
++    return { ok: true, brand: r.brand, usersCleaned: (p.ok && p.users) || 0 };
++  }));
++
++  // ---- 品牌统计（频次 / 数量 / 执行日志）----
++  ipcMain.handle('stats:query', guard((_e, opts) => {
++    const o = Object.assign({}, opts || {});
++    delete o.scopeIds;                       // 范围只认主进程算出来的，不认前端传的
++    return Object.assign({ ok: true }, stats.query(Object.assign(o, { scopeIds: scopeOf() })));
++  }));
++  ipcMain.handle('stats:export', guard(async (_e, opts) => {
++    const o = Object.assign({}, opts || {});
++    delete o.scopeIds;
++    const r = await stats.exportXlsx(Object.assign(o, { scopeIds: scopeOf() }));
++    logbus.ok(`品牌统计已导出：${path.basename(r.file)}（${r.brands.length} 个品牌 · ${r.totals.rows} 条记录）`);
++    return { ok: true, file: r.file, totals: r.totals, brandCount: r.brands.length };
++  }));
++
+   ipcMain.handle('app:info', () => ({
+     platform: process.platform,
+     isWin: wp.isWin(),
+@@ -98,6 +183,7 @@ function register() {
+   ipcMain.on('win:close', () => { const w = win(); if (w) w.close(); });
+   ipcMain.handle('win:is-max', () => { const w = win(); return w ? w.isMaximized() : false; });
+   ipcMain.on('win:flash', () => { const w = win(); if (w) w.flashFrame(true); });
++  ipcMain.on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
+ }
+ 
+ module.exports = { register };
+diff --git a/src/main/window.js b/src/main/window.js
+index d22b850..6ecbdab 100644
+--- a/src/main/window.js
++++ b/src/main/window.js
+@@ -7,19 +7,43 @@ const logbus = require('./logbus');
+ 
+ let win = null;
+ let saveTimer = null;
++let loginMode = false;        // 登录门模式：窗口收缩成「刚好装下登录卡片」
++let normalGeo = null;         // 进登录门前记住的正常几何，登录成功后原样还原
+ 
+-function createWindow() {
++/* 登录门窗口：宽度 = 卡片 340 + 左右各 20；
++   高度先给个兜底值，渲染层量出卡片实际高度后回调 fitGate() 收紧，避免上下留白 */
++const GATE_WIDTH = 380;
++const GATE_HEIGHT = 336;
++const GATE_PAD_Y = 18;        // 卡片上下各留的呼吸位
++
++function createWindow(locked) {
+   const b = store.get('window.bounds') || {};
+   const bg = nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed';
++  // 「正常几何」= 不做登录门收缩时本该用的那套尺寸/位置。
++  // 开场就是小窗时也必须先把它记下来，否则登录成功后 setLoginMode(false) 没有还原目标，
++  // 窗口会一直卡在 380 宽的小尺寸上（这条被 gateflow 的行为测试抓到过）。
++  const normal = {
++    width: clamp(b.width, 980, 2400, 1280),
++    height: clamp(b.height, 640, 1600, 820)
++  };
++  if (b.x != null) normal.x = b.x;
++  if (b.y != null) normal.y = b.y;
++  loginMode = !!locked;           // 未登录：开场就是小窗，避免「先大后小」闪一下
++  normalGeo = locked ? { bounds: normal, maximized: !!store.get('window.maximized') } : null;
++
++  // 非登录门：开局几何也先夹回工作区，免得换了显示器后窗口落在屏幕外找不着
++  const start = locked ? { width: GATE_WIDTH, height: GATE_HEIGHT } : fitToWorkArea(normal);
+ 
+   win = new BrowserWindow({
+     title: '得物蓝V 素材发布工具',
+-    width: clamp(b.width, 980, 2400, 1280),
+-    height: clamp(b.height, 640, 1600, 820),
+-    minWidth: 900,
+-    minHeight: 600,
+-    x: b.x,
+-    y: b.y,
++    width: start.width,
++    height: start.height,
++    minWidth: locked ? 320 : 900,
++    minHeight: locked ? 320 : 600,
++    x: start.x,
++    y: start.y,
++    resizable: !locked,           // 登录门是个「刚好装下卡片」的小窗，不允许拉伸
++    maximizable: !locked,
+     frame: false,                 // 自绘 Windows 标题栏（最小化/最大化/关闭在右上角）
+     backgroundColor: bg,
+     autoHideMenuBar: true,
+@@ -37,13 +61,17 @@ function createWindow() {
+   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+ 
+   win.once('ready-to-show', () => {
+-    const max = store.get('window.maximized');
+-    if (max) win.maximize();
++    if (loginMode) {
++      win.center();                     // 登录门：小窗居中，不读「上次最大化」
++    } else {
++      const max = store.get('window.maximized');
++      if (max) win.maximize();
++    }
+     win.show();
+   });
+ 
+   const save = () => {
+-    if (!win || win.isDestroyed()) return;
++    if (!win || win.isDestroyed() || loginMode) return;   // 登录门的尺寸不落盘，免得覆盖用户正常的窗口大小
+     clearTimeout(saveTimer);
+     saveTimer = setTimeout(() => {
+       const bb = win.getBounds();
+@@ -52,8 +80,8 @@ function createWindow() {
+   };
+   win.on('resized', save);
+   win.on('moved', save);
+-  win.on('maximize', () => store.set({ window: { maximized: true } }));
+-  win.on('unmaximize', () => store.set({ window: { maximized: false } }));
++  win.on('maximize', () => { if (!loginMode) store.set({ window: { maximized: true } }); });
++  win.on('unmaximize', () => { if (!loginMode) store.set({ window: { maximized: false } }); });
+ 
+   win.on('maximize', () => win.webContents.send('win:max', true));
+   win.on('unmaximize', () => win.webContents.send('win:max', false));
+@@ -69,6 +97,78 @@ function createWindow() {
+   return win;
+ }
+ 
++/**
++ * 把目标几何夹回「它所在的显示器工作区」内，且尺寸不超过工作区。
++ * 场景：开场就是登录小窗（窗口被 win.center() 摆在屏幕正中），登录成功后尺寸跳回
++ * 1280×820 —— 若直接沿用那个居中点，窗口右下会整块甩到屏幕外
++ * （实测 1280×784 屏上超出右 450px / 下 258px，主界面被屏幕边缘切掉）。
++ */
++function fitToWorkArea(b) {
++  const probe = {
++    x: b.x != null ? b.x : 0,
++    y: b.y != null ? b.y : 0,
++    width: Math.round(b.width || 0) || GATE_WIDTH,
++    height: Math.round(b.height || 0) || GATE_HEIGHT
++  };
++  const wa = screen.getDisplayMatching({
++    x: probe.x, y: probe.y, width: probe.width, height: probe.height
++  }).workArea;
++  probe.width = Math.min(probe.width, wa.width);
++  probe.height = Math.min(probe.height, wa.height);
++  // 没记过位置 ⇒ 居中放；记过 ⇒ 先用原位置，最后统一夹回
++  probe.x = b.x != null ? probe.x : wa.x + Math.round((wa.width - probe.width) / 2);
++  probe.y = b.y != null ? probe.y : wa.y + Math.round((wa.height - probe.height) / 2);
++  probe.x = Math.min(Math.max(probe.x, wa.x), wa.x + wa.width - probe.width);
++  probe.y = Math.min(Math.max(probe.y, wa.y), wa.y + wa.height - probe.height);
++  return probe;
++}
++
++/**
++ * 登录门开关。
++ *   开：记住当前窗口几何 → 收缩成刚好装下登录卡片的小窗（居中、禁拉伸、禁最大化）
++ *   关：还原成登录前的尺寸/位置与最大化状态
++ * 登录门期间的几何变化有意不写进 config.json（save() 在 loginMode 下直接返回），
++ * 否则会出现「登录前 1280×820、退出登录再进来变成 380×336」。
++ */
++function setLoginMode(on) {
++  if (!win || win.isDestroyed()) return;
++  const next = !!on;
++  if (next === loginMode) return;
++  if (next) {
++    normalGeo = { bounds: win.getBounds(), maximized: win.isMaximized() };
++    loginMode = true;                     // 先置位：让下面的 unmaximize 不落盘
++    if (win.isMaximized()) win.unmaximize();
++    win.setMinimumSize(320, 320);
++    win.setResizable(false);
++    win.setMaximizable(false);
++    win.setBounds({ width: GATE_WIDTH, height: GATE_HEIGHT });
++    win.center();
++  } else {
++    loginMode = false;
++    win.setResizable(true);
++    win.setMaximizable(true);
++    win.setMinimumSize(900, 600);
++    const g = normalGeo;
++    normalGeo = null;
++    if (g) {
++      // 必须夹回工作区：登录小窗是居中的，尺寸一跳大就会把右下甩到屏幕外
++      if (g.bounds) win.setBounds(fitToWorkArea(g.bounds));
++      if (g.maximized) win.maximize();
++    }
++  }
++}
++
++/** 渲染层量出登录卡片的实际高度后回调：把窗口收紧到「卡片高度 + 上下呼吸位」 */
++function fitGate(cardHeight) {
++  if (!win || win.isDestroyed() || !loginMode) return;
++  const raw = Math.round(Number(cardHeight) || 0) + GATE_PAD_Y * 2;
++  if (!(raw > 0)) return;
++  const target = Math.max(200, Math.min(760, raw));
++  if (Math.abs(win.getBounds().height - target) < 2) return;
++  win.setBounds({ height: target });
++  win.center();
++}
++
+ function theme() {
+   return {
+     shouldUseDarkColors: nativeTheme.shouldUseDarkColors,
+@@ -88,4 +188,4 @@ function clamp(v, lo, hi, dflt) {
+   return Math.max(lo, Math.min(hi, n));
+ }
+ 
+-module.exports = { createWindow, getWindow, attach, theme };
++module.exports = { createWindow, getWindow, attach, theme, setLoginMode, fitGate, fitToWorkArea };
+diff --git a/src/preload/index.js b/src/preload/index.js
+index cfc3949..b5dc018 100644
+--- a/src/preload/index.js
++++ b/src/preload/index.js
+@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('api', {
+   authResetPwd: (id, newP) => ipcRenderer.invoke('auth:reset-password', id, newP),
+   authRemoveUser: id => ipcRenderer.invoke('auth:remove-user', id),
+ 
++  brandList: () => ipcRenderer.invoke('brand:list'),
++  brandAdd: input => ipcRenderer.invoke('brand:add', input),
++  brandUpdate: (id, patch) => ipcRenderer.invoke('brand:update', id, patch),
++  brandRemove: id => ipcRenderer.invoke('brand:remove', id),
++  statsQuery: opts => ipcRenderer.invoke('stats:query', opts),
++  statsExport: opts => ipcRenderer.invoke('stats:export', opts),
++
+   configGet: key => ipcRenderer.invoke('config:get', key),
+   configSet: patch => ipcRenderer.invoke('config:set', patch),
+   projectGet: () => ipcRenderer.invoke('project:get'),
+@@ -42,6 +49,7 @@ contextBridge.exposeInMainWorld('api', {
+   close: () => ipcRenderer.send('win:close'),
+   isMax: () => ipcRenderer.invoke('win:is-max'),
+   flash: () => ipcRenderer.send('win:flash'),
++  fitGate: h => ipcRenderer.send('win:fit-gate', h),
+ 
+   onJobStart: cb => on('job:started', cb),
+   onJobProgress: cb => on('job:progress', cb),
+diff --git a/src/renderer/app.js b/src/renderer/app.js
+index b5eddf0..487f1a5 100644
+--- a/src/renderer/app.js
++++ b/src/renderer/app.js
+@@ -15,7 +15,14 @@ const state = {
+   publishRowTick: 0,
+   auth: null,         // {requireLogin, user, isAdmin, defaultHint}
+   users: null,        // 管理员可见的账号列表
+-  myId: null
++  myId: null,
++  brandsMeta: null,   // { isAdmin, brands:[{id,name,enabled}], mine:[id], defaultBrandId }
++  brandId: '',        // 标题栏那个「当前品牌」的值；产出类任务都带上它，主进程还会再校验一次权限
++  stats: null,        // 品牌统计查询结果
++  statsOpts: { days: 30, brandId: '', userId: '' },
++  statsBusy: false,
++  brandEdit: null,    // 正在改名的品牌 { id, name }
++  permUserId: null    // 「品牌权限」面板里当前选中的账号
+ };
+ 
+ /* ---------------- 工具 ---------------- */
+@@ -87,10 +94,17 @@ function pushLogEntry(e) {
+ }
+ 
+ /* ---------------- 任务（实例化：同一时间可以有多个批次在跑） ---------------- */
++/** 产出可发布内容的任务：必须带品牌归属。名单要和主进程 jobs.js 的 BRAND_SCOPED 保持一致 */
++const BRAND_SCOPED_TYPES = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
++
+ async function runJob(type, args) {
+   let res;
++  const a = Object.assign({}, args || {});
++  // 自动带上标题栏选中的品牌。没选中就不带 —— 让主进程把「为什么不行」讲清楚，
++  // 而不是在前端塞一个顶上：归属记错了比报错难查得多
++  if (BRAND_SCOPED_TYPES.has(type) && !a.brandId && state.brandId) a.brandId = state.brandId;
+   try {
+-    res = await appApi.run(type, args);
++    res = await appApi.run(type, a);
+   } catch (e) {
+     // IPC 层抛出来也要给人一句话，不能只在控制台里报错
+     res = { ok: false, error: (e && e.message) || '任务调用失败' };
+@@ -262,6 +276,9 @@ function sideStatus() {
+   const rows = (p.publish && p.publish.rows) || [];
+   const ok = rows.filter(r => r.result === '发布成功').length;
+   set(6, rows.length ? `${ok}/${rows.length}` : '—', rows.length ? (ok === rows.length ? 'ok' : '') : '');
++  // 8 品牌统计：显示「能用几个品牌」。一个都没有是黄灯 —— 那样什么产出任务都起不来，得先说清
++  const mine = state.brandsMeta ? state.brandsMeta.mine : null;
++  set(8, mine ? `${mine.length} 个` : '—', mine ? (mine.length ? 'ok' : 'warn') : '');
+ }
+ 
+ /* ---------------- 各页渲染 ---------------- */
+@@ -562,7 +579,7 @@ TABS[7] = {
+       </div>
+       <div class="box">
+         <h3>内容与校验（对齐真机）</h3>
+-        <div class="row" style="margin-bottom:9px"><span class="lbl">品牌</span><input class="inp" value="${esc(c.copy.brand || '')}" data-cfg="copy.brand" placeholder="如 TW男装 / skechers"></div>
++        <p class="hint">品牌不在这里填了 —— 见下方「<b>品牌管理</b>」：可以建多个品牌，并按账号分配权限（「账号管理」表里新增了「品牌权限」列）。产出的文案 / 发布单 / 发布记录都会带上所属品牌，管理员在「品牌统计」页按品牌查频次、数量和执行日志。</p>
+         <div class="row" style="margin-bottom:9px"><span class="lbl">筛选排序提示词</span><input class="inp" value="${esc(c.copy.promptFilter || '')}" data-cfg="copy.promptFilter"></div>
+         <div class="row" style="margin-bottom:9px"><span class="lbl">文案生成提示词</span><input class="inp" value="${esc(c.copy.promptWrite || '')}" data-cfg="copy.promptWrite"></div>
+         <div class="row" style="margin-bottom:9px"><span class="lbl">货号颜色</span>
+@@ -594,10 +611,177 @@ TABS[7] = {
+         </table></div>
+         <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>
+       </div>
++      ${brandsHtml()}
+       ${accountHtml()}`;
+   }
+ };
+ 
++/* ---------------- ⑧ 品牌统计 ---------------- */
++function daysLabel(d) { return Number(d) > 0 ? `最近 ${d} 天` : '全部时间'; }
++
++function fmtTs(ts) {
++  if (!ts) return '';
++  const d = new Date(ts);
++  const p = n => String(n).padStart(2, '0');
++  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
++}
++
++async function loadStats() {
++  if (state.statsBusy) return;
++  state.statsBusy = true;
++  state.statsTried = true;
++  try {
++    const r = await appApi.statsQuery(state.statsOpts);
++    state.stats = r && r.ok ? r : { error: (r && r.error) || '查询失败' };
++  } catch (e) {
++    state.stats = { error: (e && e.message) || '查询失败' };
++  }
++  state.statsBusy = false;
++  renderAll();
++}
++
++/** 频次柱：一天一根，高度按最大值归一。0 的那天画成细灰线（表示「这天真的没有」，不是漏画） */
++function sparkHtml(byDay, max) {
++  const days = byDay || [];
++  if (!days.length) return '<span style="opacity:.5">—</span>';
++  const m = max || Math.max(1, ...days.map(d => d.rows));
++  return `<span class="spark" title="${esc(days.map(d => `${d.date} ${d.rows} 条`).join('\n'))}">${days.map(d => {
++    const h = d.rows ? Math.max(3, Math.round(d.rows / m * 22)) : 2;
++    return `<i class="${d.rows ? '' : 'zero'}" style="height:${h}px"></i>`;
++  }).join('')}</span>`;
++}
++
++TABS[8] = {
++  title: '品牌统计',
++  desc: '按品牌看发布频次、数量与执行日志 · 未标品牌的历史记录单独列出，不并入任何品牌',
++  actions: () => [
++    { act: 'stats:refresh', label: '查询', primary: true },
++    { act: 'stats:export', label: '导出 xlsx', disabled: !(state.stats && !state.stats.error) }
++  ],
++  render() {
++    const s = state.stats;
++    const m = state.brandsMeta || { brands: [], mine: [], isAdmin: false };
++    const usable = (m.brands || []).filter(b => (m.mine || []).includes(b.id));
++    const head = `
++      <div class="box">
++        <div class="acct-toolbar" style="margin-top:0">
++          <span class="lbl">时间范围</span>
++          <select class="inp" id="stDays">${[[7, '最近 7 天'], [30, '最近 30 天'], [90, '最近 90 天'], [0, '全部时间']].map(([v, t]) => `<option value="${v}" ${Number(state.statsOpts.days) === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
++          <span class="lbl">品牌</span>
++          <select class="inp" id="stBrand">
++            <option value="">全部品牌</option>
++            ${usable.map(b => `<option value="${b.id}" ${state.statsOpts.brandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
++            ${m.isAdmin ? '<option value="__none__" ' + (state.statsOpts.brandId === '__none__' ? 'selected' : '') + '>未标品牌</option>' : ''}
++          </select>
++          ${m.isAdmin ? `<span class="lbl">执行人</span>
++          <select class="inp" id="stUser"><option value="">全部执行人</option>${((s && s.users) || []).map(u => `<option value="${esc(u.userId)}" ${state.statsOpts.userId === u.userId ? 'selected' : ''}>${esc(u.displayName || u.username || '未记录')}（${u.rows}）</option>`).join('')}</select>` : ''}
++          <button class="btn sm primary" data-act="stats:refresh">查询</button>
++          <span class="chip ${m.isAdmin ? 'chip-user' : ''}">${m.isAdmin ? '管理员：全部品牌' : `你名下 ${usable.length} 个品牌`}</span>
++        </div>
++      </div>`;
++    if (!s) return head + '<div class="empty">正在读取发布日志…（若一直停在这里，说明输出目录不可读）</div>';
++    if (s.error) return head + `<div class="empty">查询失败：${esc(s.error)}</div>`;
++
++    const t = s.totals;
++    const notes = (s.notes || []).length
++      ? `<div class="box" style="border-color:var(--amber)"><h3>口径说明</h3>${s.notes.map(x => `<p class="hint" style="margin:4px 0">· ${esc(x)}</p>`).join('')}</div>`
++      : '';
++
++    const maxRows = Math.max(1, ...[...s.brands, s.untagged, ...s.orphans].map(b => b.rows));
++    const rowOf = (b, cls, label) => `<tr class="${cls || ''}">
++      <td>${label || `<b>${esc(b.name)}</b>`}</td>
++      <td>${b.orphan ? badge('品牌已删除', 'bad') : (b.enabled === false ? badge('已停用', 'wait') : badge('启用', 'ok'))}</td>
++      <td class="num">${b.rows}</td>
++      <td class="num">${b.ok}</td>
++      <td class="num">${b.fail}</td>
++      <td class="num">${b.batches}</td>
++      <td class="mono">${esc(b.lastDay || '—')}</td>
++      <td>${sparkHtml(b.byDay, maxRows)}</td>
++      <td class="cut">${b.users.length ? esc(b.users.map(u => `${u.displayName || u.username || '（未记录执行人）'} ${u.rows}`).join(' / ')) : '<span style="opacity:.6">（无记录）</span>'}</td>
++    </tr>`;
++
++    const summary = `<div class="tw"><table>
++      <thead><tr><th>品牌</th><th>状态</th><th>条数</th><th>成功</th><th>失败</th><th>批次</th><th>最近发布</th><th>频次</th><th>执行人（条数）</th></tr></thead>
++      <tbody>
++        ${s.brands.map(b => rowOf(b)).join('')}
++        ${rowOf(s.untagged, 'brandrow-flag', `<b>${esc(s.untagged.name)}</b><div style="font-size:11px;opacity:.75">历史记录 / 发布时没选品牌</div>`)}
++        ${s.orphans.map(o => rowOf(o, 'brandrow-dead')).join('')}
++      </tbody></table></div>
++      <p class="hint">「频次」是按天画的柱：柱高 = 当天条数，细灰线 = 当天 0 条（是「真的没有」，不是没画）。
++      条数按 <code>publish-log.jsonl</code> 逐条统计；「执行日志」按 <code>run-log.jsonl</code> 的<b>任务级</b>记录。</p>`;
++
++    // 按天明细：只列「有数据的那些天」。时间范围=全部时没有密集序列，就从各品牌的 byDay 合并出来
++    const dayMap = new Map();
++    if (s.daily && s.daily.length) {
++      for (const d of s.daily) dayMap.set(d.date, d);
++    } else {
++      for (const b of [...s.brands, s.untagged, ...s.orphans]) {
++        for (const d of b.byDay) {
++          const cur = dayMap.get(d.date) || { date: d.date, rows: 0, ok: 0, fail: 0, other: 0 };
++          cur.rows += d.rows; cur.ok += d.ok; cur.fail += d.fail; cur.other += d.other;
++          dayMap.set(d.date, cur);
++        }
++      }
++    }
++    const daysWith = [...dayMap.values()].filter(d => d.rows > 0).sort((a, b) => a.date < b.date ? 1 : -1);
++    const dailyBox = `<div class="box">
++      <h3>按天频次（${esc(s.range.label)}${state.statsOpts.brandId ? ' · 已按品牌筛选' : ''}）</h3>
++      ${s.daily && s.daily.length ? `<div class="spark" style="height:64px;gap:3px">${(() => {
++        const mx = Math.max(1, ...s.daily.map(d => d.rows));
++        return s.daily.map(d => `<i class="${d.rows ? '' : 'zero'}" style="width:auto;flex:1;height:${d.rows ? Math.max(4, Math.round(d.rows / mx * 64)) : 2}px" title="${esc(d.date)}：${d.rows} 条"></i>`).join('');
++      })()}</div>
++      <p class="hint">${esc(s.daily[0] ? s.daily[0].date : '')} → ${esc(s.daily[s.daily.length - 1] ? s.daily[s.daily.length - 1].date : '')}</p>` : ''}
++      ${daysWith.length ? `<div class="tw" style="margin-top:10px"><table>
++        <thead><tr><th>日期</th><th>条数</th><th>成功</th><th>失败</th><th>其他</th></tr></thead>
++        <tbody>${daysWith.slice(0, 60).map(d => `<tr><td class="mono">${esc(d.date)}</td><td class="num">${d.rows}</td><td class="num">${d.ok}</td><td class="num">${d.fail}</td><td class="num">${d.other}</td></tr>`).join('')}</tbody>
++      </table></div>${daysWith.length > 60 ? `<p class="hint">只显示最近 60 天，完整数据请「导出 xlsx」。</p>` : ''}` : '<p class="hint">这个范围里还没有发布记录。</p>'}
++    </div>`;
++
++    const LOG_LEVEL = { ok: ['完成', 'ok'], error: ['失败', 'bad'], warn: ['告警', 'warn'], run: ['开始', 'run'], info: ['', 'wait'] };
++    const logBadge = lv => {
++      const [t, k] = LOG_LEVEL[lv] || LOG_LEVEL.info;
++      return t ? badge(t, k) : '<span style="opacity:.4">·</span>';
++    };
++    const logs = (s.logs || []).length ? `<div class="tw"><table>
++      <thead><tr><th>时间</th><th>品牌</th><th>执行人</th><th>任务</th><th>批次</th><th>级别</th><th>说明</th></tr></thead>
++      <tbody>${s.logs.map(e => `<tr class="${e.level === 'error' ? 'flag' : (e.level === 'warn' ? 'warnrow' : '')}">
++        <td class="mono">${esc(fmtTs(e.ts))}</td>
++        <td>${esc(e.brandName || '未标品牌')}</td>
++        <td>${esc(e.displayName || e.username || '—')}</td>
++        <td class="cut">${esc(e.label || e.type || '')}</td>
++        <td class="mono cut">${esc(e.batch || '')}</td>
++        <td>${logBadge(e.level)}</td>
++        <td class="cut">${esc(e.msg || '')}</td>
++      </tr>`).join('')}</tbody></table></div>`
++      : '<div class="empty">这个范围里没有任务执行日志。</div>';
++
++    return head + `
++      <div class="stats">
++        <div class="stat good"><b>${t.rows}</b><span>发布条数</span></div>
++        <div class="stat good"><b>${t.ok}</b><span>成功</span></div>
++        <div class="stat bad"><b>${t.fail}</b><span>失败</span></div>
++        <div class="stat"><b>${t.batches}</b><span>批次数</span></div>
++        <div class="stat"><b>${t.runs}</b><span>任务次数</span></div>
++        <div class="stat ${t.runFails ? 'bad' : ''}"><b>${t.runFails}</b><span>任务失败</span></div>
++        <div class="stat"><b>${s.brands.length}</b><span>品牌数</span></div>
++      </div>
++      <div class="box">
++        <div class="tagline">
++          <span class="chip">范围：${esc(s.range.label)}（${esc(s.range.from)} → ${esc(s.range.to)}）</span>
++          <span class="chip">发布日志 ${t.totalInLog} 条 / 命中 ${t.consideredInRange}</span>
++          <span class="chip">运行日志 ${s.sources.runLog.entries} 条 · ${kb(s.sources.runLog.size)}</span>
++          ${t.filtered ? '<span class="chip warn">已按条件筛选</span>' : ''}
++        </div>
++        <p class="hint" style="margin-top:8px">数据文件：<code>${esc((s.sources.publishLog.file || '').replace(/^\\\\\?\\/, ''))}</code> ·
++          <code>${esc((s.sources.runLog.file || '').replace(/^\\\\\?\\/, ''))}</code> —— 只追加、不自动裁剪，要清理由你自己决定。</p>
++      </div>
++      ${notes}
++      <div class="box"><h3>按品牌汇总（${esc(daysLabel(state.statsOpts.days))}）</h3>${summary}</div>
++      ${dailyBox}
++      <div class="box"><h3>执行日志（最近 ${(s.logs || []).length} 条）</h3>${logs}</div>`;
++  }
++};
++
+ /** 设备矩阵：真机里「一个设备 = 一个账号」（雷电模拟器多台并行） */
+ function devicesHtml() {
+   const list = (state.config.publish && state.config.publish.devices) || [];
+@@ -671,6 +855,11 @@ function renderAll() {
+   const lo = $('#btnLogout');
+   if (lo) lo.style.display = me ? '' : 'none';
+   if (state.tab === 7) bindSettings();
++  if (state.tab === 8) {
++    bindStats();
++    // 第一次进这个页签自动读一次；statsTried 防止查询失败时无限重试（那只会在 render→load→render 里打转）
++    if (!state.stats && !state.statsBusy && !state.statsTried) loadStats();
++  }
+ }
+ 
+ /* ---------------- 登录门 ---------------- */
+@@ -681,6 +870,16 @@ function fmtDate(ts) {
+   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+ }
+ 
++/** 量出登录卡片的实际高度，让主进程把窗口收紧到「刚好装下卡片」 */
++function fitGateWindow() {
++  if (!appApi.fitGate) return;
++  requestAnimationFrame(() => {
++    const card = document.querySelector('.gate .gcard');
++    if (!card) return;
++    appApi.fitGate(Math.ceil(card.getBoundingClientRect().height));
++  });
++}
++
+ function showGate(msg) {
+   document.body.classList.add('locked');
+   $('#lgErr').textContent = msg || '';
+@@ -688,7 +887,11 @@ function showGate(msg) {
+   if (!f.dataset.bound) {
+     f.dataset.bound = '1';
+     f.onsubmit = e => { e.preventDefault(); doLogin(); };
+-    $('#lgUser').oninput = $('#lgPwd').oninput = () => { $('#lgErr').textContent = ''; };
++    $('#lgUser').oninput = $('#lgPwd').oninput = () => {
++      if ($('#lgErr').textContent) { $('#lgErr').textContent = ''; fitGateWindow(); }
++    };
++    const gx = $('#gateClose');
++    if (gx) gx.onclick = () => appApi.close();    // 无边框小窗必须自带一个关闭口
+   }
+   const hint = state.auth && state.auth.defaultHint;
+   const tip = $('#lgTip');
+@@ -699,6 +902,7 @@ function showGate(msg) {
+   } else {
+     tip.hidden = true;
+   }
++  fitGateWindow();                                // 提示行显隐会影响卡片高度，量完再收紧窗口
+   setTimeout(() => {
+     const u = $('#lgUser');
+     if (u.value) $('#lgPwd').focus(); else u.focus();
+@@ -716,6 +920,7 @@ async function doLogin() {
+   btn.disabled = false; btn.textContent = '登 录';
+   if (!r.ok) {
+     $('#lgErr').textContent = r.error || '登录失败';
++    fitGateWindow();                     // 报错行会让卡片变高，窗口跟着收紧一次
+     $('#lgPwd').select();
+     return;
+   }
+@@ -732,6 +937,7 @@ async function enterApp() {
+   // 启动时对齐一次「运行中的批次」（job:busy 不传类型就是清单），免得刷新后看不见正在跑的任务
+   const live = await appApi.busy();
+   if (Array.isArray(live)) state.jobs = live.map(j => Object.assign({ progress: null, startedAt: j.startedAt || Date.now() }, j));
++  await refreshBrands();
+   await refreshUsers();
+   bindOnce();
+   renderAll();
+@@ -746,6 +952,14 @@ async function doLogout() {
+   state.users = null;
+   state.jobs = [];
+   state.batchDetail = null;
++  // 品牌与统计是「这个账号看得见的东西」，退出必须清掉 ——
++  // 不清的话换个人登录会先看到上一个人的品牌和统计，直到下一次刷新才纠正
++  state.brandsMeta = null;
++  state.brandId = '';
++  state.stats = null;
++  state.statsTried = false;
++  state.permUserId = null;
++  state.brandEdit = null;
+   showGate('已退出登录');
+ }
+ 
+@@ -759,6 +973,109 @@ async function refreshUsers() {
+   }
+ }
+ 
++/* ---------------- 品牌与权限 ---------------- */
++/**
++ * 拉一次「我能用哪些品牌」，顺带把标题栏下拉填上。
++ * 这里只是把选项列出来方便操作，**说了算的是主进程** —— 前端改个值骗不了它
++ * （jobs.js 起任务时会再按账号权限校验一遍）。
++ */
++async function refreshBrands() {
++  let r = null;
++  try { r = await appApi.brandList(); } catch (e) { r = null; }
++  state.brandsMeta = (r && r.ok)
++    ? r
++    : { isAdmin: false, brands: [], mine: [], defaultBrandId: '', error: (r && r.error) || '读不到品牌列表' };
++  paintBrandSelect();
++}
++
++function brandNameOf(id) {
++  const m = state.brandsMeta;
++  if (!m) return id || '';
++  const b = (m.brands || []).find(x => x.id === id);
++  if (b) return b.name;
++  return id ? '已删除的品牌' : '未标品牌';
++}
++
++/** 标题栏下拉：只列「我有权限的」；一个都没有就显示一行提示并转黄 */
++function paintBrandSelect() {
++  const sel = $('#brandSel');
++  if (!sel) return;
++  const m = state.brandsMeta || { brands: [], mine: [], isAdmin: false };
++  const mine = Array.isArray(m.mine) ? m.mine : [];
++  const usable = (m.brands || []).filter(b => mine.includes(b.id) && b.enabled !== false);
++  const prev = state.brandId;
++  sel.innerHTML = usable.length
++    ? usable.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')
++    : '<option value="">（没有可用品牌）</option>';
++  const keep = [prev, m.defaultBrandId].find(x => x && usable.some(b => b.id === x)) || (usable[0] ? usable[0].id : '');
++  sel.value = keep;
++  state.brandId = keep;
++  sel.classList.toggle('warn', !usable.length);
++  sel.title = usable.length
++    ? `当前品牌：${brandNameOf(keep)} —— 文案生成 / 发布单 / 发布都会归属到它`
++    : (m.isAdmin ? '还没有品牌：到「设置 → 品牌管理」添加' : '你还没有被分配品牌：请管理员到「设置 → 账号管理」里分配');
++}
++
++/* ---------------- 设置页：品牌管理 ---------------- */
++function brandsHtml() {
++  const m = state.brandsMeta;
++  const me = state.auth || {};
++  if (!me.isAdmin) {
++    // 普通成员：只看得见自己被分配的品牌，不给增删改
++    const mine = m ? (m.brands || []).filter(b => (m.mine || []).includes(b.id)) : [];
++    return `<div class="box">
++      <h3>我的品牌权限</h3>
++      ${mine.length
++        ? `<div class="row">${mine.map(b => `<span class="chip${b.enabled === false ? ' warn' : ''}">${esc(b.name)}${b.enabled === false ? '（已停用）' : ''}</span>`).join('')}</div>`
++        : '<p class="hint">你还没有被分配任何品牌 —— 请联系管理员到「设置 → 账号管理」里分配。没有品牌时，<b>文案生成 / 发布单 / 发布</b>这类任务会直接报错停下（不会悄悄发出去）。</p>'}
++      <p class="hint">品牌清单、以及谁能用哪些品牌，都由管理员维护。</p>
++    </div>`;
++  }
++  const all = (m && m.brands) || [];
++  const rows = all.length ? `<div class="tw"><table>
++    <thead><tr><th>品牌</th><th>状态</th><th>备注</th><th>有权限的账号</th><th>操作</th></tr></thead>
++    <tbody>${all.map(b => {
++    const us = (state.users || []).filter(u => (u.brands || []).includes(b.id));
++    const editing = state.brandEdit && state.brandEdit.id === b.id;
++    return `<tr class="${b.enabled === false ? 'warnrow' : ''}">
++        <td>${editing
++        ? `<input class="inp" id="brdName" value="${esc(b.name)}" style="min-width:130px">`
++        : `<b>${esc(b.name)}</b>`}</td>
++        <td>${badge(b.enabled === false ? '已停用' : '启用', b.enabled === false ? 'wait' : 'ok')}</td>
++        <td class="cut">${esc(b.note || '—')}</td>
++        <td class="cut">${us.length ? esc(us.map(u => u.displayName || u.username).join('、')) : '<span style="opacity:.6">（没有账号分配）</span>'}</td>
++        <td>${editing
++        ? `<button class="btn sm primary" data-act="brand:save" data-id="${b.id}">保存</button>
++             <button class="btn sm" data-act="brand:cancel">取消</button>`
++        : `<button class="btn sm" data-act="brand:edit" data-id="${b.id}">改名</button>
++             <button class="btn sm" data-act="brand:toggle" data-id="${b.id}" data-next="${b.enabled === false ? '1' : '0'}">${b.enabled === false ? '启用' : '停用'}</button>
++             <button class="btn sm" data-act="brand:del" data-id="${b.id}" data-name="${esc(b.name)}">删除</button>`}</td>
++      </tr>`;
++  }).join('')}</tbody></table></div>`
++    : '<div class="empty">还没有品牌。添加一个之后，才能给账号分配权限，发布记录也才有归属可查。</div>';
++  return `
++    <div class="box">
++      <h3>品牌管理（管理员）</h3>
++      ${rows}
++      <div class="acct-toolbar">
++        <input class="inp" id="nbName" placeholder="品牌名，如 TW男装 / skechers" style="min-width:180px">
++        <input class="inp" id="nbNote" placeholder="备注（可不填）" style="min-width:140px">
++        <button class="btn sm primary" data-act="brand:add">新增品牌</button>
++      </div>
++      <div class="acct-toolbar">
++        <span class="lbl">默认品牌</span>
++        <select class="inp" id="brandDefault">
++          <option value="">（不预选）</option>
++          ${all.filter(b => b.enabled !== false).map(b => `<option value="${b.id}" ${m.defaultBrandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
++        </select>
++        <button class="btn sm" data-act="brand:default">设为默认</button>
++        <span class="chip">标题栏的「当前品牌」只列当前账号<b>有权限</b>的品牌</span>
++      </div>
++      <p class="hint">权限记的是品牌 <b>id</b>，所以<b>改名不会丢掉任何人的权限</b>（存名字就会丢）。删掉的品牌，历史发布记录仍按原样保留，
++        在「品牌统计」里单列为「已删除的品牌」，不会被并进别的品牌里。</p>
++    </div>`;
++}
++
+ /* ---------------- 设置页：账号与安全 ---------------- */
+ function accountHtml() {
+   const a = state.auth || {};
+@@ -791,11 +1108,25 @@ function accountHtml() {
+ function adminUsersHtml() {
+   const us = state.users || [];
+   const myId = (state.auth && state.auth.user) ? state.auth.user.id : null;
++  const all = (state.brandsMeta && state.brandsMeta.brands) || [];
++  const brandTag = u => {
++    if (u.role === 'admin') return '<span class="chip chip-user">全部品牌</span>';
++    const ids = Array.isArray(u.brands) ? u.brands : [];
++    if (!ids.length) return '<span class="chip warn">未分配</span>';
++    return ids.map(id => {
++      const b = all.find(x => x.id === id);
++      // 品牌已被删除但授权还挂着（手改过 auth.json 才会出现）：明确标出来，别显示成正常品牌
++      return b
++        ? `<span class="chip${b.enabled === false ? ' warn' : ''}">${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</span>`
++        : '<span class="chip warn">已删除的品牌</span>';
++    }).join(' ');
++  };
+   const rows = us.map(u => `<tr>
+       <td>${esc(u.displayName)}</td>
+       <td class="mono">${esc(u.username)}</td>
+       <td>${badge(u.role === 'admin' ? '管理员' : '成员', u.role === 'admin' ? 'ok' : 'wait')}</td>
+       <td>${badge(u.disabled ? '已停用' : '启用', u.disabled ? 'bad' : 'ok')}</td>
++      <td class="brandcell">${brandTag(u)}</td>
+       <td class="mono">${esc(u.lastLoginAt ? fmtDate(u.lastLoginAt) : '—')}</td>
+       <td>${u.id === myId ? '<span class="chip">本人</span>' : `
+         <button class="btn sm" data-act="auth:toggle" data-id="${u.id}" data-next="${u.disabled ? '0' : '1'}">${u.disabled ? '启用' : '停用'}</button>
+@@ -803,11 +1134,24 @@ function adminUsersHtml() {
+         <button class="btn sm" data-act="auth:del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>`}</td>
+     </tr>`).join('');
+   const others = us.filter(u => u.id !== myId);
++  const target = others.find(u => u.id === state.permUserId) || others[0] || null;
++  const isSelfAdminTarget = target && target.role === 'admin';
++  const permPanel = !others.length ? '' : `
++      <div class="acct-toolbar">
++        <span class="lbl">品牌权限</span>
++        <select class="inp" id="pbUser">${others.map(u => `<option value="${u.id}" ${target && target.id === u.id ? 'selected' : ''}>${esc(u.displayName)}（${esc(u.username)}）</option>`).join('')}</select>
++        ${isSelfAdminTarget
++      ? '<span class="chip chip-user">管理员 = 全部品牌，不必逐个分配</span>'
++      : `<span class="perm-list">${all.length
++        ? all.map(b => `<label class="perm"><input type="checkbox" data-brand="${b.id}" ${target && (target.brands || []).includes(b.id) ? 'checked' : ''}> ${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</label>`).join('')
++        : '<span class="hint">还没有品牌，先到上面的「品牌管理」添加一个</span>'}</span>
++         <button class="btn sm primary" data-act="auth:brands" data-id="${target ? target.id : ''}">保存品牌权限</button>`}
++      </div>`;
+   return `
+     <div class="box">
+       <h3>账号管理（管理员）</h3>
+       <div class="tw"><table>
+-        <thead><tr><th>姓名</th><th>账号</th><th>角色</th><th>状态</th><th>上次登录</th><th>操作</th></tr></thead>
++        <thead><tr><th>姓名</th><th>账号</th><th>角色</th><th>状态</th><th>品牌权限</th><th>上次登录</th><th>操作</th></tr></thead>
+         <tbody>${rows}</tbody>
+       </table></div>
+       <div class="acct-toolbar">
+@@ -817,6 +1161,7 @@ function adminUsersHtml() {
+         <input class="inp mono" id="nuPwd" type="password" placeholder="初始密码 ≥6 位" style="min-width:150px">
+         <button class="btn sm primary" data-act="auth:create">新建账号</button>
+       </div>
++      ${permPanel}
+       <div class="acct-toolbar">
+         <select class="inp" id="rsUser">${others.map(u => `<option value="${u.id}">重置：${esc(u.username)}</option>`).join('') || '<option value="">（没有其他账号）</option>'}</select>
+         <input class="inp mono" id="rsPwd" type="password" placeholder="新密码 ≥6 位" style="min-width:150px">
+@@ -824,6 +1169,8 @@ function adminUsersHtml() {
+       </div>
+       <p class="hint">账号存在本机 <code>auth.json</code>（与 config.json 分开），口令只存 scrypt 哈希，不存明文。
+         停用/删除账号<b>不影响</b>已产出的素材、发布单与商品池。连续输错 6 次会锁定 5 分钟。</p>
++      <p class="hint"><b>关于这个权限的边界</b>：它是<b>本机离线</b>的，用来防误操作、让产出可归属，<b>不是安全隔离</b> ——
++        能碰到这台机器的人可以直接改 <code>auth.json</code> / <code>config.json</code>。别把它当权限系统用。</p>
+     </div>`;
+ }
+ 
+@@ -1076,8 +1423,91 @@ const ACTS = {
+     renderAll();
+   },
+ 
+-  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },
+-  'cfg:path': async (el) => {
++  // ---- 品牌权限（管理员）----
++  'auth:brands': async (el) => {
++    const id = el.dataset.id;
++    if (!id) { toast('先选一个账号', 'err'); return; }
++    const boxes = [...document.querySelectorAll('#pane [data-brand]')];
++    if (!boxes.length) { toast('还没有品牌：先到上面的「品牌管理」添加一个', 'err'); return; }
++    const ids = boxes.filter(b => b.checked).map(b => b.dataset.brand);
++    const r = await appApi.authUpdateUser(id, { brands: ids });
++    if (!r.ok) { toast(r.error, 'err'); return; }
++    await refreshUsers();
++    toast(ids.length ? `已保存品牌权限：${ids.length} 个品牌` : '已清空品牌权限（该账号将无法起产出任务）', 'ok');
++    renderAll();
++  },
++
++  // ---- 品牌管理（管理员）----
++  'brand:add': async () => {
++    const name = ($('#nbName') || {}).value || '';
++    const note = ($('#nbNote') || {}).value || '';
++    if (!name.trim()) { toast('先填品牌名', 'err'); return; }
++    const r = await appApi.brandAdd({ name: name.trim(), note: note.trim() });
++    if (!r.ok) { toast(r.error, 'err'); return; }
++    $('#nbName').value = ''; $('#nbNote').value = '';
++    await refreshBrands(); await refreshUsers();
++    toast(`已新增品牌 ${r.brand.name}`, 'ok');
++    renderAll();
++  },
++  'brand:edit': (el) => { state.brandEdit = { id: el.dataset.id }; renderAll(); },
++  'brand:cancel': () => { state.brandEdit = null; renderAll(); },
++  'brand:save': async (el) => {
++    const box = document.getElementById('brdName');
++    if (!box) return;
++    const r = await appApi.brandUpdate(el.dataset.id, { name: box.value });
++    if (!r.ok) { toast(r.error, 'err'); return; }
++    state.brandEdit = null;
++    await refreshBrands();
++    toast('品牌已改名（已分配的权限不受影响，因为记的是 id）', 'ok');
++    renderAll();
++  },
++  'brand:toggle': async (el) => {
++    const on = el.dataset.next === '1';
++    const r = await appApi.brandUpdate(el.dataset.id, { enabled: on });
++    if (!r.ok) { toast(r.error, 'err'); return; }
++    await refreshBrands();
++    toast(on ? '品牌已启用' : '品牌已停用：只拿到这个品牌的账号将无法再起产出任务', on ? 'ok' : '');
++    renderAll();
++  },
++  'brand:del': async (el) => {
++    const name = el.dataset.name;
++    const okDel = window.confirm(
++      `确定删除品牌「${name}」？\n\n` +
++      '· 已经发出去的历史记录会保留，在「品牌统计」里单列为「已删除的品牌」\n' +
++      '· 各账号上这个品牌的权限会被一并清掉\n' +
++      '· 该品牌下的批次归属会变成「未标品牌」'
++    );
++    if (!okDel) return;
++    const r = await appApi.brandRemove(el.dataset.id);
++    if (!r.ok) { toast(r.error, 'err'); return; }
++    await refreshBrands(); await refreshUsers();
++    toast(`已删除品牌「${name}」${r.usersCleaned ? `，同时清了 ${r.usersCleaned} 个账号的授权` : ''}`, 'ok');
++    renderAll();
++  },
++  'brand:default': async () => {
++    const sel = $('#brandDefault');
++    const id = sel ? sel.value : '';
++    await appApi.configSet({ copy: { defaultBrandId: id } });
++    state.config = await appApi.configGet();
++    await refreshBrands();
++    toast(id ? `默认品牌已设为 ${brandNameOf(id)}` : '已取消默认品牌', 'ok');
++    renderAll();
++  },
++
++  // ---- 品牌统计 ----
++  'stats:refresh': async () => {
++    state.stats = null;
++    state.statsTried = false;
++    await loadStats();
++  },
++  'stats:export': async () => {
++    const r = await appApi.statsExport(state.statsOpts);
++    if (!r.ok) { toast(r.error || '导出失败', 'err'); return; }
++    toast(`已导出：${(r.file || '').split(/[\\/]/).pop()}（${r.brandCount} 个品牌 · ${r.totals.rows} 条记录）`, 'ok');
++    if (r.file) await appApi.reveal(r.file);
++  },
++
++  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); },  'cfg:path': async (el) => {
+     const key = el.dataset.key;
+     const d = await appApi.pickDir({ title: '选择目录', defaultPath: state.config.paths.source });
+     if (!d) return;
+@@ -1114,6 +1544,27 @@ function bindSettings() {
+   document.querySelectorAll('#pane [data-cfg]').forEach(el => {
+     el.onchange = () => { saveCfgFromDom(); };
+   });
++  // 「品牌权限」面板里选账号就重画，勾选框要跟着换成这个人的当前分配
++  const pb = $('#pbUser');
++  if (pb) pb.onchange = () => { state.permUserId = pb.value; renderAll(); };
++}
++
++/** 品牌统计页：三个下拉改了就记进 state.statsOpts，点「查询」才真去读日志（避免每动一下就全量读盘） */
++function bindStats() {
++  const wire = (id, key) => {
++    const el = $(id);
++    if (!el) return;
++    el.onchange = () => { state.statsOpts[key] = el.value; };
++  };
++  wire('#stDays', 'days');
++  wire('#stBrand', 'brandId');
++  // 换了筛选条件，执行人下拉的候选也会变，所以清掉防止选到一个当前范围内不存在的人
++  const ub = $('#stUser');
++  if (ub) {
++    ub.onchange = () => { state.statsOpts.userId = ub.value; };
++  } else {
++    state.statsOpts.userId = '';
++  }
+ }
+ 
+ function bindOnce() {
+@@ -1125,6 +1576,17 @@ function bindOnce() {
+ function bind() {
+   $('#btnLogout').onclick = () => doLogout();
+ 
++  // 标题栏的「当前品牌」：改了就记住（下次进来还是它）。
++  // 只是省事，不是权限 —— 主进程每次起任务都会再校验一遍
++  const bsel = $('#brandSel');
++  if (bsel) bsel.onchange = async () => {
++    state.brandId = bsel.value;
++    await appApi.configSet({ copy: { defaultBrandId: bsel.value } });
++    state.config = await appApi.configGet();
++    await refreshBrands();
++    renderAll();
++  };
++
+   document.addEventListener('click', e => {
+     const el = e.target.closest('[data-act]');
+     if (!el || el.disabled) return;
+@@ -1145,7 +1607,7 @@ function bind() {
+   document.addEventListener('keydown', e => {
+     if (e.ctrlKey && !e.altKey && !e.metaKey) {
+       const k = Number(e.key);
+-      if (k >= 1 && k <= 7) { state.tab = k; renderAll(); e.preventDefault(); }
++      if (k >= 1 && k <= 8) { state.tab = k; renderAll(); e.preventDefault(); }
+     }
+   });
+ 
+diff --git a/src/renderer/index.html b/src/renderer/index.html
+index db006c7..529b83f 100644
+--- a/src/renderer/index.html
++++ b/src/renderer/index.html
+@@ -24,6 +24,9 @@
+     <div class="tb-right">
+       <div class="chips">
+         <span class="chip chip-proj" id="chipProj">项目 —</span>
++        <!-- 当前品牌：文案生成 / 发布单 / 发布 都归属到它。放在标题栏是为了让人随时看得见，
++             不然「忘了选品牌」会变成一条查不到归属的发布记录 -->
++        <select class="chip chip-sel" id="brandSel" title="当前品牌：文案生成 / 发布单 / 发布都会归属到它"></select>
+         <span class="chip" id="runChip">空闲</span>
+         <span class="chip chip-user" id="chipUser" title="当前登录账号">未登录</span>
+         <button class="tbbtn" id="btnLogout" title="退出登录">退出</button>
+@@ -75,6 +78,13 @@
+         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2.6M12 17.9v2.6M4.9 7.8l2.2 1.3M16.9 14.9l2.2 1.3M4.9 16.2l2.2-1.3M16.9 9.1l2.2-1.3"/></svg></span>
+         <span>设置</span>
+       </button>
++      <!-- 编号接在最后而不是插进「执行」组：插进去要把设置从 7 改成 8，
++           连带 Ctrl+1..7 快捷键、app.js 里跳设置页的写法、几处测试断言都要跟着动，
++           为一个新页签改号不划算 -->
++      <button class="nav" data-tab="8">
++        <span class="ic"><svg viewBox="0 0 24 24"><path d="M3 21h18"/><rect x="5" y="12" width="3.4" height="6" rx="1"/><rect x="10.3" y="7" width="3.4" height="11" rx="1"/><rect x="15.6" y="14" width="3.4" height="4" rx="1"/></svg></span>
++        <span>品牌统计</span><span class="st" data-st="8">—</span>
++      </button>
+     </nav>
+ 
+     <div class="main">
+@@ -97,6 +107,10 @@
+ 
+ <div class="gate" id="gate">
+   <form class="gcard" id="loginForm" autocomplete="off">
++    <!-- 无边框小窗的关闭口：做在卡片内部右上角，不许浮到卡片边框外面去 -->
++    <button class="gx" id="gateClose" type="button" title="关闭" aria-label="关闭">
++      <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg>
++    </button>
+     <div class="gbrand">
+       <span class="glogo" aria-hidden="true">
+         <svg viewBox="0 0 32 32" width="26" height="26">
+diff --git a/src/renderer/styles.css b/src/renderer/styles.css
+index 1522457..f327d51 100644
+--- a/src/renderer/styles.css
++++ b/src/renderer/styles.css
+@@ -218,14 +218,29 @@ body:not(.locked) .gate{display:none}
+   position:fixed;inset:0;z-index:100;
+   display:flex;align-items:center;justify-content:center;
+   background:var(--bg);
++  /* 无边框小窗：整块遮罩就是拖拽区，卡片以外的空白也能拖着走 */
++  -webkit-app-region:drag;
+ }
++/* 交互控件必须显式 no-drag，否则拖拽区会把点击吃掉（输入框点不进去） */
++.gate input,.gate button,.gate label,.gate a,.gate select,
++.gate .gerr,.gate .gtip{-webkit-app-region:no-drag}
+ .gate .gcard{
++  position:relative;
+   width:340px;background:var(--panel);
+   border:1px solid var(--bd);border-radius:12px;
+   padding:24px 26px 20px;
+   box-shadow:0 18px 50px rgba(0,0,0,.16);
+ }
+-.gate .gbrand{display:flex;align-items:center;gap:11px;margin-bottom:18px}
++/* 关闭口：缩在卡片右上角内部，不再往卡片外挂标题带 */
++.gate .gcard .gx{
++  position:absolute;top:16px;right:16px;
++  width:24px;height:24px;border-radius:6px;padding:0;
++  display:flex;align-items:center;justify-content:center;
++  background:transparent;border:0;color:var(--tx3);cursor:pointer;
++}
++.gate .gcard .gx svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1;display:block}
++.gate .gcard .gx:hover{background:#e81123;color:#fff}
++.gate .gbrand{display:flex;align-items:center;gap:11px;margin-bottom:18px;padding-right:30px}
+ .gate .glogo{display:flex}
+ .gate .gname{font-size:14px;font-weight:600;letter-spacing:.02em}
+ .gate .gsub{font-size:11.5px;color:var(--tx3);margin-top:2px}
+@@ -233,7 +248,7 @@ body:not(.locked) .gate{display:none}
+ .gate .gfld span{display:block;font-size:11.5px;color:var(--tx3);margin-bottom:4px}
+ .gate .gfld .inp{width:100%;min-width:0}
+ .gate .grem{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx3);margin:2px 0 12px;cursor:pointer}
+-.gate .gerr{min-height:17px;font-size:11.5px;color:var(--red);margin-bottom:6px}
++.gate .gerr{min-height:0;font-size:11.5px;color:var(--red);margin-bottom:6px}
+ .gate .ggo{width:100%;padding:9px 10px;font-size:13px;letter-spacing:.08em}
+ .gate .gtip{font-size:11px;color:var(--tx3);margin:10px 0 0;line-height:1.7}
+ .gate .gtip b{color:var(--amber);font-family:var(--mono)}
+@@ -242,6 +257,38 @@ body:not(.locked) .gate{display:none}
+ .acct-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
+ .acct-toolbar .inp{flex:0 0 auto;min-width:120px}
+ 
++/* ---------- 标题栏：当前品牌 ---------- */
++/* 用原生 select，但抹平系统外观做成 chip 的样子（右边那个小箭头是用渐变压出来的） */
++.chip-sel{
++  font:inherit;font-size:11.5px;padding:3px 24px 3px 10px;border-radius:99px;max-width:200px;
++  background:var(--panel);border:1px solid var(--bd);color:var(--tx2);
++  white-space:nowrap;text-overflow:ellipsis;cursor:pointer;appearance:none;-webkit-appearance:none;
++  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
++  background-position:calc(100% - 13px) 54%,calc(100% - 9px) 54%;
++  background-size:4px 4px,4px 4px;background-repeat:no-repeat;
++}
++.chip-sel:hover{border-color:var(--tx3)}
++.chip-sel:focus{outline:2px solid var(--teal);outline-offset:1px}
++/* 没有可用品牌 / 还没选：用告警色，别让它看着像正常状态 */
++.chip-sel.warn{background-color:var(--amber-bg);color:var(--amber);border-color:transparent;font-weight:600}
++
++/* ---------- 品牌统计 ---------- */
++/* 频次柱：一眼看出「哪个品牌最近没在发」。没有数据的那天画成细灰线，避免看起来像漏了 */
++.spark{display:flex;align-items:flex-end;gap:2px;height:22px;min-width:40px}
++.spark i{display:block;width:5px;background:var(--teal);border-radius:1px;min-height:2px;opacity:.85}
++.spark i.zero{background:var(--bd);opacity:1}
++.brandrow-flag td{background:var(--amber-bg)}
++.brandrow-dead td{background:var(--gray-bg)}
++.tagline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
++
++/* ---------- 品牌权限 ---------- */
++.brandcell{max-width:260px}
++.brandcell .chip{margin:1px 3px 1px 0;display:inline-block}
++.perm-list{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:1 1 100%}
++.perm-list .perm{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--tx2);cursor:pointer;
++  padding:3px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--panel2);white-space:nowrap}
++.perm-list .perm:hover{border-color:var(--tx3)}
++
+ @media (max-width:900px){
+   .body{flex-direction:column}
+   .side{width:100%;flex:0 0 auto;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--bd)}
+diff --git a/tools/run-all.js b/tools/run-all.js
+index f4352e4..cc12d69 100644
+--- a/tools/run-all.js
++++ b/tools/run-all.js
+@@ -11,10 +11,12 @@
+  *   compliancetest 合规边界 + 导出报告
+  *   batchtest      多批次并行 / 取消 / 按批次重导出日志
+  *   reporttest     「AI 内容报告」导入 → 发布 → 回写
+- *   uicheck        隐藏窗口加载真实渲染层（7 个页签 + 零控制台报错）
++ *   brandtest      品牌权限 + 按品牌统计（未标品牌单列 / 已删除品牌保留）
++ *   uicheck        隐藏窗口加载真实渲染层（8 个页签 + 零控制台报错）
+  *   logintest      登录门（未登录拦截 / 口令 / 权限 / 防爆破）
++ *   gatetest       登录门窗口尺寸（未登录收缩成小窗 / 登录后还原 / 退出再收缩）
+  *
+- * 两个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
++ * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
+  */
+ const { spawnSync } = require('child_process');
+ const fs = require('fs');
+@@ -42,7 +44,7 @@ const ELECTRON = electronBin();
+ const CHILD_ENV = { ...process.env };
+ delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
+ 
+-// uicheck / logintest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
++// uicheck / logintest / gatetest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
+ // （远程/CI/沙箱）GPU 进程会反复退出并 FATAL 掉整个 Electron，所以固定关掉 GPU、改进程内渲染。
+ const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
+ 
+@@ -53,8 +55,10 @@ const SUITES = [
+   ['compliancetest', 'node', ['tools/compliancetest.js']],
+   ['batchtest', 'node', ['tools/batchtest.js']],
+   ['reporttest', 'node', ['tools/reporttest.js']],
++  ['brandtest', 'node', ['tools/brandtest.js']],
+   ['uicheck', 'electron', ['tools/uicheck.js']],
+-  ['logintest', 'electron', ['tools/logintest.js']]
++  ['logintest', 'electron', ['tools/logintest.js']],
++  ['gatetest', 'electron', ['tools/gatetest.js']]
+ ];
+ 
+ /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */
+
+### 新增文件（git diff 不带未跟踪文件，单独补一段）
+diff --git a/tools/gatetest.js b/tools/gatetest.js
+new file mode 100644
+index 0000000..87d3920
+--- /dev/null
++++ b/tools/gatetest.js
+@@ -0,0 +1,153 @@
++/* 登录门「窗口尺寸」回归：未登录时窗口必须收缩成刚好装下登录卡片的小窗，
++   登录成功后还原成正常尺寸，退出登录再收缩；且登录门期间的临时尺寸不许写进 config.json。
++
++   为什么单独一套：这条链横跨 渲染层量卡片高度 → preload → ipc → main 改窗口，
++   uicheck 只验界面、logintest 只验账号逻辑，两边都盖不到「窗口尺寸」。
++   曾经的真坑：开场就以小窗启动时没记住「正常几何」，登录成功后窗口会一直卡在 380 宽。
++
++   用法：npx electron tools/gatetest.js     （tools/run-all.js 里就是这么调的）
++   注意：userData 会被指到临时目录，不会动你本机的 auth.json / config.json / project.json。
++*/
++const { app, screen } = require('electron');
++const path = require('path');
++const os = require('os');
++const fs = require('fs');
++
++const ROOT = path.resolve(__dirname, '..');
++const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-gate-'));
++app.setPath('userData', TMP);
++app.commandLine.appendSwitch('disable-gpu');
++
++const GATE_MAX_W = 420;     // 登录小窗的宽度上限（卡片 340 + 左右各 20，留点余量）
++const PAD_Y = 18;           // 与 src/main/window.js 的 GATE_PAD_Y 保持一致
++
++let bad = 0;
++const ok = (label, cond, extra) => {
++  console.log((cond ? 'PASS  ' : 'FAIL  ') + label + (extra ? '  → ' + extra : ''));
++  if (!cond) bad++;
++};
++const geoSig = b => b.width + 'x' + b.height;
++
++app.whenReady().then(async () => {
++  const store = require(path.join(ROOT, 'src/main/store.js'));
++  const project = require(path.join(ROOT, 'src/main/project.js'));
++  const auth = require(path.join(ROOT, 'src/main/auth.js'));
++  const ipc = require(path.join(ROOT, 'src/main/ipc.js'));
++  const winmod = require(path.join(ROOT, 'src/main/window.js'));
++
++  store.load();
++  project.load();
++  auth.load();      // 全新数据目录 ⇒ 用出厂账号建库（admin / BlueV@2026）
++  ipc.register();
++
++  const USER = auth.DEFAULT_USER;
++  const PASS = auth.DEFAULT_PASS;
++
++  const w = winmod.createWindow(true);            // true = 以登录门开场
++  await new Promise(r => w.webContents.once('did-finish-load', r));
++  await new Promise(r => setTimeout(r, 1500));    // 等渲染层量高 + fitGate 回调走完
++
++  const js = s => w.webContents.executeJavaScript(s);
++  const cardH = () => js('Math.round(document.querySelector(".gate .gcard").getBoundingClientRect().height)');
++  const isLocked = () => js('document.body.classList.contains("locked")');
++  const gateDisplay = () => js('getComputedStyle(document.querySelector("#gate")).display');
++
++  let g = w.getBounds();
++  let ch = await cardH();
++  ok('未登录：窗口是紧凑小窗，不再是大窗', g.width <= GATE_MAX_W, geoSig(g));
++  ok('未登录：窗口高 = 卡片高 + 上下呼吸位', Math.abs(g.height - (ch + PAD_Y * 2)) <= 3, '窗' + g.height + ' / 卡' + ch);
++  ok('未登录：业务界面整块隐藏、登录门显示', (await isLocked()) === true && (await gateDisplay()) !== 'none');
++  ok('未登录：窗口禁止拉伸 / 禁止最大化', w.isResizable() === false && w.isMaximizable() === false);
++
++  // 用户报过：卡片外挂了一条独立标题带（左上角标题 + 右上角 ×），卡片本身又有边框，
++  // 于是那两个东西醒目地浮在边框外面 —— 观感就是「没在框内」。
++  // 现在关闭口缩进卡片右上角，拖拽区改用整块遮罩，卡片外不再有任何东西。
++  const gx = await js(`(() => {
++    const b = document.querySelector('#gateClose'), c = document.querySelector('.gate .gcard');
++    if (!b || !c) return null;
++    const br = b.getBoundingClientRect(), cr = c.getBoundingClientRect();
++    return { l: Math.round(br.left - cr.left), t: Math.round(br.top - cr.top),
++             r: Math.round(cr.right - br.right), b: Math.round(cr.bottom - br.bottom),
++             w: Math.round(br.width), h: Math.round(br.height) };
++  })()`);
++  ok('登录页：关闭按钮缩在卡片右上角、四边都落在边框内',
++     !!gx && gx.l > 0 && gx.t > 0 && gx.r > 0 && gx.b > 0 && gx.w >= 20 && gx.h >= 20,
++     JSON.stringify(gx));
++
++  // 更狠的一条：登录门里任何「可见」元素都不许越过卡片边框（零尺寸的报错行/提示行不算）。
++  // 拦住的是「在卡片外又挂了个浮层」这类改法，不管它叫什么名字。
++  const outside = await js(`(() => {
++    const c = document.querySelector('.gate .gcard');
++    if (!c) return { err: 'no card' };
++    const cr = c.getBoundingClientRect();
++    const out = [];
++    for (const el of document.querySelectorAll('#gate *')) {
++      const r = el.getBoundingClientRect();
++      if (r.width < 1 || r.height < 1) continue;
++      if (r.left < cr.left - 0.6 || r.right > cr.right + 0.6 ||
++          r.top < cr.top - 0.6 || r.bottom > cr.bottom + 0.6) {
++        out.push((el.id || el.getAttribute('class') || el.tagName) + ':' +
++          [r.left, r.top, r.right, r.bottom].map(n => Math.round(n)).join(','));
++      }
++    }
++    return { out };
++  })()`);
++  ok('登录页：卡片外没有任何可见元素（标题/× 不许浮在边框外）',
++     !!outside && !!outside.out && outside.out.length === 0, JSON.stringify(outside));
++
++  // 走渲染层自己的流程：填表 + 提交（等同于用户敲完点「登录」）
++  await js(`(() => {
++    document.querySelector('#lgUser').value = ${JSON.stringify(USER)};
++    document.querySelector('#lgPwd').value = ${JSON.stringify(PASS)};
++    document.querySelector('#loginForm').requestSubmit();
++    return true;
++  })()`);
++  await new Promise(r => setTimeout(r, 1200));
++
++  g = w.getBounds();
++  ok('登录页没有报错（口令被接受）', (await js('document.querySelector("#lgErr").textContent')) === '');
++  ok('登录后：窗口还原成正常尺寸', g.width >= 900, geoSig(g));
++  ok('登录后：登录门消失、业务界面出来', (await isLocked()) === false && (await gateDisplay()) === 'none');
++  ok('登录后：窗口恢复可拉伸 / 可最大化', w.isResizable() === true && w.isMaximizable() === true);
++  const savedAfterLogin = store.get('window.bounds') || {};
++  ok('登录后：落盘的窗口尺寸不是小窗（下次启动不会变小）', !savedAfterLogin.width || savedAfterLogin.width >= 900, JSON.stringify(savedAfterLogin));
++
++  // 真坑：登录小窗是 win.center() 摆在屏幕正中的，尺寸跳回 1280×820 时位置没跟着走，
++  // 窗口右下整块甩出屏幕（1280×784 屏实测超右 450 / 下 258）——观感就是「文字冲出边框」。
++  const disp = screen.getDisplayMatching(g).workArea;
++  const inside = g.x >= disp.x && g.y >= disp.y &&
++                 g.x + g.width <= disp.x + disp.width &&
++                 g.y + g.height <= disp.y + disp.height;
++  ok('登录后：窗口完整落在屏幕工作区内（右下不会被屏幕切掉）', inside,
++     geoSig(g) + ' @' + g.x + ',' + g.y + ' / 工作区 ' + disp.width + 'x' + disp.height);
++
++  // 单元级：把「明显出屏」的几何喂给夹具，必须被夹回来（这条不依赖本机屏幕有多大）
++  let clamped = null, clampErr = '';
++  try { clamped = winmod.fitToWorkArea({ x: -99999, y: -99999, width: 99999, height: 99999 }); }
++  catch (e) { clampErr = e.message; }
++  ok('fitToWorkArea：离谱几何必被夹回工作区',
++     !!clamped && clamped.x >= disp.x && clamped.y >= disp.y &&
++     clamped.width <= disp.width && clamped.height <= disp.height &&
++     clamped.x + clamped.width <= disp.x + disp.width &&
++     clamped.y + clamped.height <= disp.y + disp.height,
++     clampErr || JSON.stringify(clamped));
++
++  // 点标题栏右上角的「退出」
++  await js('document.querySelector("#btnLogout").click()');
++  await new Promise(r => setTimeout(r, 1200));
++
++  g = w.getBounds();
++  ch = await cardH();
++  ok('退出登录：窗口重新收缩成小窗', g.width <= GATE_MAX_W, geoSig(g));
++  ok('退出登录：高度再次贴合卡片', Math.abs(g.height - (ch + PAD_Y * 2)) <= 3, '窗' + g.height + ' / 卡' + ch);
++  ok('退出登录：登录门回来', (await isLocked()) === true);
++  const savedAtGate = store.get('window.bounds') || {};
++  ok('登录门的临时尺寸不写进 config.json', !savedAtGate.width || savedAtGate.width >= 900, JSON.stringify(savedAtGate));
++
++  console.log('\nuserData(临时): ' + TMP);
++  console.log(bad ? ('有 ' + bad + ' 项未通过') : '全部通过');
++  app.exit(bad ? 1 : 0);
++}).catch(e => {
++  console.error('GATE TEST ERROR', e);
++  app.exit(1);
++});

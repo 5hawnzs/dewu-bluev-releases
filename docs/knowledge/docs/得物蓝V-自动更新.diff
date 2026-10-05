@@ -1,0 +1,3339 @@
+diff --git a/.gitignore b/.gitignore
+index 75e9582..3d99a80 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -22,9 +22,20 @@ failures/
+ 输出/
+ _rejected/
+ 
++# ---------- 发布凭据：绝不进仓库 ----------
++# 对象存储的子账号密钥只该躺在打包机上。上传脚本读环境变量或这两个文件。
++# 进过 git 的密钥等于公开 —— 一旦误提交，必须去 CAM 里把这对密钥删掉重发，改文件没用。
++.env
++.env.local
++
+ # ---------- 代码快照（回滚点，按约定放在工程外） ----------
+ _snapshot-*.tar.gz
+ 
++# ---------- 定点破坏验证留下的备份：正常跑完会自己删掉，留在这里就说明脚本崩在半路 ----------
++*.fixbak
++*.brandbak
++*.updbak
++
+ # ---------- 系统 / 编辑器 ----------
+ .DS_Store
+ Thumbs.db
+diff --git a/README.md b/README.md
+index 8b26d7e..0d48412 100644
+--- a/README.md
++++ b/README.md
+@@ -134,7 +134,7 @@ npm run dist:win
+ 
+ 要临时免登录开发：`BLUEV_NO_LOGIN=1 npm start`。
+ 
+-登录门有回归守护（改动这块之前先跑）：`./node_modules/.bin/electron tools/logintest.js` —— 58 项断言，
++登录门有回归守护（改动这块之前先跑）：`./node_modules/.bin/electron tools/logintest.js` —— 59 项断言，
+ 覆盖「未登录时业务通道在主进程侧就被拦」（不是前端藏起来）、口令只存 scrypt 哈希、记住登录重启免密、
+ 普通成员看不到账号列表、停用后不能登录、不能停用/删自己、连错 6 次锁定 5 分钟。
+ 
+@@ -185,6 +185,82 @@ npm run dist:win
+   只是先按品牌存着。弹窗里也这么标着 —— 别以为配了就有效果。
+ - 单条提示词上限 **4000 字**（粘贴超长内容会截断而不是整条保存失败）；`\r\n` 会归一成 `\n`。
+ 
++## 应用更新（自动更新，2026-10-01 新增）
++
++装好的**安装版**（`…-x64-win.exe`）启动约 20 秒后会自己查一次更新源。发现新版本会告诉你，但
++**不会自己下载、更不会自己重启** —— 这两步都要你在「设置 → 应用更新」里点。
++
++| 项 | 说明 |
++| --- | --- |
++| 更新源 | 腾讯云 COS 的 `stable/` 目录（地址在 `package.json` 的 `build.publish`，**编译进包**） |
++| 通道 | 阶段 1 **只有一条正式通道**。测试版 / 正式版将来靠**两个不同的源地址**隔离，不是靠一个开关 |
++| 检查时机 | 启动后约 20 秒自检**一次**（不是定时轮询），以及手动点「检查更新」 |
++| 下载 | **手动**。包有 88 MB，不替用户决定占带宽 |
++| 安装 | **手动**；而且**有任务在跑时会拦住** —— 重启会把跑一半的发布掐断，且没有回滚 |
++| 不支持的情况 | **便携版不支持**（每次启动自解压到临时目录，没法就地替换）；**开发模式**（`npm start`）也不检查。这两种情况「应用更新」一栏会**如实写不可用**，不摆点了没反应的按钮 |
++| 换源地址的代价 | 地址编译进包 ⇒ 改了等于所有已装客户端全部失联，只能重发一次包 |
++
++### 发版流程（打包机上）
++
++```bash
++# 1) 先改 package.json 的 version
++#    不涨版本号会「同名覆盖」，而且 electron-updater 按版本号比较，客户端会直接判「没有新版本」
++# 2) 打包 + 上传，一条命令：
++npm run dist:release
++```
++
++`npm run dist:release` = 打包（`dist:win`）+ 上传（`release:stable`）。
++上传的东西是 electron-builder **不会代传**的那三样：安装包 exe、`latest.yml`、`.blockmap`
++（generic 提供者必须自己上传，漏了就是「包打了但客户端永远收不到」）。
++
++凭据**不进仓库**，放打包机上的 `.env`（已在 `.gitignore`；`node_modules/` 外、仓库根或 `tools/` 下都认）：
++
++```
++COS_SECRET_ID=…
++COS_SECRET_KEY=…
++COS_BUCKET=dewu-bluev-release-1499238579
++COS_REGION=ap-guangzhou
++# COS_DOMAIN 可选，不填就按 https://<bucket>.cos.<region>.myqcloud.com 拼
++```
++
++只看要传什么、不真传：`node tools/upload-release.js --channel stable --dry-run`。
++
++```
++通道      stable
++版本      1.0.0（package.json 1.0.0）
++目标      https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com
++要传的文件：
++  安装包    stable/得物蓝V素材发布工具-1.0.0-x64-win.exe   85.0 MB
++  版本清单  stable/latest.yml   388 B
++  增量块图  stable/得物蓝V素材发布工具-1.0.0-x64-win.exe.blockmap   91.4 KB
++```
++
++上传脚本会挡住两种「传了等于没传」：**dist 里的版本号和 package.json 对不上**（说明 dist 是旧包）、
++**源上已经是同一个版本号**（要覆盖得显式加 `--force`）。它**只传安装版**，便携版连列都不会列进去。
++
++### 怎么确认「源地址配对了」（实测过，不用猜）
++
++打完包去这两个地方看一眼，对上就是对的 —— 地址写错的话，应用只会一直说「已是最新」，
++**不会报错**，所以这一眼必须看：
++
++```bash
++cat dist/win-unpacked/resources/app-update.yml      # 编译进包、在 asar 外，electron-updater 只认它
++cat dist/latest.yml                                 # 客户端按这里的 path 去下载，对不上就是 404
++```
++
++`app-update.yml` 长这样（**2026-10-01 实测生成**）：
++
++```yaml
++provider: generic
++url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable
++channel: latest
++updaterCacheDirName: dewu-bluev-publisher-updater
++```
++
++> - ⚠️ **便携版收不到自动更新**：用它的人要手动换一次文件（改装安装版），之后才进自动更新通道。
++> - ℹ️ `release:beta` 脚本已经在了（`node tools/upload-release.js --channel beta`），但**阶段 1 还没有 beta 通道**
++>   —— 包里只配了 `stable` 源地址，现在跑它只会往 `beta/` 传一份**没人读**的文件。等阶段 2 接上 beta 通道再用。
++
+ ## 依赖状态
+ 
+ - 图片引擎：优先 `sharp`（支持 HEIC、libvips 多核）；原生模块加载失败时自动降级为纯 JS 引擎（`jpeg-js` + `pngjs`），降级状态显示在「设置 → 外部依赖」。sharp 是 N-API 预编译包，**不需要 electron-rebuild**。
+@@ -194,10 +270,10 @@ npm run dist:win
+ 
+ ## 开发期自检
+ 
+-测试都在仓库里（`tools/`），一条命令跑完全部 **319** 项断言：
++测试都在仓库里（`tools/`），一条命令跑完全部 **379** 项断言：
+ 
+ ```bash
+-bash tools/run-all.sh          # 七套主进程测试 + 三个隐藏窗口套件（界面自检 / 登录门 / 窗口几何）
++bash tools/run-all.sh          # 九套纯 Node 测试 + 三套隐藏窗口套件（界面自检 / 登录门 / 窗口几何）
+ ```
+ 
+ > ⚠️ 跑回归**不要**设 `BLUEV_NO_LOGIN=1`：登录门那套断言的就是「这个变量没设」，设了会失败并挂住。
+@@ -211,9 +287,11 @@ bash tools/run-all.sh          # 七套主进程测试 + 三个隐藏窗口套
+ | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、恢复动作保存与校验 | 22 |
+ | `tools/reporttest.js` | 「AI 内容报告」导入：列名匹配（列顺序打乱）、行↔叶子一一对应与数量不等报错、标题/文案空则生成、好物 1~9 带全、**发图文还是发视频按「内容类型」列判定**（没标则按目录推断；图和视频都有又没标 → 标「校验未通过」不静默丢）、发布结果回写 B/C 列、被占用→暂存→补写 | 32 |
+ | `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删品牌**排空授权**但**不动历史记录**；按品牌统计（「未标品牌」「已删除的品牌」各自成桶、绝不并进真实品牌）；执行日志落盘且重启后仍在；xlsx 四个工作表；**按品牌文案提示词**（`\r\n` 归一 / 超长截断、拼进 system 时品牌模板在前而输出约束在后、没配提示词的品牌**起任务前就被拦下且不留台账**、直接调 `copywriter.generate` 也拦得住） | 69 |
+-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**（`userData` 指到临时目录，不动本机数据） | 27 |
+-| `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员改不了品牌注册表、看统计的范围被限死、不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全） | 58 |
++| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因**（`userData` 指到临时目录，不动本机数据） | 29 |
++| `tools/logintest.js` | 登录门（**不开**免登录）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员改不了品牌注册表、看统计的范围被限死、不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全）；**自动更新四个通道同样被拦**（未登录时 `update:status/check/download/install` 全部拒绝） | 59 |
+ | `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮在卡片边框内、卡片外无可见元素 | 17 |
++| `tools/updatertest.js` | 自动更新的状态机与两条红线（纯 Node + 假 `autoUpdater`，不联网、不真下载）：未打包 / 便携版**都不可用且给出中文原因**；`autoDownload` 与 `autoInstallOnAppQuit` **必须都是 false**（不许自己下 88MB、不许退出时偷偷装）；`update-downloaded` 之后 **`quitAndInstall` 调用次数必须是 0**（绝不自动重启）；只有用户点「重启并安装」才调，且参数是 `(false, true)`；检查/下载/安装的状态流转与失败回退；重复点击不会并发起第二次检查；推给界面的 payload 是**快照**（不是活引用） | 29 |
++| `tools/releasetest.js` | 发版工具（`upload-release.js`）的纯逻辑——这条链上**失败是静默的**：`latest.yml` 的 `path` 读错就是全员 404；源上同版本号被覆盖 ⇒ 客户端永远判「没有新版本」；把「便携版」传上去 ⇒ portable 收不到更新。断言：真实 `latest.yml`（中文产物名）与 CRLF 变体都读得对、文件名带空格不被截断、多文件顺序不丢、空清单不抛异常也不编造 `path`；`pickInstaller` 永不含「便携版」；`versionGate` 在「版本号涨了」放行、「源上读不出」放行、「同版本号」默认拦下而 `--force` 放行；大小显示不再把 388 B 写成 `0.0 MB`；表格按中文 2 格对齐 | 28 |
+ 
+ **没测到的**：真机上的得物 App 页面结构（发布页按钮文本 / resource-id 各版本不同，
+ **视频发布页与图文不是一套界面，`videoSteps` 必须真机抓一次**）、Android 媒体扫描后相册刷新的真实耗时
+@@ -228,6 +306,7 @@ src/main/window.js       无边框窗口 + 尺寸记忆
+ src/main/ipc.js          IPC 白名单（业务通道统一做登录门禁）
+ src/main/auth.js         本机账号：scrypt 口令哈希 / 登录会话 / 账号管理
+ src/main/brands.js       品牌注册表 + 按账号的品牌权限判定（权限记 id，改名不丢）
++src/main/updater.js      自动更新状态机（下载/安装都等用户点，绝不自动重启）
+ src/main/jobs.js         任务编排（任务实例化：进度/日志/取消/运行中批次/任务栏进度/通知）
+ src/main/services/       flatten / compliance / copywriter / verify / sheet / report / publisher / pool / imaging
+                          runlog（执行日志落盘）/ stats（按品牌统计 + 导出）
+@@ -236,4 +315,5 @@ src/preload/index.js     contextBridge（contextIsolation，渲染层无 node 
+ src/renderer/            Windows 风格 UI
+ build/icon.ico           安装包与窗口图标
+ tools/                   回归测试（run-all.sh 一键跑）+ 假 adb；不进安装包（build.files 只含 src/）
++tools/upload-release.js  发版上传（exe + latest.yml + blockmap → 对象存储的 stable/）
+ ```
+diff --git a/docs/HANDOFF.md b/docs/HANDOFF.md
+index d54f560..cdedec9 100644
+--- a/docs/HANDOFF.md
++++ b/docs/HANDOFF.md
+@@ -93,11 +93,17 @@
+ 3. **它的产物不要动**：`src/main/auth.js`、`index.js`、`ipc.js`、`preload/index.js`、`renderer/index.html`、`renderer/styles.css`
+    （本机登录门：`auth:*` 通道，`guard()` 拦截未登录的 `job:run` 等调用）。   默认管理员 `admin / BlueV@2026`；
+    手动跑 App 想免登录：`BLUEV_NO_LOGIN=1`（**只限手动跑**；跑回归不要设它，原因见 §2 第 3 条）。
+-   登录门本身已有回归：`tools/logintest.js`（58 项，见 §6）—— 覆盖未登录拦截、口令只存哈希、记住登录、
++   登录门本身已有回归：`tools/logintest.js`（59 项，见 §6）—— 覆盖未登录拦截、口令只存哈希、记住登录、
+    权限、防爆破、退出；**改这几块之前先跑它**。
+ 4. 回滚点（都在工程外，不打进安装包）：
+    - `_snapshot-20260930-1510.tar.gz` —— **含 ①②③④ 的改动**（src + package.json + README + docs + tools）
+    - `_snapshot-20260930-1447.tar.gz` —— 这批改动**之前**的状态（含另一个任务的登录门）
++5. **自动更新有两条「不许顺手加上」的红线**（`src/main/updater.js` 文件头也写着，改那儿之前先读）：
++   a. **绝不自动重启安装**。这工具随时可能在跑批量发布（一跑几十分钟），静默重启会把任务拦腰截断、而且**没有回滚**。
++      `autoInstallOnAppQuit` 也必须是 `false`（否则用户下次关窗口时会被装上）。
++      安装只能由用户点「立即安装」，而且**有任务在跑时必须拦住**（已经拦在 `ipc.js` 的 `update:install` 里）。
++   b. **不在运行时改更新源地址**（`setFeedURL`）。地址编译进 `resources/app-update.yml`；将来 beta / stable
++      两条通道是靠**两个不同的源地址**隔离的，运行时能改就等于把「测试版没验过的东西」直接送进正式版。
+ 
+ ## 3. 环境与已知坑
+ 
+@@ -192,6 +198,8 @@
+     这套权限的真正作用是**防误操作 + 让统计能对账**，不是防内部的恶意越权；真要隔离得上服务端（当前没有服务端）。
+   - 回归：新增 `tools/brandtest.js`（58 项）；`uicheck` 19→23、`logintest` 32→48；合计 **216 → 294** 项断言。
+     随后加文案提示词，又补到 `brandtest` 69、`uicheck` 27、`logintest` 58，合计 **319** 项。
++  - 再往后加**自动更新**（2026-10-01，见 §2 第 5 条）：新增 `tools/updatertest.js`（29 项）与
++    `tools/releasetest.js`（28 项），`uicheck` 27→29、`logintest` 58→59 ⇒ 合计 **379** 项断言（实测）。
+ 
+ ## 5. 待做（按优先级）
+ 
+@@ -392,11 +400,13 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
+ | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
+ | `tools/reporttest.js` | 「AI 内容报告」导入 → 发布 → 回写：列名匹配（列顺序打乱）、行↔叶子配对与数量不等报错、标题文案空则生成、好物带全、**发图文还是发视频按「内容类型」列判定**（没标按目录推断；图+视频都有又没标 → 「校验未通过」）、报告被占用→暂存→补写 | 32 |
+ | `tools/brandtest.js` | 品牌注册表与权限：改名不丢已分配的授权、重名与保留名被拒、成员借别人的品牌 id 越权被拦、删除品牌**排空授权**且**不动历史记录**；按品牌统计（「未标品牌」与「已删除的品牌」各自成桶、绝不与真实品牌合并）；执行日志落盘且重启后仍在；xlsx 四个工作表；**按品牌文案提示词**（存 / 归一 `\r\n` / 超长截断、拼进 system 时品牌模板在前而输出约束在后、没配提示词的品牌**起任务前就被拦下且不留台账**、直接调 `copywriter.generate` 也拦得住） | 69 |
+-| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关** | 27 |
+-| `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全、成员看到的品牌名是只读的） | 58 |
++| `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、8 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置、**点「提示词配置」直接弹出弹窗且点遮罩能关**、**设置页有「应用更新」面板并如实写出当前版本 / 不可用原因（未打包时不许摆点了没用的按钮）** | 29 |
++| `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定；**品牌权限**（成员连品牌注册表都改不了、成员看统计的范围被限死、成员不能借别人的品牌 id 越权）；**文案提示词权限**（成员能改自己品牌的、改不了别人的、也不能借这个口子改名；`brand:list` 不回别人品牌的提示词；弹窗编辑视图字段齐全、成员看到的品牌名是只读的）；**自动更新四个通道同样被登录门拦** | 59 |
+ | `tools/gatetest.js` | 登录小窗 / 主窗几何：登录后窗口完整落在工作区内、离谱几何必被夹回、关闭按钮四边都在卡片边框内、卡片外没有任何**可见**元素 | 17 |
++| `tools/updatertest.js` | 自动更新状态机与两条红线（纯 Node + 假 `autoUpdater`，**不联网、不真下载、不碰真 electron-updater**）：未打包 / 便携版都不可用且给出中文原因；`autoDownload === false` 且 `autoInstallOnAppQuit === false`；**`update-downloaded` 之后 `quitAndInstall` 调用次数必须为 0**（绝不自动重启 —— 装了会掐断正在跑的发布任务）；只有用户点「重启并安装」才调且参数 `(false, true)`；`idle→checking→available→downloading→ready` 与 `uptodate` / `error` 的回退；重复点检查不会并发；推给界面的是快照而非活引用 | 29 |
++| `tools/releasetest.js` | 发版工具纯逻辑（不联网、不碰 COS、不读 `dist`）：`latest.yml` 的 `path` 读错 ⇒ 客户端按错名字下载 ⇒ **全员 404 但本机毫无异常**；`pickInstaller` 永不含「便携版」（portable 不支持自动更新，传了就是发个用不了的包）；`versionGate` 在「源上已是同版本号」时默认**拦下**（不拦 ⇒ 用户永远收不到更新且查不出原因）、`--force` 才放行、「源上读不出」不拦（读不出 ≠ 已存在）；`humanSize` 不再把 388 B 显示成 `0.0 MB` | 28 |
+ 
+-合计 **319** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 27 + 58 + 17 = 319`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
++合计 **379** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 69 + 29 + 59 + 17 + 29 + 28 = 379`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+ `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
+ 
+ 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
+@@ -567,9 +577,13 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
+ | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
+ | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
+ | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
+-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：十套测试，共 319 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
++| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：**十二套**测试，共 **379** 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
++| `tools/upload-release.js` | 把 exe + `latest.yml` + `.blockmap` 传到对象存储的 `stable/`（或 `beta/`）。★ **generic provider 不会替你上传**（electron-updater 官方明确要求自己放），漏了这一步源上还是旧清单 ⇒ 应用**永远显示「已是最新」，而且失败是静默的** |
++| `dist/win-unpacked/resources/app-update.yml` | **实测生成（2026-10-01）**：`provider: generic` / `url: https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable` / `channel: latest` / `updaterCacheDirName: dewu-bluev-publisher-updater`。由 `package.json` 的 `build.publish` 生成，**编译进包、但在 asar 外**（electron-updater 只能读这个文件，**不许 `setFeedURL`**） |
++| `dist/latest.yml` | electron-builder 生成的更新清单（388 B）：`path` 指向 **NSIS 安装版** exe（不是便携版），带 `sha512` 与 `size`。客户端按这里的 `path` 去下载，**对不上就是 404** |
++| `.env`（不进仓库，已在 `.gitignore`） | 发版凭据 `COS_BUCKET` / `COS_REGION` / `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_DOMAIN`；子账号 `dewu-bluev-cos-upload` |
+ | `docs/WINDOWS-E2E.md` | Windows + 雷电模拟器的端到端测试手册（怎么跑、每步预期、坑、问题回传） |
+-| `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好并生效 |
++| `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据 / `.env`」写好并生效 |
+ 
+ 复现本次拆解（万一要重看原始录屏）：
+ 
+diff --git a/package-lock.json b/package-lock.json
+index 6829598..deb7b80 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -9,14 +9,15 @@
+       "version": "1.0.0",
+       "license": "MIT",
+       "dependencies": {
++        "electron-updater": "^6.8.9",
+         "exceljs": "^4.4.0",
+         "jpeg-js": "^0.4.4",
+         "pngjs": "^7.0.0"
+       },
+       "devDependencies": {
++        "cos-nodejs-sdk-v5": "^3.0.0",
+         "electron": "^31.7.7",
+-        "electron-builder": "^24.13.3",
+-        "electron-rebuild": "^3.2.9"
++        "electron-builder": "^24.13.3"
+       },
+       "optionalDependencies": {
+         "sharp": "^0.33.5"
+@@ -364,13 +365,6 @@
+       "integrity": "sha512-fAtCfv4jJg+ExtXhvCkCqUKZ+4ok/JQk01qDKhL5BDDoS3AxKXhV5/MAVUZyQnSEd2GT92fkgZl0pz0Q0AzcIQ==",
+       "license": "MIT"
+     },
+-    "node_modules/@gar/promisify": {
+-      "version": "1.1.3",
+-      "resolved": "https://registry.npmjs.org/@gar/promisify/-/promisify-1.1.3.tgz",
+-      "integrity": "sha512-k2Ty1JcVojjJFwrg/ThKi2ujJ7XNLYaFGNB/bWT9wGR+oSMJHMa5w+CUq6p/pVrKeNNgA7pCqEcjSnHVoqJQFw==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+     "node_modules/@img/sharp-darwin-arm64": {
+       "version": "0.33.5",
+       "resolved": "https://registry.npmjs.org/@img/sharp-darwin-arm64/-/sharp-darwin-arm64-0.33.5.tgz",
+@@ -913,48 +907,6 @@
+         "node": ">= 10.0.0"
+       }
+     },
+-    "node_modules/@npmcli/fs": {
+-      "version": "2.1.2",
+-      "resolved": "https://registry.npmjs.org/@npmcli/fs/-/fs-2.1.2.tgz",
+-      "integrity": "sha512-yOJKRvohFOaLqipNtwYB9WugyZKhC/DZC4VYPmpaCzDBrA8YpK3qHZ8/HGscMnE4GqbkLNuVcCnxkeQEdGt6LQ==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "@gar/promisify": "^1.1.3",
+-        "semver": "^7.3.5"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+-    "node_modules/@npmcli/fs/node_modules/semver": {
+-      "version": "7.8.5",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+-      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "bin": {
+-        "semver": "bin/semver.js"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      }
+-    },
+-    "node_modules/@npmcli/move-file": {
+-      "version": "2.0.1",
+-      "resolved": "https://registry.npmjs.org/@npmcli/move-file/-/move-file-2.0.1.tgz",
+-      "integrity": "sha512-mJd2Z5TjYWq/ttPLLGqArdtnC74J6bOzg4rMDnN+p1xTacZ2yPRCk2y0oSWQtygLR9YVQXgOcONrwtnk3JupxQ==",
+-      "deprecated": "This functionality has been moved to @npmcli/fs",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "mkdirp": "^1.0.4",
+-        "rimraf": "^3.0.2"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+     "node_modules/@pkgjs/parseargs": {
+       "version": "0.11.0",
+       "resolved": "https://registry.npmjs.org/@pkgjs/parseargs/-/parseargs-0.11.0.tgz",
+@@ -1127,13 +1079,6 @@
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/abbrev": {
+-      "version": "1.1.1",
+-      "resolved": "https://registry.npmjs.org/abbrev/-/abbrev-1.1.1.tgz",
+-      "integrity": "sha512-nne9/IiQ/hzIhY6pdDnbBtz7DjPTKrY00P/zvPSm5pOFkl6xuGrGnXn/VtTNNfNtAfZ9/1RtehkszU9qcTii0Q==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/agent-base": {
+       "version": "6.0.2",
+       "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+@@ -1147,33 +1092,6 @@
+         "node": ">= 6.0.0"
+       }
+     },
+-    "node_modules/agentkeepalive": {
+-      "version": "4.6.0",
+-      "resolved": "https://registry.npmjs.org/agentkeepalive/-/agentkeepalive-4.6.0.tgz",
+-      "integrity": "sha512-kja8j7PjmncONqaTsB8fQ+wE2mSU2DJ9D4XKoJ5PFWIdRMa6SLSN1ff4mOr4jCbfRSsxR4keIiySJU0N9T5hIQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "humanize-ms": "^1.2.1"
+-      },
+-      "engines": {
+-        "node": ">= 8.0.0"
+-      }
+-    },
+-    "node_modules/aggregate-error": {
+-      "version": "3.1.0",
+-      "resolved": "https://registry.npmjs.org/aggregate-error/-/aggregate-error-3.1.0.tgz",
+-      "integrity": "sha512-4I7Td01quW/RpocfNayFdFVk1qSuoh0E7JrbRJ16nH01HhKFQ88INq9Sd+nd72zqRySlr9BmDA8xlEJ6vJMrYA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "clean-stack": "^2.0.0",
+-        "indent-string": "^4.0.0"
+-      },
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+     "node_modules/ajv": {
+       "version": "6.15.0",
+       "resolved": "https://registry.npmjs.org/ajv/-/ajv-6.15.0.tgz",
+@@ -1328,13 +1246,6 @@
+         "node": ">= 10.0.0"
+       }
+     },
+-    "node_modules/aproba": {
+-      "version": "2.1.0",
+-      "resolved": "https://registry.npmjs.org/aproba/-/aproba-2.1.0.tgz",
+-      "integrity": "sha512-tLIEcj5GuR2RSTnxNKdkK0dJ/GrC7P38sUkiDmDuHfsHmbagTFAxDVIBltoklXEVIQ/f14IL8IMJ5pn9Hez1Ew==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/archiver": {
+       "version": "5.3.2",
+       "resolved": "https://registry.npmjs.org/archiver/-/archiver-5.3.2.tgz",
+@@ -1404,35 +1315,28 @@
+         "safe-buffer": "~5.1.0"
+       }
+     },
+-    "node_modules/are-we-there-yet": {
+-      "version": "3.0.1",
+-      "resolved": "https://registry.npmjs.org/are-we-there-yet/-/are-we-there-yet-3.0.1.tgz",
+-      "integrity": "sha512-QZW4EDmGwlYur0Yyf/b2uGucHQMa8aFUP7eu9ddR73vvhFyt4V0Vl3QHPcTNJ8l6qYOBdxgXdnBXQrHilfRQBg==",
+-      "deprecated": "This package is no longer supported.",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "delegates": "^1.0.0",
+-        "readable-stream": "^3.6.0"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+     "node_modules/argparse": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/argparse/-/argparse-2.0.1.tgz",
+       "integrity": "sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==",
+-      "dev": true,
+       "license": "Python-2.0"
+     },
++    "node_modules/asn1": {
++      "version": "0.2.6",
++      "resolved": "https://registry.npmjs.org/asn1/-/asn1-0.2.6.tgz",
++      "integrity": "sha512-ix/FxPn0MDjeyJ7i/yoHGFt/EX6LyNbxSEhPPXODPL+KB0VPk86UYfL0lMdy+KCnv+fmvIzySwaK5COwqVbWTQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "safer-buffer": "~2.1.0"
++      }
++    },
+     "node_modules/assert-plus": {
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/assert-plus/-/assert-plus-1.0.0.tgz",
+       "integrity": "sha512-NfJ4UzBCcQGLDlQq7nHxH+tv3kyZ0hHQqF5BO6J7tNJeP5do1llPr8dZ8zHonfhAu0PHAdMkSo+8o0wxg9lZWw==",
+       "dev": true,
+       "license": "MIT",
+-      "optional": true,
+       "engines": {
+         "node": ">=0.8"
+       }
+@@ -1481,6 +1385,23 @@
+         "node": ">= 4.0.0"
+       }
+     },
++    "node_modules/aws-sign2": {
++      "version": "0.7.0",
++      "resolved": "https://registry.npmjs.org/aws-sign2/-/aws-sign2-0.7.0.tgz",
++      "integrity": "sha512-08kcGqnYf/YmjoRhfxyu+CLxBjUtHLXLXX/vUfx9l2LYzG3c1m61nrpyFUZI6zeS+Li/wWMMidD9KgrqtGq3mA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": "*"
++      }
++    },
++    "node_modules/aws4": {
++      "version": "1.13.2",
++      "resolved": "https://registry.npmjs.org/aws4/-/aws4-1.13.2.tgz",
++      "integrity": "sha512-lHe62zvbTB5eEABUVi/AwVh0ZKY9rMMDhmm+eeyuuUQbQ3+J+fONVQOZyj+DdrvD4BY33uYniyRJ4UJIaSKAfw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/balanced-match": {
+       "version": "1.0.2",
+       "resolved": "https://registry.npmjs.org/balanced-match/-/balanced-match-1.0.2.tgz",
+@@ -1507,6 +1428,16 @@
+       ],
+       "license": "MIT"
+     },
++    "node_modules/bcrypt-pbkdf": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/bcrypt-pbkdf/-/bcrypt-pbkdf-1.0.2.tgz",
++      "integrity": "sha512-qeFIXtP4MSoi6NLqO12WfqARWWuCKi2Rn/9hJLEmtB5yTNr9DqFWkJRCf2qShWzPeAMRnOgCrq0sg/KLv5ES9w==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "tweetnacl": "^0.14.3"
++      }
++    },
+     "node_modules/big-integer": {
+       "version": "1.6.52",
+       "resolved": "https://registry.npmjs.org/big-integer/-/big-integer-1.6.52.tgz",
+@@ -1722,67 +1653,6 @@
+         "node": ">= 10.0.0"
+       }
+     },
+-    "node_modules/cacache": {
+-      "version": "16.1.3",
+-      "resolved": "https://registry.npmjs.org/cacache/-/cacache-16.1.3.tgz",
+-      "integrity": "sha512-/+Emcj9DAXxX4cwlLmRI9c166RuL3w30zp4R7Joiv2cQTtTtA+jeuCAjH3ZlGnYS3tKENSrKhAzVVP9GVyzeYQ==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "@npmcli/fs": "^2.1.0",
+-        "@npmcli/move-file": "^2.0.0",
+-        "chownr": "^2.0.0",
+-        "fs-minipass": "^2.1.0",
+-        "glob": "^8.0.1",
+-        "infer-owner": "^1.0.4",
+-        "lru-cache": "^7.7.1",
+-        "minipass": "^3.1.6",
+-        "minipass-collect": "^1.0.2",
+-        "minipass-flush": "^1.0.5",
+-        "minipass-pipeline": "^1.2.4",
+-        "mkdirp": "^1.0.4",
+-        "p-map": "^4.0.0",
+-        "promise-inflight": "^1.0.1",
+-        "rimraf": "^3.0.2",
+-        "ssri": "^9.0.0",
+-        "tar": "^6.1.11",
+-        "unique-filename": "^2.0.0"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+-    "node_modules/cacache/node_modules/glob": {
+-      "version": "8.1.0",
+-      "resolved": "https://registry.npmjs.org/glob/-/glob-8.1.0.tgz",
+-      "integrity": "sha512-r8hpEjiQEYlF2QU0df3dS+nxxSIreXQS1qRhMJM0Q5NDdR386C7jb7Hwwod8Fgiuex+k0GFjgft18yvxm5XoCQ==",
+-      "deprecated": "Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "fs.realpath": "^1.0.0",
+-        "inflight": "^1.0.4",
+-        "inherits": "2",
+-        "minimatch": "^5.0.1",
+-        "once": "^1.3.0"
+-      },
+-      "engines": {
+-        "node": ">=12"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/isaacs"
+-      }
+-    },
+-    "node_modules/cacache/node_modules/lru-cache": {
+-      "version": "7.18.3",
+-      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-7.18.3.tgz",
+-      "integrity": "sha512-jumlc0BIUrS3qJGgIkWZsyfAM7NCWiBcCDhnd+3NNM5KbBmLTgHVfWBcg6W+rLUsIpzpERPsvwUP7CckAQSOoA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+     "node_modules/cacheable-lookup": {
+       "version": "5.0.4",
+       "resolved": "https://registry.npmjs.org/cacheable-lookup/-/cacheable-lookup-5.0.4.tgz",
+@@ -1826,6 +1696,30 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/call-bound": {
++      "version": "1.0.4",
++      "resolved": "https://registry.npmjs.org/call-bound/-/call-bound-1.0.4.tgz",
++      "integrity": "sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "call-bind-apply-helpers": "^1.0.2",
++        "get-intrinsic": "^1.3.0"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/caseless": {
++      "version": "0.12.0",
++      "resolved": "https://registry.npmjs.org/caseless/-/caseless-0.12.0.tgz",
++      "integrity": "sha512-4tYFyifaFfGacoiObjJegolkwSU4xQNGbVgUiNYVUxbQ2x2lUsFvY4hVgVzGiIe6WLOPqycWXA40l+PWsxthUw==",
++      "dev": true,
++      "license": "Apache-2.0"
++    },
+     "node_modules/chainsaw": {
+       "version": "0.1.0",
+       "resolved": "https://registry.npmjs.org/chainsaw/-/chainsaw-0.1.0.tgz",
+@@ -1888,42 +1782,6 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/clean-stack": {
+-      "version": "2.2.0",
+-      "resolved": "https://registry.npmjs.org/clean-stack/-/clean-stack-2.2.0.tgz",
+-      "integrity": "sha512-4diC9HaTE+KRAMWhDhrGOECgWZxoevMc5TlkObMqNSsVU62PYzXZ/SMTjzyGAFF1YusgxGcSWTEXBhp0CPwQ1A==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6"
+-      }
+-    },
+-    "node_modules/cli-cursor": {
+-      "version": "3.1.0",
+-      "resolved": "https://registry.npmjs.org/cli-cursor/-/cli-cursor-3.1.0.tgz",
+-      "integrity": "sha512-I/zHAwsKf9FqGoXM4WWRACob9+SNukZTd94DWF57E4toouRulbCxcUh6RKUEOQlYTHJnzkPMySvPNaaSLNfLZw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "restore-cursor": "^3.1.0"
+-      },
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+-    "node_modules/cli-spinners": {
+-      "version": "2.9.2",
+-      "resolved": "https://registry.npmjs.org/cli-spinners/-/cli-spinners-2.9.2.tgz",
+-      "integrity": "sha512-ywqV+5MmyL4E7ybXgKys4DugZbX0FC6LnwrhjuykIjnK9k8OQacQ7axGKnjDXWNhns0xot3bZI5h55H8yo9cJg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+     "node_modules/cli-truncate": {
+       "version": "2.1.0",
+       "resolved": "https://registry.npmjs.org/cli-truncate/-/cli-truncate-2.1.0.tgz",
+@@ -1957,16 +1815,6 @@
+         "node": ">=12"
+       }
+     },
+-    "node_modules/clone": {
+-      "version": "1.0.4",
+-      "resolved": "https://registry.npmjs.org/clone/-/clone-1.0.4.tgz",
+-      "integrity": "sha512-JQHZ2QMW6l3aH/j6xCqQThY/9OH4D/9ls34cgkUBiEeocRTU04tHfKPBsUK1PqZCUQM7GiA0IIXJSuXHI64Kbg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=0.8"
+-      }
+-    },
+     "node_modules/clone-response": {
+       "version": "1.0.3",
+       "resolved": "https://registry.npmjs.org/clone-response/-/clone-response-1.0.3.tgz",
+@@ -2025,16 +1873,6 @@
+         "simple-swizzle": "^0.2.2"
+       }
+     },
+-    "node_modules/color-support": {
+-      "version": "1.1.3",
+-      "resolved": "https://registry.npmjs.org/color-support/-/color-support-1.1.3.tgz",
+-      "integrity": "sha512-qiBjkpbMLO/HL68y+lh4q0/O1MZFj2RX6X/KmMa3+gJD3z+WwI1ZzDHysvqHGS3mP6mznPckpXmw1nI9cJjyRg==",
+-      "dev": true,
+-      "license": "ISC",
+-      "bin": {
+-        "color-support": "bin.js"
+-      }
+-    },
+     "node_modules/combined-stream": {
+       "version": "1.0.8",
+       "resolved": "https://registry.npmjs.org/combined-stream/-/combined-stream-1.0.8.tgz",
+@@ -2148,19 +1986,97 @@
+         "node": ">=16 || 14 >=14.17"
+       }
+     },
+-    "node_modules/console-control-strings": {
+-      "version": "1.1.0",
+-      "resolved": "https://registry.npmjs.org/console-control-strings/-/console-control-strings-1.1.0.tgz",
+-      "integrity": "sha512-ty/fTekppD2fIwRvnZAVdeOiGd1c7YXEixbgJTNzqcxJWKQnjJ/V1bNEEE6hygpM3WjwHFUVK6HTjWSzV4a8sQ==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/core-util-is": {
+       "version": "1.0.2",
+       "resolved": "https://registry.npmjs.org/core-util-is/-/core-util-is-1.0.2.tgz",
+       "integrity": "sha512-3lqz5YjWTYnW6dlDa5TLaTCcShfar1e40rmcJVwCBJC6mWlFuj0eCHIElmG1g5kyuJ/GD+8Wn4FFCcz4gJPfaQ==",
+       "license": "MIT"
+     },
++    "node_modules/cos-fast-xml-parser": {
++      "version": "1.0.0",
++      "resolved": "https://registry.npmjs.org/cos-fast-xml-parser/-/cos-fast-xml-parser-1.0.0.tgz",
++      "integrity": "sha512-kOPJb1cuj+gc5E8jN5ekZn4rgQHaxYTLcQT+jmbHtlTNcNjv7wnOBEYH2uRA0pG3h8giot4z9h4WFLDuXATZwg==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/NaturalIntelligence"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "strnum": "^1.0.5"
++      },
++      "bin": {
++        "fxparser": "src/cli/cli.js"
++      },
++      "engines": {
++        "node": ">= 9"
++      }
++    },
++    "node_modules/cos-nodejs-sdk-v5": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/cos-nodejs-sdk-v5/-/cos-nodejs-sdk-v5-3.0.0.tgz",
++      "integrity": "sha512-xUqiDdUxfEjfaWoyBA3qsSnlQVHPz13DRFErL+NliadBVUeeZhAPHGVa2inGpUvPTOs52ALIKkMbzL+inSqvXg==",
++      "dev": true,
++      "license": "ISC",
++      "dependencies": {
++        "cos-fast-xml-parser": "^1.0.0",
++        "cos-request": "^1.3.0",
++        "mime-types": "^2.1.35"
++      },
++      "engines": {
++        "node": ">= 9"
++      }
++    },
++    "node_modules/cos-request": {
++      "version": "1.3.3",
++      "resolved": "https://registry.npmjs.org/cos-request/-/cos-request-1.3.3.tgz",
++      "integrity": "sha512-zD7fKMAIMfJNHssx8VZE5mUQ67hs3QDi7S2BX7JuD8MzT1XYqEOAN42PJ0BtRhgutnn+8HiUF+Fup+j5zORasQ==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "aws-sign2": "~0.7.0",
++        "aws4": "^1.8.0",
++        "caseless": "~0.12.0",
++        "combined-stream": "~1.0.6",
++        "extend": "~3.0.2",
++        "forever-agent": "~0.6.1",
++        "form-data": "~2.5.6",
++        "http-signature": "~1.2.0",
++        "is-typedarray": "~1.0.0",
++        "isstream": "~0.1.2",
++        "json-stringify-safe": "~5.0.1",
++        "mime-types": "~2.1.19",
++        "oauth-sign": "~0.9.0",
++        "performance-now": "^2.1.0",
++        "qs": "^6.15.2",
++        "safe-buffer": "^5.1.2",
++        "tough-cookie": "~4.1.4",
++        "tunnel-agent": "^0.6.0"
++      },
++      "engines": {
++        "node": ">= 8"
++      }
++    },
++    "node_modules/cos-request/node_modules/form-data": {
++      "version": "2.5.6",
++      "resolved": "https://registry.npmjs.org/form-data/-/form-data-2.5.6.tgz",
++      "integrity": "sha512-Ogz/E85h9tlfJzpI6TuFpGcHZFhLrb9Gw8wq9v40CxSCPnv7ahKr6Xgtkn0KYCDQJ8DNn5VoMO8EXr9V5PadyA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "asynckit": "^0.4.0",
++        "combined-stream": "^1.0.8",
++        "es-set-tostringtag": "^2.1.0",
++        "hasown": "^2.0.4",
++        "mime-types": "^2.1.35",
++        "safe-buffer": "^5.2.1"
++      },
++      "engines": {
++        "node": ">= 0.12"
++      }
++    },
+     "node_modules/crc": {
+       "version": "3.8.0",
+       "resolved": "https://registry.npmjs.org/crc/-/crc-3.8.0.tgz",
+@@ -2212,6 +2128,19 @@
+         "node": ">= 8"
+       }
+     },
++    "node_modules/dashdash": {
++      "version": "1.14.1",
++      "resolved": "https://registry.npmjs.org/dashdash/-/dashdash-1.14.1.tgz",
++      "integrity": "sha512-jRFi8UDGo6j+odZiEpjazZaWqEal3w/basFjQHQEwVtZJGDpxbH1MeYluwCS8Xq5wmLJooDlMgvVarmWfGM44g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "assert-plus": "^1.0.0"
++      },
++      "engines": {
++        "node": ">=0.10"
++      }
++    },
+     "node_modules/dayjs": {
+       "version": "1.11.23",
+       "resolved": "https://registry.npmjs.org/dayjs/-/dayjs-1.11.23.tgz",
+@@ -2222,7 +2151,6 @@
+       "version": "4.4.3",
+       "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+       "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+-      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "ms": "^2.1.3"
+@@ -2265,19 +2193,6 @@
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
+-    "node_modules/defaults": {
+-      "version": "1.0.4",
+-      "resolved": "https://registry.npmjs.org/defaults/-/defaults-1.0.4.tgz",
+-      "integrity": "sha512-eFuaLoy/Rxalv2kr+lqMlUnrDWV+3j4pljOIJgLIhI058IQfWJ7vXhyEIHu+HtC738klGALYxOKDO0bQP3tg8A==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "clone": "^1.0.2"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+     "node_modules/defer-to-connect": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/defer-to-connect/-/defer-to-connect-2.0.1.tgz",
+@@ -2336,19 +2251,12 @@
+         "node": ">=0.4.0"
+       }
+     },
+-    "node_modules/delegates": {
+-      "version": "1.0.0",
+-      "resolved": "https://registry.npmjs.org/delegates/-/delegates-1.0.0.tgz",
+-      "integrity": "sha512-bd2L678uiWATM6m5Z1VzNCErI3jiGzt6HGY8OVICs40JQq/HALfbyNJmp0UDakEY4pMMaN0Ly5om/B1VI/+xfQ==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+     "node_modules/detect-libc": {
+       "version": "2.1.2",
+       "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
+       "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==",
+-      "devOptional": true,
+       "license": "Apache-2.0",
++      "optional": true,
+       "engines": {
+         "node": ">=8"
+       }
+@@ -2557,6 +2465,17 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/ecc-jsbn": {
++      "version": "0.1.2",
++      "resolved": "https://registry.npmjs.org/ecc-jsbn/-/ecc-jsbn-0.1.2.tgz",
++      "integrity": "sha512-eh9O+hwRHNbG4BLTjEl3nw044CkGm5X6LoaCf7LPp7UU8Qrt47JYNi6nPX8xjW97TKGKm1ouctg0QSpZe9qrnw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "jsbn": "~0.1.0",
++        "safer-buffer": "^2.1.0"
++      }
++    },
+     "node_modules/ejs": {
+       "version": "3.1.10",
+       "resolved": "https://registry.npmjs.org/ejs/-/ejs-3.1.10.tgz",
+@@ -2766,64 +2685,39 @@
+         "node": ">= 10.0.0"
+       }
+     },
+-    "node_modules/electron-rebuild": {
+-      "version": "3.2.9",
+-      "resolved": "https://registry.npmjs.org/electron-rebuild/-/electron-rebuild-3.2.9.tgz",
+-      "integrity": "sha512-FkEZNFViUem3P0RLYbZkUjC8LUFIK+wKq09GHoOITSJjfDAVQv964hwaNseTTWt58sITQX3/5fHNYcTefqaCWw==",
+-      "deprecated": "Please use @electron/rebuild moving forward.  There is no API change, just a package name change",
+-      "dev": true,
++    "node_modules/electron-updater": {
++      "version": "6.8.9",
++      "resolved": "https://registry.npmjs.org/electron-updater/-/electron-updater-6.8.9.tgz",
++      "integrity": "sha512-ZhVxM9iGONUpZGI1FxdMRgJjUFXi7AYGVa5PwKlO1tV1/4zDxQmfKpXOHVztKrd6L9rLcFjERvi1Mf2vxyTkig==",
+       "license": "MIT",
+       "dependencies": {
+-        "@malept/cross-spawn-promise": "^2.0.0",
+-        "chalk": "^4.0.0",
+-        "debug": "^4.1.1",
+-        "detect-libc": "^2.0.1",
+-        "fs-extra": "^10.0.0",
+-        "got": "^11.7.0",
+-        "lzma-native": "^8.0.5",
+-        "node-abi": "^3.0.0",
+-        "node-api-version": "^0.1.4",
+-        "node-gyp": "^9.0.0",
+-        "ora": "^5.1.0",
+-        "semver": "^7.3.5",
+-        "tar": "^6.0.5",
+-        "yargs": "^17.0.1"
+-      },
+-      "bin": {
+-        "electron-rebuild": "lib/src/cli.js"
+-      },
+-      "engines": {
+-        "node": ">=12.13.0"
++        "builder-util-runtime": "9.7.0",
++        "fs-extra": "^10.1.0",
++        "js-yaml": "^4.1.0",
++        "lazy-val": "^1.0.5",
++        "lodash.escaperegexp": "^4.1.2",
++        "lodash.isequal": "^4.5.0",
++        "semver": "~7.7.3",
++        "tiny-typed-emitter": "^2.1.0"
+       }
+     },
+-    "node_modules/electron-rebuild/node_modules/@malept/cross-spawn-promise": {
+-      "version": "2.0.0",
+-      "resolved": "https://registry.npmjs.org/@malept/cross-spawn-promise/-/cross-spawn-promise-2.0.0.tgz",
+-      "integrity": "sha512-1DpKU0Z5ThltBwjNySMC14g0CkbyhCaz9FkhxqNsZI6uAPJXFS8cMXlBKo26FJ8ZuW6S9GCMcR9IO5k2X5/9Fg==",
+-      "dev": true,
+-      "funding": [
+-        {
+-          "type": "individual",
+-          "url": "https://github.com/sponsors/malept"
+-        },
+-        {
+-          "type": "tidelift",
+-          "url": "https://tidelift.com/subscription/pkg/npm-.malept-cross-spawn-promise?utm_medium=referral&utm_source=npm_fund"
+-        }
+-      ],
+-      "license": "Apache-2.0",
++    "node_modules/electron-updater/node_modules/builder-util-runtime": {
++      "version": "9.7.0",
++      "resolved": "https://registry.npmjs.org/builder-util-runtime/-/builder-util-runtime-9.7.0.tgz",
++      "integrity": "sha512-g/kR520giAFYkSXTzcmF3kqQq7wi8F6N6SzeDgZrqTBN+VHdmgWOyTdD1yD7AATDId/yXLvuP34CxW46/BwCdw==",
++      "license": "MIT",
+       "dependencies": {
+-        "cross-spawn": "^7.0.1"
++        "debug": "^4.3.4",
++        "sax": "^1.2.4"
+       },
+       "engines": {
+-        "node": ">= 12.13.0"
++        "node": ">=12.0.0"
+       }
+     },
+-    "node_modules/electron-rebuild/node_modules/fs-extra": {
++    "node_modules/electron-updater/node_modules/fs-extra": {
+       "version": "10.1.0",
+       "resolved": "https://registry.npmjs.org/fs-extra/-/fs-extra-10.1.0.tgz",
+       "integrity": "sha512-oRXApq54ETRj4eMiFzGnHWGy+zo5raudjuxN0b8H7s/RU2oW0Wvsx9O0ACRN/kRq9E8Vu/ReskGB5o3ji+FzHQ==",
+-      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "graceful-fs": "^4.2.0",
+@@ -2834,11 +2728,10 @@
+         "node": ">=12"
+       }
+     },
+-    "node_modules/electron-rebuild/node_modules/jsonfile": {
++    "node_modules/electron-updater/node_modules/jsonfile": {
+       "version": "6.2.1",
+       "resolved": "https://registry.npmjs.org/jsonfile/-/jsonfile-6.2.1.tgz",
+       "integrity": "sha512-zwOTdL3rFQ/lRdBnntKVOX6k5cKJwEc1HdilT71BWEu7J41gXIB2MRp+vxduPSwZJPWBxEzv4yH1wYLJGUHX4Q==",
+-      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "universalify": "^2.0.0"
+@@ -2847,11 +2740,10 @@
+         "graceful-fs": "^4.1.6"
+       }
+     },
+-    "node_modules/electron-rebuild/node_modules/semver": {
+-      "version": "7.8.5",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+-      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+-      "dev": true,
++    "node_modules/electron-updater/node_modules/semver": {
++      "version": "7.7.4",
++      "resolved": "https://registry.npmjs.org/semver/-/semver-7.7.4.tgz",
++      "integrity": "sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==",
+       "license": "ISC",
+       "bin": {
+         "semver": "bin/semver.js"
+@@ -2860,11 +2752,10 @@
+         "node": ">=10"
+       }
+     },
+-    "node_modules/electron-rebuild/node_modules/universalify": {
++    "node_modules/electron-updater/node_modules/universalify": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/universalify/-/universalify-2.0.1.tgz",
+       "integrity": "sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw==",
+-      "dev": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">= 10.0.0"
+@@ -2877,17 +2768,6 @@
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/encoding": {
+-      "version": "0.1.13",
+-      "resolved": "https://registry.npmjs.org/encoding/-/encoding-0.1.13.tgz",
+-      "integrity": "sha512-ETBauow1T35Y/WZMkio9jiM0Z5xjHHmJ4XmjZOq1l/dXz3lr2sRn87nJy20RupqSh1F2m3HHPSp8ShIPQJrJ3A==",
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "iconv-lite": "^0.6.2"
+-      }
+-    },
+     "node_modules/end-of-stream": {
+       "version": "1.4.5",
+       "resolved": "https://registry.npmjs.org/end-of-stream/-/end-of-stream-1.4.5.tgz",
+@@ -3015,12 +2895,12 @@
+         "node": ">=8.3.0"
+       }
+     },
+-    "node_modules/exponential-backoff": {
+-      "version": "3.1.3",
+-      "resolved": "https://registry.npmjs.org/exponential-backoff/-/exponential-backoff-3.1.3.tgz",
+-      "integrity": "sha512-ZgEeZXj30q+I0EN+CbSSpIyPaJ5HVQD18Z1m+u1FXbAeT94mr1zw50q4q6jiiC447Nl/YTcIYSAftiGqetwXCA==",
++    "node_modules/extend": {
++      "version": "3.0.2",
++      "resolved": "https://registry.npmjs.org/extend/-/extend-3.0.2.tgz",
++      "integrity": "sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==",
+       "dev": true,
+-      "license": "Apache-2.0"
++      "license": "MIT"
+     },
+     "node_modules/extract-zip": {
+       "version": "2.0.1",
+@@ -3131,6 +3011,16 @@
+         "url": "https://github.com/sponsors/isaacs"
+       }
+     },
++    "node_modules/forever-agent": {
++      "version": "0.6.1",
++      "resolved": "https://registry.npmjs.org/forever-agent/-/forever-agent-0.6.1.tgz",
++      "integrity": "sha512-j0KLYPhm6zeac4lz3oJ3o65qvgQCcPubiyotZrXqEaG4hNagNYO8qdlUrX5vwqv9ohqeT/Z3j6+yW067yWWdUw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": "*"
++      }
++    },
+     "node_modules/form-data": {
+       "version": "4.0.6",
+       "resolved": "https://registry.npmjs.org/form-data/-/form-data-4.0.6.tgz",
+@@ -3239,27 +3129,6 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
+-    "node_modules/gauge": {
+-      "version": "4.0.4",
+-      "resolved": "https://registry.npmjs.org/gauge/-/gauge-4.0.4.tgz",
+-      "integrity": "sha512-f9m+BEN5jkg6a0fZjleidjN51VE1X+mPFQ2DJ0uv1V39oCLCbsGe6yjbBnp7eK7z/+GAon99a3nHuqbuuthyPg==",
+-      "deprecated": "This package is no longer supported.",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "aproba": "^1.0.3 || ^2.0.0",
+-        "color-support": "^1.1.3",
+-        "console-control-strings": "^1.1.0",
+-        "has-unicode": "^2.0.1",
+-        "signal-exit": "^3.0.7",
+-        "string-width": "^4.2.3",
+-        "strip-ansi": "^6.0.1",
+-        "wide-align": "^1.1.5"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+     "node_modules/get-caller-file": {
+       "version": "2.0.5",
+       "resolved": "https://registry.npmjs.org/get-caller-file/-/get-caller-file-2.0.5.tgz",
+@@ -3325,6 +3194,16 @@
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
++    "node_modules/getpass": {
++      "version": "0.1.7",
++      "resolved": "https://registry.npmjs.org/getpass/-/getpass-0.1.7.tgz",
++      "integrity": "sha512-0fzj9JxOLfJ+XGLhR8ze3unN0KZCgZwiSSDz168VERjK8Wl8kVSdcu2kspd4s4wtAa1y/qrVRiAA0WclVsu0ng==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "assert-plus": "^1.0.0"
++      }
++    },
+     "node_modules/glob": {
+       "version": "7.2.3",
+       "resolved": "https://registry.npmjs.org/glob/-/glob-7.2.3.tgz",
+@@ -3517,13 +3396,6 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
+-    "node_modules/has-unicode": {
+-      "version": "2.0.1",
+-      "resolved": "https://registry.npmjs.org/has-unicode/-/has-unicode-2.0.1.tgz",
+-      "integrity": "sha512-8Rf9Y83NBReMnx0gFzA8JImQACstCYWUplepDa9xprwwtmgEZUF0h/i5xSA625zB/I37EtrswSST6OXxwaaIJQ==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/hasown": {
+       "version": "2.0.4",
+       "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz",
+@@ -3572,6 +3444,22 @@
+         "node": ">= 6"
+       }
+     },
++    "node_modules/http-signature": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/http-signature/-/http-signature-1.2.0.tgz",
++      "integrity": "sha512-CAbnr6Rz4CYQkLYUtSNXxQPUH2gK8f3iWexVlsnMeD+GjlsQ0Xsy1cOX+mN3dtxYomRy21CiOzU8Uhw6OwncEQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "assert-plus": "^1.0.0",
++        "jsprim": "^1.2.2",
++        "sshpk": "^1.7.0"
++      },
++      "engines": {
++        "node": ">=0.8",
++        "npm": ">=1.3.7"
++      }
++    },
+     "node_modules/http2-wrapper": {
+       "version": "1.0.3",
+       "resolved": "https://registry.npmjs.org/http2-wrapper/-/http2-wrapper-1.0.3.tgz",
+@@ -3600,16 +3488,6 @@
+         "node": ">= 6"
+       }
+     },
+-    "node_modules/humanize-ms": {
+-      "version": "1.2.1",
+-      "resolved": "https://registry.npmjs.org/humanize-ms/-/humanize-ms-1.2.1.tgz",
+-      "integrity": "sha512-Fl70vYtsAFb/C06PTS9dZBo7ihau+Tu/DNCk/OyHhea07S+aeMWpFFkUaXRa8fI+ScZbEI8dfSxwY7gxZ9SAVQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "ms": "^2.0.0"
+-      }
+-    },
+     "node_modules/iconv-corefoundation": {
+       "version": "1.1.7",
+       "resolved": "https://registry.npmjs.org/iconv-corefoundation/-/iconv-corefoundation-1.1.7.tgz",
+@@ -3667,33 +3545,6 @@
+       "integrity": "sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==",
+       "license": "MIT"
+     },
+-    "node_modules/imurmurhash": {
+-      "version": "0.1.4",
+-      "resolved": "https://registry.npmjs.org/imurmurhash/-/imurmurhash-0.1.4.tgz",
+-      "integrity": "sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=0.8.19"
+-      }
+-    },
+-    "node_modules/indent-string": {
+-      "version": "4.0.0",
+-      "resolved": "https://registry.npmjs.org/indent-string/-/indent-string-4.0.0.tgz",
+-      "integrity": "sha512-EdDDZu4A2OyIK7Lr/2zG+w5jmbuk1DVBnEwREQvBzspBJkCEbRa8GxU1lghYcaGJCnRWibjDXlq779X1/y5xwg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+-    "node_modules/infer-owner": {
+-      "version": "1.0.4",
+-      "resolved": "https://registry.npmjs.org/infer-owner/-/infer-owner-1.0.4.tgz",
+-      "integrity": "sha512-IClj+Xz94+d7irH5qRyfJonOdfTzuDaifE6ZPWfx0N0+/ATZCbuTPq2prFl526urkQd90WyUKIh1DfBQ2hMz9A==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/inflight": {
+       "version": "1.0.6",
+       "resolved": "https://registry.npmjs.org/inflight/-/inflight-1.0.6.tgz",
+@@ -3711,16 +3562,6 @@
+       "integrity": "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==",
+       "license": "ISC"
+     },
+-    "node_modules/ip-address": {
+-      "version": "10.7.2",
+-      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.2.tgz",
+-      "integrity": "sha512-7H/2gFSIitxc0hG3nOI1glS8QLo/EHBFFLk8vEUjXY/xu0AdL8jZ9U1IzO2PUm0d2D/ofQcAifb0g6OBkt8U7w==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">= 12"
+-      }
+-    },
+     "node_modules/is-arrayish": {
+       "version": "0.3.4",
+       "resolved": "https://registry.npmjs.org/is-arrayish/-/is-arrayish-0.3.4.tgz",
+@@ -3751,36 +3592,13 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/is-interactive": {
++    "node_modules/is-typedarray": {
+       "version": "1.0.0",
+-      "resolved": "https://registry.npmjs.org/is-interactive/-/is-interactive-1.0.0.tgz",
+-      "integrity": "sha512-2HvIEKRoqS62guEC+qBjpvRubdX910WCMuJTZ+I9yvqKU2/12eSL549HMwtabb4oupdj2sMP50k+XJfB/8JE6w==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+-    "node_modules/is-lambda": {
+-      "version": "1.0.1",
+-      "resolved": "https://registry.npmjs.org/is-lambda/-/is-lambda-1.0.1.tgz",
+-      "integrity": "sha512-z7CMFGNrENq5iFB9Bqo64Xk6Y9sg+epq1myIcdHaGnbMTYOxvzsEtdYqQUylB7LxfkvgrrjP32T6Ywciio9UIQ==",
++      "resolved": "https://registry.npmjs.org/is-typedarray/-/is-typedarray-1.0.0.tgz",
++      "integrity": "sha512-cyA56iCMHAh5CdzjJIa4aohJyeO1YbwLi3Jc35MmRU6poroFjIGZzUzupGiRPOjgHg9TLu43xbpwXk523fMxKA==",
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/is-unicode-supported": {
+-      "version": "0.1.0",
+-      "resolved": "https://registry.npmjs.org/is-unicode-supported/-/is-unicode-supported-0.1.0.tgz",
+-      "integrity": "sha512-knxG2q4UC3u8stRGyAVJCOdxFmv5DZiRcdlIaAQXAbSfJya+OhopNotLQrstBhququ4ZpuKbDc/8S6mgXgPFPw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=10"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+     "node_modules/isarray": {
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/isarray/-/isarray-1.0.0.tgz",
+@@ -3807,6 +3625,13 @@
+       "dev": true,
+       "license": "ISC"
+     },
++    "node_modules/isstream": {
++      "version": "0.1.2",
++      "resolved": "https://registry.npmjs.org/isstream/-/isstream-0.1.2.tgz",
++      "integrity": "sha512-Yljz7ffyPbrLpLngrMtZ7NduUgVvi6wG9RJ9IUcyCd59YQ911PBJphODUcbOVbqYfxe1wuYf/LJ8PauMRwsM/g==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/jackspeak": {
+       "version": "3.4.3",
+       "resolved": "https://registry.npmjs.org/jackspeak/-/jackspeak-3.4.3.tgz",
+@@ -3851,7 +3676,6 @@
+       "version": "4.3.2",
+       "resolved": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.2.tgz",
+       "integrity": "sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==",
+-      "dev": true,
+       "funding": [
+         {
+           "type": "github",
+@@ -3870,6 +3694,13 @@
+         "js-yaml": "bin/js-yaml.js"
+       }
+     },
++    "node_modules/jsbn": {
++      "version": "0.1.1",
++      "resolved": "https://registry.npmjs.org/jsbn/-/jsbn-0.1.1.tgz",
++      "integrity": "sha512-UVU9dibq2JcFWxQPA6KCqj5O42VOmAY3zQUfEKxU0KpTGXwNoCjkX1e13eHNvw/xPynt6pU0rZ1htjWTNTSXsg==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/json-buffer": {
+       "version": "3.0.1",
+       "resolved": "https://registry.npmjs.org/json-buffer/-/json-buffer-3.0.1.tgz",
+@@ -3877,6 +3708,13 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/json-schema": {
++      "version": "0.4.0",
++      "resolved": "https://registry.npmjs.org/json-schema/-/json-schema-0.4.0.tgz",
++      "integrity": "sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==",
++      "dev": true,
++      "license": "(AFL-2.1 OR BSD-3-Clause)"
++    },
+     "node_modules/json-schema-traverse": {
+       "version": "0.4.1",
+       "resolved": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-0.4.1.tgz",
+@@ -3889,8 +3727,7 @@
+       "resolved": "https://registry.npmjs.org/json-stringify-safe/-/json-stringify-safe-5.0.1.tgz",
+       "integrity": "sha512-ZClg6AaYvamvYEE82d3Iyd3vSSIjQ+odgjaTzRuO3s7toCdFKczob2i0zCh7JE8kWn17yvAWhUVxvqGwUalsRA==",
+       "dev": true,
+-      "license": "ISC",
+-      "optional": true
++      "license": "ISC"
+     },
+     "node_modules/json5": {
+       "version": "2.2.3",
+@@ -3915,6 +3752,47 @@
+         "graceful-fs": "^4.1.6"
+       }
+     },
++    "node_modules/jsprim": {
++      "version": "1.4.2",
++      "resolved": "https://registry.npmjs.org/jsprim/-/jsprim-1.4.2.tgz",
++      "integrity": "sha512-P2bSOMAc/ciLz6DzgjVlGJP9+BrJWu5UDGK70C2iweC5QBIeFf0ZXRvGjEj2uYgrY2MkAAhsSWHDWlFtEroZWw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "assert-plus": "1.0.0",
++        "extsprintf": "1.3.0",
++        "json-schema": "0.4.0",
++        "verror": "1.10.0"
++      },
++      "engines": {
++        "node": ">=0.6.0"
++      }
++    },
++    "node_modules/jsprim/node_modules/extsprintf": {
++      "version": "1.3.0",
++      "resolved": "https://registry.npmjs.org/extsprintf/-/extsprintf-1.3.0.tgz",
++      "integrity": "sha512-11Ndz7Nv+mvAC1j0ktTa7fAb0vLyGGX+rMHNBYQviQDGU0Hw7lhctJANqbPhu9nV9/izT/IntTgZ7Im/9LJs9g==",
++      "dev": true,
++      "engines": [
++        "node >=0.6.0"
++      ],
++      "license": "MIT"
++    },
++    "node_modules/jsprim/node_modules/verror": {
++      "version": "1.10.0",
++      "resolved": "https://registry.npmjs.org/verror/-/verror-1.10.0.tgz",
++      "integrity": "sha512-ZZKSmDAEFOijERBLkmYfJ+vmk3w+7hOLYDNkRCuRuMJGEmqYNCNLyBBFwWKVMhfwaEF3WOd0Zlw86U/WC/+nYw==",
++      "dev": true,
++      "engines": [
++        "node >=0.6.0"
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "assert-plus": "^1.0.0",
++        "core-util-is": "1.0.2",
++        "extsprintf": "^1.2.0"
++      }
++    },
+     "node_modules/jszip": {
+       "version": "3.10.2",
+       "resolved": "https://registry.npmjs.org/jszip/-/jszip-3.10.2.tgz",
+@@ -3971,7 +3849,6 @@
+       "version": "1.0.5",
+       "resolved": "https://registry.npmjs.org/lazy-val/-/lazy-val-1.0.5.tgz",
+       "integrity": "sha512-0/BnGCCfyUMkBpeDgWihanIAF9JmZhHBgUhEqzvf+adhNGLoP6TaiI5oF8oyb3I45P+PcnrqihSf01M0l0G5+Q==",
+-      "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/lazystream": {
+@@ -4117,23 +3994,6 @@
+       "integrity": "sha512-xfBaXQd9ryd9dlSDvnvI0lvxfLJlYAZzXomUYzLKtUeOQvOP5piqAWuGtrhWeqaXK9hhoM/iyJc5AV+XfsX3HQ==",
+       "license": "MIT"
+     },
+-    "node_modules/log-symbols": {
+-      "version": "4.1.0",
+-      "resolved": "https://registry.npmjs.org/log-symbols/-/log-symbols-4.1.0.tgz",
+-      "integrity": "sha512-8XPvpAA8uyhfteu8pIvQxpJZ7SYYdpUivZpGy6sFsBuKRY/7rQGavedeB8aK+Zkyq6upMFVL/9AW6vOYzfRyLg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "chalk": "^4.1.0",
+-        "is-unicode-supported": "^0.1.0"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+     "node_modules/lowercase-keys": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/lowercase-keys/-/lowercase-keys-2.0.0.tgz",
+@@ -4157,70 +4017,6 @@
+         "node": ">=10"
+       }
+     },
+-    "node_modules/lzma-native": {
+-      "version": "8.0.6",
+-      "resolved": "https://registry.npmjs.org/lzma-native/-/lzma-native-8.0.6.tgz",
+-      "integrity": "sha512-09xfg67mkL2Lz20PrrDeNYZxzeW7ADtpYFbwSQh9U8+76RIzx5QsJBMy8qikv3hbUPfpy6hqwxt6FcGK81g9AA==",
+-      "dev": true,
+-      "hasInstallScript": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "node-addon-api": "^3.1.0",
+-        "node-gyp-build": "^4.2.1",
+-        "readable-stream": "^3.6.0"
+-      },
+-      "bin": {
+-        "lzmajs": "bin/lzmajs"
+-      },
+-      "engines": {
+-        "node": ">=10.0.0"
+-      }
+-    },
+-    "node_modules/lzma-native/node_modules/node-addon-api": {
+-      "version": "3.2.1",
+-      "resolved": "https://registry.npmjs.org/node-addon-api/-/node-addon-api-3.2.1.tgz",
+-      "integrity": "sha512-mmcei9JghVNDYydghQmeDX8KoAm0FAiYyIcUt/N4nhyAipB17pllZQDOJD2fotxABnt4Mdz+dKTO7eftLg4d0A==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/make-fetch-happen": {
+-      "version": "10.2.1",
+-      "resolved": "https://registry.npmjs.org/make-fetch-happen/-/make-fetch-happen-10.2.1.tgz",
+-      "integrity": "sha512-NgOPbRiaQM10DYXvN3/hhGVI2M5MtITFryzBGxHM5p4wnFxsVCbxkrBrDsk+EZ5OB4jEOT7AjDxtdF+KVEFT7w==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "agentkeepalive": "^4.2.1",
+-        "cacache": "^16.1.0",
+-        "http-cache-semantics": "^4.1.0",
+-        "http-proxy-agent": "^5.0.0",
+-        "https-proxy-agent": "^5.0.0",
+-        "is-lambda": "^1.0.1",
+-        "lru-cache": "^7.7.1",
+-        "minipass": "^3.1.6",
+-        "minipass-collect": "^1.0.2",
+-        "minipass-fetch": "^2.0.3",
+-        "minipass-flush": "^1.0.5",
+-        "minipass-pipeline": "^1.2.4",
+-        "negotiator": "^0.6.3",
+-        "promise-retry": "^2.0.1",
+-        "socks-proxy-agent": "^7.0.0",
+-        "ssri": "^9.0.0"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+-    "node_modules/make-fetch-happen/node_modules/lru-cache": {
+-      "version": "7.18.3",
+-      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-7.18.3.tgz",
+-      "integrity": "sha512-jumlc0BIUrS3qJGgIkWZsyfAM7NCWiBcCDhnd+3NNM5KbBmLTgHVfWBcg6W+rLUsIpzpERPsvwUP7CckAQSOoA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+     "node_modules/matcher": {
+       "version": "3.0.0",
+       "resolved": "https://registry.npmjs.org/matcher/-/matcher-3.0.0.tgz",
+@@ -4281,16 +4077,6 @@
+         "node": ">= 0.6"
+       }
+     },
+-    "node_modules/mimic-fn": {
+-      "version": "2.1.0",
+-      "resolved": "https://registry.npmjs.org/mimic-fn/-/mimic-fn-2.1.0.tgz",
+-      "integrity": "sha512-OqbOk5oEQeAZ8WXWydlu9HJjz9WVdEIvamMCcXmuqUYjTknH/sqsWvhQ3vgwKFRR1HpjvNBKQ37nbJgYzGqGcg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6"
+-      }
+-    },
+     "node_modules/mimic-response": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/mimic-response/-/mimic-response-1.0.1.tgz",
+@@ -4335,281 +4121,90 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/minipass-collect": {
+-      "version": "1.0.2",
+-      "resolved": "https://registry.npmjs.org/minipass-collect/-/minipass-collect-1.0.2.tgz",
+-      "integrity": "sha512-6T6lH0H8OG9kITm/Jm6tdooIbogG9e0tLgpY6mphXSm/A9u8Nq1ryBG+Qspiub9LjWlBPsPS3tWQ/Botq4FdxA==",
++    "node_modules/minizlib": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/minizlib/-/minizlib-2.1.2.tgz",
++      "integrity": "sha512-bAxsR8BVfj60DWXHE3u30oHzfl4G7khkSuPW+qvpd7jFRHm7dLxOjUk1EHACJ/hxLY8phGJ0YhYHZo7jil7Qdg==",
+       "dev": true,
+-      "license": "ISC",
++      "license": "MIT",
+       "dependencies": {
+-        "minipass": "^3.0.0"
++        "minipass": "^3.0.0",
++        "yallist": "^4.0.0"
+       },
+       "engines": {
+         "node": ">= 8"
+       }
+     },
+-    "node_modules/minipass-fetch": {
+-      "version": "2.1.2",
+-      "resolved": "https://registry.npmjs.org/minipass-fetch/-/minipass-fetch-2.1.2.tgz",
+-      "integrity": "sha512-LT49Zi2/WMROHYoqGgdlQIZh8mLPZmOrN2NdJjMXxYe4nkN6FUyuPuOAOedNJDrx0IRGg9+4guZewtp8hE6TxA==",
++    "node_modules/mkdirp": {
++      "version": "1.0.4",
++      "resolved": "https://registry.npmjs.org/mkdirp/-/mkdirp-1.0.4.tgz",
++      "integrity": "sha512-vVqVZQyf3WLx2Shd0qJ9xuvqgAyKPLAiqITEtqW0oIUjzo3PePDd6fW9iFz30ef7Ysp/oiWqbhszeGWW2T6Gzw==",
+       "dev": true,
+       "license": "MIT",
+-      "dependencies": {
+-        "minipass": "^3.1.6",
+-        "minipass-sized": "^1.0.3",
+-        "minizlib": "^2.1.2"
++      "bin": {
++        "mkdirp": "bin/cmd.js"
+       },
+       "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      },
+-      "optionalDependencies": {
+-        "encoding": "^0.1.13"
++        "node": ">=10"
+       }
+     },
+-    "node_modules/minipass-flush": {
+-      "version": "1.0.7",
+-      "resolved": "https://registry.npmjs.org/minipass-flush/-/minipass-flush-1.0.7.tgz",
+-      "integrity": "sha512-TbqTz9cUwWyHS2Dy89P3ocAGUGxKjjLuR9z8w4WUTGAVgEj17/4nhgo2Du56i0Fm3Pm30g4iA8Lcqctc76jCzA==",
++    "node_modules/ms": {
++      "version": "2.1.3",
++      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
++      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
++      "license": "MIT"
++    },
++    "node_modules/node-addon-api": {
++      "version": "1.7.2",
++      "resolved": "https://registry.npmjs.org/node-addon-api/-/node-addon-api-1.7.2.tgz",
++      "integrity": "sha512-ibPK3iA+vaY1eEjESkQkM0BbCqFOaZMiXRTtdB0u7b4djtY6JnsjvPdUHVMg6xQt3B8fpTTWHI9A+ADjM9frzg==",
+       "dev": true,
+-      "license": "BlueOak-1.0.0",
+-      "dependencies": {
+-        "minipass": "^3.0.0"
+-      },
++      "license": "MIT",
++      "optional": true
++    },
++    "node_modules/normalize-path": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/normalize-path/-/normalize-path-3.0.0.tgz",
++      "integrity": "sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==",
++      "license": "MIT",
+       "engines": {
+-        "node": ">= 8"
++        "node": ">=0.10.0"
+       }
+     },
+-    "node_modules/minipass-pipeline": {
+-      "version": "1.2.4",
+-      "resolved": "https://registry.npmjs.org/minipass-pipeline/-/minipass-pipeline-1.2.4.tgz",
+-      "integrity": "sha512-xuIq7cIOt09RPRJ19gdi4b+RiNvDFYe5JH+ggNvBqGqpQXcru3PcRmOZuHBKWK1Txf9+cQ+HMVN4d6z46LZP7A==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "minipass": "^3.0.0"
+-      },
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+-    "node_modules/minipass-sized": {
+-      "version": "1.0.3",
+-      "resolved": "https://registry.npmjs.org/minipass-sized/-/minipass-sized-1.0.3.tgz",
+-      "integrity": "sha512-MbkQQ2CTiBMlA2Dm/5cY+9SWFEN8pzzOXi6rlM5Xxq0Yqbda5ZQy9sU75a673FE9ZK0Zsbr6Y5iP6u9nktfg2g==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "minipass": "^3.0.0"
+-      },
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+-    "node_modules/minizlib": {
+-      "version": "2.1.2",
+-      "resolved": "https://registry.npmjs.org/minizlib/-/minizlib-2.1.2.tgz",
+-      "integrity": "sha512-bAxsR8BVfj60DWXHE3u30oHzfl4G7khkSuPW+qvpd7jFRHm7dLxOjUk1EHACJ/hxLY8phGJ0YhYHZo7jil7Qdg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "minipass": "^3.0.0",
+-        "yallist": "^4.0.0"
+-      },
+-      "engines": {
+-        "node": ">= 8"
+-      }
+-    },
+-    "node_modules/mkdirp": {
+-      "version": "1.0.4",
+-      "resolved": "https://registry.npmjs.org/mkdirp/-/mkdirp-1.0.4.tgz",
+-      "integrity": "sha512-vVqVZQyf3WLx2Shd0qJ9xuvqgAyKPLAiqITEtqW0oIUjzo3PePDd6fW9iFz30ef7Ysp/oiWqbhszeGWW2T6Gzw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "bin": {
+-        "mkdirp": "bin/cmd.js"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      }
+-    },
+-    "node_modules/ms": {
+-      "version": "2.1.3",
+-      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+-      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/negotiator": {
+-      "version": "0.6.4",
+-      "resolved": "https://registry.npmjs.org/negotiator/-/negotiator-0.6.4.tgz",
+-      "integrity": "sha512-myRT3DiWPHqho5PrJaIRyaMv2kgYf0mUVgBNOYMuCH5Ki1yEiQaf/ZJuQ62nvpc44wL5WDbTX7yGJi1Neevw8w==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">= 0.6"
+-      }
+-    },
+-    "node_modules/node-abi": {
+-      "version": "3.96.0",
+-      "resolved": "https://registry.npmjs.org/node-abi/-/node-abi-3.96.0.tgz",
+-      "integrity": "sha512-rebQ/lz7i0EkoLzUVSrKRzA69zMkwLp95kKMWoMDkkM00Suxz0D7zEQPwRml5fQum24mj7bPvmlgLAmu2JCiYg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "semver": "^7.3.5"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      }
+-    },
+-    "node_modules/node-abi/node_modules/semver": {
+-      "version": "7.8.5",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+-      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "bin": {
+-        "semver": "bin/semver.js"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      }
+-    },
+-    "node_modules/node-addon-api": {
+-      "version": "1.7.2",
+-      "resolved": "https://registry.npmjs.org/node-addon-api/-/node-addon-api-1.7.2.tgz",
+-      "integrity": "sha512-ibPK3iA+vaY1eEjESkQkM0BbCqFOaZMiXRTtdB0u7b4djtY6JnsjvPdUHVMg6xQt3B8fpTTWHI9A+ADjM9frzg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true
+-    },
+-    "node_modules/node-api-version": {
+-      "version": "0.1.4",
+-      "resolved": "https://registry.npmjs.org/node-api-version/-/node-api-version-0.1.4.tgz",
+-      "integrity": "sha512-KGXihXdUChwJAOHO53bv9/vXcLmdUsZ6jIptbvYvkpKfth+r7jw44JkVxQFA3kX5nQjzjmGu1uAu/xNNLNlI5g==",
++    "node_modules/normalize-url": {
++      "version": "6.1.0",
++      "resolved": "https://registry.npmjs.org/normalize-url/-/normalize-url-6.1.0.tgz",
++      "integrity": "sha512-DlL+XwOy3NxAQ8xuC0okPgK46iuVNAK01YN7RueYBqqFeGsBjV9XmCAzAdgt+667bCl5kPh9EqKKDwnaPG1I7A==",
+       "dev": true,
+       "license": "MIT",
+-      "dependencies": {
+-        "semver": "^7.3.5"
+-      }
+-    },
+-    "node_modules/node-api-version/node_modules/semver": {
+-      "version": "7.8.5",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+-      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "bin": {
+-        "semver": "bin/semver.js"
+-      },
+       "engines": {
+         "node": ">=10"
+-      }
+-    },
+-    "node_modules/node-gyp": {
+-      "version": "9.4.1",
+-      "resolved": "https://registry.npmjs.org/node-gyp/-/node-gyp-9.4.1.tgz",
+-      "integrity": "sha512-OQkWKbjQKbGkMf/xqI1jjy3oCTgMKJac58G2+bjZb3fza6gW2YrCSdMQYaoTb70crvE//Gngr4f0AgVHmqHvBQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "env-paths": "^2.2.0",
+-        "exponential-backoff": "^3.1.1",
+-        "glob": "^7.1.4",
+-        "graceful-fs": "^4.2.6",
+-        "make-fetch-happen": "^10.0.3",
+-        "nopt": "^6.0.0",
+-        "npmlog": "^6.0.0",
+-        "rimraf": "^3.0.2",
+-        "semver": "^7.3.5",
+-        "tar": "^6.1.2",
+-        "which": "^2.0.2"
+-      },
+-      "bin": {
+-        "node-gyp": "bin/node-gyp.js"
+-      },
+-      "engines": {
+-        "node": "^12.13 || ^14.13 || >=16"
+-      }
+-    },
+-    "node_modules/node-gyp-build": {
+-      "version": "4.8.4",
+-      "resolved": "https://registry.npmjs.org/node-gyp-build/-/node-gyp-build-4.8.4.tgz",
+-      "integrity": "sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "bin": {
+-        "node-gyp-build": "bin.js",
+-        "node-gyp-build-optional": "optional.js",
+-        "node-gyp-build-test": "build-test.js"
+-      }
+-    },
+-    "node_modules/node-gyp/node_modules/semver": {
+-      "version": "7.8.5",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+-      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "bin": {
+-        "semver": "bin/semver.js"
+       },
+-      "engines": {
+-        "node": ">=10"
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
+-    "node_modules/nopt": {
+-      "version": "6.0.0",
+-      "resolved": "https://registry.npmjs.org/nopt/-/nopt-6.0.0.tgz",
+-      "integrity": "sha512-ZwLpbTgdhuZUnZzjd7nb1ZV+4DoiC6/sfiVKok72ym/4Tlf+DFdlHYmT2JPmcNNWV6Pi3SDf1kT+A4r9RTuT9g==",
++    "node_modules/oauth-sign": {
++      "version": "0.9.0",
++      "resolved": "https://registry.npmjs.org/oauth-sign/-/oauth-sign-0.9.0.tgz",
++      "integrity": "sha512-fexhUFFPTGV8ybAtSIGbV6gOkSv8UtRbDBnAyLQw4QPKkgNlsH2ByPGtMUqdWkos6YCRmAqViwgZrJc/mRDzZQ==",
+       "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "abbrev": "^1.0.0"
+-      },
+-      "bin": {
+-        "nopt": "bin/nopt.js"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+-    "node_modules/normalize-path": {
+-      "version": "3.0.0",
+-      "resolved": "https://registry.npmjs.org/normalize-path/-/normalize-path-3.0.0.tgz",
+-      "integrity": "sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==",
+-      "license": "MIT",
++      "license": "Apache-2.0",
+       "engines": {
+-        "node": ">=0.10.0"
++        "node": "*"
+       }
+     },
+-    "node_modules/normalize-url": {
+-      "version": "6.1.0",
+-      "resolved": "https://registry.npmjs.org/normalize-url/-/normalize-url-6.1.0.tgz",
+-      "integrity": "sha512-DlL+XwOy3NxAQ8xuC0okPgK46iuVNAK01YN7RueYBqqFeGsBjV9XmCAzAdgt+667bCl5kPh9EqKKDwnaPG1I7A==",
++    "node_modules/object-inspect": {
++      "version": "1.13.4",
++      "resolved": "https://registry.npmjs.org/object-inspect/-/object-inspect-1.13.4.tgz",
++      "integrity": "sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+-        "node": ">=10"
++        "node": ">= 0.4"
+       },
+       "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+-    "node_modules/npmlog": {
+-      "version": "6.0.2",
+-      "resolved": "https://registry.npmjs.org/npmlog/-/npmlog-6.0.2.tgz",
+-      "integrity": "sha512-/vBvz5Jfr9dT/aFWd0FIRf+T/Q2WBsLENygUaFUqstqsycmZAP/t5BvFJTK0viFmSUxiUKTUplWy5vt+rvKIxg==",
+-      "deprecated": "This package is no longer supported.",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "are-we-there-yet": "^3.0.0",
+-        "console-control-strings": "^1.1.0",
+-        "gauge": "^4.0.3",
+-        "set-blocking": "^2.0.0"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
++        "url": "https://github.com/sponsors/ljharb"
+       }
+     },
+     "node_modules/object-keys": {
+@@ -4632,46 +4227,6 @@
+         "wrappy": "1"
+       }
+     },
+-    "node_modules/onetime": {
+-      "version": "5.1.2",
+-      "resolved": "https://registry.npmjs.org/onetime/-/onetime-5.1.2.tgz",
+-      "integrity": "sha512-kbpaSSGJTWdAY5KPVeMOKXSrPtr8C8C7wodJbcsd51jRnmD+GZu8Y0VoU6Dm5Z4vWr0Ig/1NKuWRKf7j5aaYSg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "mimic-fn": "^2.1.0"
+-      },
+-      "engines": {
+-        "node": ">=6"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+-    "node_modules/ora": {
+-      "version": "5.4.1",
+-      "resolved": "https://registry.npmjs.org/ora/-/ora-5.4.1.tgz",
+-      "integrity": "sha512-5b6Y85tPxZZ7QytO+BQzysW31HJku27cRIlkbAXaNx+BdcVi+LlRFmVXzeF6a7JCwJpyw5c4b+YSVImQIrBpuQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "bl": "^4.1.0",
+-        "chalk": "^4.1.0",
+-        "cli-cursor": "^3.1.0",
+-        "cli-spinners": "^2.5.0",
+-        "is-interactive": "^1.0.0",
+-        "is-unicode-supported": "^0.1.0",
+-        "log-symbols": "^4.1.0",
+-        "strip-ansi": "^6.0.0",
+-        "wcwidth": "^1.0.1"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+     "node_modules/p-cancelable": {
+       "version": "2.1.1",
+       "resolved": "https://registry.npmjs.org/p-cancelable/-/p-cancelable-2.1.1.tgz",
+@@ -4682,22 +4237,6 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/p-map": {
+-      "version": "4.0.0",
+-      "resolved": "https://registry.npmjs.org/p-map/-/p-map-4.0.0.tgz",
+-      "integrity": "sha512-/bjOqmgETBYB5BoEeGVea8dmvHb2m9GLy1E9W43yeyfP6QQCZGFNa+XRceJEuDB6zqr+gKpIAmlLebMpykw/MQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "aggregate-error": "^3.0.0"
+-      },
+-      "engines": {
+-        "node": ">=10"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/sindresorhus"
+-      }
+-    },
+     "node_modules/package-json-from-dist": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/package-json-from-dist/-/package-json-from-dist-1.0.1.tgz",
+@@ -4771,6 +4310,13 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/performance-now": {
++      "version": "2.1.0",
++      "resolved": "https://registry.npmjs.org/performance-now/-/performance-now-2.1.0.tgz",
++      "integrity": "sha512-7EAHlyLHI56VEIdK57uwHdHKIaAGbnXPiw0yWbarQZOKaKpvUIgW0jWRVLiatnM+XXlSwsanIBH/hzGMJulMow==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/picocolors": {
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+@@ -4818,13 +4364,6 @@
+         "node": ">=0.4.0"
+       }
+     },
+-    "node_modules/promise-inflight": {
+-      "version": "1.0.1",
+-      "resolved": "https://registry.npmjs.org/promise-inflight/-/promise-inflight-1.0.1.tgz",
+-      "integrity": "sha512-6zWPyEOFaQBJYcGMHBKTKJ3u6TBsnMFOIZSa6ce1e/ZrrsOlnHRHbabMjLiBYKp+n44X9eUI6VUPaukCXHuG4g==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/promise-retry": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/promise-retry/-/promise-retry-2.0.1.tgz",
+@@ -4839,6 +4378,19 @@
+         "node": ">=10"
+       }
+     },
++    "node_modules/psl": {
++      "version": "1.15.0",
++      "resolved": "https://registry.npmjs.org/psl/-/psl-1.15.0.tgz",
++      "integrity": "sha512-JZd3gMVBAVQkSs6HdNZo9Sdo0LNcQeMNP3CozBJb3JYC/QUYZTnKxP+f8oWRX4rHP5EurWxqAHTSwUCjlNKa1w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "punycode": "^2.3.1"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/lupomontero"
++      }
++    },
+     "node_modules/pump": {
+       "version": "3.0.4",
+       "resolved": "https://registry.npmjs.org/pump/-/pump-3.0.4.tgz",
+@@ -4860,6 +4412,30 @@
+         "node": ">=6"
+       }
+     },
++    "node_modules/qs": {
++      "version": "6.16.0",
++      "resolved": "https://registry.npmjs.org/qs/-/qs-6.16.0.tgz",
++      "integrity": "sha512-h6fhOIaRrID2CbEY2fqs+7t+UXZo+MLAnU5gRIq85uFtdiUPCdsApMlHhXogKVM4HM2DVbIjGNTTYH2OcmP1vA==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "es-define-property": "^1.0.1",
++        "side-channel": "^1.1.1"
++      },
++      "engines": {
++        "node": ">=0.6"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/querystringify": {
++      "version": "2.2.0",
++      "resolved": "https://registry.npmjs.org/querystringify/-/querystringify-2.2.0.tgz",
++      "integrity": "sha512-FIqgj2EUvTa7R50u0rGsyTftzjYmv/a3hO345bZNrqabNqjtgiDMgmo4mkUjd+nzU5oF3dClKqFIPUKybUyqoQ==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/quick-lru": {
+       "version": "5.1.1",
+       "resolved": "https://registry.npmjs.org/quick-lru/-/quick-lru-5.1.1.tgz",
+@@ -4924,6 +4500,13 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/requires-port": {
++      "version": "1.0.0",
++      "resolved": "https://registry.npmjs.org/requires-port/-/requires-port-1.0.0.tgz",
++      "integrity": "sha512-KigOCHcocU3XODJxsu8i/j8T9tzT4adHiecwORRQ0ZZFcp7ahwXuRU1m+yuO90C5ZUyGeGfocHDI14M3L3yDAQ==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/resolve-alpn": {
+       "version": "1.2.1",
+       "resolved": "https://registry.npmjs.org/resolve-alpn/-/resolve-alpn-1.2.1.tgz",
+@@ -4944,20 +4527,6 @@
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
+-    "node_modules/restore-cursor": {
+-      "version": "3.1.0",
+-      "resolved": "https://registry.npmjs.org/restore-cursor/-/restore-cursor-3.1.0.tgz",
+-      "integrity": "sha512-l+sSefzHpj5qimhFSE5a8nufZYAM3sBSVMAPtYkmC+4EH2anSGaEMXSD0izRQbu9nfyQ9y5JrVmp7E8oZrUjvA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "onetime": "^5.1.0",
+-        "signal-exit": "^3.0.2"
+-      },
+-      "engines": {
+-        "node": ">=8"
+-      }
+-    },
+     "node_modules/retry": {
+       "version": "0.12.0",
+       "resolved": "https://registry.npmjs.org/retry/-/retry-0.12.0.tgz",
+@@ -4968,23 +4537,6 @@
+         "node": ">= 4"
+       }
+     },
+-    "node_modules/rimraf": {
+-      "version": "3.0.2",
+-      "resolved": "https://registry.npmjs.org/rimraf/-/rimraf-3.0.2.tgz",
+-      "integrity": "sha512-JZkJMZkAGFFPP2YqXZXPbMlMBgsxzE8ILs4lMIX/2o0L9UBw9O/Y3o6wFw/i9YLapcUJWwqbi3kdxIPdC62TIA==",
+-      "deprecated": "Rimraf versions prior to v4 are no longer supported",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "glob": "^7.1.3"
+-      },
+-      "bin": {
+-        "rimraf": "bin.js"
+-      },
+-      "funding": {
+-        "url": "https://github.com/sponsors/isaacs"
+-      }
+-    },
+     "node_modules/roarr": {
+       "version": "2.15.4",
+       "resolved": "https://registry.npmjs.org/roarr/-/roarr-2.15.4.tgz",
+@@ -5045,7 +4597,6 @@
+       "version": "1.6.1",
+       "resolved": "https://registry.npmjs.org/sax/-/sax-1.6.1.tgz",
+       "integrity": "sha512-42tBVwLWnaQvW5zc4HbZrTuWccECCZfBi92FDuwtqxasH+JbPB3/FOKb1m222K42R4WxuxzzMsTswfzgtSu64Q==",
+-      "dev": true,
+       "license": "BlueOak-1.0.0",
+       "engines": {
+         "node": ">=11.0.0"
+@@ -5098,13 +4649,6 @@
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
+-    "node_modules/set-blocking": {
+-      "version": "2.0.0",
+-      "resolved": "https://registry.npmjs.org/set-blocking/-/set-blocking-2.0.0.tgz",
+-      "integrity": "sha512-KiKBS8AnWGEyLzofFfmvKwpdPzqiy16LvQfK3yv/fVH7Bj13/wl3JSR1J+rfgRE9q7xUJK4qvgS8raSOeLUehw==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+     "node_modules/setimmediate": {
+       "version": "1.0.5",
+       "resolved": "https://registry.npmjs.org/setimmediate/-/setimmediate-1.0.5.tgz",
+@@ -5187,12 +4731,81 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/signal-exit": {
+-      "version": "3.0.7",
+-      "resolved": "https://registry.npmjs.org/signal-exit/-/signal-exit-3.0.7.tgz",
+-      "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ==",
++    "node_modules/side-channel": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/side-channel/-/side-channel-1.1.1.tgz",
++      "integrity": "sha512-6x6dK6zJdpTzF4sQeNYxwtvBzf6Eg4GtlesS94HOvTudUeyK2WXAaIfmDgsyslYrRBeFIlsi54AYsFGUuhmvrQ==",
+       "dev": true,
+-      "license": "ISC"
++      "license": "MIT",
++      "dependencies": {
++        "es-errors": "^1.3.0",
++        "object-inspect": "^1.13.4",
++        "side-channel-list": "^1.0.1",
++        "side-channel-map": "^1.0.1",
++        "side-channel-weakmap": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/side-channel-list": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/side-channel-list/-/side-channel-list-1.0.1.tgz",
++      "integrity": "sha512-mjn/0bi/oUURjc5Xl7IaWi/OJJJumuoJFQJfDDyO46+hBWsfaVM65TBHq2eoZBhzl9EchxOijpkbRC8SVBQU0w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "es-errors": "^1.3.0",
++        "object-inspect": "^1.13.4"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/side-channel-map": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/side-channel-map/-/side-channel-map-1.0.1.tgz",
++      "integrity": "sha512-VCjCNfgMsby3tTdo02nbjtM/ewra6jPHmpThenkTYh8pG9ucZ/1P8So4u4FGBek/BjpOVsDCMoLA/iuBKIFXRA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "es-errors": "^1.3.0",
++        "get-intrinsic": "^1.2.5",
++        "object-inspect": "^1.13.3"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/side-channel-weakmap": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/side-channel-weakmap/-/side-channel-weakmap-1.0.2.tgz",
++      "integrity": "sha512-WPS/HvHQTYnHisLo9McqBHOJk2FkHO/tlpvldyrnem4aeQp4hai3gythswg6p01oSoTl58rcpiFAjF2br2Ak2A==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "es-errors": "^1.3.0",
++        "get-intrinsic": "^1.2.5",
++        "object-inspect": "^1.13.3",
++        "side-channel-map": "^1.0.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
+     },
+     "node_modules/simple-swizzle": {
+       "version": "0.2.4",
+@@ -5252,41 +4865,12 @@
+       "integrity": "sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==",
+       "dev": true,
+       "license": "MIT",
++      "optional": true,
+       "engines": {
+         "node": ">= 6.0.0",
+         "npm": ">= 3.0.0"
+       }
+     },
+-    "node_modules/socks": {
+-      "version": "2.8.10",
+-      "resolved": "https://registry.npmjs.org/socks/-/socks-2.8.10.tgz",
+-      "integrity": "sha512-e0VyvkVTwVYViNovRkZ9aodhxVlyoMn7eJhVUPxZ+eK9P/7CBkxvvsBOHqFPEH416726W8tLXXXjKwqgTErrCQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "ip-address": "^10.1.1",
+-        "smart-buffer": "^4.2.0"
+-      },
+-      "engines": {
+-        "node": ">= 10.0.0",
+-        "npm": ">= 3.0.0"
+-      }
+-    },
+-    "node_modules/socks-proxy-agent": {
+-      "version": "7.0.0",
+-      "resolved": "https://registry.npmjs.org/socks-proxy-agent/-/socks-proxy-agent-7.0.0.tgz",
+-      "integrity": "sha512-Fgl0YPZ902wEsAyiQ+idGd1A7rSFx/ayC1CQVMw5P+EQx2V0SgpGtf6OKFhVjPflPUl9YMmEOnmfjCdMUsygww==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "agent-base": "^6.0.2",
+-        "debug": "^4.3.3",
+-        "socks": "^2.6.2"
+-      },
+-      "engines": {
+-        "node": ">= 10"
+-      }
+-    },
+     "node_modules/source-map": {
+       "version": "0.6.1",
+       "resolved": "https://registry.npmjs.org/source-map/-/source-map-0.6.1.tgz",
+@@ -5316,17 +4900,30 @@
+       "license": "BSD-3-Clause",
+       "optional": true
+     },
+-    "node_modules/ssri": {
+-      "version": "9.0.1",
+-      "resolved": "https://registry.npmjs.org/ssri/-/ssri-9.0.1.tgz",
+-      "integrity": "sha512-o57Wcn66jMQvfHG1FlYbWeZWW/dHZhJXjpIcTfXldXEk5nz5lStPo3mK0OJQfGR3RbZUlbISexbljkJzuEj/8Q==",
++    "node_modules/sshpk": {
++      "version": "1.18.0",
++      "resolved": "https://registry.npmjs.org/sshpk/-/sshpk-1.18.0.tgz",
++      "integrity": "sha512-2p2KJZTSqQ/I3+HX42EpYOa2l3f8Erv8MWKsy2I9uf4wA7yFIkXRffYdsx86y6z4vHtV8u7g+pPlr8/4ouAxsQ==",
+       "dev": true,
+-      "license": "ISC",
++      "license": "MIT",
+       "dependencies": {
+-        "minipass": "^3.1.1"
++        "asn1": "~0.2.3",
++        "assert-plus": "^1.0.0",
++        "bcrypt-pbkdf": "^1.0.0",
++        "dashdash": "^1.12.0",
++        "ecc-jsbn": "~0.1.1",
++        "getpass": "^0.1.1",
++        "jsbn": "~0.1.0",
++        "safer-buffer": "^2.0.2",
++        "tweetnacl": "~0.14.0"
++      },
++      "bin": {
++        "sshpk-conv": "bin/sshpk-conv",
++        "sshpk-sign": "bin/sshpk-sign",
++        "sshpk-verify": "bin/sshpk-verify"
+       },
+       "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
++        "node": ">=0.10.0"
+       }
+     },
+     "node_modules/stat-mode": {
+@@ -5406,6 +5003,19 @@
+         "node": ">=8"
+       }
+     },
++    "node_modules/strnum": {
++      "version": "1.1.2",
++      "resolved": "https://registry.npmjs.org/strnum/-/strnum-1.1.2.tgz",
++      "integrity": "sha512-vrN+B7DBIoTTZjnPNewwhx6cBA/H+IS7rfW68n7XxC1y7uoiGQBxaKzqucGUgavX15dJgiGztLJ8vxuEzwqBdA==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/NaturalIntelligence"
++        }
++      ],
++      "license": "MIT"
++    },
+     "node_modules/sumchecker": {
+       "version": "3.0.1",
+       "resolved": "https://registry.npmjs.org/sumchecker/-/sumchecker-3.0.1.tgz",
+@@ -5526,6 +5136,12 @@
+         "node": ">= 10.0.0"
+       }
+     },
++    "node_modules/tiny-typed-emitter": {
++      "version": "2.1.0",
++      "resolved": "https://registry.npmjs.org/tiny-typed-emitter/-/tiny-typed-emitter-2.1.0.tgz",
++      "integrity": "sha512-qVtvMxeXbVej0cQWKqVSSAHmKZEHAvxdF8HEUBFWts8h+xEo5m/lEiPakuyZ3BnCBjOD8i24kzNOiOLLgsSxhA==",
++      "license": "MIT"
++    },
+     "node_modules/tmp": {
+       "version": "0.2.7",
+       "resolved": "https://registry.npmjs.org/tmp/-/tmp-0.2.7.tgz",
+@@ -5545,6 +5161,32 @@
+         "tmp": "^0.2.0"
+       }
+     },
++    "node_modules/tough-cookie": {
++      "version": "4.1.4",
++      "resolved": "https://registry.npmjs.org/tough-cookie/-/tough-cookie-4.1.4.tgz",
++      "integrity": "sha512-Loo5UUvLD9ScZ6jh8beX1T6sO1w2/MpCRpEP7V280GKMVUQ0Jzar2U3UJPsrdbziLEMMhu3Ujnq//rhiFuIeag==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "psl": "^1.1.33",
++        "punycode": "^2.1.1",
++        "universalify": "^0.2.0",
++        "url-parse": "^1.5.3"
++      },
++      "engines": {
++        "node": ">=6"
++      }
++    },
++    "node_modules/tough-cookie/node_modules/universalify": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/universalify/-/universalify-0.2.0.tgz",
++      "integrity": "sha512-CJ1QgKmNg3CwvAv/kOFmtnEN05f0D/cn9QntgNOQlQF9dgvVTHj3t+8JPdjqawCHk7V/KA+fbUqzZ9XWhcqPUg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 4.0.0"
++      }
++    },
+     "node_modules/traverse": {
+       "version": "0.3.9",
+       "resolved": "https://registry.npmjs.org/traverse/-/traverse-0.3.9.tgz",
+@@ -5571,6 +5213,26 @@
+       "license": "0BSD",
+       "optional": true
+     },
++    "node_modules/tunnel-agent": {
++      "version": "0.6.0",
++      "resolved": "https://registry.npmjs.org/tunnel-agent/-/tunnel-agent-0.6.0.tgz",
++      "integrity": "sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "safe-buffer": "^5.0.1"
++      },
++      "engines": {
++        "node": "*"
++      }
++    },
++    "node_modules/tweetnacl": {
++      "version": "0.14.5",
++      "resolved": "https://registry.npmjs.org/tweetnacl/-/tweetnacl-0.14.5.tgz",
++      "integrity": "sha512-KXXFFdAbFXY4geFIwoyNK+f5Z1b7swfXABfL7HXCmoIWMKU3dmS26672A4EeQtDzLKy7SXmfBu51JolvEKwtGA==",
++      "dev": true,
++      "license": "Unlicense"
++    },
+     "node_modules/type-fest": {
+       "version": "0.13.1",
+       "resolved": "https://registry.npmjs.org/type-fest/-/type-fest-0.13.1.tgz",
+@@ -5606,32 +5268,6 @@
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/unique-filename": {
+-      "version": "2.0.1",
+-      "resolved": "https://registry.npmjs.org/unique-filename/-/unique-filename-2.0.1.tgz",
+-      "integrity": "sha512-ODWHtkkdx3IAR+veKxFV+VBkUMcN+FaqzUUd7IZzt+0zhDZFPFxhlqwPF3YQvMHx1TD0tdgYl+kuPnJ8E6ql7A==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "unique-slug": "^3.0.0"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+-    "node_modules/unique-slug": {
+-      "version": "3.0.0",
+-      "resolved": "https://registry.npmjs.org/unique-slug/-/unique-slug-3.0.0.tgz",
+-      "integrity": "sha512-8EyMynh679x/0gqE9fT9oilG+qEt+ibFyqjuVTsZn1+CMxH+XLlpvr2UZx4nVcCwTpx81nICr2JQFkM+HPLq4w==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "imurmurhash": "^0.1.4"
+-      },
+-      "engines": {
+-        "node": "^12.13.0 || ^14.15.0 || >=16.0.0"
+-      }
+-    },
+     "node_modules/universalify": {
+       "version": "0.1.2",
+       "resolved": "https://registry.npmjs.org/universalify/-/universalify-0.1.2.tgz",
+@@ -5706,6 +5342,17 @@
+         "punycode": "^2.1.0"
+       }
+     },
++    "node_modules/url-parse": {
++      "version": "1.5.10",
++      "resolved": "https://registry.npmjs.org/url-parse/-/url-parse-1.5.10.tgz",
++      "integrity": "sha512-WypcfiRhfeUP9vvF0j6rw0J3hrWrw6iZv3+22h6iRMJ/8z1Tj6XfLP4DsUix5MhMPnXpiHDoKyoZ/bdCkwBCiQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "querystringify": "^2.1.1",
++        "requires-port": "^1.0.0"
++      }
++    },
+     "node_modules/utf8-byte-length": {
+       "version": "1.0.5",
+       "resolved": "https://registry.npmjs.org/utf8-byte-length/-/utf8-byte-length-1.0.5.tgz",
+@@ -5745,16 +5392,6 @@
+         "node": ">=0.6.0"
+       }
+     },
+-    "node_modules/wcwidth": {
+-      "version": "1.0.1",
+-      "resolved": "https://registry.npmjs.org/wcwidth/-/wcwidth-1.0.1.tgz",
+-      "integrity": "sha512-XHPEwS0q6TaxcvG85+8EYkbiCux2XtWG2mkc47Ng2A77BQu9+DqIOJldST4HgPkuea7dvKSj5VgX3P1d4rW8Tg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "defaults": "^1.0.3"
+-      }
+-    },
+     "node_modules/which": {
+       "version": "2.0.2",
+       "resolved": "https://registry.npmjs.org/which/-/which-2.0.2.tgz",
+@@ -5771,16 +5408,6 @@
+         "node": ">= 8"
+       }
+     },
+-    "node_modules/wide-align": {
+-      "version": "1.1.5",
+-      "resolved": "https://registry.npmjs.org/wide-align/-/wide-align-1.1.5.tgz",
+-      "integrity": "sha512-eDMORYaPNZ4sQIuuYPDHdQvf4gyCF9rEEV/yPxGfwPkRodwEgiMUUXTx/dex+Me0wxx53S+NgUHaP7y3MGlDmg==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "string-width": "^1.0.2 || 2 || 3 || 4"
+-      }
+-    },
+     "node_modules/wrap-ansi": {
+       "version": "7.0.0",
+       "resolved": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-7.0.0.tgz",
+diff --git a/package.json b/package.json
+index 69c3b20..0520268 100644
+--- a/package.json
++++ b/package.json
+@@ -10,10 +10,14 @@
+     "start": "electron .",
+     "dev": "electron . --dev",
+     "addon:win": "npm install --no-save --force --os=win32 --cpu=x64 @img/sharp-win32-x64@0.33.5 @img/sharp-libvips-win32-x64@1.0.4",
+-    "dist:win": "npm run addon:win && electron-builder --win --x64",
+-    "dist:win-only": "electron-builder --win --x64"
++    "dist:win": "npm run addon:win && electron-builder --win --x64 --publish never",
++    "dist:win-only": "electron-builder --win --x64 --publish never",
++    "release:stable": "node tools/upload-release.js --channel stable",
++    "release:beta": "node tools/upload-release.js --channel beta",
++    "dist:release": "npm run dist:win && npm run release:stable"
+   },
+   "dependencies": {
++    "electron-updater": "^6.8.9",
+     "exceljs": "^4.4.0",
+     "jpeg-js": "^0.4.4",
+     "pngjs": "^7.0.0"
+@@ -22,6 +26,7 @@
+     "sharp": "^0.33.5"
+   },
+   "devDependencies": {
++    "cos-nodejs-sdk-v5": "^3.0.0",
+     "electron": "^31.7.7",
+     "electron-builder": "^24.13.3"
+   },
+@@ -33,6 +38,13 @@
+       "output": "dist",
+       "buildResources": "build"
+     },
++    "publish": [
++      {
++        "provider": "generic",
++        "url": "https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/stable",
++        "channel": "latest"
++      }
++    ],
+     "files": [
+       "src/**/*",
+       "package.json",
+diff --git a/src/main/index.js b/src/main/index.js
+index ddb94d3..1ac4276 100644
+--- a/src/main/index.js
++++ b/src/main/index.js
+@@ -6,6 +6,7 @@ const logbus = require('./logbus');
+ const winmod = require('./window');
+ const ipc = require('./ipc');
+ const auth = require('./auth');
++const updater = require('./updater');
+ const wp = require('./util/winpath');
+ const imaging = require('./services/imaging');
+ const pool = require('./services/pool');
+@@ -42,6 +43,25 @@ if (!app.requestSingleInstanceLock()) {
+     }
+     logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
+ 
++    // 自动更新：这里只「初始化 + 排一次延迟自检」。
++    // 下载和安装都必须由用户在「设置 → 应用更新」里点 —— 见 updater.js 文件头的两条铁律
++    updater.init({
++      send: (ch, payload) => {
++        for (const bw of BrowserWindow.getAllWindows()) {
++          if (!bw.isDestroyed()) bw.webContents.send(ch, payload);
++        }
++      },
++      packaged: app.isPackaged,
++      version: app.getVersion()
++    });
++    const upSt = updater.status();
++    if (upSt.supported) {
++      updater.scheduleStartupCheck();
++      logbus.info(`自动更新已启用 · 当前 ${upSt.current} · 启动约 ${Math.round(updater.STARTUP_DELAY_MS / 1000)} 秒后自检一次（下载/安装都要手动点）`);
++    } else {
++      logbus.info(`自动更新不可用：${upSt.message}`);
++    }
++
+     logbus.info(st.requireLogin
+       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')
+       : '登录校验已关闭（BLUEV_NO_LOGIN=1）');
+diff --git a/src/main/ipc.js b/src/main/ipc.js
+index b4881c1..f1b2cb8 100644
+--- a/src/main/ipc.js
++++ b/src/main/ipc.js
+@@ -10,6 +10,7 @@ const brands = require('./brands');
+ const imaging = require('./services/imaging');
+ const pool = require('./services/pool');
+ const stats = require('./services/stats');
++const updater = require('./updater');
+ const wp = require('./util/winpath');
+ const winmod = require('./window');
+ 
+@@ -144,6 +145,26 @@ function register() {
+     return { ok: true, file: r.file, totals: r.totals, brandCount: r.brands.length };
+   }));
+ 
++  // ---- 应用更新（阶段 1）----
++  // 检查 / 下载 / 安装**都只由用户点**：没有定时轮询、没有自动下载、没有自动重启。
++  // 原因见 src/main/updater.js 文件头 —— 静默重启会拦腰截断正在跑的批量发布。
++  ipcMain.handle('update:status', guard(() => Object.assign({ ok: true }, updater.status())));
++  ipcMain.handle('update:check', guard(() => updater.check({ manual: true })));
++  ipcMain.handle('update:download', guard(() => updater.download()));
++  ipcMain.handle('update:install', guard(() => {
++    // 唯一会重启应用的入口。哪怕用户点了，也要在「真有任务在跑」时拦住 ——
++    // 重启把发布跑一半掐掉，那批素材的下场没人说得清
++    const running = jobs.busy();
++    if (running && running.length) {
++      const first = running[0];
++      return {
++        ok: false,
++        error: `还有 ${running.length} 个任务在跑（${first.label}${first.batch ? ' · ' + first.batch : ''}），装完会重启、把任务掐断。等跑完再装。`
++      };
++    }
++    return updater.install();
++  }));
++
+   ipcMain.handle('app:info', () => ({
+     platform: process.platform,
+     isWin: wp.isWin(),
+diff --git a/src/main/updater.js b/src/main/updater.js
+new file mode 100644
+index 0000000..30840bf
+--- /dev/null
++++ b/src/main/updater.js
+@@ -0,0 +1,253 @@
++'use strict';
++/**
++ * 应用自动更新（阶段 1：单通道 = 正式源 stable）
++ *
++ * ★★ 两条「不许顺手加上」的铁律，改这个文件前先读一遍：
++ *
++ *   1. **绝不自动重启安装**。这个工具随时可能在跑批量发布（一跑几十分钟），
++ *      静默重启会把任务拦腰截断，而且发到一半的批次没有回滚。所以一律
++ *      「下载好 → 界面上点『立即安装』才真的重启」。electron-updater 的
++ *      `autoInstallOnAppQuit` 也保持关闭 —— 否则用户下次关窗口时也会被装上。
++ *
++ *   2. **不在运行时改更新源地址**。源地址在打包时写进 `resources/app-update.yml`
++ *      （在 asar 外面，编译进包）。electron-updater 官方明确不要 `setFeedURL`；
++ *      而且测试版 / 正式版是靠**两个不同的源地址**隔离的，运行时能改就等于把
++ *      两条通道混成一条，「测试版没验过的东西跑到正式版」就拦不住了。
++ *
++ * 设计上刻意做成「可注入」：`init()` 收依赖、`_setUpdater()` 收假实现。
++ * 这样 tools/updatertest.js 能在纯 Node 里把整个状态机跑一遍，
++ * 不需要真的打包、也不需要真的连网。
++ */
++const logbus = require('./logbus');
++
++/** 发现新版本**不**自动开始下载：包有 88 MB，先让人知道再下，别偷偷占带宽 */
++const AUTO_DOWNLOAD = false;
++
++/** 启动后延迟自检：先让窗口起来、把该干的活干上，别和启动抢 IO */
++const STARTUP_DELAY_MS = 20 * 1000;
++
++/** 便携版的判据：electron-builder 的 portable target 会设这两个环境变量 */
++function portableExe() {
++  return process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR || '';
++}
++
++const state = {
++  supported: false,   // 这个包到底能不能自动更新（开发模式 / 便携版 = false）
++  status: 'idle',     // idle|checking|available|downloading|ready|uptodate|error
++  current: '',        // 当前版本（app.getVersion()）
++  latest: '',         // 源上发现的版本
++  percent: 0,
++  transferred: 0,
++  total: 0,
++  bytesPerSecond: 0,
++  message: '',
++  at: 0,
++  manual: false       // 这次是用户点的，还是启动自检
++};
++
++let send = () => {};
++let autoUpdater = null;
++let loadErr = '';
++let timer = null;
++let started = false;
++let checking = false;
++
++function snapshot() {
++  return Object.assign({}, state);
++}
++
++function broadcast() {
++  state.at = Date.now();
++  try { send('update:changed', snapshot()); } catch (e) { /* 窗口可能已经关了 */ }
++}
++
++/** 只在「状态真的变了」时才记日志：下载进度每秒好几条，全记会把日志刷没 */
++function patch(p, log) {
++  const changed = Object.keys(p).some(k => state[k] !== p[k]);
++  Object.assign(state, p);
++  if (changed && log) {
++    const line = typeof log === 'function' ? log(snapshot()) : log;
++    if (line) logbus.info(line);
++  }
++  broadcast();
++  return snapshot();
++}
++
++/**
++ * 把两个开关压成我们要的值。**必须在这里统一做**，不能只写在 loadUpdater 里 ——
++ * 否则测试注入假实现时拿到的是另外一套默认值，「不许偷偷下载/安装」这条就验不到。
++ */
++function normalize(up) {
++  up.autoDownload = AUTO_DOWNLOAD;          // ★ 不许自己下 88MB
++  up.autoInstallOnAppQuit = false;          // ★ 见文件头铁律 1
++  up.logger = null;                         // 它默认会往控制台刷一堆，没必要
++  return up;
++}
++
++/**
++ * 把 electron-updater 拿进来。**必须懒加载 + try**：
++ * 开发模式（没打包）下它拿不到 app-update.yml，一 require 就可能抛；
++ * 而「更新模块坏了」绝不该让整个应用起不来。
++ */
++function loadUpdater() {
++  if (autoUpdater) return autoUpdater;
++  if (loadErr) return null;
++  try {
++    autoUpdater = normalize(require('electron-updater').autoUpdater);
++    wire(autoUpdater);
++    return autoUpdater;
++  } catch (e) {
++    loadErr = (e && e.message) || String(e);
++    return null;
++  }
++}
++
++function wire(up) {
++  up.on('checking-for-update', () => {
++    patch({ status: 'checking', message: '正在检查更新…' });
++  });
++  up.on('update-available', info => {
++    const v = (info && info.version) || '';
++    patch({ status: 'available', latest: v, percent: 0 },
++      s => `发现新版本 ${s.current} → ${v}（还没下载；要下就在「设置 → 应用更新」里点「下载更新」）`);
++  });
++  up.on('update-not-available', info => {
++    const v = (info && info.version) || state.current;
++    patch({ status: 'uptodate', latest: v, message: '已经是最新版本' },
++      s => (s.manual ? `检查更新：已是最新版本（${s.current}）` : ''));
++  });
++  up.on('download-progress', p => {
++    patch({
++      status: 'downloading',
++      percent: Math.max(0, Math.min(100, Number(p && p.percent) || 0)),
++      transferred: (p && p.transferred) || 0,
++      total: (p && p.total) || 0,
++      bytesPerSecond: (p && p.bytesPerSecond) || 0,
++      message: '正在下载更新…'
++    });
++  });
++  up.on('update-downloaded', info => {
++    const v = (info && info.version) || state.latest;
++    // ★ 到这里**什么都不做**，只把状态改成「可安装」等用户点。见文件头铁律 1
++    patch({ status: 'ready', latest: v, percent: 100, message: '已下载完成，可以安装' },
++      s => `新版本 ${v} 已下载完成。点「立即安装」才会重启生效（不会自动重启）`);
++  });
++  up.on('error', err => {
++    const msg = (err && err.message) || String(err || '未知错误');
++    patch({ status: 'error', message: msg }, () => `检查更新失败：${msg}`);
++  });
++}
++
++/**
++ * @param {object} opts
++ * @param {(ch:string, payload:any)=>void} opts.send  事件广播（主进程里 = 发给所有窗口）
++ * @param {boolean} opts.packaged                     app.isPackaged
++ * @param {string}  opts.version                      app.getVersion()
++ * @param {(ms:number, fn:Function)=>{}} [opts.setTimer] 便于测试注入
++ */
++function init(opts) {
++  const o = opts || {};
++  if (o.send) send = o.send;
++  if (o.version) state.current = o.version;
++  if (o.setTimer) timer = o.setTimer;
++
++  const dev = o.packaged === false;
++  const port = portableExe();
++
++  if (dev) {
++    state.supported = false;
++    state.status = 'idle';
++    state.message = '开发模式（未打包）不检查更新：自动更新只在安装版里生效';
++    return snapshot();
++  }
++  if (port) {
++    // 便携版是「每次启动自解压到临时目录」的，装不了更新 —— 如实说，别给个点了没用的按钮
++    state.supported = false;
++    state.status = 'idle';
++    state.message = '当前是便携版，不支持自动更新；要用自动更新请改装安装版（…-x64-win.exe）';
++    return snapshot();
++  }
++
++  state.supported = true;
++  state.status = 'idle';
++  state.message = '';
++  return snapshot();
++}
++
++/** 启动后延迟自检一次（只做一次，别写成定时轮询 —— 那是给常驻服务用的） */
++function scheduleStartupCheck() {
++  if (started || !state.supported) return false;
++  started = true;
++  timer = timer || setTimeout;
++  timer(STARTUP_DELAY_MS, () => { check({ manual: false }); });
++  return true;
++}
++
++async function check(opts) {
++  const manual = !!(opts && opts.manual);
++  if (!state.supported) return { ok: false, error: state.message || '这个版本不支持自动更新' };
++  if (checking) return { ok: false, error: '正在检查中，稍等一下' };
++  if (state.status === 'downloading') return { ok: false, error: '正在下载更新，下载完再检查' };
++
++  const up = loadUpdater();
++  if (!up) return { ok: false, error: `更新模块不可用：${loadErr}` };
++
++  checking = true;
++  patch({ manual });
++  try {
++    await up.checkForUpdates();
++  } catch (e) {
++    const msg = (e && e.message) || String(e);
++    patch({ status: 'error', message: msg }, () => `检查更新失败：${msg}`);
++    checking = false;
++    return { ok: false, error: msg };
++  }
++  checking = false;
++  return { ok: true };
++}
++
++async function download() {
++  if (!state.supported) return { ok: false, error: state.message || '这个版本不支持自动更新' };
++  if (state.status === 'downloading') return { ok: false, error: '正在下载中' };
++  // 允许「idle → 直接下」：用户可能刚启动就点，还没走完一次检查
++  const up = loadUpdater();
++  if (!up) return { ok: false, error: `更新模块不可用：${loadErr}` };
++  try {
++    await up.downloadUpdate();
++  } catch (e) {
++    const msg = (e && e.message) || String(e);
++    patch({ status: 'error', message: msg }, () => `下载更新失败：${msg}`);
++    return { ok: false, error: msg };
++  }
++  return { ok: true };
++}
++
++/** ★ 只有这一个入口会重启应用，而且必须由用户点。别在别处调 quitAndInstall */
++async function install() {
++  if (state.status !== 'ready') return { ok: false, error: '还没有下载完成的更新包' };
++  const up = loadUpdater();
++  if (!up) return { ok: false, error: `更新模块不可用：${loadErr}` };
++  logbus.warn(`正在安装新版本 ${state.latest}，应用会立即重启`);
++  // 不 await：quitAndInstall 正常路径下会把进程带走，await 后面的代码不保证执行
++  up.quitAndInstall(false, true);
++  return { ok: true };
++}
++
++const status = () => snapshot();
++
++/* ---- 以下两个只在测试里用 ---- */
++/** 注入假实现。**必须走和真身同一条 normalize**，否则测出来的开关状态不是真的 */
++function _setUpdater(fake) { autoUpdater = normalize(fake); loadErr = ''; wire(autoUpdater); return autoUpdater; }
++function _reset() {
++  autoUpdater = null; loadErr = ''; timer = null; started = false; checking = false;
++  Object.assign(state, {
++    supported: false, status: 'idle', current: '', latest: '', percent: 0,
++    transferred: 0, total: 0, bytesPerSecond: 0, message: '', at: 0, manual: false
++  });
++}
++
++module.exports = {
++  init, scheduleStartupCheck, check, download, install, status,
++  portableExe, AUTO_DOWNLOAD, STARTUP_DELAY_MS,
++  _setUpdater, _reset
++};
+diff --git a/src/preload/index.js b/src/preload/index.js
+index 9880c20..45c0478 100644
+--- a/src/preload/index.js
++++ b/src/preload/index.js
+@@ -28,6 +28,12 @@ contextBridge.exposeInMainWorld('api', {
+   statsQuery: opts => ipcRenderer.invoke('stats:query', opts),
+   statsExport: opts => ipcRenderer.invoke('stats:export', opts),
+ 
++  updateStatus: () => ipcRenderer.invoke('update:status'),
++  updateCheck: () => ipcRenderer.invoke('update:check'),
++  updateDownload: () => ipcRenderer.invoke('update:download'),
++  updateInstall: () => ipcRenderer.invoke('update:install'),
++  onUpdate: cb => on('update:changed', cb),
++
+   configGet: key => ipcRenderer.invoke('config:get', key),
+   configSet: patch => ipcRenderer.invoke('config:set', patch),
+   projectGet: () => ipcRenderer.invoke('project:get'),
+diff --git a/src/renderer/app.js b/src/renderer/app.js
+index 3fd6815..0bec9b8 100644
+--- a/src/renderer/app.js
++++ b/src/renderer/app.js
+@@ -24,7 +24,8 @@ const state = {
+   brandEdit: null,    // 正在改名的品牌 { id, name }
+   permUserId: null,   // 「品牌权限」面板里当前选中的账号
+   // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
+-  brandModal: null
++  brandModal: null,
++  upd: null           // 应用更新状态（来自主进程）null=还没读到
+ };
+ 
+ /* ---------------- 工具 ---------------- */
+@@ -610,6 +611,7 @@ TABS[7] = {
+           <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
+         </div>
+       </div>
++      ${updateHtml()}
+       <div class="box">
+         <h3>外部依赖</h3>
+         <div class="tw"><table>
+@@ -623,6 +625,70 @@ TABS[7] = {
+   }
+ };
+ 
++/* ---------------- 应用更新（阶段 1：单通道 = 正式源） ---------------- */
++/** 状态 → [徽章样式, 文案]。键要和 src/main/updater.js 里的 status 一一对应 */
++const UPD_KIND = {
++  idle: ['wait', '未检查'], checking: ['run', '检查中'], available: ['warn', '有新版本'],
++  downloading: ['run', '下载中'], ready: ['ok', '可以安装'], uptodate: ['ok', '已是最新'],
++  error: ['bad', '出错']
++};
++
++function updateHtml() {
++  const u = state.upd;
++  if (!u) return `<div class="box" id="updBox"><h3>应用更新</h3><p class="hint">正在读取更新状态…</p></div>`;
++
++  // 开发模式 / 便携版：不摆一堆点了没用的按钮，只把原因写清楚
++  if (!u.supported) {
++    return `<div class="box" id="updBox">
++      <h3>应用更新</h3>
++      <div class="row"><span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>${badge('不可用', 'wait')}</div>
++      <!-- 主进程没给出原因时别编一个：说「原因没取到」比说「这个版本就是不支持」诚实 -->
++      <p class="hint">${esc(u.message || '取不到不可用的原因（更新模块可能没初始化）')}</p>
++    </div>`;
++  }
++
++  const [kind, label] = UPD_KIND[u.status] || ['wait', u.status || '—'];
++  const pct = Math.max(0, Math.min(100, Math.round(u.percent || 0)));
++  const dl = u.status === 'downloading';
++  const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
++  const newer = u.latest && u.latest !== u.current;
++
++  return `<div class="box" id="updBox">
++    <h3>应用更新</h3>
++    <div class="row" style="margin-bottom:9px">
++      <span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>
++      ${newer ? `<span class="lbl">新版本</span><span class="chip mono">${esc(u.latest)}</span>` : ''}
++      ${badge(label, kind)}
++    </div>
++    ${dl ? `<div class="progwrap"><div class="bar" id="updBar"><i style="width:${pct}%"></i></div>
++      <span class="chip" id="updTxt">${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}</span></div>` : ''}
++    <div class="row" style="margin-top:9px">
++      <button class="btn sm" data-act="upd:check" ${dl ? 'disabled' : ''}>检查更新</button>
++      <button class="btn sm${(u.status === 'available' || u.status === 'idle') ? ' primary' : ''}" data-act="upd:download" ${(dl || u.status === 'ready') ? 'disabled' : ''}>下载更新</button>
++      <button class="btn sm${u.status === 'ready' ? ' primary' : ''}" data-act="upd:install" ${u.status === 'ready' ? '' : 'disabled'}>立即安装并重启</button>
++    </div>
++    ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
++    <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
++    「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
++  </div>`;
++}
++
++async function refreshUpdate() {
++  try { state.upd = await appApi.updateStatus(); } catch (e) { /* 读不到就保持原样 */ }
++  renderAll();
++}
++
++/** 下载进度每秒好几条，只动进度条那两处，别整页重画（会把正在输入的框重置掉） */
++function updateUpdateBar(u) {
++  const bar = document.querySelector('#updBar i');
++  const txt = document.querySelector('#updTxt');
++  if (!bar || !txt) return;
++  const pct = Math.max(0, Math.min(100, Math.round(u.percent || 0)));
++  const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
++  bar.style.width = pct + '%';
++  txt.textContent = `${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}`;
++}
++
+ /* ---------------- ⑧ 品牌统计 ---------------- */
+ function daysLabel(d) { return Number(d) > 0 ? `最近 ${d} 天` : '全部时间'; }
+ 
+@@ -946,6 +1012,8 @@ async function enterApp() {
+   if (Array.isArray(live)) state.jobs = live.map(j => Object.assign({ progress: null, startedAt: j.startedAt || Date.now() }, j));
+   await refreshBrands();
+   await refreshUsers();
++  // 更新状态读一次就够，之后靠主进程推 update:changed（下载进度很密，见 onUpdate 的处理）
++  try { state.upd = await appApi.updateStatus(); } catch (e) { state.upd = null; }
+   bindOnce();
+   renderAll();
+   renderLogs();
+@@ -1303,6 +1371,23 @@ function adminUsersHtml() {
+ 
+ /* ---------------- 交互 ---------------- */
+ const ACTS = {
++  // ---- 应用更新：三个动作都要用户点，主进程不会自己下载、更不会自己重启 ----
++  'upd:check': async () => {
++    const r = await appApi.updateCheck();
++    toast(r.ok ? '正在检查更新…' : r.error, r.ok ? '' : 'err');
++    await refreshUpdate();
++  },
++  'upd:download': async () => {
++    const r = await appApi.updateDownload();
++    toast(r.ok ? '开始下载更新…' : r.error, r.ok ? '' : 'err');
++    await refreshUpdate();
++  },
++  'upd:install': async () => {
++    const r = await appApi.updateInstall();
++    if (!r.ok) { toast(r.error, 'err'); return; }
++    toast('正在安装，应用马上重启…', 'ok');
++  },
++
+   'flatten:pick': async () => {
+     const d = await appApi.pickDir({ title: '选择素材根目录' });
+     if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', { sourceDir: d }).then(r => r.ok ? r.result : null); renderAll(); }
+@@ -1850,6 +1935,15 @@ function bind() {
+     if (!d.ok) toast(d.error || '任务失败', d.cancelled || /已取消/.test(d.error || '') ? '' : 'err');
+     renderAll();
+   });
++  appApi.onUpdate(u => {
++    const prev = state.upd;
++    // 只有「状态真的变了」才整页重画；下载进度每秒好几条，只动进度条那两处 ——
++    // 整页重画会把用户正在输入的框重置回旧值（品牌弹窗踩过同一个坑）
++    const big = !prev || prev.status !== u.status || prev.supported !== u.supported || prev.latest !== u.latest;
++    state.upd = u;
++    if (state.tab !== 7) return;
++    if (big) renderAll(); else updateUpdateBar(u);
++  });
+ }
+ 
+ async function boot() {
+diff --git a/tools/logintest.js b/tools/logintest.js
+index 9d9a866..dad0b9c 100644
+--- a/tools/logintest.js
++++ b/tools/logintest.js
+@@ -112,6 +112,18 @@ app.whenReady().then(async () => {
+   ok('未登录时读配置被拦下', /未登录|过期/.test(blocked.cfg || ''), blocked.cfg);
+   ok('未登录时选目录被拦下', /未登录|过期/.test(blocked.dir || ''), blocked.dir);
+ 
++  // 新加的通道最容易漏掉 guard()，而 update:install 是会**重启整个应用**的那一个，
++  // 漏了就等于「没登录的人也能把别人正在跑的任务重开掉」。四个一起查。
++  const updBlocked = await js(`(async () => {
++    const st = await window.api.updateStatus();
++    const ck = await window.api.updateCheck();
++    const dl = await window.api.updateDownload();
++    const ins = await window.api.updateInstall();
++    return { st: st && st.error, ck: ck && ck.error, dl: dl && dl.error, ins: ins && ins.error };
++  })()`);
++  ok('未登录时更新通道全被拦下（含会重启应用的 update:install）',
++    ['st', 'ck', 'dl', 'ins'].every(k => /未登录|过期/.test(updBlocked[k] || '')), JSON.stringify(updBlocked));
++
+   // ---- ③ 错口令 / 不存在的账号：明确报错、不放进去，且不泄露账号是否存在 ----
+   const wrong = await js(`__t.login(${JSON.stringify(ADMIN)}, 'definitely-wrong', false)`);
+   ok('口令错 → 明确报错且仍在登录页', wrong.locked && /账号或密码不正确/.test(wrong.err), wrong.err);
+diff --git a/tools/run-all.js b/tools/run-all.js
+index cc12d69..b58fdc1 100644
+--- a/tools/run-all.js
++++ b/tools/run-all.js
+@@ -15,6 +15,8 @@
+  *   uicheck        隐藏窗口加载真实渲染层（8 个页签 + 零控制台报错）
+  *   logintest      登录门（未登录拦截 / 口令 / 权限 / 防爆破）
+  *   gatetest       登录门窗口尺寸（未登录收缩成小窗 / 登录后还原 / 退出再收缩）
++ *   updatertest    自动更新状态机（下载完绝不自动重启 / 便携版与开发模式如实说不可用）
++ *   releasetest    发版工具纯逻辑（latest.yml 读错就是 404 / 便携版永不上传 / 同版本号默认拦下）
+  *
+  * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
+  */
+@@ -58,7 +60,9 @@ const SUITES = [
+   ['brandtest', 'node', ['tools/brandtest.js']],
+   ['uicheck', 'electron', ['tools/uicheck.js']],
+   ['logintest', 'electron', ['tools/logintest.js']],
+-  ['gatetest', 'electron', ['tools/gatetest.js']]
++  ['gatetest', 'electron', ['tools/gatetest.js']],
++  ['updatertest', 'node', ['tools/updatertest.js']],
++  ['releasetest', 'node', ['tools/releasetest.js']]
+ ];
+ 
+ /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */
+diff --git a/tools/uicheck.js b/tools/uicheck.js
+index c3ff69f..67c7720 100644
+--- a/tools/uicheck.js
++++ b/tools/uicheck.js
+@@ -32,11 +32,18 @@ app.whenReady().then(async () => {
+   const logbus = require(path.join(ROOT, 'src/main/logbus.js'));
+   const ipc = require(path.join(ROOT, 'src/main/ipc.js'));
+   const auth = require(path.join(ROOT, 'src/main/auth.js'));
++  const updater = require(path.join(ROOT, 'src/main/updater.js'));
+   store.load();
+   project.load();
+   auth.load();
+   ipc.register();
+ 
++  // 照 src/main/index.js 的样子把更新模块也初始化一次。
++  // 不初始化的话 update:status 回的是「谁都没动过」的默认值（message 空），
++  // 界面上「为什么不可用」那句真实原因就传不到，这一栏等于没测。
++  // packaged=false（自检跑的是源码）⇒ 应当如实说「开发模式」。
++  updater.init({ send: () => {}, packaged: app.isPackaged, version: app.getVersion() });
++
+   const win = new BrowserWindow({
+     show: false,                       // 隐藏窗口：不打断正在用电脑的人
+     width: 1280,
+@@ -109,6 +116,22 @@ app.whenReady().then(async () => {
+   ok('页签 8 有「查询」（品牌统计）', await onTab(8, 'stats:refresh'));
+   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
+ 
++  // ---- 应用更新面板：这轮测的是「界面诚不诚实」，不是「按钮好不好看」----
++  // 自检跑的是没打包的源码 ⇒ app.isPackaged=false ⇒ 自动更新本来就不可用。
++  // 所以这一栏必须**如实说不可用**，而不是摆三个点了没反应的按钮出来。
++  const updPanel = await win.webContents.executeJavaScript(`(async () => {
++    document.querySelector('.nav[data-tab="7"]').click();
++    await new Promise(r => setTimeout(r, 150));
++    const box = document.querySelector('#updBox');
++    if (!box) return null;
++    return { text: box.textContent, acts: [...box.querySelectorAll('[data-act]')].map(e => e.dataset.act) };
++  })()`);
++  ok('页签 7 有「应用更新」面板，并写出当前版本号', !!updPanel && /当前版本/.test(updPanel.text),
++     (updPanel && updPanel.text || '').slice(0, 120));
++  ok('未打包时如实标「开发模式 / 不可用」，且不摆点了没用的按钮',
++     !!updPanel && /开发模式/.test(updPanel.text) && updPanel.acts.length === 0,
++     (updPanel && updPanel.text || '').slice(0, 120) + ' | 按钮 ' + JSON.stringify(updPanel && updPanel.acts));
++
+   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
+   // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动
+   const modal = await win.webContents.executeJavaScript(`
+diff --git a/tools/updatertest.js b/tools/updatertest.js
+new file mode 100644
+index 0000000..4cba577
+--- /dev/null
++++ b/tools/updatertest.js
+@@ -0,0 +1,153 @@
++'use strict';
++/*
++ * 自动更新状态机回归（纯 Node，不需要打包、不需要联网、不需要桌面会话）。
++ *
++ * 为什么单独一套：这条链横跨「主进程状态机 → ipc → 渲染层三个状态」，
++ * smoke 碰不到它，uicheck 只能看见界面有没有画出来，抓不到
++ * 「事件来了状态没变」和「偷偷自动重启」这两类。
++ *
++ * ★ 本套最要紧的两条断言（改 updater.js 时别把它们删了）：
++ *   ① update-downloaded 之后 **autoUpdater.quitAndInstall 一次都不能被调用** ——
++ *      这个工具随时可能在跑批量发布，静默重启会把任务掐断且没有回滚。
++ *   ② autoDownload / autoInstallOnAppQuit 两个开关必须是 false。
++ *
++ * 用法：node tools/updatertest.js
++ */
++const path = require('path');
++const { EventEmitter } = require('events');
++
++const ROOT = path.resolve(__dirname, '..');
++const upd = require(path.join(ROOT, 'src/main/updater.js'));
++
++let bad = 0;
++const ok = (label, cond, extra) => {
++  console.log((cond ? 'PASS  ' : 'FAIL  ') + label + (extra !== undefined ? '  → ' + extra : ''));
++  if (!cond) bad++;
++};
++
++/** 假 autoUpdater：只保留 updater.js 真正用到的那几个成员 */
++function fakeUpdater() {
++  const f = new EventEmitter();
++  f.calls = { check: 0, download: 0, install: 0, installArgs: null };
++  f.autoDownload = true;            // 故意给错值，验 updater 会把它压成 false
++  f.autoInstallOnAppQuit = true;    // 同上
++  f.checkForUpdates = () => { f.calls.check++; f.emit('checking-for-update'); return Promise.resolve(null); };
++  f.downloadUpdate = () => { f.calls.download++; return Promise.resolve(null); };
++  f.quitAndInstall = (...a) => { f.calls.install++; f.calls.installArgs = a; };
++  return f;
++}
++
++const sent = [];
++const send = (ch, payload) => sent.push({ ch, payload });
++const initBase = extra => Object.assign({ send, packaged: true, version: '1.0.0', setTimer: () => {} }, extra || {});
++
++(async () => {
++  /* ---------- A. 开发模式（没打包）：如实说不可用，不是报错 ---- */
++  let f = fakeUpdater();
++  upd._reset();
++  upd._setUpdater(f);
++  let st = upd.init(initBase({ packaged: false }));
++  ok('未打包：supported=false（不假装能更新）', st.supported === false);
++  ok('未打包：说明里点明「开发模式」', /开发模式/.test(st.message), st.message);
++  let r = await upd.check({ manual: true });
++  ok('未打包：check 明确返回失败并给出原因', r.ok === false && !!r.error, r.error);
++  ok('未打包：排定时自检也排不上', upd.scheduleStartupCheck() === false);
++
++  /* ---------- B. 便携版：不支持自动更新，不能装死 ---- */
++  f = fakeUpdater();
++  upd._reset();
++  upd._setUpdater(f);
++  process.env.PORTABLE_EXECUTABLE_FILE = 'D:/tmp/portable.exe';
++  st = upd.init(initBase());
++  ok('便携版：supported=false', st.supported === false);
++  ok('便携版：说明里点明「便携版」并给出替代动作', /便携版/.test(st.message) && /安装版/.test(st.message), st.message);
++  delete process.env.PORTABLE_EXECUTABLE_FILE;
++
++  /* ---------- C. 正常启动 ---- */
++  f = fakeUpdater();
++  upd._reset();
++  upd._setUpdater(f);
++  st = upd.init(initBase());
++  ok('安装版：supported=true，状态 idle，带出当前版本', st.supported === true && st.status === 'idle' && st.current === '1.0.0');
++  ok('★ autoDownload 被压成 false（不许自己偷偷下 88MB）', f.autoDownload === false);
++  ok('★ autoInstallOnAppQuit 被压成 false（退出时也不许偷偷装）', f.autoInstallOnAppQuit === false);
++  ok('延迟自检：第一次排上', upd.scheduleStartupCheck() === true);
++  ok('延迟自检：只排一次（不是定时轮询）', upd.scheduleStartupCheck() === false);
++
++  /* ---------- D. 状态机：检查中 → 有新版本 → 下载中 → 可安装 ---- */
++  sent.length = 0;
++  r = await upd.check({ manual: true });
++  ok('手动检查：返回 ok 且真的调了 checkForUpdates', r.ok === true && f.calls.check === 1);
++  st = upd.status();
++  ok('状态：checking（「检查中」这一态界面要显示出来）', st.status === 'checking', st.status);
++  ok('检查来源标记：手动检查 manual=true（启动自检是 false）', st.manual === true);
++  ok('广播：状态变化都推了 update:changed', sent.length > 0 && sent.every(s => s.ch === 'update:changed'), sent.map(s => s.ch).join(','));
++  const atChecking = sent[sent.length - 1].payload;
++
++  f.emit('update-available', { version: '1.0.1' });
++  st = upd.status();
++  ok('状态：available 且带出新版本号', st.status === 'available' && st.latest === '1.0.1', JSON.stringify({ s: st.status, l: st.latest }));
++  // 这条拦的是「把 state 本体直接推给界面」——那样后面的状态变化会把已经推出去的对象一起改掉，
++  // 界面拿到的历史事件全部变成「当前值」，排查问题时看到的全是假象
++  ok('广播：推的是**当时的快照**，后续状态变化不会把已推出去的对象一起改掉',
++     atChecking.status === 'checking' && atChecking.latest === '', JSON.stringify(atChecking));
++  ok('★ 发现新版本后**没有**自动开始下载', f.calls.download === 0);
++
++  f.emit('download-progress', { percent: 42.6, transferred: 1000, total: 2000, bytesPerSecond: 500 });
++  st = upd.status();
++  ok('状态：downloading 且百分比被夹进 0..100',
++     st.status === 'downloading' && st.percent === 42.6 && st.total === 2000, JSON.stringify({ p: st.percent }));
++  f.emit('download-progress', { percent: 999 });
++  ok('状态：异常百分比（999）会被夹到 100', upd.status().percent === 100, upd.status().percent);
++
++  f.emit('update-downloaded', { version: '1.0.1' });
++  st = upd.status();
++  ok('状态：ready 且进度归 100', st.status === 'ready' && st.percent === 100, JSON.stringify({ s: st.status, p: st.percent }));
++  ok('★★ 下载完**绝不自动重启**：quitAndInstall 一次都没被调用', f.calls.install === 0, '调用次数 ' + f.calls.install);
++
++  /* ---------- E. 只有用户点「立即安装」才装 ---- */
++  r = await upd.install();
++  ok('安装：用户点了才真的调 quitAndInstall', r.ok === true && f.calls.install === 1);
++  ok('安装：参数是 (false, true) —— 静默安装 + 装完重启，不弹向导',
++     JSON.stringify(f.calls.installArgs) === '[false,true]', JSON.stringify(f.calls.installArgs));
++
++  /* ---------- F. 已是最新 / 出错 ---- */
++  f = fakeUpdater();
++  upd._reset();
++  upd._setUpdater(f);
++  upd.init(initBase());
++  f.emit('update-not-available', { version: '1.0.0' });
++  st = upd.status();
++  ok('状态：uptodate', st.status === 'uptodate', st.status);
++  ok('uptodate 时安装按钮该是禁用的（没有可装的包）', (await upd.install()).ok === false);
++
++  f.emit('error', new Error('ENOTFOUND release.example.com'));
++  st = upd.status();
++  ok('状态：error 且把原始错误带出来（不许吞成「未知错误」）',
++     st.status === 'error' && /ENOTFOUND/.test(st.message), st.message);
++
++  /* ---------- G. 重复点击 / 下载中不许再查 ---- */
++  f = fakeUpdater();
++  upd._reset();
++  upd._setUpdater(f);
++  upd.init(initBase());
++  let slow = null;
++  f.checkForUpdates = () => { f.calls.check++; f.emit('checking-for-update'); return new Promise(res => { slow = res; }); };
++  const p1 = upd.check({ manual: true });
++  const p2 = await upd.check({ manual: true });
++  ok('连点两次「检查更新」：第二次被挡住并说明原因', p2.ok === false && /正在检查/.test(p2.error), p2.error);
++  if (slow) slow();
++  await p1;
++  // 光看 status 是验不出来的（它会一直停在 checking）。要看的是**闸门有没有复位**：
++  // 复位了才谈得上「再查一次」，没复位界面就永远卡在「检查中」，用户只剩重启应用一条路
++  f.checkForUpdates = () => { f.calls.check++; return Promise.resolve(null); };
++  const p3 = await upd.check({ manual: true });
++  ok('第一次检查结束后闸门复位，还能再查一次（不会卡死在「检查中」）', p3.ok === true, JSON.stringify(p3));
++
++  console.log('\n以上断言全部通过时，说明「下载完不自动重启」这条底线是活的。');
++  console.log(bad ? ('有 ' + bad + ' 项未通过') : '全部通过');
++  process.exit(bad ? 1 : 0);
++})().catch(e => {
++  console.error('UPDATER TEST ERROR', e);
++  process.exit(1);
++});
+diff --git a/tools/upload-release.js b/tools/upload-release.js
+new file mode 100644
+index 0000000..13740b7
+--- /dev/null
++++ b/tools/upload-release.js
+@@ -0,0 +1,206 @@
++'use strict';
++/**
++ * 把 dist/ 里打好的包 + latest.yml + .blockmap 传到腾讯云 COS（发布通道）。
++ *
++ * ★ 为什么必须有它：electron-builder 的 **generic provider 不会替你上传**
++ *   （官方明确：generic 需要你把文件自己放上去）。没有这一步，
++ *   「打了包」和「客户端能收到更新」之间就断了一截，而且**失败是静默的** ——
++ *   源上还是旧 latest.yml，应用永远显示「已是最新」。
++ *
++ * 用法：
++ *   node tools/upload-release.js --channel stable
++ *   node tools/upload-release.js --channel beta --dry-run
++ *   node tools/upload-release.js --channel stable --force      # 允许覆盖同版本号
++ *
++ * 凭据（**绝不进仓库**）：环境变量，或仓库根 / tools/ 下的 `.env`（已在 .gitignore）
++ *   COS_SECRET_ID / COS_SECRET_KEY
++ *   COS_BUCKET   形如 dewu-bluev-release-1499238579
++ *   COS_REGION   形如 ap-guangzhou
++ *   COS_DOMAIN   可选，默认 https://<bucket>.cos.<region>.myqcloud.com
++ */
++const fs = require('fs');
++const path = require('path');
++
++const ROOT = path.resolve(__dirname, '..');
++const DIST = path.join(ROOT, 'dist');
++
++function loadEnv() {
++  for (const f of [path.join(ROOT, '.env'), path.join(__dirname, '.env')]) {
++    if (!fs.existsSync(f)) continue;
++    for (const line of fs.readFileSync(f, 'utf8').split(/\r?\n/)) {
++      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
++      if (!m) continue;
++      let v = m[2].trim();
++      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
++      if (!(m[1] in process.env)) process.env[m[1]] = v;
++    }
++  }
++}
++
++function arg(name, def) {
++  const i = process.argv.indexOf('--' + name);
++  if (i < 0) return def;
++  const nxt = process.argv[i + 1];
++  return (!nxt || nxt.startsWith('--')) ? true : nxt;
++}
++const has = name => process.argv.includes('--' + name);
++
++/** latest.yml 是 electron-builder 生成的简单 YAML，只取我们需要的两个字段，不引 YAML 依赖 */
++function parseManifest(text) {
++  const out = { version: '', path: '', files: [] };
++  const v = /^version:\s*(.+)$/m.exec(text);
++  if (v) out.version = v[1].trim();
++  const p = /^path:\s*(.+)$/m.exec(text);
++  if (p) out.path = p[1].trim();
++  const re = /^\s*-\s*url:\s*(.+)$/gm;
++  let m;
++  while ((m = re.exec(text))) out.files.push(m[1].trim());
++  return out;
++}
++
++/** 人类可读的文件大小（388 B 不能写成 "0.0 MB" —— 那看着像空文件） */
++function humanSize(n) {
++  if (!Number.isFinite(n) || n < 0) return '—';
++  if (n < 1024) return `${n} B`;
++  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
++  return `${(n / 1024 / 1024).toFixed(1)} MB`;
++}
++
++/** 按**显示宽度**补空格（中文占 2 格），否则 --dry-run 的清单会歪 */
++function padTo(s, width) {
++  let w = 0;
++  for (const ch of String(s)) {
++    w += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
++  }
++  return String(s) + ' '.repeat(Math.max(1, width - w));
++}
++
++/** 挑出该上传的安装包：**便携版不支持自动更新**，传上去只会让人下错 */
++function pickInstaller(names) {
++  return names.filter(f => f.endsWith('.exe') && !f.includes('便携版'));
++}
++
++/**
++ * 版本闸门。源上已有同版本号时必须拦住 —— electron-builder 按版本号比较，
++ * 不涨版本号就覆盖会同时踩两个坑：客户端判「没有新版本」+ 新旧文件同名（事后查不出来）。
++ * 返回 { block } 决定要不要中止，{ forced } 表示用户明确要覆盖。
++ */
++function versionGate(remoteVersion, localVersion, force) {
++  if (!remoteVersion || !localVersion) return { block: false, remoteVersion, localVersion };
++  if (remoteVersion !== localVersion) return { block: false, remoteVersion, localVersion };
++  if (force) return { block: false, forced: true, remoteVersion, localVersion };
++  return { block: true, remoteVersion, localVersion };
++}
++
++function main() {
++  loadEnv();
++
++  const channel = String(arg('channel', 'stable'));
++  const dryRun = !!has('dry-run');
++  const force = !!has('force');
++
++  if (!['stable', 'beta'].includes(channel)) {
++    console.error(`--channel 只能是 stable 或 beta，收到：${channel}`);
++    process.exit(2);
++  }
++
++  const ymlFile = path.join(DIST, 'latest.yml');
++  if (!fs.existsSync(ymlFile)) {
++    console.error(`找不到 ${ymlFile}\n先在仓库里跑 npm run dist:win 打包。`);
++    process.exit(2);
++  }
++  const mani = parseManifest(fs.readFileSync(ymlFile, 'utf8'));
++  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
++
++  // ★ 版本号必须和 package.json 一致，否则就是「打了包但版本没涨」——
++  //   electron-builder 按版本号比较，不涨客户端会直接判「没有新版本」，而且同名文件会被覆盖
++  if (mani.version && pkg.version && mani.version !== pkg.version) {
++    console.error(`dist 里的包是 ${mani.version}，package.json 是 ${pkg.version}`);
++    console.error('说明 dist 是旧版本打的，先 npm run dist:win 重打，别把旧包传上去。');
++    process.exit(2);
++  }
++
++  // 只传安装版：portable 不支持自动更新，传上去只会让人下错
++  const exes = pickInstaller(fs.readdirSync(DIST));
++  if (exes.length !== 1) {
++    console.error(`dist/ 里应当只有 1 个安装版 exe，实际找到 ${exes.length} 个：${exes.join(', ')}`);
++    process.exit(2);
++  }
++  const exeName = exes[0];
++  if (mani.path && mani.path !== exeName) {
++    console.error(`latest.yml 里写的 path=${mani.path}，与 dist 里的 ${exeName} 对不上。`);
++    console.error('客户端会按 yml 里的名字去下载，对不上就是 404。先重打一次。');
++    process.exit(2);
++  }
++
++  const blk = exeName + '.blockmap';
++  const jobs = [{ local: path.join(DIST, exeName), key: channel + '/' + exeName, what: '安装包' }];
++  jobs.push({ local: ymlFile, key: channel + '/' + (channel === 'beta' ? 'beta.yml' : 'latest.yml'), what: '版本清单' });
++  if (fs.existsSync(path.join(DIST, blk))) {
++    jobs.push({ local: path.join(DIST, blk), key: channel + '/' + blk, what: '增量块图' });
++  }
++
++  const DOMAIN = (process.env.COS_DOMAIN ||
++    (process.env.COS_BUCKET ? `https://${process.env.COS_BUCKET}.cos.${process.env.COS_REGION}.myqcloud.com` : '')).replace(/\/+$/, '');
++
++  console.log(`通道      ${channel}`);
++  console.log(`版本      ${mani.version}（package.json ${pkg.version}）`);
++  console.log(`目标      ${DOMAIN || '(未配置 COS_BUCKET / COS_DOMAIN)'}`);
++  console.log('要传的文件：');
++  for (const j of jobs) console.log(`  ${padTo(j.what, 10)}${j.key}   ${humanSize(fs.statSync(j.local).size)}`);
++  if (dryRun) { console.log('\n--dry-run：什么都没传。'); return; }
++
++  if (!process.env.COS_SECRET_ID || !process.env.COS_SECRET_KEY || !process.env.COS_BUCKET || !process.env.COS_REGION) {
++    console.error('\n缺少凭据。需要 COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET / COS_REGION（环境变量或 .env）。');
++    process.exit(2);
++  }
++
++  let COS;
++  try { COS = require('cos-nodejs-sdk-v5'); }
++  catch (e) { console.error('缺 cos-nodejs-sdk-v5，先 npm i -D cos-nodejs-sdk-v5'); process.exit(2); }
++  const cos = new COS({ SecretId: process.env.COS_SECRET_ID, SecretKey: process.env.COS_SECRET_KEY, Timeout: 600000 });
++
++  const B = process.env.COS_BUCKET, R = process.env.COS_REGION;
++  const head = Key => new Promise(res => cos.headObject({ Bucket: B, Region: R, Key }, (e, d) => res(e ? null : d)));
++  const put = (Key, File) => new Promise((res, rej) => cos.uploadFile({
++    Bucket: B, Region: R, Key, FilePath: File, SliceSize: 5 * 1024 * 1024
++  }, (e, d) => e ? rej(e) : res(d)));
++
++  (async () => {
++    // ★ 同版本号覆盖 = 客户端判「没有新版本」+ 新旧文件同名，事后完全查不出来。
++    //   所以先看源上是什么版本，一样就停下来，除非明确 --force
++    const manKey = channel + '/' + (channel === 'beta' ? 'beta.yml' : 'latest.yml');
++    const remote = await head(manKey);
++    if (remote) {
++      const body = await new Promise((res, rej) => cos.getObject({ Bucket: B, Region: R, Key: manKey, DataType: 'text' },
++        (e, d) => e ? rej(e) : res(d.Body)));
++      const rv = parseManifest(String(body)).version;
++      console.log(`\n源上现有版本：${rv || '(读不出)'}`);
++      const gate = versionGate(rv, mani.version, force);
++      if (gate.block) {
++        console.error('源上已经是这个版本号了。electron-builder 按版本号比较，');
++        console.error('不涨版本号就覆盖 ⇒ 客户端会认为「没有新版本」。');
++        console.error('先改 package.json 的 version，或者确实要覆盖就加 --force。');
++        process.exit(1);
++      }
++      if (gate.forced) console.log('（--force：明确要覆盖同版本号，客户端将收不到这次更新）');
++    }
++
++    for (const j of jobs) {
++      process.stdout.write(`上传 ${j.key} … `);
++      await put(j.key, j.local);
++      const h = await head(j.key);
++      console.log('ok' + (h ? `（源上 ${h.headers['content-length']} B）` : ''));
++    }
++
++    console.log('\n完成。公网地址：');
++    for (const j of jobs) console.log('  ' + DOMAIN + '/' + encodeURI(j.key));
++    console.log('\n提醒：本机正在用的那份要更新，得先装一次安装版（便携版收不到自动更新）。');
++  })().catch(e => {
++    console.error('\n上传失败：' + ((e && (e.code || e.message)) || e));
++    process.exit(1);
++  });
++}
++
++module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate };
++if (require.main === module) main();

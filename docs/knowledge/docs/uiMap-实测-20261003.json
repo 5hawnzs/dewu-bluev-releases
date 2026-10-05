@@ -1,0 +1,223 @@
+{
+  "package": "com.shizhuang.duapp",
+  "generatedAt": 1790955000000,
+  "note": "★ 2026-10-03 真机实测（MuMu 12 / 得物 900x1600）逐屏抓取。入口三跳 + 相册/剪辑/封面/编辑四屏都实测过（没有点最后那个「发布」）。verified=true 的每一步都是实测看到过的；TODO 的那些这一轮没有走进去，不能算确认。steps=图文，videoSteps=视频 —— 实测证明两者前段并不一样（视频多「剪辑页」和「封面页」），所以分开配。　■ 2026-10-03 用户三条指示已落表：① 话题**不做联想点选**（删了原「话题（点开联想）」步骤）；② 图文过「下一步」后**不过**剪辑/封面屏（那两屏只属视频）；③ 图文第一张图默认是主图。　未确认项见 pending 字段。",
+  "videoNote": "视频实测比图文多两屏：① 剪辑页（有音乐/滤镜/贴纸/文字/剪辑，右下角「下一步」= flNextStep）；② 封面页（「跳过」= tv_skip，或「下一步」= tvNextStep）。■ 这两屏不点过去就到不了编辑页 —— 老定位表里那句「视频复用图文」在得物这个版本上不成立。",
+  "steps": [
+    {
+      "name": "底部「我」（进个人页）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tab_user",
+      "hint": "实测：bounds [675,1513][900,1600]，clickable=true，5 个底部 tab 里最右一格。不管当前在哪一屏，先点它都能回到个人页。",
+      "verified": true
+    },
+    {
+      "name": "右上角「主页」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvGoHomePage",
+      "hint": "实测：文字「主页」，bounds [807,135][870,163]。★ 它的 clickable=false，但按坐标点击有效（实测点进去就是 PersonalActivity）；实在点不动就把 value 改成文字「主页」。",
+      "verified": true
+    },
+    {
+      "name": "「发布新动态」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/rlPublish",
+      "hint": "实测：可点容器 bounds [15,830][227,1020]，里面的文字「发布新动态」在 tvPublish [76,889][166,962]。点它进发布页（TotalPublishProcessActivity，首屏是选素材的相册）。",
+      "verified": true
+    },
+    {
+      "name": "切到「照片」页签（图文）",
+      "action": "tapText",
+      "value": "照片",
+      "hint": "实测：顶部页签「全部 / 照片 / 视频」，三个都没有 resource-id，只能按文字点。bounds 大约 [429,222][471,251]（有模板区时）/ [429,120][471,149]（无模板区时）。",
+      "verified": true
+    },
+    {
+      "name": "选中要发的图（图文第 1 张＝主图）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flThumbSelect",
+      "hint": "★ 缩略图**没有任何文字/描述**，只能按 id 点，而 tapId 取的是**第一个**匹配节点＝相册第 1 格。实测第 1 格 bounds [100,270][175,345]。得物相册按时间倒序 ⇒ 刚推上去的最新素材一般就在第 1 格（这一条要真发一次才能完全确认）。　★ 2026-10-03 用户说明：**图文第一张图默认为主图（封面）**；「主图怎么处理」（换图 / 裁剪 / 指定别的图当主图）**还没定，后面再处理**，所以这一格先按「点第 1 格」配。",
+      "verified": true
+    },
+    {
+      "name": "下一步",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "★ 实测这格的文字是「下一步 (1)」**带计数**，写死「下一步」只能靠模糊匹配侥幸命中 ⇒ 用 id flNextStep 更稳。bounds [738,1492][900,1576]。注意：**没选素材时这一格不存在**（相册首屏只有 相册/拍摄/模板 三个 tab）。　★ 2026-10-03 用户确认：**图文过这一步后不再经过剪辑页 / 封面页**，直接进编辑页；剪辑页与封面页**只属于视频**（见 videoSteps）。",
+      "verified": true
+    },
+    {
+      "name": "点标题输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTitle",
+      "hint": "★ 新增：本程序的中文走 ADBKeyboard 广播，广播是发给**当前有焦点**的输入框的 ⇒ 不先点一下输入框，字打不进去（老定位表直接 input，少了这一步）。实测「添加标题」占位，bounds [0,381][900,418]。",
+      "verified": true
+    },
+    {
+      "name": "填标题",
+      "action": "input",
+      "value": "${title}",
+      "hint": "占位符在运行时替换。",
+      "verified": false
+    },
+    {
+      "name": "点正文输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTrendContent",
+      "hint": "实测「添加作品描述」占位，bounds [0,432][900,741]。同「点标题」的理由：必须先聚焦。",
+      "verified": true
+    },
+    {
+      "name": "填正文",
+      "action": "input",
+      "value": "${body}",
+      "hint": "正文里不要带 #，话题走发布单的「话题1~5」。",
+      "verified": false
+    },
+    {
+      "name": "话题（直接输入，不点联想）",
+      "action": "input",
+      "value": "${topic1}",
+      "hint": "★ 2026-10-03 用户拍板：**话题不做联想点选** —— 给几个就写几个，绝不点候选挂到别的话题上。当前实现是**纯文本输入**（ADB_INPUT_TEXT 广播），不点任何候选。⚠ 待真机确认：这样写在得物上会不会被识别成「话题」（可点链接）；发布单分别有 `话题1`~`话题5` 五个占位符，需要几个就配几步。",
+      "verified": false
+    },
+    {
+      "name": "关联好物",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "hint": "TODO：实测这一行存在（文字「关联好物」，bounds [0,832][840,898]，clickable=true），但点进去之后的「搜索货号 → 选商品」两屏没抓。老表里写的「搜货号 → 默认选第一件商品」需要在这一轮补上真结构。",
+      "verified": false
+    },
+    {
+      "name": "提交发布",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvPublish",
+      "hint": "★ 实测存在：文字「发布」，bounds [174,1510][870,1576]，clickable=true。同一屏还有「存草稿」(tvSaveExit)、「预览」(tvPreview)。⚠ 点下去就真发出去了 —— 调试时把这一步删掉再跑。",
+      "verified": true
+    }
+  ],
+  "videoSteps": [
+    {
+      "name": "底部「我」（进个人页）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tab_user",
+      "hint": "与图文同一条入口。",
+      "verified": true
+    },
+    {
+      "name": "右上角「主页」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvGoHomePage",
+      "hint": "与图文同一条入口。",
+      "verified": true
+    },
+    {
+      "name": "「发布新动态」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/rlPublish",
+      "hint": "与图文同一条入口（两条路都通向同一个发布页）。",
+      "verified": true
+    },
+    {
+      "name": "切到「视频」页签",
+      "action": "tapText",
+      "value": "视频",
+      "hint": "实测：切过去之后上方那排模板（写文字/问商品/AI试衣间）会收起，页签上移到 y≈120。",
+      "verified": true
+    },
+    {
+      "name": "选中要发的视频（相册第 1 格）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flThumbSelect",
+      "hint": "实测：点中之后右上角出现选中序号 ivThumbSelect（text=\"1\"），底部出现「下一步 (1)」。",
+      "verified": true
+    },
+    {
+      "name": "下一步（离开相册）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "实测：文字是「下一步 (1)」。",
+      "verified": true
+    },
+    {
+      "name": "剪辑页 · 下一步",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "实测：视频会先进剪辑页（音乐 ivMusic / 滤镜 ivFilter / 贴纸 ivSticker / 标签 ivTag / 文字 ivText / 剪辑 ivClip），右下角还是 flNextStep。★ 这是视频比图文多出来的第一屏。",
+      "verified": true
+    },
+    {
+      "name": "封面页 · 跳过",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tv_skip",
+      "hint": "实测：视频再多一屏「设置封面」（相册导入 tv_add_image / 跳过 tv_skip / 下一步 tvNextStep）。按已拍板的口径用得物自带封面 ⇒ 点「跳过」。★ 这是多出来的第二屏。",
+      "verified": true
+    },
+    {
+      "name": "点标题输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTitle",
+      "hint": "同图文：必须先聚焦再输入。",
+      "verified": true
+    },
+    {
+      "name": "填标题",
+      "action": "input",
+      "value": "${title}",
+      "hint": "占位符运行时替换。",
+      "verified": false
+    },
+    {
+      "name": "点正文输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTrendContent",
+      "hint": "同图文。",
+      "verified": true
+    },
+    {
+      "name": "填正文",
+      "action": "input",
+      "value": "${body}",
+      "hint": "正文不带 #。",
+      "verified": false
+    },
+    {
+      "name": "话题（直接输入，不点联想）",
+      "action": "input",
+      "value": "${topic1}",
+      "hint": "同图文：不联想，直接写（2026-10-03 用户拍板）。",
+      "verified": false
+    },
+    {
+      "name": "关联好物",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "hint": "TODO：同图文，搜索货号 / 选商品两屏要补抓。",
+      "verified": false
+    },
+    {
+      "name": "提交发布",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvPublish",
+      "hint": "⚠ 点下去就真发出去了。",
+      "verified": true
+    }
+  ],
+  "pending": [
+    {
+      "item": "关联好物的「搜货号 → 选商品」两屏",
+      "status": "待补",
+      "why": "点进去之后两屏没抓，老表写的「搜货号→默认选第一件」需要真结构"
+    },
+    {
+      "item": "「刚推上去的最新素材一定在相册第 1 格」",
+      "status": "待确认",
+      "why": "得物相册按时间倒序、理论上成立，但没真推素材验证过"
+    },
+    {
+      "item": "图文主图（封面）怎么处理",
+      "status": "待定 · 用户说后面再说",
+      "why": "2026-10-03 用户明确：图文第一张图默认即主图，主图问题后面处理"
+    }
+  ]
+}

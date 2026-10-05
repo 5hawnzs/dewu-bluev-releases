@@ -1,0 +1,29 @@
+{
+ "data": {},
+ "steps": [
+  {
+   "name": "底部「我」（进个人页）",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/tab_user",
+   "hint": "实测：bounds [675,1513][900,1600]，clickable=true，5 个底部 tab 里最右一格。",
+   "verified": true,
+   "settle": 2200
+  },
+  {
+   "name": "右上角「主页」",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/tvGoHomePage",
+   "hint": "实测：文字「主页」，bounds [807,135][870,163]。它 clickable=false 但按坐标点击有效。",
+   "verified": true,
+   "settle": 2200
+  },
+  {
+   "name": "「发布新动态」",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/rlPublish",
+   "hint": "实测：可点容器 bounds [15,830][227,1020]。点它进发布页（首屏是选素材的相册）。",
+   "verified": true,
+   "settle": 2200
+  }
+ ]
+}

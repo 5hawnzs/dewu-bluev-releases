@@ -1,0 +1,28 @@
+{
+  "url": "https://dcf9a696225c47818c3b56816ae8b19e.app.workbuddy.host/",
+  "title": "得物蓝V · 发布进度看板（只读）",
+  "sdkLocal": "present",
+  "conn": "已连接 · 4 条",
+  "rendered": true,
+  "whoRows": 2,
+  "whoText": "机器 / 执行人已发成功失败成功率最近⚠ 连通性探针（可删） / E2E3 3 100%1970-01-01 08:00⚠ 连通性探针（可删） / 未标执行人1 0 0%—",
+  "detailRows": 4,
+  "kpiText": "4已发布3成功0失败75%成功率0今天1机器7.4s平均单条耗时",
+  "setupErr": "",
+  "screenshot": "D:/work/_e2e/_board-live.png",
+  "requestHosts": {
+    "dcf9a696225c47818c3b56816ae8b19e.app.workbuddy.host": [
+      200,
+      200
+    ],
+    "rywurhpkovyjpjyvfjdz.supabase.co": [
+      200,
+      200,
+      200
+    ]
+  },
+  "consoleErrors": [
+    "[2] %cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security\n  Policy set or a policy with \"unsafe-eval\" enabled. This exposes users of\n  this app to unnecessary security risks.\n\nFor more information and help, consult\nhttps://electronjs.org/docs/tutorial/security.\nThis warning will not show up\nonce the app is packaged.",
+    "[2] GoTrueClient@sb-rywurhpkovyjpjyvfjdz-auth-token:1 (2.117.2) 2026-10-02T19:31:59.511Z Multiple GoTrueClient instances detected in the same browser context. It is not an error, but this should be avoided as it may produce undefined behavior when used concurrently under the same storage key."
+  ]
+}

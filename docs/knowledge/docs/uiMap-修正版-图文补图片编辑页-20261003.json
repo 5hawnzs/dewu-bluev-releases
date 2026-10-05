@@ -1,0 +1,589 @@
+{
+  "package": "com.shizhuang.duapp",
+  "note": "图文补了「图片编辑页 · 下一步」；视频沿用原表",
+  "steps": [
+    {
+      "name": "底部「我」（进个人页）",
+      "action": "tapXY",
+      "value": "945,1869",
+      "hint": "★ tapXY：直点实测坐标 945,1869，**不抓屏**（原来按 id 抓一次屏 ~1s）。App 全局底部导航（第 5 格「我」）。冷启动首页实测中心；底栏不随页面滚动。",
+      "verified": true,
+      "fast": true
+    },
+    {
+      "name": "右上角「主页」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvGoHomePage",
+      "hint": "★ 2026-10-03 实测退回 tapId（抓屏）：主页是网络驱动的页面，「发布新动态」的位置会随上方内容变 —— 同一套等待 3 次成功后仍有 1 次没点中（停在个人页）。盲点失败是**静默**的，不能接受。",
+      "verified": true,
+      "fast": false
+    },
+    {
+      "name": "「发布新动态」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/rlPublish",
+      "hint": "★ 2026-10-03 实测退回 tapId（抓屏）：主页是网络驱动的页面，「发布新动态」的位置会随上方内容变 —— 同一套等待 3 次成功后仍有 1 次没点中（停在个人页）。盲点失败是**静默**的，不能接受。",
+      "verified": true,
+      "fast": false
+    },
+    {
+      "name": "草稿箱拦截 · 点底部「发布新动态」出到相册（只有真落到草稿箱时才点）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/fl_publish",
+      "hint": "★★ 2026-10-03 真机实测（MuMu 12 / 1080×1920）：草稿箱非空时，「我→主页→发布新动态」这最后一跳打开的是**草稿箱**（media.activity.DraftActivity），不是相册。定位表原来没有这一步 ⇒ 下一条「切到照片页签」当场找不到节点，整条卡死。\n出口：点底部那颗 fl_publish（实测居中 (540,1871)、clickable=true），真机验证过它会进 TotalPublishProcessActivity（相册：全部/照片/视频 三页签 + flThumbSelect×N）。\n判据用 whenOn = iv_draft_title（草稿箱标题 id）：实测它在相册页的 dump 里出现 **0 次** ⇒ 正常进发布页时这一步**整步跳过、一个像素都不碰**。",
+      "verified": true,
+      "whenOn": "com.shizhuang.duapp:id/iv_draft_title"
+    },
+    {
+      "name": "切到「照片」页签（图文）",
+      "action": "tapText",
+      "value": "照片",
+      "hint": "实测：顶部页签「全部 / 照片 / 视频」都没有 resource-id，只能按文字点。",
+      "verified": true
+    },
+    {
+      "name": "选中要发的图（前 N 张，N＝这个叶子的图片数）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flThumbSelect",
+      "count": "${imageCount}",
+      "hint": "★ 缩略图没有文字也没有描述，只能按 id 点。\n★ 2026-10-03 加：count 写 ${imageCount} ⇒ **这个叶子有几张图就点前几格**（一次点前 N 个匹配）。\n  不写 count 就是老行为：只点第 1 张（其余图早就推上设备了，但没被选中）。\n⚠ 相册按**时间倒序** ⇒ 点的是最前面 N 格；封面是不是你想要的那张，取决于推送顺序（未真机验证）。\n⚠「刚推上去的最新素材一定在第 1 格」仍未真机验证：这台 MuMu 的媒体扫描广播不生效（实测等 180.6s 仍未索引到），要重启模拟器才会收录。",
+      "verified": true
+    },
+    {
+      "name": "下一步",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "★ tapXY 退回 tapId（2026-10-03 实测）：盲点的失败模式是**静默的** —— 点空之后界面看着还行，但这一步该做的事没做（tvPublish 点空＝帖子没发出去却记成功）。所以这两颗保留抓屏。",
+      "verified": true,
+      "fast": false
+    },
+    {
+      "name": "图片编辑页 · 下一步（得物图文的图片编辑页：相册→下一步之后那一屏；只在真停在这一屏时才点）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "whenOn": "com.shizhuang.duapp:id/edit_panel"
+    },
+    {
+      "name": "点标题输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTitle",
+      "hint": "★ 中文走 ADBKeyboard 广播，广播只发给**当前有焦点**的输入框 ⇒ 不先点一下，字打不进去。",
+      "verified": true
+    },
+    {
+      "name": "填标题",
+      "action": "input",
+      "value": "${title}",
+      "hint": "占位符运行时替换。",
+      "verified": true
+    },
+    {
+      "name": "点正文输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTrendContent",
+      "hint": "同「点标题」：必须先聚焦。实测 bounds [0,432][900,741]。",
+      "verified": true
+    },
+    {
+      "name": "填正文",
+      "action": "input",
+      "value": "${body}",
+      "hint": "正文里不要带 #（话题单独走话题列）。",
+      "verified": true
+    },
+    {
+      "name": "话题 1",
+      "action": "input",
+      "value": "${topic1}",
+      "when": "topic1",
+      "hint": "★ 2026-10-03 用户拍板：话题**不做联想点选**，给几个写几个。话题是往**正文框**里继续打的（焦点还在 etTrendContent）⇒ 前面不需要再点输入框。\n★ when 守卫：这一列空着就跳过（老版本是配几步写几步）。",
+      "verified": true
+    },
+    {
+      "name": "话题 2",
+      "action": "input",
+      "value": "${topic2}",
+      "when": "topic2",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "话题 3",
+      "action": "input",
+      "value": "${topic3}",
+      "when": "topic3",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "话题 4",
+      "action": "input",
+      "value": "${topic4}",
+      "when": "topic4",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "话题 5",
+      "action": "input",
+      "value": "${topic5}",
+      "when": "topic5",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods1Sku",
+      "hint": "实测（2026-10-03 12:10）：id 存在、clickable=true、bounds [0,904][840,970]。**位置随素材区高度变化** ⇒ 只能按 id 点，别写坐标。\n右边那个 tvRelevantProductRecognitionCount（识别件数）不要点。\n★ 点它打开「关联好物」搜索页 —— 那是**同一个 Activity 的第二个窗口**，dumpsys 备用通道看不到它（所以 runStep 必须等 uiautomator 抓成功，已加重试）。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等搜索页加载",
+      "action": "wait",
+      "value": 400,
+      "when": "goods1Sku",
+      "hint": "★ 2026-10-03 提速：1200→400 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物1 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods1Sku",
+      "hint": "★ 必须单独一步：input 动作只是「往当前有焦点的框发广播」，它**不点输入框** —— 刚打开这一页焦点不在搜索框上，直接 input 打不进去（而且不报错）。\n实测 bounds [30,163][870,215]。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 输「货号」",
+      "action": "input",
+      "value": "${goods1Sku}",
+      "when": "goods1Sku",
+      "hint": "★ 实测（2026-10-03 12:16 探针）：**每次打开这个搜索页，搜索框都是空的**（空的时候显示占位文字「搜索好物」）\n⇒ **不需要**先点 × 清空。而且搜索框为空时右侧那个 ivClear **根本不存在** ⇒ 无条件点它会硬失败，千万别写进去。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等结果出来",
+      "action": "wait",
+      "value": 600,
+      "when": "goods1Sku",
+      "hint": "★ 2026-10-03 提速：2000→600 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物1 · 选「${goods1Color}」那一格（点它的商品图）",
+      "action": "tapCardText",
+      "value": "${goods1Color}",
+      "card": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods1Sku,goods1Color",
+      "hint": "★★ 2026-10-03 真机实测：原来写的 tapText「按颜色点那一格」是**错的** —— 点颜色文字弹出的是「选择商品规格」弹层，**不会选中卡片**（MuMu / 得物，UWG460108 货号页与「卡宾」关键词页都实测过，各留了 dump + 截图）。能选中整张卡的是**商品图 com.shizhuang.duapp:id/ivProduct**（实测 319×319）。而颜色文字在几何上落在它所属那张图的 bounds 之内（实测 tvCSpuInfo [278,554][354,597] 完全包在 ivProduct [35,278][354,597] 里）⇒ tapCardText = 按颜色文字找到它所属那张卡、点那张图的**中心**（卡心离颜色标签 259px，不会误触规格弹层）。★ 同一屏的树里同时存在两套互相重叠的卡片列表（「已购」「想要」两个 viewPager，实测坐标错开 220px）⇒ 归属按「右下角对齐」判，不取第一个包住的。★ 同色多款是真的：实测一页里「本白」出现 3 次、各自指向不同的卡；要第 N 个就给这一步写 count。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods1Sku",
+      "whenNot": "goods1Color",
+      "hint": "★ 单色货号（颜色列可以是空的）走这条退路。\n为什么点 ivProduct：卡片根是**无 id 无文字的可点 ViewGroup**，现有三种找法（tapText/tapId/tapDesc）都点不到它；\n但它第 1 个子节点是商品大图 ivProduct ⇒ 点图心会落进卡片范围，Android 把点击交给可点的卡片根。\ntapId 取第一个匹配 ⇒ 永远是**第 1 个搜索结果**。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods2Sku",
+      "hint": "★ 用户 2026-10-03 确认：**要关联第 2 个商品，就要再点一次「关联好物」**（发布会自动把新选的商品追加到那一行里）。\nwhen 守卫：发布单没填「好物2货号」时这一整段 6 步全跳（跳过会写进日志）。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 等搜索页加载",
+      "action": "wait",
+      "value": 400,
+      "when": "goods2Sku",
+      "hint": "★ 2026-10-03 提速：1200→400 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物2 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods2Sku",
+      "hint": "同上。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 输「货号」",
+      "action": "input",
+      "value": "${goods2Sku}",
+      "when": "goods2Sku",
+      "hint": "同好物1：搜索框每次打开都是空的。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 等结果出来",
+      "action": "wait",
+      "value": 600,
+      "when": "goods2Sku",
+      "hint": "★ 2026-10-03 提速：2000→600 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物2 · 选「${goods2Color}」那一格（点它的商品图）",
+      "action": "tapCardText",
+      "value": "${goods2Color}",
+      "card": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods2Sku,goods2Color",
+      "hint": "★★ 2026-10-03 真机实测：原来写的 tapText「按颜色点那一格」是**错的** —— 点颜色文字弹出的是「选择商品规格」弹层，**不会选中卡片**（MuMu / 得物，UWG460108 货号页与「卡宾」关键词页都实测过，各留了 dump + 截图）。能选中整张卡的是**商品图 com.shizhuang.duapp:id/ivProduct**（实测 319×319）。而颜色文字在几何上落在它所属那张图的 bounds 之内（实测 tvCSpuInfo [278,554][354,597] 完全包在 ivProduct [35,278][354,597] 里）⇒ tapCardText = 按颜色文字找到它所属那张卡、点那张图的**中心**（卡心离颜色标签 259px，不会误触规格弹层）。★ 同一屏的树里同时存在两套互相重叠的卡片列表（「已购」「想要」两个 viewPager，实测坐标错开 220px）⇒ 归属按「右下角对齐」判，不取第一个包住的。★ 同色多款是真的：实测一页里「本白」出现 3 次、各自指向不同的卡；要第 N 个就给这一步写 count。",
+      "verified": true
+    },
+    {
+      "name": "好物2 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods2Sku",
+      "whenNot": "goods2Color"
+    },
+    {
+      "name": "好物3 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods3Sku",
+      "hint": "同好物2。发布单里好物一共只有 3 组列（好物1~3 货号 / 颜色）。",
+      "verified": false
+    },
+    {
+      "name": "好物3 · 等搜索页加载",
+      "action": "wait",
+      "value": 400,
+      "when": "goods3Sku",
+      "hint": "★ 2026-10-03 提速：1200→400 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物3 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 输「货号」",
+      "action": "input",
+      "value": "${goods3Sku}",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 等结果出来",
+      "action": "wait",
+      "value": 600,
+      "when": "goods3Sku",
+      "hint": "★ 2026-10-03 提速：2000→600 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物3 · 选「${goods3Color}」那一格（点它的商品图）",
+      "action": "tapCardText",
+      "value": "${goods3Color}",
+      "card": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods3Sku,goods3Color",
+      "hint": "★★ 2026-10-03 真机实测：原来写的 tapText「按颜色点那一格」是**错的** —— 点颜色文字弹出的是「选择商品规格」弹层，**不会选中卡片**（MuMu / 得物，UWG460108 货号页与「卡宾」关键词页都实测过，各留了 dump + 截图）。能选中整张卡的是**商品图 com.shizhuang.duapp:id/ivProduct**（实测 319×319）。而颜色文字在几何上落在它所属那张图的 bounds 之内（实测 tvCSpuInfo [278,554][354,597] 完全包在 ivProduct [35,278][354,597] 里）⇒ tapCardText = 按颜色文字找到它所属那张卡、点那张图的**中心**（卡心离颜色标签 259px，不会误触规格弹层）。★ 同一屏的树里同时存在两套互相重叠的卡片列表（「已购」「想要」两个 viewPager，实测坐标错开 220px）⇒ 归属按「右下角对齐」判，不取第一个包住的。★ 同色多款是真的：实测一页里「本白」出现 3 次、各自指向不同的卡；要第 N 个就给这一步写 count。",
+      "verified": true
+    },
+    {
+      "name": "好物3 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods3Sku",
+      "whenNot": "goods3Color"
+    },
+    {
+      "name": "提交发布",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvPublish",
+      "hint": "★ tapXY 退回 tapId（2026-10-03 实测）：盲点的失败模式是**静默的** —— 点空之后界面看着还行，但这一步该做的事没做（tvPublish 点空＝帖子没发出去却记成功）。所以这两颗保留抓屏。",
+      "verified": true,
+      "fast": false
+    }
+  ],
+  "videoSteps": [
+    {
+      "name": "底部「我」（进个人页）",
+      "action": "tapXY",
+      "value": "945,1869",
+      "verified": true,
+      "fast": true,
+      "hint": "★ tapXY：直点实测坐标 945,1869，**不抓屏**（原来按 id 抓一次屏 ~1s）。App 全局底部导航（第 5 格「我」）。冷启动首页实测中心；底栏不随页面滚动。"
+    },
+    {
+      "name": "右上角「主页」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvGoHomePage",
+      "verified": true,
+      "fast": false,
+      "hint": "★ 2026-10-03 实测退回 tapId（抓屏）：主页是网络驱动的页面，「发布新动态」的位置会随上方内容变 —— 同一套等待 3 次成功后仍有 1 次没点中（停在个人页）。盲点失败是**静默**的，不能接受。"
+    },
+    {
+      "name": "「发布新动态」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/rlPublish",
+      "verified": true,
+      "fast": false,
+      "hint": "★ 2026-10-03 实测退回 tapId（抓屏）：主页是网络驱动的页面，「发布新动态」的位置会随上方内容变 —— 同一套等待 3 次成功后仍有 1 次没点中（停在个人页）。盲点失败是**静默**的，不能接受。"
+    },
+    {
+      "name": "草稿箱拦截 · 点底部「发布新动态」出到相册（只有真落到草稿箱时才点）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/fl_publish",
+      "verified": true,
+      "whenOn": "com.shizhuang.duapp:id/iv_draft_title",
+      "hint": "★★ 2026-10-03 真机实测（MuMu 12 / 1080×1920）：草稿箱非空时，「我→主页→发布新动态」这最后一跳打开的是**草稿箱**（media.activity.DraftActivity），不是相册。定位表原来没有这一步 ⇒ 下一条「切到照片页签」当场找不到节点，整条卡死。\n出口：点底部那颗 fl_publish（实测居中 (540,1871)、clickable=true），真机验证过它会进 TotalPublishProcessActivity（相册：全部/照片/视频 三页签 + flThumbSelect×N）。\n判据用 whenOn = iv_draft_title（草稿箱标题 id）：实测它在相册页的 dump 里出现 **0 次** ⇒ 正常进发布页时这一步**整步跳过、一个像素都不碰**。"
+    },
+    {
+      "name": "切到「视频」页签",
+      "action": "tapText",
+      "value": "视频",
+      "hint": "实测：切过去之后上方那排模板会收起，页签上移到 y≈120。",
+      "verified": true
+    },
+    {
+      "name": "选中要发的视频（相册第 1 格）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flThumbSelect",
+      "hint": "实测：点中之后右上角出现选中序号 ivThumbSelect（text=\"1\"），底部出现「下一步 (1)」。\n★ 视频不用 count：一条内容就是一个视频，只选 1 格。",
+      "verified": true
+    },
+    {
+      "name": "下一步（离开相册）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "verified": true
+    },
+    {
+      "name": "剪辑页 · 下一步",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "实测：视频先过剪辑页，右下角还是 flNextStep。★ 视频比图文多出来的第一屏。",
+      "verified": true
+    },
+    {
+      "name": "封面页 · 跳过",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tv_skip",
+      "hint": "实测：再多一屏「设置封面」。按已拍板的口径用得物自带封面 ⇒ 点「跳过」。★ 多出来的第二屏。",
+      "verified": true
+    },
+    {
+      "name": "点标题输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTitle",
+      "verified": true
+    },
+    {
+      "name": "填标题",
+      "action": "input",
+      "value": "${title}",
+      "verified": true
+    },
+    {
+      "name": "点正文输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTrendContent",
+      "verified": true
+    },
+    {
+      "name": "填正文",
+      "action": "input",
+      "value": "${body}",
+      "verified": true
+    },
+    {
+      "name": "话题 1",
+      "action": "input",
+      "value": "${topic1}",
+      "when": "topic1",
+      "verified": true
+    },
+    {
+      "name": "话题 2",
+      "action": "input",
+      "value": "${topic2}",
+      "when": "topic2",
+      "verified": true
+    },
+    {
+      "name": "话题 3",
+      "action": "input",
+      "value": "${topic3}",
+      "when": "topic3",
+      "verified": true
+    },
+    {
+      "name": "话题 4",
+      "action": "input",
+      "value": "${topic4}",
+      "when": "topic4",
+      "verified": true
+    },
+    {
+      "name": "话题 5",
+      "action": "input",
+      "value": "${topic5}",
+      "when": "topic5",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods1Sku",
+      "hint": "与图文完全相同的一段。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等搜索页加载",
+      "action": "wait",
+      "value": 400,
+      "when": "goods1Sku",
+      "hint": "★ 2026-10-03 提速：1200→400 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物1 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods1Sku",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 输「货号」",
+      "action": "input",
+      "value": "${goods1Sku}",
+      "when": "goods1Sku",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等结果出来",
+      "action": "wait",
+      "value": 600,
+      "when": "goods1Sku",
+      "hint": "★ 2026-10-03 提速：2000→600 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物1 · 按「颜色」选对那一格",
+      "action": "tapCardText",
+      "value": "${goods1Color}",
+      "when": "goods1Sku,goods1Color",
+      "hint": "★★ 2026-10-03 补：这里原来写的是 tapText —— 点颜色文字只会弹「选择商品规格」，**不会选中卡片**（真机实测）。图文那套当时已改成 tapCardText，视频这套漏改了。现在与图文一致：按颜色文字找到它所属那张卡，点卡上商品图 ivProduct 的中心。",
+      "verified": true,
+      "card": "com.shizhuang.duapp:id/ivProduct"
+    },
+    {
+      "name": "好物1 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods1Sku",
+      "whenNot": "goods1Color",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods2Sku",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 等搜索页加载",
+      "action": "wait",
+      "value": 400,
+      "when": "goods2Sku",
+      "hint": "★ 2026-10-03 提速：1200→400 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物2 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 输「货号」",
+      "action": "input",
+      "value": "${goods2Sku}",
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 等结果出来",
+      "action": "wait",
+      "value": 600,
+      "when": "goods2Sku",
+      "hint": "★ 2026-10-03 提速：2000→600 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物2 · 按「颜色」选对那一格",
+      "action": "tapCardText",
+      "value": "${goods2Color}",
+      "when": "goods2Sku,goods2Color",
+      "verified": true,
+      "card": "com.shizhuang.duapp:id/ivProduct",
+      "hint": "★★ 2026-10-03 补：这里原来写的是 tapText —— 点颜色文字只会弹「选择商品规格」，**不会选中卡片**（真机实测）。图文那套当时已改成 tapCardText，视频这套漏改了。现在与图文一致：按颜色文字找到它所属那张卡，点卡上商品图 ivProduct 的中心。"
+    },
+    {
+      "name": "好物2 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods2Sku",
+      "whenNot": "goods2Color"
+    },
+    {
+      "name": "好物3 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods3Sku",
+      "verified": false
+    },
+    {
+      "name": "好物3 · 等搜索页加载",
+      "action": "wait",
+      "value": 400,
+      "when": "goods3Sku",
+      "hint": "★ 2026-10-03 提速：1200→400 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物3 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 输「货号」",
+      "action": "input",
+      "value": "${goods3Sku}",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 等结果出来",
+      "action": "wait",
+      "value": 600,
+      "when": "goods3Sku",
+      "hint": "★ 2026-10-03 提速：2000→600 ms —— 后面的点击步有 3 次重试兜底，固定 sleep 是白等。"
+    },
+    {
+      "name": "好物3 · 按「颜色」选对那一格",
+      "action": "tapCardText",
+      "value": "${goods3Color}",
+      "when": "goods3Sku,goods3Color",
+      "verified": true,
+      "card": "com.shizhuang.duapp:id/ivProduct",
+      "hint": "★★ 2026-10-03 补：这里原来写的是 tapText —— 点颜色文字只会弹「选择商品规格」，**不会选中卡片**（真机实测）。图文那套当时已改成 tapCardText，视频这套漏改了。现在与图文一致：按颜色文字找到它所属那张卡，点卡上商品图 ivProduct 的中心。"
+    },
+    {
+      "name": "好物3 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods3Sku",
+      "whenNot": "goods3Color"
+    },
+    {
+      "name": "提交发布",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvPublish",
+      "hint": "★ tapXY 退回 tapId（2026-10-03 实测）：盲点的失败模式是**静默的** —— 点空之后界面看着还行，但这一步该做的事没做（tvPublish 点空＝帖子没发出去却记成功）。所以这两颗保留抓屏。",
+      "verified": true,
+      "fast": false
+    }
+  ]
+}

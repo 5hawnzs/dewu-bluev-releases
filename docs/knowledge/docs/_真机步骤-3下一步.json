@@ -1,0 +1,45 @@
+{
+ "data": {},
+ "steps": [
+  {
+   "name": "下一步",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/flNextStep",
+   "hint": "★ 这格的文字是「下一步 (1)」带计数 ⇒ 按 id 点更稳（已改）。注意：没选素材时这一格不存在。",
+   "verified": true,
+   "settle": 1200
+  },
+  {
+   "name": "点标题输入框",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/etTitle",
+   "hint": "★ 中文走 ADBKeyboard 广播，广播只发给**当前有焦点**的输入框 ⇒ 不先点一下，字打不进去。",
+   "verified": true,
+   "settle": 1200
+  },
+  {
+   "name": "填标题",
+   "action": "input",
+   "value": "${title}",
+   "hint": "占位符运行时替换。",
+   "verified": true,
+   "settle": 1200
+  },
+  {
+   "name": "点正文输入框",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/etTrendContent",
+   "hint": "同「点标题」：必须先聚焦。实测 bounds [0,432][900,741]。",
+   "verified": true,
+   "settle": 1200
+  },
+  {
+   "name": "填正文",
+   "action": "input",
+   "value": "${body}",
+   "hint": "正文里不要带 #（话题单独走话题列）。",
+   "verified": true,
+   "settle": 1200
+  }
+ ]
+}

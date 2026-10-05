@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>得物蓝V · 发布进度看板（只读）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --tx:#1c1f23; --tx2:#5b6470; --line:#e3e7ec;
+    --ok:#1a9c62; --bad:#d63b3b; --wait:#c98a12; --brand:#2f6bd8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  header h1{font-size:15px;margin:0;font-weight:600}
+  .grow{flex:1}
+  .chip{padding:2px 9px;border-radius:99px;font-size:12px;border:1px solid var(--line);background:#f0f2f5;color:var(--tx2)}
+  .chip.ok{color:#fff;background:var(--ok);border-color:var(--ok)}
+  .chip.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .chip.wait{color:#fff;background:var(--wait);border-color:var(--wait)}
+  main{padding:18px 20px 40px;max-width:1180px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--tx2);font-weight:600;letter-spacing:.03em}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kpi b{display:block;font-size:22px;line-height:1.2;font-variant-numeric:tabular-nums}
+  .kpi span{font-size:12px;color:var(--tx2)}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);font-size:13px}
+  th{color:var(--tx2);font-weight:600;font-size:12px}
+  td.num,th.num{text-align:right}
+  .bar{height:6px;border-radius:4px;background:#eceff3;overflow:hidden;min-width:70px}
+  .bar i{display:block;height:100%;background:var(--brand)}
+  .rowbtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  input,select,button{font:inherit;color:inherit}
+  input,select{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:#fff}
+  button{padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer}
+  button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  button:disabled{opacity:.55;cursor:default}
+  .hint{color:var(--tx2);font-size:12.5px}
+  .mono{font-family:ui-monospace,Consolas,monospace}
+  .err{color:var(--bad)}
+  [hidden]{display:none!important}
+  .tw{overflow-x:auto}
+</style>
+<!-- ★ 看板自带的 Supabase SDK（同目录 vendor/supabase.js），**刻意不引 CDN**：
+     同事的机器/网络未必连得上 esm.sh，一旦连不上整页就只剩「加载 SDK 失败」，等于看板打不开。
+     来源：https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js
+     版本：@supabase/supabase-js 2.117.2（UMD 构建，文件头挂 `var supabase`）
+     大小：217945 字节 · sha256 59d39487c3589843b410322d8a3d562ce022aba1e5ccb16898ef3fb2a0da2ecd
+     要升级就换这个文件，并同步改上面这行版本/校验和（别只改一处）。 -->
+<script src="./vendor/supabase.js"></script>
+</head>
+<body>
+<header>
+  <h1>得物蓝V · 发布进度看板</h1>
+  <span class="chip" id="conn">未连接</span>
+  <span class="grow"></span>
+  <label class="hint"><input type="checkbox" id="auto" checked> 每 30 秒自动刷新</label>
+  <button id="btnRefresh">刷新</button>
+  <button id="btnSetup">连接设置</button>
+</header>
+
+<main>
+  <!-- 连接设置：地址与 key 已按组织预填好（与 App 内置的是同一份），直接点「保存并连接」即可 -->
+  <div class="card" id="setupCard">
+    <h2>连接设置</h2>
+    <div class="rowbtns">
+      <input id="cfgUrl" class="mono" style="min-width:320px" placeholder="https://xxxx.supabase.co">
+      <input id="cfgKey" class="mono" type="password" style="min-width:340px" placeholder="anon public key">
+      <button class="primary" id="btnSave">保存并连接</button>
+    </div>
+    <p class="hint">
+      <b>已经按组织预填好了</b>，直接点「保存并连接」就行（要换成别的项目就直接改这两个框）。
+      填过的值只存在<b>这台浏览器</b>的 localStorage 里，不上传到别处。
+    </p>
+    <p class="hint">
+      ★ 这里<b>只能填 anon / publishable key</b>（它本来就是公开设计、靠数据库的行级策略收口）。
+      <b>绝不要把 service_role / secret key 填进来</b> —— 那个 key 能绕过策略读写整张表。
+    </p>
+    <p class="hint">
+      还没有表？先在 Supabase 控制台的 SQL Editor 里跑一次仓库里的 <code>docs/supabase-setup.sql</code>。
+      各台机器<b>装完即连</b>（地址与 key 已内置在安装包里），不用手填。
+      ★ 各台机器那边<b>留空 = 跟随内置</b>，所以换项目只要<b>发新包</b>、让它们升级一次就会自动跟随；
+      只有升不了级的机器才需要「高级设置 → 云端协作 → 导入配置」。
+      <b>换了项目后这个看板也要改成同一个地址</b> —— 否则 App 往新库推、看板读旧库，会「少人」而且不报错。
+    </p>
+    <p class="hint err" id="setupErr" hidden></p>
+  </div>
+
+  <div id="main" hidden>
+    <div class="kpis" id="kpis"></div>
+
+    <div class="card">
+      <h2>款进度（每款目标篇数可改，默认 150）</h2>
+      <div class="rowbtns">
+        <label class="hint">每款目标 <input id="goal" type="number" min="1" value="150" style="width:90px"></label>
+        <label class="hint">只看
+          <select id="fMachine"><option value="">全部机器</option></select>
+        </label>
+        <label class="hint">执行人
+          <select id="fUser"><option value="">全部</option></select>
+        </label>
+        <label class="hint">品牌
+          <select id="fBrand"><option value="">全部</option></select>
+        </label>
+        <label class="hint">最近
+          <select id="fDays">
+            <option value="0" selected>全部</option><option value="1">24 小时</option>
+            <option value="7">7 天</option><option value="30">30 天</option>
+          </select>
+        </label>
+      </div>
+      <div class="tw"><table id="tSku"></table></div>
+    </div>
+
+    <div class="card">
+      <h2>按机器 / 执行人</h2>
+      <div class="tw"><table id="tWho"></table></div>
+    </div>
+
+    <div class="card">
+      <h2>最近明细（200 条）</h2>
+      <div class="tw"><table id="tRows"></table></div>
+    </div>
+  </div>
+
+  <p class="hint" id="foot"></p>
+</main>
+
+<script type="module">
+/** 只读看板：只做 select，没有任何写操作。数字取不到就显示「—」，绝不拿 0 冒充。 */
+const $ = s => document.querySelector(s);
+const LS = 'bluev-board';
+let sb = null, timer = null, rows = [];
+
+/**
+ * ★ 内置的组织默认值 —— 与 App 的 src/main/clouddefaults.js 是**同一份**，改一处必须同时改另一处。
+ *   这里只放 anon / publishable key：它本来就是设计成公开的（权限完全由数据库 RLS 决定），
+ *   所以「预填」并不降低安全性，只是省掉每台机器手填。
+ * ★★ service_role / secret key **绝不许**出现在这个文件里 —— 它绕过所有策略，等于整张表裸奔。
+ */
+const BUILTIN = {
+  url: 'https://rywurhpkovyjpjyvfjdz.supabase.co',
+  key: 'sb_publishable_pAp0t-MpIyTn5GgAYOa6gA_IAahwJmr',
+  org: 'bluev'
+};
+
+const cfg = JSON.parse(localStorage.getItem(LS) || '{}');
+$('#cfgUrl').value = cfg.url || BUILTIN.url;
+$('#cfgKey').value = cfg.key || BUILTIN.key;
+// 组织标识：取数时按它过滤，免得将来同一个项目里混进别的组织的数据
+const ORG = cfg.org || BUILTIN.org;
+
+function fmt(ts){
+  if(!ts) return '—';
+  const d = new Date(Number(ts));
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function conn(kind, text){ const el = $('#conn'); el.className = 'chip ' + (kind||''); el.textContent = text; }
+
+async function connect(){
+  const url = $('#cfgUrl').value.trim().replace(/\/+$/,'');
+  const key = $('#cfgKey').value.trim();
+  if(!url || !key){ $('#setupErr').hidden = false; $('#setupErr').textContent = '地址和 anon key 都要填。'; return; }
+  $('#setupErr').hidden = true;
+  localStorage.setItem(LS, JSON.stringify({url, key}));
+  conn('wait','连接中…');
+  try {
+    // SDK 是同目录的 vendor/supabase.js 用普通 <script> 带进来的（解析期就执行完，比本段更早），
+    // 所以这里**不需要联网**；以前是从 esm.sh 动态 import，CDN 不通整页就废了。
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      throw new Error('自带的 SDK 没加载出来：vendor/supabase.js 缺失、被改名，或被浏览器扩展拦了');
+    }
+    sb = window.supabase.createClient(url, key, { auth:{ persistSession:false } });
+  } catch(e){
+    conn('bad','连不上');
+    $('#setupErr').hidden = false;
+    $('#setupErr').textContent = '看板自带的 Supabase SDK 没能用上：' + (e && e.message || e);
+    return;
+  }
+  $('#setupCard').hidden = true;
+  await load();
+}
+
+async function load(){
+  if(!sb) return;
+  conn('wait','读取中…');
+  $('#btnRefresh').disabled = true;
+  const limit = 5000;   // 只读最近 5000 条来聚合；要全量对账就去本机导 Excel（本机 jsonl 才是完整账）
+  const { data, error } = await sb.from('publish_log')
+    .select('ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_name,username,display_name')
+    .eq('org', ORG)                     // ★ 只看本组织的行（其他组织的条目不上这张看板）
+    .order('ts', { ascending: false }).limit(limit);
+  $('#btnRefresh').disabled = false;
+  if(error){ conn('bad','读取失败'); $('#foot').innerHTML = `<span class="err">读取失败：${esc(error.message)}</span>`; return; }
+  rows = data || [];
+  conn('ok', `已连接 · ${rows.length} 条`);
+  $('#main').hidden = false;
+  render();
+}
+
+function filtered(){
+  const days = Number($('#fDays').value) || 0;
+  const cut = days ? Date.now() - days*86400000 : 0;
+  const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
+  return rows.filter(r => (!cut || Number(r.ts) >= cut)
+    && (!m || r.machine_id === m) && (!u || (r.display_name || r.username || '') === u)
+    && (!b || (r.brand_name || '') === b));
+}
+
+function fillFilters(){
+  const sel = (el, arr) => {
+    const cur = el.value;
+    el.innerHTML = '<option value="">' + el.options[0].text + '</option>' +
+      arr.map(v => `<option value="${esc(v)}" ${v===cur?'selected':''}>${esc(v)}</option>`).join('');
+  };
+  const u = [...new Set(rows.map(r => (r.display_name || r.username || '').trim()).filter(Boolean))].sort();
+  const b = [...new Set(rows.map(r => (r.brand_name || '').trim()).filter(Boolean))].sort();
+  sel($('#fUser'), u); sel($('#fBrand'), b);
+  const ms = [...new Map(rows.map(r => [r.machine_id, r.machine_name || r.machine_id])).entries()];
+  const el = $('#fMachine');
+  const cur = el.value;
+  el.innerHTML = '<option value="">全部机器</option>' +
+    ms.map(([id,name]) => `<option value="${esc(id)}" ${id===cur?'selected':''}>${esc(name)}</option>`).join('');
+}
+
+function render(){
+  fillFilters();
+  const list = filtered();
+  const ok = list.filter(r => r.result === '发布成功').length;
+  const bad = list.filter(r => r.result === '失败').length;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayN = list.filter(r => Number(r.ts) >= today.getTime()).length;
+  const machines = new Set(list.map(r => r.machine_id)).size;
+  const avg = list.length ? (list.reduce((s,r)=>s+(Number(r.elapsed)||0),0)/list.length) : 0;
+
+  $('#kpis').innerHTML = [
+    ['已发布', list.length, ''], ['成功', ok, 'ok'], ['失败', bad, bad?'bad':''],
+    ['成功率', list.length ? Math.round(ok/list.length*100)+'%' : '—', ''],
+    ['今天', todayN, ''], ['机器', machines, ''],
+    ['平均单条耗时', avg ? avg.toFixed(1)+'s' : '—', '']
+  ].map(([k,v,c]) => `<div class="kpi"><b class="${c?'err':''}" ${c==='ok'?'style="color:var(--ok)"':''}>${esc(v)}</b><span>${esc(k)}</span></div>`).join('');
+
+  // ---- 款进度 ----
+  const goal = Math.max(1, Number($('#goal').value) || 150);
+  const bySku = new Map();
+  for(const r of list){
+    const k = (r.dir_name || '').trim() || '（未标款）';
+    const o = bySku.get(k) || { n:0, ok:0, bad:0, last:0 };
+    o.n++; if(r.result === '发布成功') o.ok++; else if(r.result === '失败') o.bad++;
+    o.last = Math.max(o.last, Number(r.ts)||0);
+    bySku.set(k,o);
+  }
+  const skus = [...bySku.entries()].sort((a,b) => b[1].n - a[1].n);
+  $('#tSku').innerHTML = `<thead><tr><th>款</th><th class="num">已发</th><th class="num">成功</th><th class="num">失败</th><th>完成度（目标 ${goal}）</th><th>最近</th></tr></thead><tbody>` +
+    (skus.length ? skus.map(([k,o]) => {
+      const pct = Math.min(100, Math.round(o.n/goal*100));
+      return `<tr><td>${esc(k)}</td><td class="num">${o.n}</td><td class="num">${o.ok}</td><td class="num">${o.bad?'':''}${o.bad||''}</td>
+        <td><div style="display:flex;align-items:center;gap:8px"><div class="bar"><i style="width:${pct}%"></i></div><span class="hint">${o.n}/${goal}</span></div></td>
+        <td class="hint">${fmt(o.last)}</td></tr>`;
+    }).join('') : `<tr><td colspan="6" class="hint">还没有数据：先在电脑上跑一次发布，并打开「云端协作」开关。</td></tr>`) + '</tbody>';
+
+  // ---- 按机器 / 执行人 ----
+  const byWho = new Map();
+  for(const r of list){
+    const k = (r.machine_name || r.machine_id || '?') + ' / ' + ((r.display_name || r.username || '').trim() || '未标执行人');
+    const o = byWho.get(k) || { n:0, ok:0, bad:0, last:0 };
+    o.n++; if(r.result === '发布成功') o.ok++; else if(r.result === '失败') o.bad++;
+    o.last = Math.max(o.last, Number(r.ts)||0);
+    byWho.set(k,o);
+  }
+  $('#tWho').innerHTML = `<thead><tr><th>机器 / 执行人</th><th class="num">已发</th><th class="num">成功</th><th class="num">失败</th><th class="num">成功率</th><th>最近</th></tr></thead><tbody>` +
+    ([...byWho.entries()].sort((a,b)=>b[1].n-a[1].n).map(([k,o]) => `<tr><td>${esc(k)}</td><td class="num">${o.n}</td>
+      <td class="num">${o.ok}</td><td class="num">${o.bad||''}</td>
+      <td class="num">${o.n?Math.round(o.ok/o.n*100)+'%':'—'}</td><td class="hint">${fmt(o.last)}</td></tr>`).join('') || `<tr><td colspan="6" class="hint">—</td></tr>`) + '</tbody>';
+
+  // ---- 明细 ----
+  $('#tRows').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>款</th><th class="num">篇号</th><th>类型</th><th>结果</th><th>原因</th><th class="num">耗时</th></tr></thead><tbody>` +
+    (list.slice(0,200).map(r => `<tr>
+      <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
+      <td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.brand_name||'')}</td>
+      <td>${esc(r.dir_name||'')}</td><td class="num">${esc(r.seq==null?'':r.seq)}</td>
+      <td>${esc(r.kind||'')}</td>
+      <td>${r.result==='发布成功'?'<span class="chip ok">成功</span>':(r.result==='失败'?'<span class="chip bad">失败</span>':esc(r.result||''))}</td>
+      <td class="hint">${esc(r.reason||'')}</td><td class="num">${r.elapsed==null?'—':Number(r.elapsed).toFixed(1)+'s'}</td></tr>`).join('') || `<tr><td colspan="10" class="hint">—</td></tr>`) + '</tbody>';
+
+  $('#foot').innerHTML = `数据来自各台机器上行的发布结果（最近 ${rows.length} 条，最多取 5000 条）。
+    <b>这一页是只读的，改不动任何东西</b> —— 完整对账请用本机导出的 Excel（本机 jsonl 才是完整账）。`;
+}
+
+$('#btnSave').onclick = connect;
+$('#btnSetup').onclick = () => { $('#setupCard').hidden = !$('#setupCard').hidden; };
+$('#btnRefresh').onclick = load;
+['#fMachine','#fUser','#fBrand','#fDays','#goal'].forEach(s => { $(s).onchange = render; $('#goal').oninput = render; });
+$('#auto').onchange = () => {
+  clearInterval(timer); timer = null;
+  if($('#auto').checked) timer = setInterval(load, 30000);
+};
+timer = setInterval(load, 30000);
+
+if(cfg.url && cfg.key) connect(); else { $('#main').hidden = true; conn('wait','未连接'); }
+</script>
+</body>
+</html>

@@ -1,0 +1,569 @@
+{
+  "package": "com.shizhuang.duapp",
+  "generatedAt": 1791011572378,
+  "note": "★ 2026-10-03 真机实测（MuMu 12 / 得物 900x1600）· v4。\n相对 v2 的变化：\n  ① 「关联好物」那一段**按 3 个好物各配一遍**（发布单列：好物1~3 货号 / 好物1~3 颜色），\n     用条件步骤 when / whenNot 守卫 ⇒ 空着的那几个好物整段跳过，不会把搜索页打开却不选商品。\n  ② 话题 1~5 也加了 when 守卫 ⇒ 空的几列真的不写（老版本是配几步写几步，多出来的那几列静默不写）。\n  ③ 选商品改为「按颜色选那一格」，没填颜色时才退化成「选第 1 格」。\n\n⚠ 需要 App 支持条件步骤（when / whenNot）与 ${goods1Sku}/${goods1Color} 占位符 ——\n   这两项是 2026-10-03 随本表一起加进源码的，**旧版本 App 导入本表不会报错，但条件会被忽略**\n   （那时 3 个好物段会全部执行 ⇒ 空货号段把搜索页打开却不选 ⇒ 整条崩）。所以：\n   **旧版本 App 请不要导入本表**，先升级；或者把好物2 / 好物3 两段整段删掉再用。\n\n每个步骤的 verified 含义：true = 真在某一屏的 dump 里**亲眼看到过那个 id / 那段文字**；\nfalse = 结构对得上但**没有真机走过这一步**。\n★ 2026-10-03（下午）加：图文的「选图」那一步带 count＝${imageCount} ⇒ 一条内容能发多张图（这个叶子有几张就点几张）。",
+  "videoNote": "视频比图文多两屏：① 剪辑页（右下角「下一步」= flNextStep）；② 封面页（「跳过」= tv_skip）。\n按已拍板的口径用得物自带封面 ⇒ 点「跳过」。「关联好物」那一段图文/视频完全一样。",
+  "steps": [
+    {
+      "name": "底部「我」（进个人页）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tab_user",
+      "hint": "实测：bounds [675,1513][900,1600]，clickable=true，5 个底部 tab 里最右一格。",
+      "verified": true
+    },
+    {
+      "name": "右上角「主页」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvGoHomePage",
+      "hint": "实测：文字「主页」，bounds [807,135][870,163]。它 clickable=false 但按坐标点击有效。",
+      "verified": true
+    },
+    {
+      "name": "「发布新动态」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/rlPublish",
+      "hint": "实测：可点容器 bounds [15,830][227,1020]。点它进发布页（首屏是选素材的相册）。",
+      "verified": true
+    },
+    {
+      "name": "切到「照片」页签（图文）",
+      "action": "tapText",
+      "value": "照片",
+      "hint": "实测：顶部页签「全部 / 照片 / 视频」都没有 resource-id，只能按文字点。",
+      "verified": true
+    },
+    {
+      "name": "选中要发的图（前 N 张，N＝这个叶子的图片数）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flThumbSelect",
+      "count": "${imageCount}",
+      "hint": "★ 缩略图没有文字也没有描述，只能按 id 点。\n★ 2026-10-03 加：count 写 ${imageCount} ⇒ **这个叶子有几张图就点前几格**（一次点前 N 个匹配）。\n  不写 count 就是老行为：只点第 1 张（其余图早就推上设备了，但没被选中）。\n⚠ 相册按**时间倒序** ⇒ 点的是最前面 N 格；封面是不是你想要的那张，取决于推送顺序（未真机验证）。\n⚠「刚推上去的最新素材一定在第 1 格」仍未真机验证：这台 MuMu 的媒体扫描广播不生效（实测等 180.6s 仍未索引到），要重启模拟器才会收录。",
+      "verified": true
+    },
+    {
+      "name": "下一步",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "★ 这格的文字是「下一步 (1)」带计数 ⇒ 按 id 点更稳（已改）。注意：没选素材时这一格不存在。",
+      "verified": true
+    },
+    {
+      "name": "点标题输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTitle",
+      "hint": "★ 中文走 ADBKeyboard 广播，广播只发给**当前有焦点**的输入框 ⇒ 不先点一下，字打不进去。",
+      "verified": true
+    },
+    {
+      "name": "填标题",
+      "action": "input",
+      "value": "${title}",
+      "hint": "占位符运行时替换。",
+      "verified": true
+    },
+    {
+      "name": "点正文输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTrendContent",
+      "hint": "同「点标题」：必须先聚焦。实测 bounds [0,432][900,741]。",
+      "verified": true
+    },
+    {
+      "name": "填正文",
+      "action": "input",
+      "value": "${body}",
+      "hint": "正文里不要带 #（话题单独走话题列）。",
+      "verified": true
+    },
+    {
+      "name": "话题 1",
+      "action": "input",
+      "value": "${topic1}",
+      "when": "topic1",
+      "hint": "★ 2026-10-03 用户拍板：话题**不做联想点选**，给几个写几个。话题是往**正文框**里继续打的（焦点还在 etTrendContent）⇒ 前面不需要再点输入框。\n★ when 守卫：这一列空着就跳过（老版本是配几步写几步）。",
+      "verified": true
+    },
+    {
+      "name": "话题 2",
+      "action": "input",
+      "value": "${topic2}",
+      "when": "topic2",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "话题 3",
+      "action": "input",
+      "value": "${topic3}",
+      "when": "topic3",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "话题 4",
+      "action": "input",
+      "value": "${topic4}",
+      "when": "topic4",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "话题 5",
+      "action": "input",
+      "value": "${topic5}",
+      "when": "topic5",
+      "hint": "同上。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods1Sku",
+      "hint": "实测（2026-10-03 12:10）：id 存在、clickable=true、bounds [0,904][840,970]。**位置随素材区高度变化** ⇒ 只能按 id 点，别写坐标。\n右边那个 tvRelevantProductRecognitionCount（识别件数）不要点。\n★ 点它打开「关联好物」搜索页 —— 那是**同一个 Activity 的第二个窗口**，dumpsys 备用通道看不到它（所以 runStep 必须等 uiautomator 抓成功，已加重试）。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等搜索页加载",
+      "action": "wait",
+      "value": 1200,
+      "when": "goods1Sku"
+    },
+    {
+      "name": "好物1 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods1Sku",
+      "hint": "★ 必须单独一步：input 动作只是「往当前有焦点的框发广播」，它**不点输入框** —— 刚打开这一页焦点不在搜索框上，直接 input 打不进去（而且不报错）。\n实测 bounds [30,163][870,215]。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 输「货号」",
+      "action": "input",
+      "value": "${goods1Sku}",
+      "when": "goods1Sku",
+      "hint": "★ 实测（2026-10-03 12:16 探针）：**每次打开这个搜索页，搜索框都是空的**（空的时候显示占位文字「搜索好物」）\n⇒ **不需要**先点 × 清空。而且搜索框为空时右侧那个 ivClear **根本不存在** ⇒ 无条件点它会硬失败，千万别写进去。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等结果出来",
+      "action": "wait",
+      "value": 2000,
+      "when": "goods1Sku"
+    },
+    {
+      "name": "好物1 · 按「颜色」选对那一格",
+      "action": "tapText",
+      "value": "${goods1Color}",
+      "when": "goods1Sku,goods1Color",
+      "hint": "★★ 这一步**没有真机走过**（点它会往草稿里真的挂一个商品，我没敢代点）。依据与风险都说清：\n· 依据：搜索结果是一堵「颜色格子墙」，每一格 = 商品图 ivProduct + **颜色文字 tvCSpuInfo**（如「米白色12」）。\n  商品**名字在 dump 里抓不到**（自绘的，实测 grep「卡宾」= 0 处），整张卡片的根节点又没有 id 也没有文字 ⇒\n  唯一能用来区分『哪一格』的可匹配文字就是颜色 ⇒ 只能靠 tapText 颜色。\n· 已实测：tvCSpuInfo 节点 clickable=true，且按它点下去坐标落在该格卡片范围内。\n· ⚠ 风险一：颜色文字**会重复**（实测同一页「米白色12」出现 3 次）⇒ tapText 取的是**第一个**匹配 ⇒\n  可能挂到同色但**不同款**的那一件上。\n· ⚠ 风险二：那一小格颜色标签自己也是可点的（clickable=true），点它到底会不会『选中整张卡』**没验证过**。\n  若不会，表现是**停在这一页不走** → 下一步「提交发布」会找不到按钮并**明确报错**（不会静默发错）。\n· 颜色对不上时（发布单写「煤黑色」、页面上是「煤黑色01」）会自动退到「包含」匹配，能命中。\n· ❓要确认的有两件：① 点颜色标签能不能选中整格；② 同色多款时怎么区分。见 pending。",
+      "verified": false
+    },
+    {
+      "name": "好物1 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods1Sku",
+      "whenNot": "goods1Color",
+      "hint": "★ 单色货号（颜色列可以是空的）走这条退路。\n为什么点 ivProduct：卡片根是**无 id 无文字的可点 ViewGroup**，现有三种找法（tapText/tapId/tapDesc）都点不到它；\n但它第 1 个子节点是商品大图 ivProduct ⇒ 点图心会落进卡片范围，Android 把点击交给可点的卡片根。\ntapId 取第一个匹配 ⇒ 永远是**第 1 个搜索结果**。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods2Sku",
+      "hint": "★ 用户 2026-10-03 确认：**要关联第 2 个商品，就要再点一次「关联好物」**（发布会自动把新选的商品追加到那一行里）。\nwhen 守卫：发布单没填「好物2货号」时这一整段 6 步全跳（跳过会写进日志）。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 等搜索页加载",
+      "action": "wait",
+      "value": 1200,
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods2Sku",
+      "hint": "同上。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 输「货号」",
+      "action": "input",
+      "value": "${goods2Sku}",
+      "when": "goods2Sku",
+      "hint": "同好物1：搜索框每次打开都是空的。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 等结果出来",
+      "action": "wait",
+      "value": 2000,
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 按「颜色」选对那一格",
+      "action": "tapText",
+      "value": "${goods2Color}",
+      "when": "goods2Sku,goods2Color",
+      "hint": "同好物1（含那条「未真机验证」的告警）。两个条件同时满足才执行：有第 2 个好物 **且** 填了它的颜色。",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods2Sku",
+      "whenNot": "goods2Color"
+    },
+    {
+      "name": "好物3 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods3Sku",
+      "hint": "同好物2。发布单里好物一共只有 3 组列（好物1~3 货号 / 颜色）。",
+      "verified": false
+    },
+    {
+      "name": "好物3 · 等搜索页加载",
+      "action": "wait",
+      "value": 1200,
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 输「货号」",
+      "action": "input",
+      "value": "${goods3Sku}",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 等结果出来",
+      "action": "wait",
+      "value": 2000,
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 按「颜色」选对那一格",
+      "action": "tapText",
+      "value": "${goods3Color}",
+      "when": "goods3Sku,goods3Color",
+      "hint": "同好物1。",
+      "verified": false
+    },
+    {
+      "name": "好物3 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods3Sku",
+      "whenNot": "goods3Color"
+    },
+    {
+      "name": "提交发布",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvPublish",
+      "hint": "★ 实测存在：文字「发布」，bounds [174,1510][870,1576]，clickable=true。\n⚠ 点下去就**真发出去了** —— 想演练就把这一步删掉再导。",
+      "verified": true
+    }
+  ],
+  "videoSteps": [
+    {
+      "name": "底部「我」（进个人页）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tab_user",
+      "verified": true
+    },
+    {
+      "name": "右上角「主页」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvGoHomePage",
+      "verified": true
+    },
+    {
+      "name": "「发布新动态」",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/rlPublish",
+      "verified": true
+    },
+    {
+      "name": "切到「视频」页签",
+      "action": "tapText",
+      "value": "视频",
+      "hint": "实测：切过去之后上方那排模板会收起，页签上移到 y≈120。",
+      "verified": true
+    },
+    {
+      "name": "选中要发的视频（相册第 1 格）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flThumbSelect",
+      "hint": "实测：点中之后右上角出现选中序号 ivThumbSelect（text=\"1\"），底部出现「下一步 (1)」。\n★ 视频不用 count：一条内容就是一个视频，只选 1 格。",
+      "verified": true
+    },
+    {
+      "name": "下一步（离开相册）",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "verified": true
+    },
+    {
+      "name": "剪辑页 · 下一步",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/flNextStep",
+      "hint": "实测：视频先过剪辑页，右下角还是 flNextStep。★ 视频比图文多出来的第一屏。",
+      "verified": true
+    },
+    {
+      "name": "封面页 · 跳过",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tv_skip",
+      "hint": "实测：再多一屏「设置封面」。按已拍板的口径用得物自带封面 ⇒ 点「跳过」。★ 多出来的第二屏。",
+      "verified": true
+    },
+    {
+      "name": "点标题输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTitle",
+      "verified": true
+    },
+    {
+      "name": "填标题",
+      "action": "input",
+      "value": "${title}",
+      "verified": true
+    },
+    {
+      "name": "点正文输入框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etTrendContent",
+      "verified": true
+    },
+    {
+      "name": "填正文",
+      "action": "input",
+      "value": "${body}",
+      "verified": true
+    },
+    {
+      "name": "话题 1",
+      "action": "input",
+      "value": "${topic1}",
+      "when": "topic1",
+      "verified": true
+    },
+    {
+      "name": "话题 2",
+      "action": "input",
+      "value": "${topic2}",
+      "when": "topic2",
+      "verified": true
+    },
+    {
+      "name": "话题 3",
+      "action": "input",
+      "value": "${topic3}",
+      "when": "topic3",
+      "verified": true
+    },
+    {
+      "name": "话题 4",
+      "action": "input",
+      "value": "${topic4}",
+      "when": "topic4",
+      "verified": true
+    },
+    {
+      "name": "话题 5",
+      "action": "input",
+      "value": "${topic5}",
+      "when": "topic5",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods1Sku",
+      "hint": "与图文完全相同的一段。",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等搜索页加载",
+      "action": "wait",
+      "value": 1200,
+      "when": "goods1Sku"
+    },
+    {
+      "name": "好物1 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods1Sku",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 输「货号」",
+      "action": "input",
+      "value": "${goods1Sku}",
+      "when": "goods1Sku",
+      "verified": true
+    },
+    {
+      "name": "好物1 · 等结果出来",
+      "action": "wait",
+      "value": 2000,
+      "when": "goods1Sku"
+    },
+    {
+      "name": "好物1 · 按「颜色」选对那一格",
+      "action": "tapText",
+      "value": "${goods1Color}",
+      "when": "goods1Sku,goods1Color",
+      "hint": "见图文那一步的完整告警（未真机验证 + 同色重名风险）。",
+      "verified": false
+    },
+    {
+      "name": "好物1 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods1Sku",
+      "whenNot": "goods1Color",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods2Sku",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 等搜索页加载",
+      "action": "wait",
+      "value": 1200,
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 输「货号」",
+      "action": "input",
+      "value": "${goods2Sku}",
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 等结果出来",
+      "action": "wait",
+      "value": 2000,
+      "when": "goods2Sku"
+    },
+    {
+      "name": "好物2 · 按「颜色」选对那一格",
+      "action": "tapText",
+      "value": "${goods2Color}",
+      "when": "goods2Sku,goods2Color",
+      "verified": false
+    },
+    {
+      "name": "好物2 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods2Sku",
+      "whenNot": "goods2Color"
+    },
+    {
+      "name": "好物3 · 点「关联好物」这一行",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvRelevantProduct",
+      "when": "goods3Sku",
+      "verified": false
+    },
+    {
+      "name": "好物3 · 等搜索页加载",
+      "action": "wait",
+      "value": 1200,
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 点搜索框",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/etSearch",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 输「货号」",
+      "action": "input",
+      "value": "${goods3Sku}",
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 等结果出来",
+      "action": "wait",
+      "value": 2000,
+      "when": "goods3Sku"
+    },
+    {
+      "name": "好物3 · 按「颜色」选对那一格",
+      "action": "tapText",
+      "value": "${goods3Color}",
+      "when": "goods3Sku,goods3Color",
+      "verified": false
+    },
+    {
+      "name": "好物3 · 没填颜色就选第 1 格",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/ivProduct",
+      "when": "goods3Sku",
+      "whenNot": "goods3Color"
+    },
+    {
+      "name": "提交发布",
+      "action": "tapId",
+      "value": "com.shizhuang.duapp:id/tvPublish",
+      "hint": "⚠ 点下去就真发出去了。",
+      "verified": true
+    }
+  ],
+  "pending": [
+    {
+      "item": "真机验一次「多张图」",
+      "status": "待真机跑一条（约 1 分钟）",
+      "why": "动作层已支持「点前 N 个匹配」（count 写 ${imageCount}）—— 假 adb 上的行为级证据齐了（3 张图 ⇒ 真调 3 次 input tap；张数对不上会**失败**而不是静默少发）。\n     还差真机看一眼两件事：① 相册里连点 3 格会不会被 UI 当成同一次手势；② 发出来是不是真的 3 张图、封面是哪一张（相册按时间倒序）。"
+    },
+    {
+      "item": "「点颜色标签能不能选中整格商品」",
+      "status": "待真机点一次（约 10 秒）",
+      "why": "颜色文字 tvCSpuInfo 自己 clickable=true，但它到底会不会把点击交给整张卡片，没有验证过。\n     验证办法：模拟器里点「关联好物」→ 搜 3261132028 → 只点一下「米白色12」→ 看是不是直接退回发布页、且那一行多出一件商品。\n     ★ 若结果不是「点一下即选中」，则把「按颜色选」那一步换成保守版（统一用 tapId ivProduct 选第 1 格）—— 代价是颜色可能不对。"
+    },
+    {
+      "item": "「同色多款怎么区分」",
+      "status": "待定",
+      "why": "实测同一页里「米白色12」出现 3 次（不同款）⇒ tapText 只取第一个。\n     要真区分得靠商品名，而商品名在 dump 里**抓不到**（自绘，grep「卡宾」= 0 处）。\n     可行的下一步：给动作层加「按第 N 个匹配点」或「按颜色找那一格、点它上方那张商品图 ivProduct 的图心」。"
+    },
+    {
+      "item": "发布前「数一遍好物个数」的校验",
+      "status": "建议加",
+      "why": "发布页那一行是 rvRelevantProduct，**子节点数 = 已关联商品数**（实测：关联 1 个时正好 1 张卡，卡里有 tvName + 可点的 ivDelete）。\n     可以在点「提交发布」之前数一遍，跟发布单里非空的好物个数对不上就不发 —— 这样「挂错/少挂」才拦得住。"
+    },
+    {
+      "item": "图文主图（封面）怎么处理",
+      "status": "待定 · 用户说后面再说",
+      "why": "2026-10-03 用户明确：图文第一张图默认即主图，主图问题后面处理。"
+    },
+    {
+      "item": "封面/顺序",
+      "status": "待定",
+      "why": "相册按时间倒序 ⇒ 点最前面 N 格。素材分批推上去时，封面未必是文件名第 1 张。要精确控封面，得先按顺序重新推一遍素材。"
+    }
+  ]
+}

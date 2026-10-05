@@ -1,0 +1,26 @@
+{
+ "data": {
+  "imageCount": 3,
+  "title": "真机多图验证-测试标题",
+  "body": "第一行\n第二行\n第三行\n第四行"
+ },
+ "steps": [
+  {
+   "name": "切到「照片」页签（图文）",
+   "action": "tapText",
+   "value": "照片",
+   "hint": "实测：顶部页签「全部 / 照片 / 视频」都没有 resource-id，只能按文字点。",
+   "verified": true,
+   "settle": 1500
+  },
+  {
+   "name": "选中要发的图（前 N 张，N＝这个叶子的图片数）",
+   "action": "tapId",
+   "value": "com.shizhuang.duapp:id/flThumbSelect",
+   "count": "${imageCount}",
+   "hint": "★ 缩略图没有文字也没有描述，只能按 id 点。\n★ 2026-10-03 加：count 写 ${imageCount} ⇒ **这个叶子有几张图就点前几格**（一次点前 N 个匹配）。\n  不写 count 就是老行为：只点第 1 张（其余图早就推上设备了，但没被选中）。\n⚠ 相册按**时间倒序** ⇒ 点的是最前面 N 格；封面是不是你想要的那张，取决于推送顺序（未真机验证）。\n⚠「刚推上去的最新素材一定在第 1 格」仍未真机验证：这台 MuMu 的媒体扫描广播不生效（实测等 180.6s 仍未索引到），要重启模拟器才会收录。",
+   "verified": true,
+   "settle": 1500
+  }
+ ]
+}

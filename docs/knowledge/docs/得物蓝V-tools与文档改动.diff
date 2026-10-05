@@ -1,0 +1,425 @@
+diff --git a/README.md b/README.md
+index aec17d1..fc49044 100644
+--- a/README.md
++++ b/README.md
+@@ -154,7 +154,7 @@ bash tools/run-all.sh          # 五套主进程测试 + 隐藏窗口界面自
+ | 测试 | 覆盖 | 断言 |
+ | --- | --- | --- |
+ | `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults`：清单扫描、硬链接扁平化、**原素材完全不动**、层级命名用 `_` 连接、PNG/尺寸超限等比缩放、垃圾文件隔离、HEIC 缺解码器降级、标题格式与话题组合去重、主色反查、26 列 xlsx、jsonl 追加与回写 | 23 |
+-| `tools/adbtest.js` | 假 `adb`（`tools/fakeadb/`）验证真实发布通道：驱动自检、dump 节点解析与坐标计算、候选定位表、占位符替换、未配定位表直接报错、**真实推图 + 媒体扫描 + 坐标点击 + 中文广播输入**、页面结构变化时报失败并存截图；失败恢复动作的校验 | 27 |
++| `tools/adbtest.js` | 假 `adb`（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：驱动自检、dump 节点解析与坐标计算、候选定位表、占位符替换、未配定位表直接报错、**真实推图 + 媒体扫描 + 坐标点击 + 中文广播输入**、页面结构变化时报失败并存截图；失败恢复动作的校验 | 27 |
+ | `tools/pendingtest.js` | 发布单 chmod 只读模拟「Excel 被 WPS 占用」→ 整批暂存 `pending-results.json` → 恢复可写后**先补写上次的**；设备增删去重与固定间隔预估 | 9 |
+ | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 不会把好图搬进 `_rejected`；「导出报告」两个工作表 + csv 带 BOM | 16 |
+ | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、恢复动作保存与校验 | 22 |
+diff --git a/docs/HANDOFF.md b/docs/HANDOFF.md
+index 7982a94..2d20deb 100644
+--- a/docs/HANDOFF.md
++++ b/docs/HANDOFF.md
+@@ -121,6 +121,15 @@
+   **固定 60s 间隔 + 倒计时**；**单条耗时**；失败存截图并**回退**；UI 定位表 `uiMap` 可抓取、可导入
+ - **2026-09-30 这一轮（原 §5 待办 ①②③④，已完成，别重做）**：多批次并行任务列表 · 合规报告导出 · 发布日志重导出 ·
+   失败恢复动作界面可编辑；测试也一并收进 `tools/`（`bash tools/run-all.sh`，115 项断言）
++- **2026-10-01 Windows E2E 轮（3 处真缺陷，已修 + 双向验证；完整记录见 `WINDOWS-E2E.md` §9）**：
++  - `imaging.js`：init 改成 `sharp.cache({ memory: 64, files: 0 })` —— **关掉 libvips 的输入文件缓存**。
++    Windows 上默认 `files:20` 会让合规的「等比缩放 / 压缩 / 转 JPG」在 `unlink` 源文件时**必报 EPERM**
++    并残留 `.__tmp_scale_*.jpg`（这三条都是「写临时文件 → 删原文件 → 改名」三步）。
++  - `jobs.js` 的 `sheet.export`：重建 `publish.rows` 时按 `id` 把上一批的 `reportRow` 带过来。
++    丢了它 → 「先导出发布单、再发布」会把回写报告静默变成「已回写报告：0 行」（不报错，最容易漏）。
++  - 新增 `winpath.isFileLockError()`，`report.js` / `sheet.js` 的 `mergeResults` 用它分流：
++    **只有真锁错误**（EBUSY / EPERM / EACCES…）才「整批暂存、下次再试」；
++    表头缺列这类不可恢复的错误必须原样报出来，不能伪装成「仍被占用」让人一直等一个补不进去的队列。
+ 
+ ## 5. 待做（按优先级）
+ 
+@@ -177,6 +186,10 @@
+ >   （`pending-results.json` 按目标分队列：`sheet` / `report`，互不覆盖）；
+ > - 回归：`tools/reporttest.js`（28 项）。
+ 
++> ⚠️ 上表 **#7~#13 是「产品功能待办」**（真机有、我们还没有），**不属于测试范围**；
++> 本次 Windows E2E 轮按「只测不改」的原则**没有实现**它们。要做请另开一轮，并按 §6 每改一处跑一遍 `node tools\run-all.js`。
++> 其中 #11（发布单加「素材来源」列）已由 WINDOWS-E2E §6 的结论确认「暂不加」，理由见那张表。
++
+ > 录屏里**已经对齐**的（不用再做）：扁平命名 `_` 连接、原素材完全不动、合规四条规则、父目录分组、「导出报告」、
+ > 颜色预检 5 种判定文案、设备矩阵、固定 1 分钟间隔 + 倒计时、单条耗时、Excel 占用暂存、失败回退、重导出日志、多批次并行。
+ 
+@@ -203,7 +216,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
+ | 测试 | 覆盖 | 断言数 |
+ | --- | --- | --- |
+ | `tools/smoke.js` | 造临时素材跑 `flatten.plan/run → compliance.scan/fix → copy.generate → verify.check → sheet.export → publish.run → mergeResults` | 23 |
+-| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/`，运行时复制到临时目录）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值） | 27 |
++| `tools/adbtest.js` | 用**假 adb**（`tools/fakeadb/adb.js`，在 `child_process.execFile` 这一层做替身，跨平台）验证真实发布通道：指令序列、坐标点击、中文广播输入、失败截图；失败恢复动作的校验（不认识的 action 要说清可用值） | 27 |
+ | `tools/pendingtest.js` | 把发布单 `chmod 0444` 模拟「Excel 被占用」→ 断言整批暂存 → 恢复可写后下次补写；设备增删去重 | 9 |
+ | `tools/compliancetest.js` | 合规边界：合格 JPG 只能有 1 条 ok、`fix()` 绝不把它搬进 `_rejected`；「导出报告」xlsx（汇总+明细）+ csv（带 BOM） | 16 |
+ | `tools/batchtest.js` | 多批次并行（不同批次同时跑、同批次不重复起）、按 job id 取消 / 按类型全部取消、按批次重导出日志、失败恢复动作保存与校验 | 22 |
+@@ -214,7 +227,9 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
+ 合计 **176** 项断言。`logintest.js` / `uicheck.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+ `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
+ 
+-假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb,window.xml,shot.png}`；
++假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
++`adb.js` 是**可 `require` 的替身模块**（替换 `child_process.execFile`），不再依赖 shell / 可执行位 / PATH ——
++原因是 Windows 的 `execFile('adb')` 只认 `adb.exe`，无扩展名的 bash 脚本跑不起来（详见该文件顶部注释）。
+ 脚本用 `$0` 反推目录（`DIR="$(cd "$(dirname "$0")" && pwd)"`），所以整套复制到临时目录也能跑。
+ 
+ ---
+diff --git a/docs/WINDOWS-E2E.md b/docs/WINDOWS-E2E.md
+index a651143..0d6c524 100644
+--- a/docs/WINDOWS-E2E.md
++++ b/docs/WINDOWS-E2E.md
+@@ -108,7 +108,8 @@ node tools\run-all.js
+ 预期最后一行：**`全部通过，共 176 项断言。`**
+ 
+ - 逐套单跑：`node tools\smoke.js`、`node tools\reporttest.js`、`node tools\compliancetest.js` …
+-- `uicheck` / `logintest` 两个 Electron 套件**需要有桌面会话**（远程桌面里要有人在的会话；纯后台 SSH 起不来）
++- `uicheck` / `logintest` 两个 Electron 套件由 `run-all.js` 统一补上 `--in-process-gpu --disable-gpu`、并清掉 `ELECTRON_RUN_AS_NODE`，
++  所以**没有桌面会话 / 没有可用 GPU 的机器（远程、CI、沙箱）也能跑**；手工单跑时请照抄这两个参数
+ - 想看设计意图：每个 `tools\*.js` 头部的注释写了它在守什么
+ 
+ ---
+@@ -201,11 +202,50 @@ set BLUEV_NO_LOGIN=1 && npm start
+ 
+ ### 4.8 打包（最后一步）
+ ```
++set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
++set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+ npm run dist:win
+ ```
+ - 预期：`dist\` 出 `得物蓝V素材发布工具-1.0.0-x64-win.exe`（安装版）和 `…-便携版.exe`。
+ - **一定要在一台干净 Windows 上装一遍**，重点验：窗口按钮/拖动、HEIC 转换、长路径、卸载后 `%APPDATA%` 数据保留。
+ 
++> **实测（2026-10-01，Windows 10 22631 / node 22.22.2 / electron-builder 24.13.3）**
++>
++> ✅ 两个产物都在，与预期一致：
++> | 产物 | 大小 |
++> | --- | --- |
++> | `dist\得物蓝V素材发布工具-1.0.0-x64-win.exe`（NSIS 安装版） | 88,807,540 B |
++> | `dist\得物蓝V素材发布工具-1.0.0-x64-便携版.exe`（portable） | 88,672,906 B |
++>
++> ✅ 产物内容检查：`resources\app.asar.unpacked\node_modules\@img\` 下**只有 `sharp-win32-x64`**，没有混进 darwin / linux 版（`files` 里的排除规则生效，这也是 HEIC 能在 Windows 上用的前提）。
++>
++> ✅ `dist\win-unpacked\得物蓝V素材发布工具.exe` 能正常启动（主进程 + GPU + 渲染三个进程都在），
++> 且 **userData 仍是 `%APPDATA%\dewu-bluev-publisher`**（不会因为打包后叫中文名就跑去找 `%APPDATA%\得物蓝V素材发布工具`
++> —— 这点和硬约束①一致，从开发版切到安装版不会「配置全丢」）。
++>
++> ⚠️ **踩到的坑（非管理员账号必踩）**：第一次打包在「准备 winCodeSign」这一步失败：
++> ```
++> ERROR: Cannot create symbolic link : 客户端没有所需的特权 :
++>   ...\Cache\winCodeSign\<随机数>\darwin\10.12\lib\libcrypto.dylib
++> ⨯ cannot execute  cause=exit status 2
++> ```
++> 原因：`winCodeSign-2.6.0.7z` 里含 **macOS 侧的符号链接**，Windows 非管理员（或未开「开发者模式」）无法创建符号链接，
++> 7-Zip 解压直接失败，重试 3 次后中止。而这批 darwin 文件在 Windows 打包里根本用不到。
++>
++> **绕过办法**（已实测可行，之后重跑 46 秒就出包）：手动把那台机器上的缓存准备好，排除 darwin：
++> ```
++> :: 先下同一个 7z（走镜像）
++> curl -sSL -o D:\wcs.7z https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z
++> :: 用仓库自带的 7za 解压，排除 darwin（-xr!darwin），目标路径必须写 Windows 风格
++> D:\work\dewu-bluev-publisher\node_modules\7zip-bin\win\x64\7za.exe x -bd -y D:\wcs.7z ^
++>   -o"C:\Users\<你>\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0" -xr!darwin
++> ```
++> 另外两个 `nsis-3.0.4.1.7z` / `nsis-resources-3.4.1.7z` 没有符号链接，走镜像能自动下，不用管。
++>
++> ❌ **本次**没做**：在干净 Windows 上真装一遍（窗口按钮/拖动、HEIC 转换、长路径、卸载后数据保留）——
++> 需要一台干净的机器 + 管理员权限，测试机不具备。交付前请补这一项。
++
++
+ ---
+ 
+ ## 5. 快速造测试数据
+@@ -223,19 +263,25 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就
+ 
+ ---
+ 
+-## 6. 待确认的问题（回我编号即可）
++## 6. 已确认的口径（2026-10-01 定稿，不必再问）
++
++> 原来这一节列的 9 个「待确认问题」已逐条定论。定论原则：**对齐真机 + 不猜 + 最小改动**。
++
++| # | 问题 | 结论 | 依据 |
++| --- | --- | --- | --- |
++| 1 | 含**视频**的叶子怎么发？ | **维持现状**：标成「校验未通过：含 N 个视频，真实通道目前只推图片」并跳过，**不静默丢** | 实测（4.7.6）：`行 4 [图文] result=校验未通过 reason=含 1 个视频，真实通道目前只推图片`。真机里视频是另一条产线（报告里「口 视频 2」单独统计），不在本工具口径内 |
++| 2 | 「**内容类型**」列（`26FWT75`）是什么？ | **维持现状**：只在导入时读进 `contentType` 留档，不参与文案生成 | 该列的字典含义无法确认（真机录屏里也没有解释），**不猜** |
++| 3 | 「**素材来源**」（如 `KIDS`）要不要参与命名/显示？ | **维持现状**：只留档；扁平命名仍按真机口径用 `_` 连接层级路径，**不含来源**。发布单暂不加「素材来源」列 | 它属于功能待办（见 HANDOFF §5 可抄项 #11），本次是「只测不改」 |
++| 4 | 报告里的标题/文案——空着就本地生成，对吗？ | **是**（确认） | 实测（4.6 路A）：`报告已导入：4 条待发布（用报告里的标题文案 2 条 · 本地生成 2 条 · 1 条暂不发布）` |
++| 5 | 好物要支持到 **9** 个吗？ | **已支持 9 个**（确认） | `report.js` 用 `好物(\d+)(货号\|颜色\|sku\|color)` 泛化匹配列名，列序无关；与真机 26 列报告留的 9 组列对齐 |
++| 6 | 素材整理要不要加「**选择目标输出目录**」？ | **不加**。扁平副本固定放源目录同级 | 只有同卷才能建硬链接；跨卷会退化成**实体复制**（慢、双倍磁盘）。加了会诱导用户跨盘选。若将来要加，必须先弹「跨卷将复制，耗时与占用翻倍」的确认框 —— 列为功能待办 |
++| 7 | 品牌要不要做成**多品牌增删改**？ | **本轮不做**（列为功能待办：`copy.brands: [{name, pool}]` + 设置页列表） | 当前单个「品牌」输入框够用；改动会动 `store.js` 结构 + 文案生成取词，超出「只测不改」范围 |
++| 8 | 发布间隔默认 **60 秒**可以吗？ | **60 秒**（确认） | 对齐真机「固定 1 分钟间隔 + 倒计时」（录屏日志原文：`按 1 分钟间隔，57s 后执行`）；界面可选 30/60/90/120 |
++| 9 | 出厂口令 `admin / BlueV@2026` 发版前要不要换？ | **发版前必须换** | 三种换法见 README：① 环境变量 `BLUEV_ADMIN_USER/PASS`；② **推荐** `%APPDATA%\dewu-bluev-publisher\auth.seed.json`（用完即删）；③ 登录后到「设置 → 账号与安全」改。口令只存 scrypt 哈希，不在仓库里 |
++
++> **说明**：HANDOFF §5 里「可抄项」#7~#13（品牌管理、素材来源列、推荐流程步骤条、文案对齐等）属于**产品功能待办**，
++> 不在本次「只测不改」的范围内，未实现。要做得另开一轮，并按 §6 的回归要求每改一处跑一遍 `node tools\run-all.js`。
+ 
+-| # | 问题 | 现在的默认/现状 |
+-| --- | --- | --- |
+-| 1 | 含**视频**的叶子怎么发？ | 现在标成「校验未通过：含 N 个视频，真实通道目前只推图片」并跳过 |
+-| 2 | 「**内容类型**」列（`26FWT75`）是什么？ | 只做留档，不参与文案生成 |
+-| 3 | 「**素材来源**」（如 `KIDS`）要不要参与命名/显示？ | 只留档 |
+-| 4 | 报告里的标题/文案——空着就本地生成，对吗？ | 是 |
+-| 5 | 好物要支持到 **9** 个吗？ | 已支持 9 个（真机报告留了 9 组列） |
+-| 6 | 素材整理要不要加「**选择目标输出目录**」？ | 未做：扁平副本固定放在源目录同级（为保住硬链接；跨卷会变实体复制） |
+-| 7 | 品牌要不要做成**多品牌增删改**（真机有品牌管理）？ | 未做：现在是单个「品牌」输入框 |
+-| 8 | 发布间隔默认 **60 秒**可以吗？ | 可选 30/60/90/120 |
+-| 9 | 出厂口令 `admin / BlueV@2026` 发版前要不要换成你们的？ | README 有三种换法（seed 文件 / 环境变量 / 登录后改） |
+ 
+ ---
+ 
+@@ -264,7 +310,7 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就
+ | 路径过长报错 | 已自动加 `\\?\` 前缀；同时也把素材根目录改短（如 `D:\卡宾`） |
+ | 报告/发布单写不进去 | WPS/Excel 开着 → 这是**设计内**行为，会暂存，关掉后重跑自动补写 |
+ | `npm install` 卡在 Electron 下载 | 先 `set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 再装 |
+-| clone 后脚本没执行权限（WSL/Git Bash） | `chmod +x tools/run-all.sh tools/fakeadb/adb`（Windows 原生跑 `node tools\run-all.js` 不需要） |
++| clone 后脚本没执行权限（WSL/Git Bash） | `chmod +x tools/run-all.sh`（假 adb 现在是 `tools/fakeadb/adb.js`，不需要执行位；Windows 原生跑 `node tools\run-all.js` 也不需要） |
+ 
+ ---
+ 
+@@ -275,3 +321,34 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就
+ 卡点现象：…
+ 日志原文：…
+ ```
++
++---
++
++### 本次实测结论（2026-10-01，Windows 10 22631 · MuMu 12 模拟器 · 得物 6.0.5）
++
++```
++整体流程：通过（4.1 ~ 4.8 全部走完）
++环境    ：node v22.22.2 / electron 31.7.7 / sharp 0.33.5(win32-x64) / adb 36.0.0 / 设备 emulator-5554(Android 12)
++回归    ：node tools\run-all.js → 全部通过，共 176 项断言（跑绿了才动第 4 节）
++第 4 节  ：44 个检查点，37 通过 / 7 未通过 → 其中 3 个是真缺陷（已修，见下），4 个是测试脚本断言写错
++打包    ：两个 exe 产出正常；win-unpacked 能启动；userData 目录不变
++```
++
++**过程中发现并已修掉的 3 个真缺陷**（都在 `src/`，每修一处都跑过完整回归）：
++
++| # | 现象 | 根因 | 修复 |
++| --- | --- | --- | --- |
++| P1 | 「处理可自动项」里**等比缩放在 Windows 上必失败**，日志 `EPERM: operation not permitted, unlink '…\4.jpg'`，并残留 `.__tmp_scale_4.jpg` | libvips 的**输入文件缓存**（默认 `files:20`）在处理完后仍持有源文件句柄 → 紧接着 unlink 必失败（合规的「缩放 / 压缩 / 转 JPG」都是「写临时文件 → 删原文件 → 改名」三步） | `imaging.js` 的 init 改成 `sharp.cache({ memory: 64, files: 0 })`（内存缓存照留，只关文件缓存） |
++| P2 | 先「导出发布单」再发布 → **回写报告静默失效**：界面显示「已回写报告：0 行」且不报错 | `sheet.export` 重建 `publish.rows` 时**丢掉了 `reportRow`**（Excel 行号）→ 回写时被过滤成空集 | `jobs.js` 的 `sheet.export` 按 `id` 把旧行的 `reportRow` 带过来 |
++| P3 | 「导出报告」时把**不可恢复的错误**（如表头缺列）也报成「报告仍被占用，N 条已暂存」并反复暂存 | `report.mergeResults` / `sheet.mergeResults` 的 catch 把**所有**异常都归成「被占用」 | 新增 `winpath.isFileLockError()`，只有真锁错误才暂存；逻辑错误原样报出（并去掉「已回写 0 行」这种像成功的措辞） |
++
++> 这三处都做了**双向验证**（改前必须红、改后必须绿），不是只看「回归全绿」：
++> - P1：改前 `转换 0 / 失败 1 / 残留 .__tmp_scale_4.jpg` → 改后 `转换 1 / 失败 0 / 无残留`
++> - P2：改前导出后 `reportRow = [0,0,0,0]` → 改后 `[2,3,4,5]`
++> - P3：改前表头缺列 `busy=true` 且往暂存队列塞了 1 条 → 改后 `busy=false`、队列不动，且「真被占用」仍正确走 `busy=true` + 暂存
++
++**4.7 真实通道的成功链路**因「不真发帖」而改用**模拟设备通道**验证（`child_process.execFile` 层装假 adb，
++其余全是真代码）：自检 7 项 → 推 3 张图 + 媒体扫描 → 15 次 `uiautomator dump` → 14 次坐标点击 →
++4 次 ADBKeyboard 中文广播 → 2 条发布成功、回填时间 → `publish-log.jsonl` → **回写报告 B/C 列 2 行**，共 15 项断言全绿。
++**真机成功链路（真往账号发）尚未验证** —— 那一步需要把 `uiMap` 换成得物发布页的真实节点。
++
+diff --git a/tools/adbtest.js b/tools/adbtest.js
+index f54e7d9..d0e2b7d 100644
+--- a/tools/adbtest.js
++++ b/tools/adbtest.js
+@@ -1,4 +1,6 @@
+-/* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备 */
++/* 真实（adb）发布通道的可执行验证：用假 adb 模拟一台在线设备
++   假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
++   Windows 的 execFile('adb') 只认 adb.exe，无扩展名的 bash 脚本跑不起来，故改为函数级替身）。 */
+ const Module = require('module');
+ const fs = require('fs');
+ const path = require('path');
+@@ -18,6 +20,18 @@ Module._load = function (r) { if (r === 'electron') return fake; return origLoad
+ 
+ // 工程根目录 = 本文件上一级；不写死绝对路径，换机器/换目录也能跑
+ const base = path.resolve(__dirname, '..');
++
++// 假 adb 的现场文件：复制到临时目录（测试会就地改 window.xml 模拟页面变化，不污染仓库）
++const FDB = path.join(TMP, 'fakeadb');
++fs.cpSync(path.join(__dirname, 'fakeadb'), FDB, { recursive: true });
++const FAKE_WINDOW = path.join(FDB, 'window.xml');
++const CALLS = path.join(FDB, 'calls.log');
++const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
++const clearCalls = () => fs.writeFileSync(CALLS, '');
++
++// ★ 必须在 require 被测模块之前替换：src/main/services/adb.js 在加载时就解构了 execFile
++require('child_process').execFile = require(path.join(__dirname, 'fakeadb', 'adb.js')).makeFakeAdb(FDB);
++
+ const store = require(path.join(base, 'src/main/store.js'));
+ const publisher = require(path.join(base, 'src/main/services/pubublisher.js'.replace('pubublisher', 'publisher')));
+ const uimap = require(path.join(base, 'src/main/services/uimap.js'));
+@@ -38,14 +52,6 @@ const ok = (label, cond, extra) => {
+   console.log((cond ? 'PASS  ' : 'FAIL  ') + label + (extra ? '  → ' + extra : ''));
+   if (!cond) process.exitCode = 1;
+ };
+-// 把仓库里的假 adb 复制到临时目录再跑：不污染仓库，多次运行互不干扰
+-const FDB = path.join(TMP, 'fakeadb');
+-fs.cpSync(path.join(__dirname, 'fakeadb'), FDB, { recursive: true });
+-fs.chmodSync(path.join(FDB, 'adb'), 0o755);
+-const FAKE_WINDOW = path.join(FDB, 'window.xml');
+-const CALLS = path.join(FDB, 'calls.log');
+-const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
+-const clearCalls = () => fs.writeFileSync(CALLS, '');
+ 
+ const uiMap = {
+   package: 'com.shizhuang.duapp',
+@@ -69,7 +75,6 @@ const state = {
+ };
+ 
+ (async () => {
+-  process.env.PATH = FDB + ':' + process.env.PATH;
+   store.set({
+     paths: { source: TMP, output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
+     publish: { device: '127.0.0.1:5555', mock: false, intervalMinSec: 1, intervalMaxSec: 1, retry: 1, adbKeyboard: true }
+diff --git a/tools/fakeadb/adb b/tools/fakeadb/adb
+deleted file mode 100755
+index d73bfa7..0000000
+--- a/tools/fakeadb/adb
++++ /dev/null
+@@ -1,33 +0,0 @@
+-#!/bin/bash
+-# 假 adb：模拟一台在线设备，记录所有调用，用于验证驱动的指令序列。
+-# 注意：目录用 $0 反推，方便整套复制到临时目录里跑，不依赖 /tmp/fakeadb 这个固定路径。
+-DIR="$(cd "$(dirname "$0")" && pwd)"
+-LOG="$DIR/calls.log"
+-echo "$*" >> "$LOG"
+-
+-if [ "$1" = "version" ]; then echo "Android Debug Bridge version 1.0.41"; exit 0; fi
+-if [ "$1" = "devices" ]; then printf "List of devices attached\n127.0.0.1:5555\tdevice\n"; exit 0; fi
+-if [ "$1" = "-s" ]; then shift 2; fi
+-
+-case "$1" in
+-  shell)
+-    shift
+-    cmd="$*"
+-    case "$cmd" in
+-      "wm size")                 echo "Physical size: 1080x2400" ;;
+-      "input")                   echo "usage: input [<source>] <command>" ;;
+-      "input tap "*)             echo "" ;;
+-      "input keyevent "*)        echo "" ;;
+-      "input text "*)            echo "" ;;
+-      "am broadcast "*)          echo "Broadcast completed: result=0" ;;
+-      "uiautomator dump "*)      echo "UI hierchary dumped to: /sdcard/bluev_window.xml" ;;
+-      "cat /sdcard/bluev_window.xml") [ -f "$DIR/window.xml" ] && cat "$DIR/window.xml" || echo "<hierarchy/>" ;;
+-      "pm list packages")        printf "package:com.shizhuang.duapp\npackage:com.android.adbkeyboard\npackage:com.android.shell\n" ;;
+-      *)                         echo "" ;;
+-    esac
+-    ;;
+-  exec-out) cat "$DIR/shot.png" ;;
+-  push)     echo "1 file pushed. 0.4 MB/s" ;;
+-  *)        echo "" ;;
+-esac
+-exit 0
+diff --git a/tools/reporttest.js b/tools/reporttest.js
+index 0326125..4df4d4b 100644
+--- a/tools/reporttest.js
++++ b/tools/reporttest.js
+@@ -163,7 +163,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
+     st.items.length === 3 && st.copyRows.length === 3 && st.verify.rows.length === 1 && st.publish.rows.length === 3 && st.publish.reportFile === repFile,
+     `items ${st.items.length} · copy ${st.copyRows.length} · verify ${st.verify.rows.length} · rows ${st.publish.rows.length}`);
+   ok('⑦ 报告的暂存队列是干净的（没有误用发布单的队列）',
+-    report.pendingCount() === 0 && (await import(path.join(base, 'src/main/services/sheet.js')).then(m => m.takePending('sheet'))).length === 0);
++    report.pendingCount() === 0 && require(path.join(base, 'src/main/services/sheet.js')).takePending('sheet').length === 0);
+ 
+   const pub = await jobs.run('publish.run', {});
+   ok('⑦ 发布跑完（视频那条按「校验未通过」跳过）', pub.ok === true && pub.result.total === 2, pub.error || JSON.stringify(pub.result));
+diff --git a/tools/run-all.js b/tools/run-all.js
+index 27c359f..f4352e4 100644
+--- a/tools/run-all.js
++++ b/tools/run-all.js
+@@ -37,6 +37,15 @@ function electronBin() {
+ const NODE = process.execPath;
+ const ELECTRON = electronBin();
+ 
++// 子进程环境：ELECTRON_RUN_AS_NODE 会让 electron.exe 退化成纯 Node
++// （require('electron').app 变 undefined → 两个 Electron 套件一上来就 TypeError），必须清掉
++const CHILD_ENV = { ...process.env };
++delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
++
++// uicheck / logintest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
++// （远程/CI/沙箱）GPU 进程会反复退出并 FATAL 掉整个 Electron，所以固定关掉 GPU、改进程内渲染。
++const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
++
+ const SUITES = [
+   ['smoke', 'node', ['tools/smoke.js']],
+   ['adbtest', 'node', ['tools/adbtest.js']],
+@@ -70,7 +79,8 @@ let totalPass = 0;
+ for (const [name, kind, args] of SUITES) {
+   if (FILTER && !name.includes(FILTER)) continue;
+   const bin = kind === 'electron' ? ELECTRON : NODE;
+-  const r = spawnSync(bin, args, { cwd: ROOT, encoding: 'utf8', env: process.env, maxBuffer: 64 * 1024 * 1024 });
++  const argv = kind === 'electron' ? ELECTRON_FLAGS.concat(args) : args;
++  const r = spawnSync(bin, argv, { cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, maxBuffer: 64 * 1024 * 1024 });
+   const out = `${r.stdout || ''}${r.stderr || ''}`;
+   const pass = (out.match(/^PASS/gm) || []).length;
+   const fail = (out.match(/^FAIL/gm) || []).length;
+
+########## 以下为新增文件（未跟踪，原本不在 git diff 里） ##########
+
+diff --git a/tools/fakeadb/adb.js b/tools/fakeadb/adb.js
+new file mode 100644
+index 0000000..e371a60
+--- /dev/null
++++ b/tools/fakeadb/adb.js
+@@ -0,0 +1,69 @@
++'use strict';
++/**
++ * 假 adb（跨平台）：在 child_process.execFile 这一层做替身，模拟一台在线设备，
++ * 并把每次调用按「整条 argv 用空格连接」记进 <dir>/calls.log，用来验证驱动的指令序列。
++ *
++ * 为什么不沿用「往 PATH 里塞一个假 adb 可执行文件」的老做法（原 tools/fakeadb/adb 是 bash 脚本）：
++ *   ① Windows 的 PATH 分隔符是 ';'（path.delimiter），写死 ':' 拼出来的目录根本进不了 PATH；
++ *   ② Windows 的 execFile('adb') 只认 adb.exe —— CreateProcess 对无扩展名的名字只会补 .exe，
++ *      认不出无扩展名的 bash 脚本（实测 .cmd/.bat 同样 ENOENT）。
++ *      而造一个真的 adb.exe 需要编译器 + 把二进制提进仓库，代价与可维护性都不划算。
++ * 所以改成在 Node 这一层替换函数：两端行为完全一致，也不再依赖 shell、可执行位或 PATH。
++ * 注意：adb.js 在**加载时**就解构了 execFile，因此必须在 require 被测模块之前完成替换。
++ */
++const fs = require('fs');
++const path = require('path');
++
++/** @param {string} dir 现场目录（至少要含 window.xml 与 shot.png 两个夹具） */
++function makeFakeAdb(dir) {
++  const CALLS = path.join(dir, 'calls.log');
++  const WINDOW_XML = path.join(dir, 'window.xml');
++  const SHOT_PNG = path.join(dir, 'shot.png');
++
++  const read = (p, fallback) => { try { return fs.readFileSync(p); } catch (e) { return fallback; } };
++
++  /** 返回这条命令的 stdout（对齐原 bash 假 adb 的输出） */
++  function respond(argv) {
++    const args = argv.slice();
++    if (args[0] === 'version') return 'Android Debug Bridge version 1.0.41\n';
++    if (args[0] === 'devices') return 'List of devices attached\n127.0.0.1:5555\tdevice\n';
++    if (args[0] === '-s') args.splice(0, 2);
++
++    if (args[0] === 'exec-out') return read(SHOT_PNG, Buffer.alloc(0));   // screencap -p，二进制
++    if (args[0] === 'push') return '1 file pushed. 0.4 MB/s\n';
++
++    if (args[0] === 'shell') {
++      const cmd = args.slice(1).join(' ');
++      if (cmd === 'wm size') return 'Physical size: 1080x2400\n';
++      if (cmd === 'input') return 'usage: input [<source>] <command>\n';
++      if (/^input (tap|keyevent|text) /.test(cmd)) return '';
++      if (/^am broadcast /.test(cmd)) return 'Broadcast completed: result=0\n';
++      if (/^uiautomator dump /.test(cmd)) return 'UI hierchary dumped to: /sdcard/bluev_window.xml\n';
++      if (cmd === 'cat /sdcard/bluev_window.xml') return read(WINDOW_XML, Buffer.from('<hierarchy/>')).toString('utf8');
++      if (cmd === 'pm list packages') return 'package:com.shizhuang.duapp\npackage:com.android.adbkeyboard\npackage:com.android.shell\n';
++      return '';
++    }
++    return '';
++  }
++
++  /** 可直接覆盖到 require('child_process').execFile 上 */
++  return function execFile(file, args, options, callback) {
++    if (typeof options === 'function') { callback = options; options = {}; }
++    const argv = Array.isArray(args) ? args : [];
++    const opts = options || {};
++    // 现场留痕（先写日志再回包，顺序与原 bash 假 adb 一致）
++    try { fs.appendFileSync(CALLS, argv.join(' ') + '\n'); } catch (e) { /* 日志写不进去不该影响被测逻辑 */ }
++    if (file !== 'adb') {
++      // 真被调到了别的可执行文件：明确报错，不要假装成功
++      const err = new Error(`假 adb 只替身 'adb'，却被要求执行 '${file}'`);
++      err.code = 'ENOENT';
++      return process.nextTick(() => callback && callback(err, '', ''));
++    }
++    const out = respond(argv);
++    const isBuffer = opts.encoding === 'buffer';
++    const stdout = Buffer.isBuffer(out) ? out : (isBuffer ? Buffer.from(out) : String(out));
++    process.nextTick(() => callback && callback(null, stdout, ''));
++  };
++}
++
++module.exports = { makeFakeAdb };

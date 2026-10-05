@@ -1,0 +1,18 @@
+{
+ "data": {
+  "goods1Sku": "UWG460108",
+  "goods1Color": "本白"
+ },
+ "steps": [
+  {
+   "name": "好物1 · 选「${goods1Color}」那一格（点它的商品图）",
+   "action": "tapCardText",
+   "value": "${goods1Color}",
+   "card": "com.shizhuang.duapp:id/ivProduct",
+   "when": "goods1Sku,goods1Color",
+   "hint": "★★ 2026-10-03 真机实测：原来写的 tapText「按颜色点那一格」是**错的** —— 点颜色文字弹出的是「选择商品规格」弹层，**不会选中卡片**（MuMu / 得物，UWG460108 货号页与「卡宾」关键词页都实测过，各留了 dump + 截图）。能选中整张卡的是**商品图 com.shizhuang.duapp:id/ivProduct**（实测 319×319）。而颜色文字在几何上落在它所属那张图的 bounds 之内（实测 tvCSpuInfo [278,554][354,597] 完全包在 ivProduct [35,278][354,597] 里）⇒ tapCardText = 按颜色文字找到它所属那张卡、点那张图的**中心**（卡心离颜色标签 259px，不会误触规格弹层）。★ 同一屏的树里同时存在两套互相重叠的卡片列表（「已购」「想要」两个 viewPager，实测坐标错开 220px）⇒ 归属按「右下角对齐」判，不取第一个包住的。★ 同色多款是真的：实测一页里「本白」出现 3 次、各自指向不同的卡；要第 N 个就给这一步写 count。",
+   "verified": true,
+   "settle": 2500
+  }
+ ]
+}

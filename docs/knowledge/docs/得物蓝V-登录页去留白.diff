@@ -1,0 +1,584 @@
+diff --git a/README.md b/README.md
+index cdd76e6..d779a82 100644
+--- a/README.md
++++ b/README.md
+@@ -145,7 +145,7 @@ npm run dist:win
+ 
+ ## 开发期自检
+ 
+-测试都在仓库里（`tools/`），一条命令跑完全部 **199** 项断言：
++测试都在仓库里（`tools/`），一条命令跑完全部 **212** 项断言：
+ 
+ ```bash
+ bash tools/run-all.sh          # 六套主进程测试 + 两个隐藏窗口套件（界面自检 / 登录门）
+diff --git a/docs/HANDOFF.md b/docs/HANDOFF.md
+index a365b45..7c27b34 100644
+--- a/docs/HANDOFF.md
++++ b/docs/HANDOFF.md
+@@ -139,6 +139,11 @@
+ - **2026-10-01 真机实测修掉两个静默隐患**：`adb.dump()` 抓不到结构时会拿**上一个页面**的 XML 冒充本页
+   （后果是按旧坐标连点 + 报「发布成功」）；得物发布页长期不 idle 导致抓不到。
+   两条防线 + 关动画兜底（并还原）见 §5「本次顺手修掉的隐患」。
++- **2026-10-01 登录页去留白（界面改动）**：未登录时不再开一个 1280×820 的空壳窗，而是
++  **收缩成刚好装下登录卡片的小窗**（`window.js` 的 `setLoginMode()` / `fitGate()`：渲染层量出卡片实际高度后回调收紧，
++  提示行显隐导致的高度变化也跟得上）。登录成功自动还原成登录前的尺寸/位置（含最大化状态），退出登录再收回；
++  **登录门期间的临时尺寸不写进 `config.json`**，免得「退出登录一次、下次启动窗口就变小了」。
++  新增 `tools/gatetest.js`（13 项）守住这条链。
+ 
+ ## 5. 待做（按优先级）
+ 
+@@ -334,7 +339,7 @@ node tools/run-all.js smoke  # 只跑名字里带 smoke 的
+ | `tools/uicheck.js` | 隐藏窗口加载真实渲染层：**自己**在进程内设 `BLUEV_NO_LOGIN=1` 免登录、7 个页签渲染、**零控制台报错**、新按钮挂载、批次面板出现/消失、恢复动作走真实 IPC 存进配置 | 19 |
+ | `tools/logintest.js` | 登录门（**这个变量必须没设**）：未登录时业务通道被主进程拦掉、错口令不泄露账号是否存在、记住登录落盘且重启免密、普通成员看不到账号列表、停用后不能登录、不能停用/删自己、退出回登录门、连错 6 次锁定 | 32 |
+ 
+-合计 **199** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 19 + 32 = 199`）。`logintest.js` / `uicheck.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
++合计 **212** 项断言（每次改动后实测：`23 + 46 + 9 + 16 + 22 + 32 + 19 + 32 + 13 = 212`）。`logintest.js` / `uicheck.js` / `gatetest.js` 都把 `userData` 指到临时目录，**不会动你本机的 auth.json / config.json / project.json**。`tools/run-all.sh` 会自己找 node、给本机 Electron 自签（见 §3 的坑），
+ `uicheck.js` 把 `userData` 指到临时目录，**不会动你本机的 config.json / auth.json / project.json**。
+ 
+ 假 adb 已经进仓库，不用再手写：`tools/fakeadb/{adb.js,window.xml,shot.png}`；
+@@ -505,7 +510,7 @@ https://dw.shike.tech/sku-color        （Shike BI · 商品颜色提取）
+ | `../_snapshot-20260930-1515.tar.gz` | **最新**代码快照回滚点（含 ①②③④ + 登录自检 + `.gitignore`） |
+ | `../_snapshot-20260930-1510.tar.gz` | 上一条快照（① ②③④ 完成时） |
+ | `../_snapshot-20260930-1447.tar.gz` | 这批改动**之前**的状态（含另一个任务的登录门） |
+-| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：八套测试，共 199 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
++| `tools/run-all.sh` / `tools/run-all.js` | 一键回归（跨平台）：九套测试，共 212 项断言（跑时**不要**设 `BLUEV_NO_LOGIN`） |
+ | `docs/WINDOWS-E2E.md` | Windows + 雷电模拟器的端到端测试手册（怎么跑、每步预期、坑、问题回传） |
+ | `.gitignore` | 已按「不提交 node_modules / dist / 运行时数据」写好并生效 |
+ 
+diff --git a/docs/WINDOWS-E2E.md b/docs/WINDOWS-E2E.md
+index eccb5db..fe08e76 100644
+--- a/docs/WINDOWS-E2E.md
++++ b/docs/WINDOWS-E2E.md
+@@ -4,7 +4,7 @@
+ > 素材整理 → 合规检查 → AI 文案生成 → 货号颜色预检 → 发布单 / 导入 AI 内容报告 → 自动发布 → 结果回写。
+ >
+ > 配套文档：`docs/HANDOFF.md`（设计与硬约束、真机口径）、`README.md`（模块说明）、本文件（动手测什么）。
+-> 回归现状：**8 套 199 项断言全绿**（`node tools\run-all.js`）。
++> 回归现状：**9 套 212 项断言全绿**（`node tools\run-all.js`）。
+ >
+ > 预计耗时：环境 + 回归 ≈ 20 分钟；手动全流程 ≈ 40~60 分钟（发布环节每条 65~80 秒，按条数算）。
+ 
+@@ -30,7 +30,7 @@ git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+ 1. 完整读 docs/HANDOFF.md 与 docs/WINDOWS-E2E.md，再读 README.md；
+ 2. 按 WINDOWS-E2E 第 2 节备环境、第 3 节跑自动化回归：
+      node tools\run-all.js
+-   预期最后一行「全部通过，共 199 项断言。」——先跑绿再动别的；
++   预期最后一行「全部通过，共 212 项断言。」——先跑绿再动别的；
+ 3. 再按第 4 节逐条做手动全流程，每步记录「预期 / 实际」。
+ 
+ 硬约束（必须遵守）：
+@@ -106,7 +106,7 @@ cd /d D:\work\dewu-bluev-publisher
+ node tools\run-all.js
+ ```
+ 
+-预期最后一行：**`全部通过，共 199 项断言。`**
++预期最后一行：**`全部通过，共 212 项断言。`**
+ 
+ > ⚠️ **不要** `set BLUEV_NO_LOGIN=1 && node tools\run-all.js`：`logintest` 断言的就是「这个变量没设」
+ > （实测设了会 3 条 FAIL 并挂住不退出；`uicheck` 自己会在进程内设好，外面不用管）。
+@@ -430,6 +430,35 @@ D:\卡宾\20260901\                       ← 批次目录（素材根目录就
+ | --- | --- | --- |
+ | P6 抓前不删远端文件 | `adbtest` 1 条红（`46→45`） | 0 红 |
+ | P7 没有关动画兜底 | `adbtest` 3 条红（`46→43`） | 0 红 |
++
++---
++
++### 追加（2026-10-01）：登录页去留白（窗口收缩 + 窗口尺寸回归）
++
++**问题**：未登录时窗口是正常大窗（1280×820），登录卡片只占中间 340×372，**留白占比 87.4%**。
++
++**改法**：`src/main/window.js` 增加登录门几何管理 ——
++
++- `createWindow(locked)`：未登录直接以 380 宽的小窗开场（避免「先大后小」闪一下），并**先记住「正常几何」**；
++- `setLoginMode(on)`：开 = 记住当前几何 → 收缩居中小窗（禁拉伸 / 禁最大化）；关 = 还原尺寸、位置与最大化状态；
++- `fitGate(cardHeight)`：渲染层量出卡片实际高度后回调，把窗口高度收到「卡片 + 上下各 18」；
++- 登录门期间的 `resized` / `moved` / `maximize` **一律不落盘**（`save()` 在 `loginMode` 下直接返回）。
++- 渲染层：`index.html` / `styles.css` 给这个无边框小窗补了一条可拖拽的细标题带 + 关闭按钮；
++  `app.js` 的 `showGate()` 量高后调 `fitGate`；报错行改为「**有错才长高**」（原来恒定预留 17px 空行）。
++
++**实测**（`webContents.capturePage()` + `getBounds()`，同一台机器）：
++
++| 情形 | 窗口 | 卡片 | 每侧留白 | 留白占比 |
++| --- | --- | --- | --- | --- |
++| 改前 | 1280×784 | 340×372 | 左右 470 / 上下 206 | **87.4%** |
++| 改后（新装、有出厂提示） | 380×386 | 340×349 | 左右 20 / 上下 19 | **19.1%** |
++| 改后（真实账号库、无提示） | 380×340 | 340×302 | 左右 20 / 上下 19 | **20.3%** |
++
++**★ 改的过程中 `tools/gatetest.js` 抓到一个真 bug**：开场就以小窗启动时 `normalGeo` 没被记住，
++`setLoginMode(false)` 没有还原目标 ⇒ **登录成功后窗口一直卡在 380 宽**（行为测试 2 项红）。
++修法：`createWindow()` 里先算出「正常几何」再建窗。修完 **13/13 全绿**。
++
++**回归 199 → 212**（新增 `gatetest` 13 项），全绿。
+ | P8 关动画后不还原 | `adbtest` 1 条红（`46→45`） | 0 红 |
+ | **P6+P9（真正的改前版：复用文件 + 不检查成功）** | `adbtest` **6** 条红（`46→40`），含 ⑪「`dump()` 返回残留 XML」与 ⑩「抓不到却连点 5 次并报发布成功」 | 0 红 |
+ 
+diff --git a/src/main/index.js b/src/main/index.js
+index 3dbe5f7..ddb94d3 100644
+--- a/src/main/index.js
++++ b/src/main/index.js
+@@ -32,7 +32,8 @@ if (!app.requestSingleInstanceLock()) {
+     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
+     ipc.register();
+ 
+-    const w = winmod.createWindow();
++    const st = auth.status();
++    const w = winmod.createWindow(st.requireLogin && !st.user);   // 未登录：直接以「登录小窗」开场
+     winmod.attach();
+ 
+     logbus.info(`工具就绪 · ${wp.isWin() ? 'Windows' : process.platform} · 图片引擎 ${imaging.engineName()}`);
+@@ -41,7 +42,6 @@ if (!app.requestSingleInstanceLock()) {
+     }
+     logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
+ 
+-    const st = auth.status();
+     logbus.info(st.requireLogin
+       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')
+       : '登录校验已关闭（BLUEV_NO_LOGIN=1）');
+@@ -50,7 +50,8 @@ if (!app.requestSingleInstanceLock()) {
+ 
+     app.on('activate', () => {
+       if (BrowserWindow.getAllWindows().length === 0) {
+-        const nw = winmod.createWindow();
++        const s = auth.status();
++        const nw = winmod.createWindow(s.requireLogin && !s.user);
+         winmod.attach(nw);
+       }
+     });
+diff --git a/src/main/ipc.js b/src/main/ipc.js
+index 24b3229..9bbf4b1 100644
+--- a/src/main/ipc.js
++++ b/src/main/ipc.js
+@@ -8,6 +8,7 @@ const auth = require('./auth');
+ const imaging = require('./services/imaging');
+ const pool = require('./services/pool');
+ const wp = require('./util/winpath');
++const winmod = require('./window');
+ 
+ function win() {
+   const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+@@ -26,8 +27,17 @@ function guard(fn) {
+ function register() {
+   // ---- 账号与登录：登录页本身要用，不设门禁 ----
+   ipcMain.handle('auth:status', () => auth.status());
+-  ipcMain.handle('auth:login', (_e, u, p, remember) => auth.login(u, p, remember));
+-  ipcMain.handle('auth:logout', () => auth.logout());
++  // 登录成功 → 窗口从「登录小窗」还原成正常尺寸；退出登录 → 重新收回小窗
++  ipcMain.handle('auth:login', (_e, u, p, remember) => {
++    const r = auth.login(u, p, remember);
++    if (r && r.ok) winmod.setLoginMode(false);
++    return r;
++  });
++  ipcMain.handle('auth:logout', () => {
++    const r = auth.logout();
++    winmod.setLoginMode(true);
++    return r;
++  });
+   ipcMain.handle('auth:change-password', (_e, oldP, newP) => auth.changePassword(oldP, newP));
+   ipcMain.handle('auth:users', () => auth.listUsers());
+   ipcMain.handle('auth:create-user', (_e, input) => auth.createUser(input));
+@@ -98,6 +108,7 @@ function register() {
+   ipcMain.on('win:close', () => { const w = win(); if (w) w.close(); });
+   ipcMain.handle('win:is-max', () => { const w = win(); return w ? w.isMaximized() : false; });
+   ipcMain.on('win:flash', () => { const w = win(); if (w) w.flashFrame(true); });
++  ipcMain.on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
+ }
+ 
+ module.exports = { register };
+diff --git a/src/main/window.js b/src/main/window.js
+index d22b850..fca821f 100644
+--- a/src/main/window.js
++++ b/src/main/window.js
+@@ -7,19 +7,40 @@ const logbus = require('./logbus');
+ 
+ let win = null;
+ let saveTimer = null;
++let loginMode = false;        // 登录门模式：窗口收缩成「刚好装下登录卡片」
++let normalGeo = null;         // 进登录门前记住的正常几何，登录成功后原样还原
+ 
+-function createWindow() {
++/* 登录门窗口：宽度 = 卡片 340 + 左右各 20；
++   高度先给个兜底值，渲染层量出卡片实际高度后回调 fitGate() 收紧，避免上下留白 */
++const GATE_WIDTH = 380;
++const GATE_HEIGHT = 336;
++const GATE_PAD_Y = 18;        // 卡片上下各留的呼吸位
++
++function createWindow(locked) {
+   const b = store.get('window.bounds') || {};
+   const bg = nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed';
++  // 「正常几何」= 不做登录门收缩时本该用的那套尺寸/位置。
++  // 开场就是小窗时也必须先把它记下来，否则登录成功后 setLoginMode(false) 没有还原目标，
++  // 窗口会一直卡在 380 宽的小尺寸上（这条被 gateflow 的行为测试抓到过）。
++  const normal = {
++    width: clamp(b.width, 980, 2400, 1280),
++    height: clamp(b.height, 640, 1600, 820)
++  };
++  if (b.x != null) normal.x = b.x;
++  if (b.y != null) normal.y = b.y;
++  loginMode = !!locked;           // 未登录：开场就是小窗，避免「先大后小」闪一下
++  normalGeo = locked ? { bounds: normal, maximized: !!store.get('window.maximized') } : null;
+ 
+   win = new BrowserWindow({
+     title: '得物蓝V 素材发布工具',
+-    width: clamp(b.width, 980, 2400, 1280),
+-    height: clamp(b.height, 640, 1600, 820),
+-    minWidth: 900,
+-    minHeight: 600,
+-    x: b.x,
+-    y: b.y,
++    width: locked ? GATE_WIDTH : normal.width,
++    height: locked ? GATE_HEIGHT : normal.height,
++    minWidth: locked ? 320 : 900,
++    minHeight: locked ? 320 : 600,
++    x: locked ? undefined : b.x,
++    y: locked ? undefined : b.y,
++    resizable: !locked,           // 登录门是个「刚好装下卡片」的小窗，不允许拉伸
++    maximizable: !locked,
+     frame: false,                 // 自绘 Windows 标题栏（最小化/最大化/关闭在右上角）
+     backgroundColor: bg,
+     autoHideMenuBar: true,
+@@ -37,13 +58,17 @@ function createWindow() {
+   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+ 
+   win.once('ready-to-show', () => {
+-    const max = store.get('window.maximized');
+-    if (max) win.maximize();
++    if (loginMode) {
++      win.center();                     // 登录门：小窗居中，不读「上次最大化」
++    } else {
++      const max = store.get('window.maximized');
++      if (max) win.maximize();
++    }
+     win.show();
+   });
+ 
+   const save = () => {
+-    if (!win || win.isDestroyed()) return;
++    if (!win || win.isDestroyed() || loginMode) return;   // 登录门的尺寸不落盘，免得覆盖用户正常的窗口大小
+     clearTimeout(saveTimer);
+     saveTimer = setTimeout(() => {
+       const bb = win.getBounds();
+@@ -52,8 +77,8 @@ function createWindow() {
+   };
+   win.on('resized', save);
+   win.on('moved', save);
+-  win.on('maximize', () => store.set({ window: { maximized: true } }));
+-  win.on('unmaximize', () => store.set({ window: { maximized: false } }));
++  win.on('maximize', () => { if (!loginMode) store.set({ window: { maximized: true } }); });
++  win.on('unmaximize', () => { if (!loginMode) store.set({ window: { maximized: false } }); });
+ 
+   win.on('maximize', () => win.webContents.send('win:max', true));
+   win.on('unmaximize', () => win.webContents.send('win:max', false));
+@@ -69,6 +94,51 @@ function createWindow() {
+   return win;
+ }
+ 
++/**
++ * 登录门开关。
++ *   开：记住当前窗口几何 → 收缩成刚好装下登录卡片的小窗（居中、禁拉伸、禁最大化）
++ *   关：还原成登录前的尺寸/位置与最大化状态
++ * 登录门期间的几何变化有意不写进 config.json（save() 在 loginMode 下直接返回），
++ * 否则会出现「登录前 1280×820、退出登录再进来变成 380×336」。
++ */
++function setLoginMode(on) {
++  if (!win || win.isDestroyed()) return;
++  const next = !!on;
++  if (next === loginMode) return;
++  if (next) {
++    normalGeo = { bounds: win.getBounds(), maximized: win.isMaximized() };
++    loginMode = true;                     // 先置位：让下面的 unmaximize 不落盘
++    if (win.isMaximized()) win.unmaximize();
++    win.setMinimumSize(320, 320);
++    win.setResizable(false);
++    win.setMaximizable(false);
++    win.setBounds({ width: GATE_WIDTH, height: GATE_HEIGHT });
++    win.center();
++  } else {
++    loginMode = false;
++    win.setResizable(true);
++    win.setMaximizable(true);
++    win.setMinimumSize(900, 600);
++    const g = normalGeo;
++    normalGeo = null;
++    if (g) {
++      if (g.bounds) win.setBounds(g.bounds);
++      if (g.maximized) win.maximize();
++    }
++  }
++}
++
++/** 渲染层量出登录卡片的实际高度后回调：把窗口收紧到「卡片高度 + 上下呼吸位」 */
++function fitGate(cardHeight) {
++  if (!win || win.isDestroyed() || !loginMode) return;
++  const raw = Math.round(Number(cardHeight) || 0) + GATE_PAD_Y * 2;
++  if (!(raw > 0)) return;
++  const target = Math.max(200, Math.min(760, raw));
++  if (Math.abs(win.getBounds().height - target) < 2) return;
++  win.setBounds({ height: target });
++  win.center();
++}
++
+ function theme() {
+   return {
+     shouldUseDarkColors: nativeTheme.shouldUseDarkColors,
+@@ -88,4 +158,4 @@ function clamp(v, lo, hi, dflt) {
+   return Math.max(lo, Math.min(hi, n));
+ }
+ 
+-module.exports = { createWindow, getWindow, attach, theme };
++module.exports = { createWindow, getWindow, attach, theme, setLoginMode, fitGate };
+diff --git a/src/preload/index.js b/src/preload/index.js
+index cfc3949..8405b05 100644
+--- a/src/preload/index.js
++++ b/src/preload/index.js
+@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('api', {
+   close: () => ipcRenderer.send('win:close'),
+   isMax: () => ipcRenderer.invoke('win:is-max'),
+   flash: () => ipcRenderer.send('win:flash'),
++  fitGate: h => ipcRenderer.send('win:fit-gate', h),
+ 
+   onJobStart: cb => on('job:started', cb),
+   onJobProgress: cb => on('job:progress', cb),
+diff --git a/src/renderer/app.js b/src/renderer/app.js
+index b5eddf0..16f1aa3 100644
+--- a/src/renderer/app.js
++++ b/src/renderer/app.js
+@@ -681,6 +681,16 @@ function fmtDate(ts) {
+   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+ }
+ 
++/** 量出登录卡片的实际高度，让主进程把窗口收紧到「刚好装下卡片」 */
++function fitGateWindow() {
++  if (!appApi.fitGate) return;
++  requestAnimationFrame(() => {
++    const card = document.querySelector('.gate .gcard');
++    if (!card) return;
++    appApi.fitGate(Math.ceil(card.getBoundingClientRect().height));
++  });
++}
++
+ function showGate(msg) {
+   document.body.classList.add('locked');
+   $('#lgErr').textContent = msg || '';
+@@ -688,7 +698,11 @@ function showGate(msg) {
+   if (!f.dataset.bound) {
+     f.dataset.bound = '1';
+     f.onsubmit = e => { e.preventDefault(); doLogin(); };
+-    $('#lgUser').oninput = $('#lgPwd').oninput = () => { $('#lgErr').textContent = ''; };
++    $('#lgUser').oninput = $('#lgPwd').oninput = () => {
++      if ($('#lgErr').textContent) { $('#lgErr').textContent = ''; fitGateWindow(); }
++    };
++    const gx = $('#gateClose');
++    if (gx) gx.onclick = () => appApi.close();    // 无边框小窗必须自带一个关闭口
+   }
+   const hint = state.auth && state.auth.defaultHint;
+   const tip = $('#lgTip');
+@@ -699,6 +713,7 @@ function showGate(msg) {
+   } else {
+     tip.hidden = true;
+   }
++  fitGateWindow();                                // 提示行显隐会影响卡片高度，量完再收紧窗口
+   setTimeout(() => {
+     const u = $('#lgUser');
+     if (u.value) $('#lgPwd').focus(); else u.focus();
+@@ -716,6 +731,7 @@ async function doLogin() {
+   btn.disabled = false; btn.textContent = '登 录';
+   if (!r.ok) {
+     $('#lgErr').textContent = r.error || '登录失败';
++    fitGateWindow();                     // 报错行会让卡片变高，窗口跟着收紧一次
+     $('#lgPwd').select();
+     return;
+   }
+diff --git a/src/renderer/index.html b/src/renderer/index.html
+index db006c7..b2837cf 100644
+--- a/src/renderer/index.html
++++ b/src/renderer/index.html
+@@ -96,6 +96,12 @@
+ <div id="toast"></div>
+ 
+ <div class="gate" id="gate">
++  <div class="gbar">
++    <span class="gbar-name">得物蓝V 素材发布工具</span>
++    <button class="gbar-x" id="gateClose" type="button" title="关闭" aria-label="关闭">
++      <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg>
++    </button>
++  </div>
+   <form class="gcard" id="loginForm" autocomplete="off">
+     <div class="gbrand">
+       <span class="glogo" aria-hidden="true">
+diff --git a/src/renderer/styles.css b/src/renderer/styles.css
+index 1522457..19c0ba0 100644
+--- a/src/renderer/styles.css
++++ b/src/renderer/styles.css
+@@ -219,6 +219,24 @@ body:not(.locked) .gate{display:none}
+   display:flex;align-items:center;justify-content:center;
+   background:var(--bg);
+ }
++/* 登录小窗是自绘无边框，给一条可拖拽的细标题带 + 关闭按钮，否则窗口既挪不动也关不掉 */
++.gate .gbar{
++  position:absolute;top:0;left:0;right:0;height:34px;
++  display:flex;align-items:center;
++  -webkit-app-region:drag;
++}
++.gate .gbar-name{
++  font-size:11.5px;color:var(--tx3);letter-spacing:.02em;
++  padding-left:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
++}
++.gate .gbar-x{
++  margin-left:auto;flex:0 0 46px;height:34px;
++  display:flex;align-items:center;justify-content:center;
++  background:transparent;border:0;color:var(--tx3);cursor:pointer;
++  -webkit-app-region:no-drag;
++}
++.gate .gbar-x svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1;display:block}
++.gate .gbar-x:hover{background:#e81123;color:#fff}
+ .gate .gcard{
+   width:340px;background:var(--panel);
+   border:1px solid var(--bd);border-radius:12px;
+@@ -233,7 +251,7 @@ body:not(.locked) .gate{display:none}
+ .gate .gfld span{display:block;font-size:11.5px;color:var(--tx3);margin-bottom:4px}
+ .gate .gfld .inp{width:100%;min-width:0}
+ .gate .grem{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx3);margin:2px 0 12px;cursor:pointer}
+-.gate .gerr{min-height:17px;font-size:11.5px;color:var(--red);margin-bottom:6px}
++.gate .gerr{min-height:0;font-size:11.5px;color:var(--red);margin-bottom:6px}
+ .gate .ggo{width:100%;padding:9px 10px;font-size:13px;letter-spacing:.08em}
+ .gate .gtip{font-size:11px;color:var(--tx3);margin:10px 0 0;line-height:1.7}
+ .gate .gtip b{color:var(--amber);font-family:var(--mono)}
+diff --git a/tools/run-all.js b/tools/run-all.js
+index f4352e4..45b165b 100644
+--- a/tools/run-all.js
++++ b/tools/run-all.js
+@@ -13,8 +13,9 @@
+  *   reporttest     「AI 内容报告」导入 → 发布 → 回写
+  *   uicheck        隐藏窗口加载真实渲染层（7 个页签 + 零控制台报错）
+  *   logintest      登录门（未登录拦截 / 口令 / 权限 / 防爆破）
++ *   gatetest       登录门窗口尺寸（未登录收缩成小窗 / 登录后还原 / 退出再收缩）
+  *
+- * 两个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
++ * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
+  */
+ const { spawnSync } = require('child_process');
+ const fs = require('fs');
+@@ -42,7 +43,7 @@ const ELECTRON = electronBin();
+ const CHILD_ENV = { ...process.env };
+ delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
+ 
+-// uicheck / logintest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
++// uicheck / logintest / gatetest 只加载隐藏窗口，不需要 GPU。但在没有桌面会话或没有可用 GPU 的环境里
+ // （远程/CI/沙箱）GPU 进程会反复退出并 FATAL 掉整个 Electron，所以固定关掉 GPU、改进程内渲染。
+ const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
+ 
+@@ -54,7 +55,8 @@ const SUITES = [
+   ['batchtest', 'node', ['tools/batchtest.js']],
+   ['reporttest', 'node', ['tools/reporttest.js']],
+   ['uicheck', 'electron', ['tools/uicheck.js']],
+-  ['logintest', 'electron', ['tools/logintest.js']]
++  ['logintest', 'electron', ['tools/logintest.js']],
++  ['gatetest', 'electron', ['tools/gatetest.js']]
+ ];
+ 
+ /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */
+
+### 新增文件（git diff 不带未跟踪文件，单独补一段）
+diff --git a/tools/gatetest.js b/tools/gatetest.js
+new file mode 100644
+index 0000000..ed3e659
+--- /dev/null
++++ b/tools/gatetest.js
+@@ -0,0 +1,97 @@
++/* 登录门「窗口尺寸」回归：未登录时窗口必须收缩成刚好装下登录卡片的小窗，
++   登录成功后还原成正常尺寸，退出登录再收缩；且登录门期间的临时尺寸不许写进 config.json。
++
++   为什么单独一套：这条链横跨 渲染层量卡片高度 → preload → ipc → main 改窗口，
++   uicheck 只验界面、logintest 只验账号逻辑，两边都盖不到「窗口尺寸」。
++   曾经的真坑：开场就以小窗启动时没记住「正常几何」，登录成功后窗口会一直卡在 380 宽。
++
++   用法：npx electron tools/gatetest.js     （tools/run-all.js 里就是这么调的）
++   注意：userData 会被指到临时目录，不会动你本机的 auth.json / config.json / project.json。
++*/
++const { app } = require('electron');
++const path = require('path');
++const os = require('os');
++const fs = require('fs');
++
++const ROOT = path.resolve(__dirname, '..');
++const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-gate-'));
++app.setPath('userData', TMP);
++app.commandLine.appendSwitch('disable-gpu');
++
++const GATE_MAX_W = 420;     // 登录小窗的宽度上限（卡片 340 + 左右各 20，留点余量）
++const PAD_Y = 18;           // 与 src/main/window.js 的 GATE_PAD_Y 保持一致
++
++let bad = 0;
++const ok = (label, cond, extra) => {
++  console.log((cond ? 'PASS  ' : 'FAIL  ') + label + (extra ? '  → ' + extra : ''));
++  if (!cond) bad++;
++};
++const geoSig = b => b.width + 'x' + b.height;
++
++app.whenReady().then(async () => {
++  const store = require(path.join(ROOT, 'src/main/store.js'));
++  const project = require(path.join(ROOT, 'src/main/project.js'));
++  const auth = require(path.join(ROOT, 'src/main/auth.js'));
++  const ipc = require(path.join(ROOT, 'src/main/ipc.js'));
++  const winmod = require(path.join(ROOT, 'src/main/window.js'));
++
++  store.load();
++  project.load();
++  auth.load();      // 全新数据目录 ⇒ 用出厂账号建库（admin / BlueV@2026）
++  ipc.register();
++
++  const USER = auth.DEFAULT_USER;
++  const PASS = auth.DEFAULT_PASS;
++
++  const w = winmod.createWindow(true);            // true = 以登录门开场
++  await new Promise(r => w.webContents.once('did-finish-load', r));
++  await new Promise(r => setTimeout(r, 1500));    // 等渲染层量高 + fitGate 回调走完
++
++  const js = s => w.webContents.executeJavaScript(s);
++  const cardH = () => js('Math.round(document.querySelector(".gate .gcard").getBoundingClientRect().height)');
++  const isLocked = () => js('document.body.classList.contains("locked")');
++  const gateDisplay = () => js('getComputedStyle(document.querySelector("#gate")).display');
++
++  let g = w.getBounds();
++  let ch = await cardH();
++  ok('未登录：窗口是紧凑小窗，不再是大窗', g.width <= GATE_MAX_W, geoSig(g));
++  ok('未登录：窗口高 = 卡片高 + 上下呼吸位', Math.abs(g.height - (ch + PAD_Y * 2)) <= 3, '窗' + g.height + ' / 卡' + ch);
++  ok('未登录：业务界面整块隐藏、登录门显示', (await isLocked()) === true && (await gateDisplay()) !== 'none');
++  ok('未登录：窗口禁止拉伸 / 禁止最大化', w.isResizable() === false && w.isMaximizable() === false);
++
++  // 走渲染层自己的流程：填表 + 提交（等同于用户敲完点「登录」）
++  await js(`(() => {
++    document.querySelector('#lgUser').value = ${JSON.stringify(USER)};
++    document.querySelector('#lgPwd').value = ${JSON.stringify(PASS)};
++    document.querySelector('#loginForm').requestSubmit();
++    return true;
++  })()`);
++  await new Promise(r => setTimeout(r, 1200));
++
++  g = w.getBounds();
++  ok('登录页没有报错（口令被接受）', (await js('document.querySelector("#lgErr").textContent')) === '');
++  ok('登录后：窗口还原成正常尺寸', g.width >= 900, geoSig(g));
++  ok('登录后：登录门消失、业务界面出来', (await isLocked()) === false && (await gateDisplay()) === 'none');
++  ok('登录后：窗口恢复可拉伸 / 可最大化', w.isResizable() === true && w.isMaximizable() === true);
++  const savedAfterLogin = store.get('window.bounds') || {};
++  ok('登录后：落盘的窗口尺寸不是小窗（下次启动不会变小）', !savedAfterLogin.width || savedAfterLogin.width >= 900, JSON.stringify(savedAfterLogin));
++
++  // 点标题栏右上角的「退出」
++  await js('document.querySelector("#btnLogout").click()');
++  await new Promise(r => setTimeout(r, 1200));
++
++  g = w.getBounds();
++  ch = await cardH();
++  ok('退出登录：窗口重新收缩成小窗', g.width <= GATE_MAX_W, geoSig(g));
++  ok('退出登录：高度再次贴合卡片', Math.abs(g.height - (ch + PAD_Y * 2)) <= 3, '窗' + g.height + ' / 卡' + ch);
++  ok('退出登录：登录门回来', (await isLocked()) === true);
++  const savedAtGate = store.get('window.bounds') || {};
++  ok('登录门的临时尺寸不写进 config.json', !savedAtGate.width || savedAtGate.width >= 900, JSON.stringify(savedAtGate));
++
++  console.log('\nuserData(临时): ' + TMP);
++  console.log(bad ? ('有 ' + bad + ' 项未通过') : '全部通过');
++  app.exit(bad ? 1 : 0);
++}).catch(e => {
++  console.error('GATE TEST ERROR', e);
++  app.exit(1);
++});

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>得物采集助手 · 用量看板</title>
+<link rel="icon" href="assets/icon48.png">
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e6e8ec;
+    --text:#1f2329; --muted:#8a9099; --brand:#111418; --accent:#ee6a00;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:0 0 48px; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+  }
+  a{color:inherit;}
+  .wrap{max-width:900px;margin:0 auto;padding:0 22px;}
+
+  nav{
+    position:sticky;top:0;z-index:9;
+    background:rgba(245,246,248,.86);backdrop-filter:saturate(180%) blur(12px);
+    border-bottom:1px solid var(--line);margin-bottom:26px;
+  }
+  nav .wrap{display:flex;align-items:center;gap:22px;height:58px;}
+  nav .brand{display:flex;align-items:center;gap:9px;font-weight:600;}
+  nav .brand img{width:24px;height:24px;border-radius:6px;}
+  nav .links{margin-left:auto;display:flex;gap:20px;font-size:13.5px;color:var(--muted);}
+  nav .links a{text-decoration:none;}
+  nav .links a:hover{color:var(--text);}
+  nav .links a.on{color:var(--text);font-weight:500;}
+
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px;}
+  h1{font-size:20px;margin:0;letter-spacing:.3px;}
+  .sub{color:var(--muted);font-size:12px;}
+  .toolbar{display:flex;align-items:center;gap:10px;margin:14px 0 20px;flex-wrap:wrap;}
+  button{
+    font:inherit;font-size:13px;padding:7px 16px;border-radius:6px;
+    border:1px solid var(--line);background:#fff;color:var(--text);cursor:pointer;
+  }
+  button:hover{border-color:#c9cdd4;}
+  button.primary{background:var(--brand);color:#fff;border-color:var(--brand);}
+  button.primary:hover{opacity:.88;}
+  .status{color:var(--muted);font-size:12px;}
+  .status.err{color:#c0392b;}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;}
+  .card .label{color:var(--muted);font-size:12px;margin-bottom:6px;}
+  .card .value{font-size:30px;font-weight:600;letter-spacing:.5px;line-height:1.1;font-variant-numeric:tabular-nums;}
+  .card .value.na{color:#c9cdd4;font-size:22px;}
+
+  section{margin-top:26px;}
+  h2{font-size:14px;font-weight:600;margin:0 0 10px;}
+  h2 .note{font-weight:400;color:var(--muted);font-size:12px;margin-left:8px;}
+
+  .bars{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px 10px;}
+  .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+  .bar-row .name{width:122px;flex:none;color:var(--muted);font-size:12px;}
+  .bar-row .track{flex:1;height:10px;background:#f0f1f4;border-radius:5px;overflow:hidden;}
+  .bar-row .fill{height:100%;background:var(--accent);border-radius:5px;min-width:2px;transition:width .3s;}
+  .bar-row .num{width:52px;flex:none;text-align:right;font-variant-numeric:tabular-nums;}
+  .bar-row.zero .fill{background:#e6e8ec;}
+
+  /* 「各页面」「各版本」按插件拆开后，每个插件一小节 */
+  .grp{margin-top:15px;}
+  .grp:first-child{margin-top:2px;}
+  .grp-h{
+    font-size:12px;font-weight:600;color:var(--text);
+    padding-bottom:6px;margin-bottom:9px;border-bottom:1px solid var(--line);
+  }
+  .empty{color:var(--muted);font-size:13px;padding:4px 0 10px;}
+
+  .days{display:flex;align-items:flex-end;gap:5px;height:130px;padding:4px 2px 0;}
+  .day{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+  .day .col{width:100%;background:var(--brand);border-radius:3px 3px 0 0;min-height:2px;}
+  .day.zero .col{background:#e6e8ec;}
+  .day .cnt{font-size:10px;color:var(--muted);margin-bottom:3px;font-variant-numeric:tabular-nums;}
+  .day .dt{font-size:10px;color:var(--muted);margin-top:5px;white-space:nowrap;}
+
+  .tip{
+    margin-top:22px;padding:12px 14px;background:#fff;border:1px solid var(--line);
+    border-left:3px solid var(--accent);border-radius:8px;color:#555;font-size:12.5px;line-height:1.8;
+  }
+  .tip b{color:var(--text);}
+  code{background:#f0f1f4;padding:1px 5px;border-radius:4px;font-size:12px;}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <div class="brand"><img src="assets/icon48.png" alt=""><span>得物采集助手</span></div>
+    <div class="links">
+      <a href="/">下载</a>
+      <a href="dashboard.html" id="nav-self" class="on">用量看板</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <header>
+    <h1>用量看板</h1>
+    <span class="sub">匿名计数 · 只读查看</span>
+  </header>
+
+  <div class="toolbar">
+    <button id="reload" class="primary">刷新数据</button>
+    <span id="status" class="status">正在读取…</span>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="label">累计采集次数</div><div class="value" id="c-total">–</div></div>
+    <div class="card"><div class="label">装过的电脑</div><div class="value" id="c-machines">–</div></div>
+    <div class="card"><div class="label">今天</div><div class="value" id="c-today">–</div></div>
+    <div class="card"><div class="label">最近 7 天</div><div class="value" id="c-week">–</div></div>
+  </div>
+
+  <section>
+    <h2>最近 14 天<span class="note">每天点「开始采集」的次数</span></h2>
+    <div class="bars"><div class="days" id="days"></div></div>
+  </section>
+
+  <section>
+    <h2>各插件用量<span class="note">按插件分开看</span></h2>
+    <div class="bars" id="plugins"></div>
+  </section>
+
+  <section>
+    <h2>各版本用量<span class="note">每个插件各自计版本</span></h2>
+    <div class="bars" id="versions"></div>
+  </section>
+
+  <section>
+    <h2>各页面用量<span class="note">看大家主要在采什么</span></h2>
+    <div class="bars" id="pages"></div>
+  </section>
+
+  <div class="tip">
+    <b>这些数字怎么来的：</b>插件每次点「开始采集」往自己的数据库插一行记录（随机机器编号 + 插件名 + 版本号 + 页面名 + 时间），
+    不发任何采购数据、也不含得物账号。<br>
+    <b>本页只读</b> —— 页面只能调用统计函数拿汇总数字，读不到任何一行明细，也不会把数字刷高。<br>
+    <b>「装过的电脑」</b>= 记录里出现过的不同机器编号个数。<br>
+    <b>注意：</b>得物 <b>v1.5.7 之前</b>的老版本走的是旧的计数服务，不在这个库里；WPS 等新插件从第一个版本起就计入。
+  </div>
+</div>
+
+<script>
+(function () {
+  // 数据来源：自己的 Supabase。**一个请求**就能拿到全部汇总数字
+  // （数据库里的 usage_summary() 函数算好的），不用再逐个计数器读。
+  var SB_URL = 'https://rywurhpkovyjpjyvfjdz.supabase.co';
+  var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5d3VyaHBrb3Z5anBqeXZmamR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NzIxMzIsImV4cCI6MjEwNTI0ODEzMn0.9Z7Sph-QxjdrCAWltr9j65qBK0PcoOw8BWOyAK0eeKM';
+
+  // 兜底值：万一 version.json 读不到，页面照样能用
+  var VERSIONS = ['1.5.7'];
+  var PAGES = [
+    ['product','商品分析'],
+    ['rank_product','市场榜单-商品榜'],
+    ['rank_brand','市场榜单-品牌榜'],
+    ['opportunity','商机推荐-品类规划'],
+    ['goods_order','我的货单'],
+    ['brand_search','品牌商品列表'],
+    ['other','其他']
+  ];
+  // 插件清单：库里存的是 id，这里映射成中文名；库里冒出没登记的 id 就原样显示
+  var PLUGIN_NAMES = [
+    ['dewu','得物'],
+    ['tmall','天猫'],
+    ['jd','京东'],
+    ['xiaohongshu','小红书'],
+    ['wps','WPS']
+  ];
+  var ready = null;
+
+  /** '1.5.7' → 10507，只用来比大小;带后缀（如 1.5.7-selftest）也按数字部分算 */
+  function verNum(v){
+    var p = String(v).split('.');
+    return (parseInt(p[0], 10) || 0) * 10000 +
+           (parseInt(p[1], 10) || 0) * 100 +
+           (parseInt(p[2], 10) || 0);
+  }
+
+  // 版本 / 页面清单从 version.json 读 —— 出新版本后这里会自动多一行
+  try {
+    ready = fetch('version.json?v=' + Date.now(), { cache: 'no-store' })
+      .then(function(r){ return r.json(); })
+      .then(function(v){
+        if (v && v.changelog && v.changelog.length) {
+          // 只拿最新版打底（没数据的也显示成 0）。
+          // 各插件的版本号规则不同（得物 1.5.x、WPS 0.1.x），
+          // 不能用一个全局阈值去筛；库里真实出现的版本由汇总数据补上。
+          VERSIONS = [v.changelog[0].version];
+        }
+        if (v && v.pages && v.pages.length) { PAGES = v.pages; }
+        // 导航里的「用量看板」自链接也带上 build，别跳到可能过期的裸地址
+        var self = document.getElementById('nav-self');
+        if (self && v && v.build) { self.href = 'dashboard.html?v=' + encodeURIComponent(v.build); }
+      })
+      .catch(function(){ /* 用兜底值 */ });
+  } catch (e) { ready = Promise.resolve(); }
+
+  function pad2(n){ return n < 10 ? '0' + n : '' + n; }
+  function ymd(d){ return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate()); }
+
+  /** 一次请求拿到全部汇总；失败就抛错（调用方负责显示"读不到"，不能显示成 0）。 */
+  function loadSummary(){
+    return fetch(SB_URL + '/rest/v1/rpc/usage_summary', {
+      method: 'POST',
+      headers: {
+        apikey: SB_KEY,
+        Authorization: 'Bearer ' + SB_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    }).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  function setCard(id, val){
+    var el = document.getElementById(id);
+    if (val === null) { el.textContent = '读不到'; el.className = 'value na'; return; }
+    el.textContent = val; el.className = 'value';
+  }
+
+  function renderBars(hostId, items){
+    var host = document.getElementById(hostId);
+    var max = Math.max(1, Math.max.apply(null, items.map(function(x){ return x[1] || 0; })));
+    host.innerHTML = items.map(function(x){
+      var v = x[1] || 0;
+      var pct = Math.round((v / max) * 100);
+      return '<div class="bar-row' + (v ? '' : ' zero') + '">' +
+        '<div class="name">' + x[0] + '</div>' +
+        '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="num">' + v + '</div></div>';
+    }).join('');
+  }
+
+  /* 按插件分组的条形图（给「各页面」「各版本」用）：
+     每个插件一个小标题 + 该插件自己的几行，条长按全局最大值算，跨插件可比。 */
+  function renderGroups(hostId, groups){
+    var host = document.getElementById(hostId);
+    groups = groups.filter(function(g){ return g.items && g.items.length; });
+    if (!groups.length) { host.innerHTML = '<div class="empty">还没有数据</div>'; return; }
+
+    var max = 1;
+    groups.forEach(function(g){
+      g.items.forEach(function(it){ if (it[1] > max) max = it[1]; });
+    });
+    host.innerHTML = groups.map(function(g){
+      return '<div class="grp">' +
+        '<div class="grp-h">' + g.name + '</div>' +
+        g.items.map(function(it){
+          var v = it[1] || 0;
+          var pct = Math.round(v / max * 100);
+          return '<div class="bar-row' + (v ? '' : ' zero') + '">' +
+            '<div class="name">' + it[0] + '</div>' +
+            '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>' +
+            '<div class="num">' + v + '</div></div>';
+        }).join('') +
+      '</div>';
+    }).join('');
+  }
+
+  /* 每个插件「有哪些页面 / 哪些版本」。
+     得物的清单是完整的，所以即使某页 0 次也列出来（方便看比重）；
+     其他插件还没这个清单，就以库里真实出现过的为准。 */
+  function declaredPages(pid){
+    return pid === 'dewu' ? PAGES : [];
+  }
+  function declaredVersions(pid){
+    return pid === 'dewu' ? VERSIONS.map(function(v){ return [v, v]; }) : [];
+  }
+
+  /* 把库里的扁平列表 [{pl,p,n}] 整理成「按插件分组」的结构。
+     keyField：取哪个字段当条目名（页面是 p、版本是 v）；prefix：显示前缀（版本加 v）。 */
+  function toGroups(flat, keyField, declaredOf, prefix){
+    var byPl = {}, order = [];
+    (flat || []).forEach(function(x){
+      if (!byPl[x.pl]) { byPl[x.pl] = {}; order.push(x.pl); }
+      byPl[x.pl][x[keyField]] = x.n;
+    });
+
+    // 登记的插件按 PLUGIN_NAMES 的顺序；库里冒出没登记的，接在后面原样显示
+    var known = PLUGIN_NAMES.map(function(p){ return p[0]; });
+    var list = PLUGIN_NAMES.concat(order.filter(function(pid){
+      return known.indexOf(pid) < 0;
+    }).map(function(pid){ return [pid, pid]; }));
+
+    return list.map(function(p){
+      var pid = p[0], map = byPl[pid] || {};
+      var items = [], seen = {};
+      (declaredOf(pid) || []).forEach(function(d){
+        items.push([prefix + d[1], map[d[0]] || 0]); seen[d[0]] = 1;
+      });
+      Object.keys(map).forEach(function(k){
+        if (!seen[k]) items.push([prefix + k, map[k]]);
+      });
+      items.sort(function(a, b){ return b[1] - a[1]; });   // 次数多的在前
+      return { name: p[1], items: items };
+    });
+  }
+
+  function renderDays(list){
+    var host = document.getElementById('days');
+    var max = Math.max(1, Math.max.apply(null, list.map(function(x){ return x[1]; })));
+    host.innerHTML = list.map(function(x){
+      var v = x[1];
+      var h = Math.round((v / max) * 82) + 2;
+      return '<div class="day' + (v ? '' : ' zero') + '">' +
+        '<div class="cnt">' + (v || '') + '</div>' +
+        '<div class="col" style="height:' + h + 'px"></div>' +
+        '<div class="dt">' + x[0] + '</div></div>';
+    }).join('');
+  }
+
+  function load(){
+    var status = document.getElementById('status');
+    status.textContent = '正在读取…'; status.className = 'status';
+
+    ready.then(loadSummary).then(function(s){
+      status.textContent = '最后刷新：' + new Date().toLocaleTimeString('zh-CN') + '（每 60 秒自动刷新）';
+      status.className = 'status';
+
+      setCard('c-total', s.total);
+      setCard('c-machines', s.machines);
+      setCard('c-today', s.today);
+      setCard('c-week', s.week);
+
+      // ---- 最近 14 天：库里只返回"有数据的天"，其余补 0 ----
+      var dayMap = {};
+      (s.by_day || []).forEach(function(x){ dayMap[x.d] = x.n; });
+      var days = [], i;
+      for (i = 13; i >= 0; i--) days.push(new Date(Date.now() - i * 86400000));
+      renderDays(days.map(function(d){
+        return [pad2(d.getMonth()+1) + '/' + pad2(d.getDate()), dayMap[ymd(d)] || 0];
+      }));
+
+      // ---- 各插件：登记的插件打底，库里多出来的也补上，按用量从多到少排 ----
+      var pluginMap = {};
+      (s.by_plugin || []).forEach(function(x){ pluginMap[x.p] = x.n; });
+      var allPlugin = PLUGIN_NAMES.slice();
+      (s.by_plugin || []).forEach(function(x){
+        if (!allPlugin.some(function(p){ return p[0] === x.p; })) allPlugin.push([x.p, x.p]);
+      });
+      allPlugin.sort(function(a, b){ return (pluginMap[b[0]] || 0) - (pluginMap[a[0]] || 0); });
+      renderBars('plugins', allPlugin.map(function(p){ return [p[1], pluginMap[p[0]] || 0]; }));
+
+      // ---- 各版本：按插件分开。
+      //      库里没有新字段（SQL 还没跑 / 老数据）就退回原来的混排，页面不会坏。 ----
+      if (s.by_plugin_version) {
+        renderGroups('versions', toGroups(s.by_plugin_version, 'v', declaredVersions, 'v'));
+      } else {
+        var verMap = {};
+        (s.by_version || []).forEach(function(x){ verMap[x.v] = x.n; });
+        var allVer = VERSIONS.slice();
+        (s.by_version || []).forEach(function(x){
+          if (allVer.indexOf(x.v) < 0) { allVer.push(x.v); }
+        });
+        allVer.sort(function(a, b){ return verNum(b) - verNum(a); });   // 新版本在前
+        renderBars('versions', allVer.map(function(v){ return ['v' + v, verMap[v] || 0]; }));
+      }
+
+      // ---- 各页面：同理，也按插件分开 ----
+      if (s.by_plugin_page) {
+        renderGroups('pages', toGroups(s.by_plugin_page, 'p', declaredPages, ''));
+      } else {
+        var pageMap = {};
+        (s.by_page || []).forEach(function(x){ pageMap[x.p] = x.n; });
+        var allPage = PAGES.slice();
+        (s.by_page || []).forEach(function(x){
+          if (!allPage.some(function(p){ return p[0] === x.p; })) allPage.push([x.p, x.p]);
+        });
+        renderBars('pages', allPage.map(function(p){ return [p[1], pageMap[p[0]] || 0]; }));
+      }
+    }).catch(function(e){
+      status.textContent = '读不到数据 —— ' + (e && e.message ? e.message : '网络异常') +
+        '。检查一下网络，或稍后再点刷新';
+      status.className = 'status err';
+      ['c-total', 'c-machines', 'c-today', 'c-week'].forEach(function(id){ setCard(id, null); });
+    });
+  }
+
+  document.getElementById('reload').addEventListener('click', load);
+  load();
+  setInterval(load, 60000);
+})();
+</script>
+</body>
+</html>

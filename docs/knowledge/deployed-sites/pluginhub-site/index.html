@@ -1,0 +1,1425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+/* 用量看板挂在 /dashboard 这个路径上。
+   静态服务器没有目录索引能力，/dashboard 会被 fallback 到本页（插件中心），
+   所以这里先判路径：命中就同步取来看板的 HTML，直接替换整个文档。
+   这样地址栏保持干净的 /dashboard，也不会闪一下首页。
+   取的时候带时间戳：CDN 会把 /dashboard/index.html 缓存住（部署不会主动失效），
+   带上变化的参数才能每次穿透缓存拿到最新版看板。 */
+(function () {
+  if (location.pathname.replace(/\/+$/, '') !== '/dashboard') return;
+  var url = '/dashboard/index.html?t=' + Date.now();
+  try {
+    var x = new XMLHttpRequest();
+    x.open('GET', url, false);
+    x.send();
+    if (x.status === 200 || x.status === 0) {
+      document.open();
+      document.write(x.responseText);
+      document.close();
+      return;
+    }
+  } catch (e) { /* 落到下面兜底 */ }
+  location.replace(url);
+})();
+</script>
+<title>插件中心</title>
+<!-- 图标：**真实文件放在 /assets/ 下**，不要用根路径 /favicon.ico ——
+     那个路径在「文件还不存在」时被 CDN 缓存成了「回落首页的 HTML」，
+     部分边缘节点至今仍返回 HTML，且部署不会让 CDN 失效（换条没被缓存过的路径才稳）。
+     ICO 里面含 16~256 七个尺寸；SVG 那行在支持它的浏览器上更清晰，Safari 会跳过它去用 ICO。 -->
+<link rel="icon" href="/assets/favicon.ico">
+<link rel="shortcut icon" href="/assets/favicon.ico">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='3' y1='3' x2='25' y2='25' gradientUnits='userSpaceOnUse'%3E%3Cstop offset='0' stop-color='%238ad0ff'/%3E%3Cstop offset='1' stop-color='%233b6dff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='20' height='20' rx='6.6' fill='none' stroke='url(%23g)' stroke-width='3'/%3E%3Crect x='10.6' y='10.6' width='6.8' height='6.8' rx='2.3' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<style>
+  :root{
+    --bg:#07080b;
+    --line:rgba(255,255,255,.075);
+    --line-2:rgba(255,255,255,.15);
+    --text:#eef2f8;
+    --muted:#8a93a4;
+    --muted-2:#5f6878;
+    --c:#3b9dff;
+    --c-rgb:59,157,255;
+    --c-text:#3b9dff;   /* 主题色当文字用；日间模式会被换成加深版 */
+    --on:#ffffff;
+    --wrap:1080px;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;overscroll-behavior-x:none;}
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  /* ---- 背景氛围：跟随当前插件主题色 ---- */
+  body::before{
+    content:""; position:fixed; left:50%; top:-360px; width:1280px; height:780px;
+    transform:translateX(-50%); z-index:0; pointer-events:none; filter:blur(14px);
+    background:radial-gradient(closest-side,rgba(var(--c-rgb),.28),transparent 70%);
+    transition:background .65s ease;
+  }
+  body::after{
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(760px 460px at 86% -6%,rgba(var(--c-rgb),.11),transparent 70%);
+    transition:background .65s ease;
+  }
+  .gridbg{
+    position:fixed; inset:0; z-index:0; pointer-events:none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.026) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px);
+    background-size:58px 58px;
+    -webkit-mask-image:radial-gradient(820px 520px at 50% 0%,#000,transparent 80%);
+    mask-image:radial-gradient(820px 520px at 50% 0%,#000,transparent 80%);
+  }
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px;position:relative;z-index:2;}
+  a{color:inherit;}
+
+  /* ---- 顶部导航 ---- */
+  nav{
+    position:sticky; top:0; z-index:30;
+    background:rgba(7,8,11,.74); backdrop-filter:blur(16px) saturate(160%);
+    border-bottom:1px solid var(--line);
+  }
+  nav .wrap{display:flex;align-items:center;gap:12px;height:60px;padding:0 24px;}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:14.5px;letter-spacing:.2px;text-decoration:none;}
+  .brand .logo{
+    width:26px;height:26px;flex:none;display:grid;place-items:center;
+    filter:drop-shadow(0 3px 12px rgba(59,157,255,.55));
+  }
+  .brand .logo svg{width:26px;height:26px;display:block;}
+
+  /* ---- Hero ---- */
+  header.hero{padding:38px 0 20px;}
+  /* 说明文字和主标题同一行：左标题、右说明，底对齐；窄屏自动折行 */
+  .hero-row{
+    display:flex;align-items:flex-end;justify-content:space-between;
+    gap:44px;flex-wrap:wrap;
+  }
+  .lead{color:#98a2b1;font-size:15.5px;margin:0;flex:1 1 320px;max-width:470px;}
+  h1{margin:0;flex:0 0 auto;font-size:clamp(30px,3.7vw,43px);line-height:1.2;letter-spacing:-1.3px;font-weight:700;}
+  h1 em{
+    font-style:normal;
+    background:linear-gradient(100deg,#3b9dff,#cf1736 52%,#e6b422);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+
+  /* ---- 不规则四边形 Tab ---- */
+  .tabbar{padding:8px 0 0;}
+  .tabs{display:flex;gap:8px;overflow-x:auto;overscroll-behavior-x:contain;padding:4px 2px 10px;scrollbar-width:none;}
+  .tabs::-webkit-scrollbar{display:none;}
+
+  .tab{
+    position:relative;border:0;background:none;padding:0;cursor:pointer;flex:none;
+    font-family:inherit;
+    /* 必须给一个「透明光晕」当过渡目标，不能留空：
+       激活态的彩色投影如果直接过渡到 none，Chrome 会残留一圈旧颜色的描边
+       —— 表现就是切走之后，得物那个 tab 原地还留着一圈蓝色。 */
+    filter:drop-shadow(0 0 0 rgba(0,0,0,0));
+    will-change:filter;
+    transition:filter .35s ease,transform .35s ease;
+  }
+  .tab .edge{
+    display:block;padding:1px;
+    clip-path:polygon(19px 0,100% 0,calc(100% - 25px) 100%,0 100%);
+    background:rgba(255,255,255,.09);
+    transition:background .35s ease;
+  }
+  .tab .face{
+    display:flex;align-items:center;gap:9px;
+    /* 梯形左右两条斜边不对称：竖中线上左边界在 9px、右边界在 W-12px。
+       所以左右 padding 要差 3px（左 = 右 - 3），图标+文字看起来才是居中的。
+       原来左 37 / 右 30 差了 7px，内容就偏右了。 */
+    padding:13px 35px 13px 32px;
+    clip-path:polygon(18px 0,100% 0,calc(100% - 24px) 100%,0 100%);
+    background:#12151b;color:#98a2b1;
+    font-size:14px;font-weight:600;letter-spacing:.2px;white-space:nowrap;
+    transition:background .35s ease,color .35s ease;
+  }
+  .tab .face svg{width:16px;height:16px;flex:none;opacity:.85;}
+  .tab .cnt{
+    font-size:10.5px;font-weight:700;letter-spacing:0;padding:1px 6px;border-radius:5px;
+    background:rgba(255,255,255,.08);color:var(--muted);transition:background .35s,color .35s;
+  }
+  .tab:hover .face{background:#181c24;color:#dbe3ee;}
+  .tab:hover{filter:drop-shadow(0 10px 20px rgba(0,0,0,.5));}
+  .tab.on{filter:drop-shadow(0 14px 30px rgba(var(--trgb),.5));}
+  .tab.on .edge{background:linear-gradient(160deg,rgba(255,255,255,.62),rgba(255,255,255,.16));}
+  .tab.on .face{background:var(--tc);color:var(--ton);}
+  .tab.on .cnt{background:rgba(0,0,0,.22);color:inherit;}
+  .tab:focus-visible{outline:2px solid rgba(var(--trgb),.8);outline-offset:3px;}
+
+  /* ---- 内容面板 ---- */
+  .stage{padding:0 0 56px;}
+  .panel{
+    /* 用 clip 而不是 hidden：两者都能把左上角的光晕裁进圆角里，
+       但 overflow:hidden 会把面板变成「滚动容器」，里面的 position:sticky
+       （在线工具箱的左目录）就再也贴不住视口了 —— clip 不创建滚动容器。
+       前一行是给不认 clip 的老浏览器兜底（那种情况下只是目录不跟随，不会坏）。 */
+    position:relative;overflow:hidden;overflow:clip;
+    border:1px solid var(--line);border-radius:20px;
+    background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.012));
+    box-shadow:0 46px 90px -58px rgba(0,0,0,.95),inset 0 1px 0 rgba(255,255,255,.05);
+    padding:28px 30px;
+    animation:rise .5s cubic-bezier(.2,.7,.3,1) both;
+  }
+  .panel>*{position:relative;z-index:1;}
+  .panel::before{
+    content:"";position:absolute;left:0;right:0;top:0;height:1px;z-index:0;
+    background:linear-gradient(90deg,transparent,rgba(var(--c-rgb),.95),transparent);
+    box-shadow:0 0 20px 1px rgba(var(--c-rgb),.55);
+  }
+  .panel::after{
+    content:"";position:absolute;left:-140px;top:-160px;width:480px;height:360px;
+    z-index:0;pointer-events:none;
+    background:radial-gradient(closest-side,rgba(var(--c-rgb),.13),transparent 74%);
+  }
+  @keyframes rise{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+
+  .phead{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;}
+  .emblem{
+    width:66px;height:66px;border-radius:20px;flex:none;display:grid;place-items:center;
+    background:linear-gradient(150deg,rgba(var(--c-rgb),1),rgba(var(--c-rgb),.68));
+    color:var(--on);
+    box-shadow:0 20px 38px -16px rgba(var(--c-rgb),.85),inset 0 1px 0 rgba(255,255,255,.42);
+  }
+  .emblem svg{width:32px;height:32px;}
+  .hmeta{flex:1 1 320px;min-width:0;}
+  .hmeta h2{margin:0 0 7px;font-size:27px;letter-spacing:-.7px;font-weight:700;line-height:1.25;}
+  .hmeta .tl{color:#a3adbd;font-size:14.5px;margin:0;max-width:620px;}
+  .tagrow{display:flex;gap:11px;align-items:center;flex-wrap:wrap;margin-top:13px;font-size:12.5px;color:var(--muted);}
+  .dot{width:3px;height:3px;border-radius:50%;background:var(--muted-2);}
+  .badge{
+    font-size:11.5px;padding:3px 11px;border-radius:999px;font-weight:600;letter-spacing:.2px;
+    border:1px solid transparent;
+  }
+  .badge.on{color:#3ddc97;background:rgba(61,220,151,.12);border-color:rgba(61,220,151,.32);}
+  .badge.beta{color:#fbbf24;background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.32);}
+  .badge.plan{color:#9aa6b8;background:rgba(154,166,184,.12);border-color:rgba(154,166,184,.3);}
+  .act{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;}
+
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;border-radius:12px;padding:13px 22px;
+    font-size:14.5px;font-weight:600;font-family:inherit;cursor:pointer;text-decoration:none;
+    border:1px solid transparent;
+    transition:transform .16s ease,box-shadow .28s ease,background .28s ease;
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn.primary{
+    background:var(--c);color:var(--on);
+    box-shadow:0 18px 36px -18px rgba(var(--c-rgb),.95),inset 0 1px 0 rgba(255,255,255,.3);
+  }
+  .btn.primary:hover{box-shadow:0 22px 44px -18px rgba(var(--c-rgb),1);}
+  .btn.primary span{opacity:.7;font-weight:500;}
+  .btn.ghost{background:rgba(255,255,255,.05);border-color:var(--line-2);color:var(--text);}
+  .btn.ghost:hover{background:rgba(255,255,255,.1);}
+
+  /* ---- 小节 ---- */
+  .sec{margin-top:26px;}
+  .sec-h{
+    display:flex;align-items:baseline;gap:11px;margin:0 0 15px;
+    font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);font-weight:600;
+  }
+  .sec-h s{text-decoration:none;font-weight:400;letter-spacing:.2px;text-transform:none;font-size:12.5px;color:var(--muted-2);}
+  .sec-h::before{content:"";width:16px;height:1px;background:rgba(var(--c-rgb),.8);align-self:center;}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(262px,1fr));gap:11px;}
+  .pg{
+    border:1px solid var(--line);border-radius:14px;padding:15px 17px;
+    background:rgba(255,255,255,.022);
+    transition:border-color .25s,background .25s,transform .25s;
+  }
+  .pg:hover{border-color:rgba(var(--c-rgb),.45);background:rgba(var(--c-rgb),.06);transform:translateY(-2px);}
+  .pg .t{font-weight:600;font-size:14px;margin-bottom:5px;letter-spacing:-.1px;}
+  .pg .d{color:var(--muted);font-size:12.8px;line-height:1.66;}
+  .pg .p{color:var(--c-text);font-size:11.5px;margin-top:9px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+
+  .cols{display:grid;grid-template-columns:1.05fr .95fr;gap:34px;margin-top:26px;}
+  .cols .sec{margin-top:0;}
+
+  /* ---- 安装步骤 ---- */
+  .steps{list-style:none;margin:0;padding:0;counter-reset:s;}
+  .steps li{
+    counter-increment:s;position:relative;padding:0 0 15px 39px;
+    font-size:14px;color:#c2cbd8;line-height:1.72;
+  }
+  .steps li:last-child{padding-bottom:0;}
+  .steps li::before{
+    content:counter(s);position:absolute;left:0;top:2px;
+    width:25px;height:25px;border-radius:9px;display:grid;place-items:center;
+    font-size:11.5px;font-weight:700;
+    background:rgba(var(--c-rgb),.14);color:var(--c-text);
+    border:1px solid rgba(var(--c-rgb),.32);
+  }
+  .steps b{color:#eaf0f8;font-weight:600;}
+  .steps code,.hint code{
+    background:rgba(255,255,255,.075);border:1px solid var(--line);
+    padding:1px 7px;border-radius:6px;font-size:12.5px;color:#dbe3ee;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .hint{
+    margin-top:13px;padding:13px 16px;border-radius:12px;
+    font-size:13px;line-height:1.75;color:#b4becd;
+    background:rgba(var(--c-rgb),.07);border:1px solid rgba(var(--c-rgb),.18);
+  }
+  .hint b{color:#e8eef7;font-weight:600;}
+
+  /* ---- 更新日志 ---- */
+  .log{position:relative;padding-left:18px;}
+  .log::before{
+    content:"";position:absolute;left:4px;top:9px;bottom:9px;width:1px;
+    background:linear-gradient(180deg,rgba(var(--c-rgb),.65),rgba(255,255,255,.06));
+  }
+  .rel{position:relative;padding:0 0 20px;}
+  .rel:last-child{padding-bottom:0;}
+  .rel::before{
+    content:"";position:absolute;left:-18px;top:7px;width:9px;height:9px;border-radius:50%;
+    background:#0b0d12;border:2px solid rgba(255,255,255,.22);
+  }
+  .rel:first-child::before{
+    background:rgb(var(--c-rgb));border-color:rgb(var(--c-rgb));
+    box-shadow:0 0 0 4px rgba(var(--c-rgb),.16);
+  }
+  .rel .hd{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}
+  .rel .v{font-weight:700;font-size:14.5px;letter-spacing:-.1px;}
+  .rel .tag{
+    font-size:10.5px;font-weight:700;color:var(--on);background:rgb(var(--c-rgb));
+    border-radius:5px;padding:1px 7px;vertical-align:1px;
+  }
+  .rel .date{color:var(--muted-2);font-size:12px;}
+  .rel ul{margin:7px 0 0;padding-left:17px;color:#96a0b0;font-size:13.2px;line-height:1.8;}
+  .rel ul::marker{color:var(--c-text);opacity:.75;}
+
+  /* ---- 在线工具箱：工具卡片 ---- */
+  .tools{display:grid;gap:12px;}
+  .tcard{
+    border:1px solid var(--line);border-radius:14px;
+    background:rgba(255,255,255,.022);
+    padding:16px;
+  }
+  .tc-h{display:flex;align-items:baseline;gap:9px;margin-bottom:13px;}
+  .tc-h b{font-size:14.5px;letter-spacing:-.1px;}
+  .tc-h span{font-size:12px;color:var(--muted-2);}
+  .tc-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:10px;}
+  .tc-row .lb{font-size:12px;color:var(--muted-2);flex:none;}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;}
+  .chip{
+    font:inherit;font-size:12px;padding:4px 11px;border-radius:8px;cursor:pointer;
+    border:1px solid var(--line);background:transparent;color:var(--muted);
+    transition:border-color .2s,background .2s,color .2s;
+  }
+  .chip:hover{border-color:var(--line-2);color:var(--text);}
+  .chip.on{
+    border-color:rgba(var(--c-rgb),.55);background:rgba(var(--c-rgb),.15);
+    color:var(--c-text);font-weight:600;
+  }
+  .inp{
+    font:inherit;font-size:12.5px;width:82px;padding:5px 9px;border-radius:8px;
+    border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);
+    outline:none;transition:border-color .2s;
+  }
+  .inp:focus{border-color:rgba(var(--c-rgb),.55);}
+  .ck{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;}
+  .ck input{accent-color:rgb(var(--c-rgb));width:13px;height:13px;cursor:pointer;margin:0;}
+  .io{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:11px;}
+  .io-col{display:flex;flex-direction:column;min-width:0;}
+  .io-h{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted-2);margin-bottom:6px;}
+  .io-h-wide{justify-content:space-between;}
+  .io-h-wide.mt{margin-top:15px;}
+  .cp{
+    margin-left:auto;font:inherit;font-size:11px;padding:2px 9px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--line);background:transparent;color:var(--muted);transition:color .2s,border-color .2s;
+  }
+  .cp:hover{color:var(--text);border-color:var(--line-2);}
+  .tcard textarea{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12.5px;line-height:1.75;
+    width:100%;box-sizing:border-box;min-height:116px;resize:vertical;
+    padding:10px 12px;border-radius:10px;
+    border:1px solid var(--line);background:rgba(0,0,0,.22);color:var(--text);
+    outline:none;transition:border-color .2s;
+  }
+  .tcard textarea:focus{border-color:rgba(var(--c-rgb),.5);}
+  .tcard textarea[readonly]{background:rgba(var(--c-rgb),.06);}
+  .tcard textarea.wide{min-height:148px;}
+  .tnote{
+    font-size:12.5px;line-height:1.78;color:var(--muted);
+    background:rgba(var(--c-rgb),.07);border:1px solid rgba(var(--c-rgb),.2);
+    border-radius:10px;padding:10px 13px;margin-bottom:12px;
+  }
+  .tnote code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.8px;
+    background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px;
+  }
+  .tnote b{color:var(--text);font-weight:600;}
+  .out-note{margin:12px 0 0;}
+  .cnt{font-variant-numeric:tabular-nums;}
+  .cnt.over{color:#ff8080;}
+  .btnrow{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px;}
+  @media (max-width:720px){ .io{grid-template-columns:1fr;} }
+
+  /* ---- 在线工具箱：左侧二级目录（只有这个面板有） ---- */
+  .tool-layout{display:grid;grid-template-columns:126px 1fr;gap:28px;align-items:start;}
+  .tool-body{min-width:0;}
+  .tool-body .sec:first-child{margin-top:0;}
+  /* 纯文字目录：不要背景块、不要边框 —— 一有底块就会和上面的模块"接"在一起 */
+  .tool-toc{position:sticky;top:84px;display:flex;flex-direction:column;}
+  .tool-toc-t{
+    font-size:14px;font-weight:700;letter-spacing:-.1px;
+    color:var(--text);padding:0 0 13px;
+  }
+  .tool-toc a{
+    display:block;font-size:14px;color:var(--muted);text-decoration:none;cursor:pointer;
+    padding:10px 0;transition:color .2s;
+  }
+  .tool-toc a:hover{color:var(--text);}
+  .tool-toc a.on{color:rgb(var(--c-rgb));font-weight:600;}
+  @media (max-width:900px){
+    .tool-layout{grid-template-columns:1fr;gap:0;}
+    .tool-toc{display:none;}
+    .tool-body .sec:first-child{margin-top:26px;}
+  }
+
+  /* ---- 回到顶部 ---- */
+  .totop{
+    position:fixed;right:26px;bottom:26px;z-index:60;padding:0;
+    width:44px;height:44px;border-radius:50%;
+    display:grid;place-items:center;cursor:pointer;
+    border:1px solid var(--line-2);
+    background:rgba(16,20,27,.85);color:var(--text);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    opacity:0;pointer-events:none;transform:translateY(12px);
+    transition:opacity .25s ease,transform .25s ease,border-color .2s,background .2s;
+  }
+  .totop.on{opacity:1;pointer-events:auto;transform:none;}
+  .totop:hover{border-color:rgba(var(--c-rgb),.65);background:rgba(var(--c-rgb),.18);}
+  .totop svg{width:18px;height:18px;}
+  @media (max-width:720px){ .totop{right:16px;bottom:16px;width:40px;height:40px;} }
+
+  /* ---- 底部 ---- */
+  footer{
+    border-top:1px solid var(--line);margin-top:10px;padding:26px 0 54px;
+    color:var(--muted-2);font-size:12.5px;line-height:1.9;
+  }
+  .toast{
+    position:fixed;left:50%;bottom:36px;z-index:99;
+    transform:translate(-50%,14px);
+    background:#161a21;color:#eef2f8;border:1px solid var(--line-2);
+    padding:11px 20px;border-radius:11px;font-size:13.5px;
+    box-shadow:0 20px 44px -18px rgba(0,0,0,.9);
+    opacity:0;pointer-events:none;transition:opacity .24s,transform .24s;
+  }
+  .toast.on{opacity:1;transform:translate(-50%,0);}
+
+  @media (max-width:860px){
+    .cols{grid-template-columns:1fr;gap:28px;}
+    .panel{padding:24px;}
+    header.hero{padding:26px 0 16px;}
+    .tab .face{padding:12px 31px 12px 28px;font-size:13.5px;}   /* 同样保持「左 = 右 - 3」 */
+  }
+  /* ---- 日间 / 夜间 切换按钮 ---- */
+  .themebtn{
+    margin-left:auto;width:32px;height:32px;flex:none;border-radius:9px;
+    display:grid;place-items:center;cursor:pointer;
+    border:1px solid var(--line-2);background:rgba(255,255,255,.05);color:var(--muted);
+    transition:background .2s,color .2s,border-color .2s;
+  }
+  .themebtn:hover{background:rgba(255,255,255,.1);color:var(--text);}
+  .themebtn svg{width:16px;height:16px;display:block;}
+
+  /* ============================ 日间模式 ============================ */
+  html[data-theme="light"]{
+    --bg:#f1f4f8;
+    --line:rgba(18,22,30,.09);
+    --line-2:rgba(18,22,30,.16);
+    --text:#151922;
+    --muted:#5d6879;
+    --muted-2:#8a94a4;
+  }
+  html[data-theme="light"] body::before{
+    background:radial-gradient(closest-side,rgba(var(--c-rgb),.17),transparent 70%);
+  }
+  html[data-theme="light"] body::after{
+    background:radial-gradient(760px 460px at 86% -6%,rgba(var(--c-rgb),.08),transparent 70%);
+  }
+  html[data-theme="light"] .gridbg{
+    background-image:
+      linear-gradient(rgba(18,22,30,.035) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(18,22,30,.035) 1px,transparent 1px);
+  }
+  html[data-theme="light"] nav{background:rgba(241,244,248,.82);}
+  html[data-theme="light"] .brand .logo{filter:drop-shadow(0 2px 8px rgba(59,157,255,.35));}
+  html[data-theme="light"] h1 em{background-image:linear-gradient(100deg,#1a6fd4,#a5122c 52%,#9c7716);}
+  html[data-theme="light"] .lead{color:#5d6879;}
+  html[data-theme="light"] .themebtn{background:#fff;}
+  html[data-theme="light"] .themebtn:hover{background:#f7f9fc;}
+
+  html[data-theme="light"] .tab .edge{background:rgba(18,22,30,.11);}
+  /* 未激活：白底灰字。这里必须排除 .on —— 这条选择器比 .tab.on .face 更"重"，
+     不排除的话会把激活 tab 的品牌色底一起刷成白色，日间下 tab 就"掉色"了。 */
+  html[data-theme="light"] .tab:not(.on) .face{background:#fff;color:#5d6879;}
+  html[data-theme="light"] .tab:not(.on):hover .face{background:#f6f8fc;color:#151922;}
+  /* 激活：保持该插件的原色实心，和夜间一致
+     （得物极光蓝 / 天猫黄 / 京东浅红 / 小红书深红 / WPS 金） */
+  html[data-theme="light"] .tab.on .face{background:var(--tc);color:var(--ton);}
+  html[data-theme="light"] .tab.on .edge{background:linear-gradient(160deg,rgba(var(--trgb),.5),rgba(var(--trgb),.14));}
+  html[data-theme="light"] .tab:hover{filter:drop-shadow(0 8px 18px rgba(18,22,30,.16));}
+  html[data-theme="light"] .tab.on{filter:drop-shadow(0 12px 24px rgba(var(--trgb),.42));}
+
+  html[data-theme="light"] .panel{
+    background:linear-gradient(180deg,#fff,#fbfcfe);
+    box-shadow:0 34px 66px -46px rgba(18,22,30,.42),0 1px 2px rgba(18,22,30,.04);
+  }
+  html[data-theme="light"] .emblem{
+    box-shadow:0 16px 32px -16px rgba(var(--c-rgb),.72),inset 0 1px 0 rgba(255,255,255,.5);
+  }
+  html[data-theme="light"] .hmeta .tl{color:#5d6879;}
+  html[data-theme="light"] .btn.ghost{background:#fff;border-color:var(--line-2);}
+  html[data-theme="light"] .btn.ghost:hover{background:#f4f6fa;}
+
+  html[data-theme="light"] .pg{background:#fafbfd;}
+  html[data-theme="light"] .pg .d{color:#6b7686;}
+  html[data-theme="light"] .pg:hover{background:rgba(var(--c-rgb),.07);}
+
+  html[data-theme="light"] .steps li{color:#39424f;}
+  html[data-theme="light"] .steps b{color:#151922;}
+  html[data-theme="light"] .steps code,
+  html[data-theme="light"] .hint code{background:#f1f4f9;border-color:var(--line);color:#39424f;}
+  html[data-theme="light"] .hint{color:#4a5563;background:rgba(var(--c-rgb),.06);}
+  html[data-theme="light"] .hint b{color:#151922;}
+
+  html[data-theme="light"] .log::before{
+    background:linear-gradient(180deg,rgba(var(--c-rgb),.55),rgba(18,22,30,.08));
+  }
+  html[data-theme="light"] .rel::before{background:#fff;border-color:rgba(18,22,30,.2);}
+  html[data-theme="light"] .rel ul{color:#5d6879;}
+
+  /* 在线工具箱（日间）：白卡 + 浅底输入框 */
+  html[data-theme="light"] .tcard{background:#fff;}
+  html[data-theme="light"] .tcard textarea{background:#fbfcfe;color:#1b2330;}
+  html[data-theme="light"] .tcard textarea[readonly]{background:rgba(var(--c-rgb),.05);}
+  html[data-theme="light"] .inp,
+  html[data-theme="light"] .chip,
+  html[data-theme="light"] .cp{background:#fff;}
+  html[data-theme="light"] .chip.on{background:rgba(var(--c-rgb),.12);}
+  html[data-theme="light"] .tnote code{background:rgba(18,22,30,.07);color:#39424f;}
+  html[data-theme="light"] .totop{background:rgba(255,255,255,.92);}
+  html[data-theme="light"] .totop:hover{background:rgba(var(--c-rgb),.1);}
+
+  html[data-theme="light"] .badge.on{color:#0f9d58;background:rgba(15,157,88,.1);border-color:rgba(15,157,88,.26);}
+  html[data-theme="light"] .badge.beta{color:#b45309;background:rgba(180,83,9,.1);border-color:rgba(180,83,9,.24);}
+  html[data-theme="light"] .badge.plan{color:#5d6879;background:rgba(93,104,121,.1);border-color:rgba(93,104,121,.22);}
+
+  html[data-theme="light"] .toast{
+    background:#fff;color:#151922;border-color:var(--line);
+    box-shadow:0 18px 40px -20px rgba(18,22,30,.35);
+  }
+</style>
+</head>
+<body>
+
+<div class="gridbg" aria-hidden="true"></div>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#/dewu">
+      <span class="logo">
+        <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="brandGrad" x1="3" y1="3" x2="25" y2="25" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#8ad0ff"/>
+              <stop offset="1" stop-color="#3b6dff"/>
+            </linearGradient>
+          </defs>
+          <rect x="4" y="4" width="20" height="20" rx="6.6" stroke="url(#brandGrad)" stroke-width="2.2"/>
+          <rect x="10.4" y="10.4" width="7.2" height="7.2" rx="2.4" fill="url(#brandGrad)"/>
+        </svg>
+      </span>
+      <span>插件中心</span>
+    </a>
+    <button class="themebtn" id="themebtn" type="button" title="切换日间 / 夜间模式" aria-label="切换日间 / 夜间模式"></button>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <div class="hero-row">
+    <h1>多个插件，<br><em>各管一个后台。</em></h1>
+    <p class="lead">得物、天猫、京东、小红书、WPS 各是一个独立的采集插件，装哪个用哪个，升级也各走各的；在线工具箱不用安装，打开就能用；<b>得物蓝V素材发布工具</b>是 Windows 桌面应用，用来把素材批量发布到得物「穿搭精选」。</p>
+  </div>
+</header>
+
+<div class="tabbar wrap">
+  <div class="tabs" id="tabs"></div>
+</div>
+
+<main class="stage wrap" id="view"></main>
+
+<footer class="wrap" id="foot">
+  插件中心 · 内部工具，请勿外传。本页为静态站点，各插件包与本页内容随新版本一起更新。
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<button class="totop" id="totop" type="button" aria-label="回到顶部" title="回到顶部">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5.6 11.4 6.4-6.4 6.4 6.4"/></svg>
+</button>
+
+<script>
+/* ===========================================================================
+   插件中心 · 单文件 Demo
+   各插件各自独立，tab 切换。路由： #/<插件 id>
+   改文案 / 加插件：只动 PLUGINS 数组。
+   每个插件的配色：color 主色、rgb 同色（逗号分隔，给 rgba 用）、on 主色上的文字色。
+   =========================================================================== */
+
+var ICONS = {
+  dewu:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>',
+  tmall:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 10 6.8 4.2 10 8.4"/><path d="M19.8 10 17.2 4.2 14 8.4"/><path d="M12 7.4c-4.4 0-7.8 2.4-7.8 6.2 0 3.4 3.5 5.6 7.8 5.6s7.8-2.2 7.8-5.6c0-3.8-3.4-6.2-7.8-6.2z"/><circle cx="9.6" cy="13.2" r=".95" fill="currentColor" stroke="none"/><circle cx="14.4" cy="13.2" r=".95" fill="currentColor" stroke="none"/></svg>',
+  jd:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5C5 7.1 3.9 8.5 3.9 10.3c0 1.5.6 2.7 1.7 3.4"/><path d="M17.5 6.5c1.5.6 2.6 2 2.6 3.8 0 1.5-.6 2.7-1.7 3.4"/><path d="M12 5.9c-3.2 0-5.8 2.4-5.8 5.7S8.8 17.1 12 17.1s5.8-2.2 5.8-5.5S15.2 5.9 12 5.9z"/><circle cx="9.5" cy="11" r="1" fill="currentColor" stroke="none"/><circle cx="14.5" cy="11" r="1" fill="currentColor" stroke="none"/><path d="M12 13.4v1.3"/></svg>',
+  xhs:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.7C10.6 5.6 8.8 5 6.9 5c-.9 0-1.7.2-2.3.5v12.3c.6-.3 1.4-.4 2.3-.4 1.9 0 3.7.6 5.1 1.7"/><path d="M12 6.7C13.4 5.6 15.2 5 17.1 5c.9 0 1.7.2 2.3.5v12.3c-.6-.3-1.4-.4-2.3-.4-1.9 0-3.7.6-5.1 1.7"/><path d="M12 6.7V19"/></svg>',
+  wps:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 9.6h17M10 9.6V20"/></svg>',
+  toolbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.6" width="18" height="11.4" rx="2.4"/><path d="M8.6 7.6V5.8A1.8 1.8 0 0 1 10.4 4h3.2a1.8 1.8 0 0 1 1.8 1.8v1.8"/><path d="M3.4 12.4h17.2"/><rect x="10.4" y="12.4" width="3.2" height="1.9" rx=".5"/></svg>',
+  bluev:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 15 22 11 13 2 9 22 2z"/><path d="M22 2 11 13"/></svg>'
+};
+
+/* 四个浏览器插件共用的加载步骤，只有最后一步的域名不同 */
+function chromeSteps(site){
+  return [
+    '把下载到的压缩包解压到一个<b>固定位置</b>（别放"下载"文件夹，以后可能被清理）。',
+    '打开 Chrome，地址栏输入 <code>chrome://extensions/</code> 回车。',
+    '打开右上角的<b>「开发者模式」</b>开关。',
+    '点左上角<b>「加载已解压的扩展程序」</b>，选中解压出来的那个文件夹（<b>选文件夹，不是选 zip</b>）。',
+    '打开 ' + site + '，点浏览器右上角的插件图标就能看到。'
+  ];
+}
+
+var PLUGINS = [
+
+  /* ------------------------------------------------------------------ 得物 */
+  {
+    id:'dewu', name:'得物采集助手', short:'得物', site:'stark.dewu.com', icon:'dewu',
+    color:'#3b9dff', rgb:'59,157,255', on:'#04121f',
+    status:'已上线', pill:'on', version:'1.5.7', released:'2026-09-24',
+    /* 配了 versionUrl 的插件，打开页面后会自动拉一次线上的版本号 / 更新日志。
+       拉不到（跨域、404、断网）就静默继续用上面写死的值，页面不受任何影响。
+       这里用相对路径：只要 version.json 跟本页放在同一个站点下就能读到，
+       以后整个目录换个域名部署也不用改代码。 */
+    versionUrl:'version.json',
+    /* 安装包地址。拉 version.json 成功的话，会用里面的 file 字段自动覆盖这个值，
+       所以换了下载文件名也不用改这里。 */
+    downloadUrl:'dl/dewu-collector.zip',
+    tagline:'一键采集得物商家后台的数据，自动翻页并导出成 Excel。',
+    pagesTitle:'支持采集的页面',
+    pages:[
+      { t:'商品分析', d:'按选定日期区间逐天采集，导出表格第一列就是「日期」。', p:'数据 → 商品分析' },
+      { t:'市场榜单 · 商品榜', d:'按当前榜单筛选条件自动翻页，抓取完整排名与销量。', p:'数据 → 市场榜单 → 商品榜' },
+      { t:'市场榜单 · 品牌榜', d:'可遍历一级类目，逐个类目把品牌榜抓完。', p:'数据 → 市场榜单 → 品牌榜' },
+      { t:'商机推荐 · 品类规划', d:'支持批量搜索品牌：一行一个品牌名，自动逐个抓该品牌 Top 商品。', p:'数据 → 商机推荐 → 品类规划' },
+      { t:'品牌商品列表', d:'按品牌抓在售商品列表；批量搜索时会在新标签页逐个采集，不受当前页面限制。', p:'数据 → 品牌商品列表' },
+      { t:'我的货单', d:'按当前筛选条件整页抓取，导出明细。', p:'数据 → 我的货单' }
+    ],
+    steps: chromeSteps('得物商家后台 <code>stark.dewu.com</code>'),
+    hints:[
+      '<b>以后升级：</b>把新压缩包解压，覆盖掉原来那个文件夹里的内容就行。回到 <code>chrome://extensions/</code> 点一下插件卡片上的<b>刷新</b>图标，再回到得物页面按 <b>F5</b>。',
+      '<b>采不到数据？</b>依次确认：① 是在对应页面上点的采集；② 在 <code>chrome://extensions/</code> 点过插件卡片上的刷新；③ 得物页面按过 F5。'
+    ],
+    changelog:[
+      { v:'1.5.7', d:'2026-09-24', items:['统计数据改用自己的数据库：不再受第三方服务的请求次数限制，记录也不会过期','统计读取重做成一次请求拿回全部数字（原来要逐个读、还得等十几秒）','修复网络异常时统计数字显示成 0 的问题——现在会明确提示「读不到」'] },
+      { v:'1.5.5', d:'2026-09-24', items:['修复「某些日期只点两页就停」——翻页改为带重试的独立流程，错过一次不再整天空跑','修复「有遍历动作但导出 0 条 / 显示共 0 天」——采集数据改存本地，不再受 10MB 临时空间限制','结束提示里的条数改为去重后的真实商品数，不再虚高'] },
+      { v:'1.5.4', d:'2026-09-24', items:['商品分析按日期逐天采集时，日期格改为双击选中并点确定，选不中会重试','调整顺序为「先切每页条数、再筛日期」，每页 100 条不再被重置','日期区间支持自定义起止日期输入框'] }
+    ]
+  },
+
+  /* --------------------------------------------------------------- 天猫 */
+  {
+    id:'tmall', name:'天猫采集助手', short:'天猫', site:'sycm.taobao.com', icon:'tmall',
+    color:'#ffc53d', rgb:'255,197,61', on:'#1a1200',
+    status:'内测', pill:'beta', version:'0.8.4', released:'2026-09-22',
+    tagline:'生意参谋的商品、行业、搜索词三类数据，按类目批量导出。',
+    pagesTitle:'支持采集的页面',
+    pages:[
+      { t:'生意参谋 · 商品分析', d:'单品流量、转化率与支付件数，支持自定义日期区间逐天抓。', p:'生意参谋 → 商品 → 商品分析' },
+      { t:'生意参谋 · 行业大盘', d:'类目趋势、价格带分布与行业排行，可遍历子类目。', p:'生意参谋 → 市场 → 行业大盘' },
+      { t:'生意参谋 · 搜索词分析', d:'抓取搜索词、点击率与支付转化率，支持按类目批量导出。', p:'生意参谋 → 流量 → 搜索词分析' },
+      { t:'竞品分析', d:'按竞品店铺抓在售商品、价格与月销，生成对比表。', p:'商家中心 → 商品 → 竞品监控' },
+      { t:'订单管理', d:'按订单状态与下单时间段导出明细，含 SKU 与收货地区。', p:'商家中心 → 交易 → 订单管理' }
+    ],
+    steps: chromeSteps('生意参谋 <code>sycm.taobao.com</code> 或商家中心'),
+    hints:[
+      '生意参谋部分模块需要<b>专业版</b>权限，子账号请先确认已开通对应页面，否则插件点不出来数据。',
+      '行业大盘的列比较多，导出前建议在插件设置里勾掉不需要的指标，表会好读很多。'
+    ],
+    changelog:[
+      { v:'0.8.4', d:'2026-09-22', items:['搜索词分析支持按类目批量跑','导出文件名自动加时间戳，多次导出不会互相覆盖'] },
+      { v:'0.8.0', d:'2026-09-10', items:['新增行业大盘、竞品分析','修复翻页到最后一页重复抓取的问题'] }
+    ]
+  },
+
+  /* --------------------------------------------------------------- 京东 */
+  {
+    id:'jd', name:'京东采集助手', short:'京东', site:'jzt.jd.com', icon:'jd',
+    color:'#ff8080', rgb:'255,128,128', on:'#2a0a0a',
+    status:'内测', pill:'beta', version:'0.7.2', released:'2026-09-18',
+    tagline:'商智的榜单与行业数据，按类目一次抓全。',
+    pagesTitle:'支持采集的页面',
+    pages:[
+      { t:'商智 · 商品榜单', d:'按类目自动翻页，抓取排名、销量与价格区间。', p:'商智 → 商品 → 商品榜单' },
+      { t:'商智 · 行业分析', d:'行业趋势、属性成交分布与价格带对比。', p:'商智 → 行业 → 行业大盘' },
+      { t:'商智 · 搜索词', d:'热搜词、点击率与成交转化，支持按类目导出。', p:'商智 → 流量 → 搜索分析' },
+      { t:'京麦 · 交易数据', d:'按时间段导出订单明细，含 SKU、店铺与配送方式。', p:'京麦 → 订单 → 订单管理' },
+      { t:'评价管理', d:'抓取商品评价（含追评）与评价标签，可按商品去重。', p:'京麦 → 商品 → 评价管理' }
+    ],
+    steps: chromeSteps('京东商智 <code>jzt.jd.com</code> 或京麦后台'),
+    hints:[
+      '商智的榜单数据<b>每天早上 8 点</b>更新，抓之前先看一眼页面上的日期是不是当天，不然抓的是昨天的。',
+      '评价抓取单商品上限 1000 条，超出的建议按颜色 / 尺码分批筛选后再抓。'
+    ],
+    changelog:[
+      { v:'0.7.2', d:'2026-09-18', items:['评价管理支持抓追评','导出表新增「评价标签」列'] },
+      { v:'0.7.0', d:'2026-09-05', items:['首个内测版：商品榜单、交易数据'] }
+    ]
+  },
+
+  /* ------------------------------------------------------------- 小红书 */
+  {
+    id:'xiaohongshu', name:'小红书采集助手', short:'小红书', site:'pgy.xiaohongshu.com', icon:'xhs',
+    color:'#cf1736', rgb:'207,23,54', on:'#ffffff',
+    status:'内测', pill:'beta', version:'0.9.1', released:'2026-09-24',
+    tagline:'笔记数据、粉丝画像、达人报价，一次抓完导出表格。',
+    pagesTitle:'支持采集的页面',
+    pages:[
+      { t:'笔记数据', d:'按笔记逐条抓曝光、点击、互动率与涨粉数，导出表带原文链接。', p:'专业号 → 数据中心 → 笔记数据' },
+      { t:'粉丝画像', d:'性别、年龄、地域分布，支持按周 / 按月批量采集。', p:'专业号 → 数据中心 → 粉丝数据' },
+      { t:'蒲公英 · 达人广场', d:'按筛选条件自动翻页，抓取达人粉丝量、报价与近期笔记表现。', p:'蒲公英 → 找达人 → 达人广场' },
+      { t:'千帆 · 商品笔记', d:'抓商品笔记的 CTR 与 GMV，可按商品维度汇总。', p:'千帆 → 内容 → 商品笔记' },
+      { t:'店铺订单', d:'按时间段与订单状态导出明细，含买家备注与物流单号。', p:'千帆 → 订单 → 订单管理' }
+    ],
+    steps: chromeSteps('蒲公英 <code>pgy.xiaohongshu.com</code> 或用小红书账号登录专业号后台'),
+    hints:[
+      '<b>笔记数据</b>要先在页面上切到目标时间区间，插件抓的就是当前区间，不会自己改日期。',
+      '<b>达人广场</b>单页数据量大，抓 500 条以上建议分 2～3 次跑，避免触发风控。'
+    ],
+    changelog:[
+      { v:'0.9.1', d:'2026-09-24', items:['粉丝画像新增地域分布，细到省级','修复笔记链接导出后点不开的问题'] },
+      { v:'0.9.0', d:'2026-09-15', items:['首个内测版：笔记数据、达人广场','支持自动翻页，单次最多 2000 条'] }
+    ]
+  },
+
+  /* ---------------------------------------------------------------- WPS */
+  {
+    id:'wps', name:'WPS 表格工具箱', short:'WPS', site:'WPS 表格加载项', icon:'wps',
+    color:'#d9b45a', rgb:'217,180,90', on:'#1a1204',
+    status:'已上线', pill:'on', version:'0.1.4', released:'2026-09-29',
+    downloadUrl:'dl/wps-toolbox-0.1.4.zip',
+    tagline:'把 WPS 表格里那些要手动折腾半天的活，做成点一下就走。',
+    pagesTitle:'包含哪些功能',
+    pages:[
+      { t:'数据清理', d:'取消公式留值、删超链接、删空行、按行去重、删空白单元格、删非数字单元格。', p:'工具箱 → 数据清理' },
+      { t:'文本处理', d:'提取数字 / 中文 / 手机号，删空格，大小写与全半角转换，拆分、合并、查找替换。', p:'工具箱 → 文本处理' },
+      { t:'行列操作', d:'选区转置、在选区上方插入 N 行、每 N 行插一个空行。', p:'工具箱 → 行列操作' },
+      { t:'提取工具', d:'身份证号一次取出出生日期 / 性别 / 年龄；金额转人民币中文大写。', p:'工具箱 → 提取工具' },
+      { t:'图片工具', d:'按单元格批量插图、批量导出图片、统一高度、适配单元格、随格移动、重命名。', p:'工具箱 → 图片工具' },
+      { t:'汇总拆分', d:'合并所有工作表、合并文件夹里的工作簿、按列拆成多表或多文件、分组统计。', p:'工具箱 → 汇总拆分' },
+      { t:'数据对比', d:'对比两列标差异、找A列独有值、标记重复值、对比两个工作表、跨表找重复。', p:'工具箱 → 数据对比' },
+      { t:'右侧工具箱面板', d:'46 个功能按分类浏览、关键词搜索，要填参数的点开卡片直接填。', p:'功能区 → 打开工具箱面板' }
+    ],
+    steps:[
+      '下载压缩包，解压到一个<b>固定位置</b>（别放“下载”文件夹，以后可能被清理）。',
+      '双击解压出来的 <code>install.bat</code>，看到 <b>Finished</b> 就是装好了。',
+      '<b>完全退出 WPS</b>（包括右下角托盘里的图标），再重新打开。',
+      '新建或打开一个表格文件，功能区就会出现<b>「表格工具箱」</b>选项卡。',
+      '高频功能直接用功能区按钮；要全套 46 个，点<b>「打开工具箱面板」</b>在右侧面板里挑。'
+    ],
+    hints:[
+      '需要 <b>WPS Office 2019 及以上</b>版本。不用装任何运行时，也不需要管理员权限。',
+      '不想用了双击 <code>uninstall.bat</code> 就能卸载。压缩包里的<b>「使用说明.txt」</b>写了手动安装方式和出问题怎么排查。'
+    ],
+    changelog:[
+      { v:'0.1.4', d:'2026-09-29', items:['修复了部分已知问题'] },
+      { v:'0.1.3', d:'2026-09-29', items:['新增【汇总拆分】5 项：合并所有工作表、合并文件夹里的工作簿、按列拆成多表、按列拆成多文件、分组统计','新增【数据对比】5 项：对比两列标差异、找出A列独有值、标记重复值、对比两个工作表、跨表找重复','拆分成多文件时自动按分组值命名并存成 xlsx','对比类功能支持设置表头行数，表头不再被误标成差异','功能总数 36 → 46'] },
+      { v:'0.1.2', d:'2026-09-29', items:['新增【图片工具】共 9 项：按单元格批量插图、导出选区图片、统一高度、适配单元格、随单元格移动、重命名、删除、统计、环境自检','按单元格批量插图会按图片原始比例缩放到单元格内并居中，自动设为随单元格移动','导出图片不需要图片有源文件，表格里贴进去的图也能导出来','功能总数 27 → 36；安装脚本升级时自动清掉旧版本目录'] },
+      { v:'0.1.1', d:'2026-09-29', items:['首个版本：27 个表格处理功能，分数据清理 / 文本处理 / 行列操作 / 提取工具四类','功能区放 10 个高频按钮，其余收在右侧工具箱面板，支持关键词搜索','身份证号一次取出出生日期、性别、年龄','金额转人民币中文大写，支持 ¥ 符号与千分位输入'] }
+    ]
+  },
+
+  {
+    id:'toolbox', name:'在线工具箱', short:'在线工具', site:'网页在线工具', icon:'toolbox',
+    color:'#17845e', rgb:'23,132,94', on:'#ffffff',
+    status:'已上线', pill:'on', version:'0.1.0', released:'2026-09-29',
+    kind:'tool',
+    tagline:'文本格式转换、短链转长链，打开网页就能用，不用装任何东西。',
+    changelog:[
+      { v:'0.1.0', d:'2026-09-29', items:['首个版本：多行 ↔ 单行的文本格式转换（合并 / 拆分）','得物短链转长链：自动识别文案里的链接，去重后重建干净长链','纯网页实现，输入的文字不会离开浏览器'] }
+    ]
+  },
+
+  /* ----------------------------------------------------- 得物蓝V（桌面应用） */
+  {
+    id:'bluev', name:'得物蓝V素材发布工具', short:'蓝V发布', site:'Windows 桌面应用', icon:'bluev',
+    color:'#5a67d8', rgb:'90,103,216', on:'#ffffff',
+    status:'已上线', pill:'on', version:'1.0.8', released:'2026-10-03',
+    /* 跟采集插件同一套自动同步：打开页面后拉一次线上的版本文件，
+       拉到就用线上的版本号 / 下载地址 / 更新日志，拉不到就用上面写死的值。 */
+    versionUrl:'dl/bluev-version.json',
+    /* 安装包地址用 ASCII 名（避免中文路径踩 CDN 缓存）；
+       给浏览器的「另存为」文件名单独用 saveAs，同事存下来还是中文名。 */
+    downloadUrl:'dl/dewu-bluev-publisher-1.0.8-x64-win.exe',
+    saveAs:'得物蓝V素材发布工具-1.0.8-x64-win.exe',
+    tagline:'把素材夹里的图文和视频批量发到得物「穿搭精选」：AI 按图写标题正文，连着模拟器一条条发出去。',
+    pagesTitle:'主要功能（按界面上的顺序）',
+    pages:[
+      { t:'素材整理', d:'多层级文件夹拍扁成一层，不覆盖原文件夹，自动加日期时间后缀。', p:'素材整理' },
+      { t:'合规检查', d:'图片转 JPG ≤10MB、视频转 MP4 ≤600s；不合规的文件隔离起来，而不是直接删。', p:'合规检查' },
+      { t:'文案生成', d:'看图写标题与正文；话题组合去重；跑完落一份带时间戳的 AI 内容报告。', p:'文案生成' },
+      { t:'货号颜色校验', d:'比对得物商品池；多颜色货号必须填对应颜色；附图片取色反查。', p:'货号颜色校验' },
+      { t:'发布单', d:'26 列，运营确认之后再交给发布端。', p:'发布单' },
+      { t:'模拟器发布', d:'导入 AI 内容报告 → 选发布间隔 → 开始发布；ADB 驱动得物 App，失败可以单独重跑。', p:'模拟器发布' }
+    ],
+    howTitle:'怎么装',
+    howNote:'Windows · 装过一次以后覆盖安装就行',
+    steps:[
+      '下载安装包（<b>约 109 MB</b>），双击运行。',
+      '安装路径可以改；默认装在当前用户目录下，<b>不需要管理员权限</b>。',
+      '<b>电脑上装过旧版就直接装</b>：安装程序会先把旧版卸掉再装新版，不会留下两个。',
+      '装完桌面上会有<b>「得物蓝V素材发布工具」</b>图标，双击打开。'
+    ],
+    hints:[
+      '<b>覆盖安装不会丢东西。</b>账号、路径配置和发布台账都不在安装目录里，重装之后还在（卸载也不会删）。',
+      '<b>发布的时候要开一个安卓模拟器</b>（MuMu 等），工具通过 adb 连上去操作；先在「高级设置 → 扫描设备」把模拟器加进来，再选一个「加入并使用」。',
+      '<b>109 MB 的安装包，个人微信可能发不出去</b>（单文件上限的公开口径不一），建议用企业微信或网盘转发。'
+    ],
+    changelog:[
+      { v:'1.0.8', d:'2026-10-03', items:[
+        '★ 修复「导入报告后点发布没反应」：导入时把发布通道设置一起抹掉了，会静默走模拟通道却显示成功。现在通道状态不再被覆盖，真走模拟通道也会先弹确认、结果记「模拟成功」',
+        '设置页撤掉与顶栏重复的「外观」块（「运行环境」挪进「外部依赖」）',
+        'AI 内容报告的落点改成跟素材条目同一个目录，不再写回还没处理的原始文件夹',
+        '话题口径统一：界面说明不再写「联想点选」（实际就是直接填进去）'
+      ]},
+      { v:'1.0.7', d:'2026-10-03', items:[
+        '用户可见的文案里公司名全部去掉',
+        '删掉设置页里与「对齐真机」重复的「内容与校验」块',
+        '删掉「更新日志」功能（含设置页开关和日志文件）'
+      ]},
+      { v:'1.0.6', d:'2026-10-03', items:[
+        '文案正文改成 4~5 行短句，核对判据同步调整',
+        '话题：必带话题排在前面，正文结尾不再带 #；品牌提示词里写够了就不再掺通用词',
+        '重复判定放宽：只看相邻两条，换一个 emoji 即算不同',
+        '新增 AI 内容报告、内容核对、热词库',
+        '修复云端同步的幂等缺陷（重复批会让同步永久卡住）'
+      ]}
+    ]
+  }
+
+];
+
+/* ==============================  渲染  ============================== */
+
+var tabsEl = document.getElementById('tabs');
+var viewEl = document.getElementById('view');
+var currentId = null;
+var firstPaint = true;
+var DEFAULT_ID = 'dewu';   /* 打开页面（地址里没带 #/xxx）时默认停在哪个插件 */
+
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c];
+  });
+}
+
+function toast(msg){
+  var t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast on';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function(){ t.className = 'toast'; }, 2000);
+}
+
+function find(id){
+  for (var i = 0; i < PLUGINS.length; i++) if (PLUGINS[i].id === id) return PLUGINS[i];
+  return null;
+}
+
+/* 把主色按比例调暗：日间模式下拿它当文字色，才压得住白底 */
+function deepen(hex, amt){
+  function f(i){
+    var v = parseInt(hex.slice(i, i + 2), 16);
+    return Math.max(0, Math.min(255, Math.round(v * (1 - amt))));
+  }
+  return 'rgb(' + f(1) + ',' + f(3) + ',' + f(5) + ')';
+}
+
+/* 把当前插件的配色写进 CSS 变量，整页（含背景光晕）跟着换色 */
+function applyTheme(p){
+  var st = document.documentElement.style;
+  var light = document.documentElement.getAttribute('data-theme') === 'light';
+  st.setProperty('--c', p.color);
+  st.setProperty('--c-rgb', p.rgb);
+  st.setProperty('--on', p.on);
+  st.setProperty('--c-text', light ? deepen(p.color, .34) : p.color);
+}
+
+/* ---------------- 日间 / 夜间 ---------------- */
+var THEME_KEY = 'pluginhub-theme2';   /* 换过 key：旧版本存过的 dark 不该盖住新的默认值 */
+
+function themeIcon(light){
+  return light
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.2M12 19.2v2.2M4.7 4.7l1.6 1.6M17.7 17.7l1.6 1.6M2.6 12h2.2M19.2 12h2.2M4.7 19.3l1.6-1.6M17.7 6.3l1.6-1.6"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1z"/></svg>';
+}
+
+function setTheme(mode){
+  document.documentElement.setAttribute('data-theme', mode);
+  var btn = document.getElementById('themebtn');
+  if (btn) btn.innerHTML = themeIcon(mode === 'light');
+  var p = find(currentId);
+  if (p) applyTheme(p);
+  try { localStorage.setItem(THEME_KEY, mode); } catch (e) {}
+}
+
+/* ---------------- 不规则四边形 tab ---------------- */
+function renderTabs(){
+  tabsEl.innerHTML = PLUGINS.map(function(p){
+    var on = p.id === currentId;
+    return '<button class="tab' + (on ? ' on' : '') + '" data-id="' + p.id + '" role="tab"' +
+      ' aria-selected="' + on + '"' +
+      ' style="--tc:' + p.color + ';--ton:' + p.on + ';--trgb:' + p.rgb + '">' +
+      '<span class="edge"><span class="face">' + ICONS[p.icon] +
+        '<span>' + esc(p.short) + '</span>' +
+      '</span></span></button>';
+  }).join('');
+}
+
+/* ---------------- 内容面板 ---------------- */
+function renderPanel(p){
+  /* 在线工具箱是「打开就能用」的网页工具，没有安装包和安装步骤，
+     面板长得和采集插件不一样，走单独一条渲染分支。 */
+  if (p.kind === 'tool') { renderToolbox(p); return; }
+
+  var feats = p.pages.map(function(f){
+    return '<div class="pg">' +
+      '<div class="t">' + esc(f.t) + '</div>' +
+      '<div class="d">' + esc(f.d) + '</div>' +
+      '<div class="p">' + esc(f.p) + '</div>' +
+    '</div>';
+  }).join('');
+
+  var steps = p.steps.map(function(s){ return '<li>' + s + '</li>'; }).join('');
+  var hints = p.hints.map(function(h){ return '<div class="hint">' + h + '</div>'; }).join('');
+
+  var logs = p.changelog.map(function(r, i){
+    return '<div class="rel">' +
+      '<div class="hd">' +
+        '<span class="v">v' + esc(r.v) + '</span>' +
+        (i === 0 ? '<span class="tag">最新</span>' : '') +
+        '<span class="date">' + esc(r.d) + '</span>' +
+      '</div>' +
+      '<ul>' + r.items.map(function(t){ return '<li>' + esc(t) + '</li>'; }).join('') + '</ul>' +
+    '</div>';
+  }).join('');
+
+  viewEl.innerHTML =
+    '<div class="panel">' +
+      '<div class="phead">' +
+        '<div class="emblem">' + ICONS[p.icon] + '</div>' +
+        '<div class="hmeta">' +
+          '<h2>' + esc(p.name) + '</h2>' +
+          '<p class="tl">' + esc(p.tagline) + '</p>' +
+          '<div class="tagrow">' +
+            '<span class="badge ' + p.pill + '">' + esc(p.status) + '</span>' +
+            '<span class="dot"></span><span>最新版 v' + esc(p.version) + ' · ' + esc(p.released) + ' 更新</span>' +
+            '<span class="dot"></span><span>' + esc(p.site) + '</span>' +
+          '</div>' +
+          '<div class="act" id="dl">' +
+            (p.downloadUrl
+              ? '<a class="btn primary" href="' + esc(p.downloadUrl) + '"' + (p.saveAs ? ' download="' + esc(p.saveAs) + '"' : ' download') + ' rel="noopener">下载最新版 <span>v' + esc(p.version) + '</span></a>'
+              : '<button class="btn primary" data-dl>下载最新版 <span>v' + esc(p.version) + '</span></button>') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="sec">' +
+        '<h3 class="sec-h">' + esc(p.pagesTitle) + '</h3>' +
+        '<div class="cards">' + feats + '</div>' +
+      '</div>' +
+
+      '<div class="cols">' +
+        '<div class="sec" id="how">' +
+          '<h3 class="sec-h">' + esc(p.howTitle || '怎么装') + (p.howNote ? ' <s>' + esc(p.howNote) + '</s>' : '') + '</h3>' +
+          '<ol class="steps">' + steps + '</ol>' + hints +
+        '</div>' +
+        '<div class="sec" id="log">' +
+          '<h3 class="sec-h">更新日志 <s>只列最近几个版本</s></h3>' +
+          '<div class="log">' + logs + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+/* ---------------- 在线工具箱（kind:'tool' 的面板） ---------------- */
+function renderToolbox(p){
+  var logs = p.changelog.map(function(r, i){
+    return '<div class="rel">' +
+      '<div class="hd">' +
+        '<span class="v">v' + esc(r.v) + '</span>' +
+        (i === 0 ? '<span class="tag">最新</span>' : '') +
+        '<span class="date">' + esc(r.d) + '</span>' +
+      '</div>' +
+      '<ul>' + r.items.map(function(t){ return '<li>' + esc(t) + '</li>'; }).join('') + '</ul>' +
+    '</div>';
+  }).join('');
+
+  viewEl.innerHTML =
+    '<div class="panel">' +
+      '<div class="phead">' +
+        '<div class="emblem">' + ICONS[p.icon] + '</div>' +
+        '<div class="hmeta">' +
+          '<h2>' + esc(p.name) + '</h2>' +
+          '<p class="tl">' + esc(p.tagline) + '</p>' +
+          '<div class="tagrow">' +
+            '<span class="badge ' + p.pill + '">' + esc(p.status) + '</span>' +
+            '<span class="dot"></span><span>v' + esc(p.version) + ' · ' + esc(p.released) + ' 更新</span>' +
+            '<span class="dot"></span><span>' + esc(p.site) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="tool-layout">' +
+        '<div class="tool-toc" id="tool-toc">' +
+          '<div class="tool-toc-t">本页目录</div>' +
+          '<a data-sec="tf" class="on">文本格式转换</a>' +
+          '<a data-sec="sl">短链转长链</a>' +
+          '<a data-sec="log">更新日志</a>' +
+        '</div>' +
+        '<div class="tool-body">' +
+
+      '<div class="sec" id="tf">' +
+        '<h3 class="sec-h">文本格式转换 <s>边输边出，不用点按钮</s></h3>' +
+        '<div class="tools">' +
+
+          '<div class="tcard">' +
+            '<div class="tc-h"><b>合并</b><span>多行 → 单行拼接</span></div>' +
+            '<div class="tc-row"><span class="lb">预设</span><span class="chips" id="mg-preset">' +
+              '<button type="button" class="chip" data-sep=",">逗号</button>' +
+              '<button type="button" class="chip" data-sep=" ">空格</button>' +
+              '<button type="button" class="chip" data-q="double">带引号逗号</button>' +
+            '</span></div>' +
+            '<div class="tc-row"><span class="lb">分隔符</span>' +
+              '<input class="inp" id="mg-sep" value="," spellcheck="false">' +
+              '<span class="lb">引号</span><span class="chips" id="mg-quote">' +
+                '<button type="button" class="chip on" data-v="none">无</button>' +
+                '<button type="button" class="chip" data-v="single">单</button>' +
+                '<button type="button" class="chip" data-v="double">双</button>' +
+              '</span></div>' +
+            '<div class="tc-row">' +
+              '<label class="ck"><input type="checkbox" id="mg-trim" checked><span>去掉每行首尾空格</span></label>' +
+              '<label class="ck"><input type="checkbox" id="mg-noblank" checked><span>去掉空行</span></label>' +
+              '<label class="ck"><input type="checkbox" id="mg-uniq"><span>去重</span></label>' +
+            '</div>' +
+            '<div class="io">' +
+              '<div class="io-col"><div class="io-h">输入（每行一段）</div>' +
+                '<textarea id="mg-in" spellcheck="false" placeholder="AAA&#10;BBB&#10;CCC"></textarea></div>' +
+              '<div class="io-col"><div class="io-h">输出<button type="button" class="cp" data-copy="mg-out">复制</button></div>' +
+                '<textarea id="mg-out" spellcheck="false" readonly></textarea></div>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="tcard">' +
+            '<div class="tc-h"><b>拆分</b><span>含分隔符文本 → 多行</span></div>' +
+            '<div class="tc-row"><span class="lb">预设</span><span class="chips" id="sp-preset">' +
+              '<button type="button" class="chip" data-sep=",">逗号</button>' +
+              '<button type="button" class="chip" data-sep=" ">空格</button>' +
+              '<button type="button" class="chip" data-sep=";">分号</button>' +
+              '<button type="button" class="chip" data-sep="&#9;">Tab</button>' +
+            '</span></div>' +
+            '<div class="tc-row"><span class="lb">分隔符</span>' +
+              '<input class="inp" id="sp-sep" value="," spellcheck="false"></div>' +
+            '<div class="tc-row">' +
+              '<label class="ck"><input type="checkbox" id="sp-trim" checked><span>去掉每项首尾空格</span></label>' +
+              '<label class="ck"><input type="checkbox" id="sp-noblank" checked><span>去掉空项</span></label>' +
+              '<label class="ck"><input type="checkbox" id="sp-uniq"><span>去重</span></label>' +
+            '</div>' +
+            '<div class="io">' +
+              '<div class="io-col"><div class="io-h">输入（含分隔符）</div>' +
+                '<textarea id="sp-in" spellcheck="false" placeholder="AAA,BBB,CCC"></textarea></div>' +
+              '<div class="io-col"><div class="io-h">输出（每行一项）<button type="button" class="cp" data-copy="sp-out">复制</button></div>' +
+                '<textarea id="sp-out" spellcheck="false" readonly></textarea></div>' +
+            '</div>' +
+          '</div>' +
+
+        '</div>' +
+      '</div>' +
+
+      '<div class="sec" id="sl">' +
+        '<h3 class="sec-h">短链转长链 <s>只保留 trendId</s></h3>' +
+        '<div class="tcard">' +
+          '<div class="tnote">每行一个链接，可混杂中文描述文字，会自动识别其中的链接。' +
+            '把 <code>trendId</code> 之外的参数（来源、渠道、追踪参数等）都去掉，重建为干净的得物长链。' +
+            '每次最多 100 条，超出请分批。</div>' +
+          '<div class="io-h io-h-wide">输入（每行一个）<span class="cnt" id="sl-cnt">0/100 条</span></div>' +
+          '<textarea id="sl-in" class="wide" spellcheck="false" placeholder="粘贴得物分享的整段文案就行，会自动找出里面的链接&#10;例：https://m.dewu.com/m/activity/community-share?trendId=xxx&amp;from=share"></textarea>' +
+          '<div class="btnrow">' +
+            '<button type="button" class="btn primary" id="sl-go">转换</button>' +
+            '<button type="button" class="btn ghost" id="sl-copy">复制全部长链（<span id="sl-n">0</span>）</button>' +
+            '<button type="button" class="btn ghost" id="sl-xls">导出 Excel</button>' +
+          '</div>' +
+          '<div class="io-h io-h-wide mt">输出（每行一个长链）</div>' +
+          '<textarea id="sl-out" class="wide" spellcheck="false" readonly></textarea>' +
+          '<div class="tnote out-note" id="sl-note" hidden></div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="sec" id="log">' +
+        '<h3 class="sec-h">更新日志 <s>只列最近几个版本</s></h3>' +
+        '<div class="log">' + logs + '</div>' +
+      '</div>' +
+
+        '</div>' +   /* /tool-body */
+      '</div>' +     /* /tool-layout */
+    '</div>';
+
+  bindToolbox();
+}
+
+/* 短链 → 长链：长链前缀（得物 H5 分享页） */
+var LONG_PREFIX = 'https://m.dewu.com/m/activity/community-share?trendId=';
+
+/* 从一段文本里抠出所有 http(s) 链接 */
+function pickUrls(text){
+  var m = text.match(/https?:\/\/[^\s"'<>，,、）)】\]｜|]+/g);
+  return m || [];
+}
+
+/* 从一条 URL 里取 trendId（已经带 trendId / contentId 的才取得出来；
+   纯短链 www.dewu.com/A/xxxx 需要联网解析，纯前端拿不到） */
+function trendIdOf(u){
+  var m = u.match(/[?&]trendId=([A-Za-z0-9_-]+)/i) ||
+          u.match(/[?&]contentId=([A-Za-z0-9_-]+)/i) ||
+          u.match(/community-share\/([A-Za-z0-9_-]+)/i);
+  return m ? m[1] : null;
+}
+
+function bindToolbox(){
+  var $ = function(id){ return viewEl.querySelector('#' + id); };
+
+  /* 通用：按选项把文本切成数组 */
+  function splitLines(v, trim, noBlank, uniq){
+    var a = v.split(/\r?\n/);
+    if (trim) a = a.map(function(s){ return s.trim(); });
+    if (noBlank) a = a.filter(function(s){ return s !== ''; });
+    if (uniq) {
+      var seen = {};
+      a = a.filter(function(s){ return seen[s] ? false : (seen[s] = true); });
+    }
+    return a;
+  }
+
+  /* ---- 合并 ---- */
+  var mgIn = $('mg-in'), mgOut = $('mg-out'), mgSep = $('mg-sep');
+  var mgQuote = 'none';
+  function mgRun(){
+    var arr = splitLines(mgIn.value, $('mg-trim').checked, $('mg-noblank').checked, $('mg-uniq').checked);
+    var q = mgQuote === 'none' ? '' : (mgQuote === 'single' ? "'" : '"');
+    mgOut.value = arr.map(function(s){ return q + s + q; }).join(mgSep.value);
+  }
+
+  /* ---- 拆分 ---- */
+  var spIn = $('sp-in'), spOut = $('sp-out'), spSep = $('sp-sep');
+  function spRun(){
+    var sep = spSep.value === '\\t' ? '\t' : spSep.value;
+    if (!sep) { spOut.value = ''; return; }
+    var arr = spIn.value.split(sep);
+    if ($('sp-trim').checked) arr = arr.map(function(s){ return s.trim(); });
+    if ($('sp-noblank').checked) arr = arr.filter(function(s){ return s !== ''; });
+    if ($('sp-uniq').checked) {
+      var seen = {};
+      arr = arr.filter(function(s){ return seen[s] ? false : (seen[s] = true); });
+    }
+    spOut.value = arr.join('\n');
+  }
+
+  /* 绑定：所有输入都实时重算 */
+  function onLive(el, fn){ if (el) { el.oninput = fn; el.onchange = fn; } }
+  onLive(mgIn, mgRun); onLive(mgSep, mgRun);
+  onLive(spIn, spRun); onLive(spSep, spRun);
+  ['mg-trim','mg-noblank','mg-uniq'].forEach(function(id){ onLive($(id), mgRun); });
+  ['sp-trim','sp-noblank','sp-uniq'].forEach(function(id){ onLive($(id), spRun); });
+
+  /* 预设 / 引号按钮 */
+  function chipGroup(wrapId, fn){
+    var box = $(wrapId);
+    if (!box) return;
+    box.onclick = function(e){
+      var b = e.target.closest ? e.target.closest('.chip') : null;
+      if (!b) return;
+      var sib = box.querySelectorAll('.chip');
+      for (var i = 0; i < sib.length; i++) sib[i].classList.remove('on');
+      b.classList.add('on');
+      fn(b);
+    };
+  }
+  chipGroup('mg-preset', function(b){
+    if (b.getAttribute('data-q')) {
+      mgQuote = b.getAttribute('data-q'); mgSep.value = ',';
+      var qs = $('mg-quote').querySelectorAll('.chip');
+      for (var i = 0; i < qs.length; i++) {
+        qs[i].classList.toggle('on', qs[i].getAttribute('data-v') === 'double');
+      }
+    } else if (b.getAttribute('data-sep') !== null) {
+      mgSep.value = b.getAttribute('data-sep');
+    }
+    mgRun();
+  });
+  chipGroup('mg-quote', function(b){ mgQuote = b.getAttribute('data-v'); mgRun(); });
+  chipGroup('sp-preset', function(b){ spSep.value = b.getAttribute('data-sep'); spRun(); });
+
+  /* ---- 复制按钮 ---- */
+  var cps = viewEl.querySelectorAll('.cp');
+  for (var i = 0; i < cps.length; i++) {
+    (function(btn){
+      btn.onclick = function(){
+        var ta = $(btn.getAttribute('data-copy'));
+        if (!ta || !ta.value) { toast('还没有内容可复制'); return; }
+        copyText(ta.value, function(ok){
+          toast(ok ? '已复制' : '复制失败，请手动选中复制');
+        });
+      };
+    })(cps[i]);
+  }
+
+  /* ---- 短链转长链 ---- */
+  var slIn = $('sl-in'), slOut = $('sl-out'), slCnt = $('sl-cnt'), slN = $('sl-n'), slNote = $('sl-note');
+  var shorties = [];   /* 收集解不开的短链，用于提示 */
+
+  function slCount(){
+    var n = slIn.value.split(/\r?\n/).filter(function(s){ return s.trim() !== ''; }).length;
+    slCnt.textContent = n + '/100 条';
+    slCnt.classList.toggle('over', n > 100);
+  }
+  slIn.oninput = slCount;
+
+  function slRun(){
+    var rows = slIn.value.split(/\r?\n/).slice(0, 100);
+    var out = [], seen = {}, miss = [];
+    rows.forEach(function(line){
+      pickUrls(line).forEach(function(u){
+        var id = trendIdOf(u);
+        if (!id) { if (miss.indexOf(u) < 0) miss.push(u); return; }
+        if (seen[id]) return;
+        seen[id] = true;
+        out.push(LONG_PREFIX + id);
+      });
+    });
+    shorties = miss;
+    slOut.value = out.join('\n');
+    slN.textContent = out.length;
+
+    /* 解不开的（纯短链）单独提示，别让用户以为工具坏了 */
+    if (miss.length) {
+      slNote.hidden = false;
+      slNote.innerHTML = '<b>有 ' + miss.length + ' 条是短链，没能转换。</b>' +
+        '短链要访问得物服务器才能换出 trendId，网页端拿不到——' +
+        '目前只能处理已经带 <code>trendId</code> 的链接。';
+    } else {
+      slNote.hidden = true;
+    }
+  }
+  $('sl-go').onclick = slRun;
+
+  $('sl-copy').onclick = function(){
+    if (!slOut.value) { toast('还没有可复制的内容'); return; }
+    copyText(slOut.value, function(ok){ toast(ok ? '已复制 ' + slN.textContent + ' 条长链' : '复制失败'); });
+  };
+
+  $('sl-xls').onclick = function(){
+    if (!slOut.value) { toast('还没有可导出的内容'); return; }
+    /* 存成 CSV：Excel 双击即可打开；带 BOM 免得中文乱码 */
+    var csv = '\ufeff' + '长链\n' + slOut.value.split('\n').map(function(s){
+      return '"' + s.replace(/"/g, '""') + '"';
+    }).join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'dewu-longlinks.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 3000);
+    toast('已导出 ' + slN.textContent + ' 条');
+  };
+
+  mgRun(); spRun(); slCount();
+}
+
+/* 复制到剪贴板（带降级） */
+function copyText(text, cb){
+  function fallback(){
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    cb(ok);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function(){ cb(true); }, fallback);
+  } else fallback();
+}
+
+/* ---------------- 版本自动同步 ----------------
+   配了 versionUrl 的插件，打开页面后后台拉一次线上 version.json，
+   成功就替换掉版本号 / 发布日期 / 更新日志（并重绘当前面板），失败就什么都不做。
+   页面永远是先用手写的兜底数据渲染出来的，所以断网 / 跨域 / 对方挂了
+   都不会影响打开，也不会出现空白或报错。 */
+function syncVersion(p){
+  if (!p.versionUrl) return;
+  var url = p.versionUrl + (p.versionUrl.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now();
+  fetch(url, { cache: 'no-store' })
+    .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(v){
+      if (!v || !v.latest) return;
+      var updated = false;
+
+      if (String(v.latest) !== String(p.version)) { p.version = String(v.latest); updated = true; }
+      if (v.released && v.released !== p.released) { p.released = v.released; updated = true; }
+
+      /* 用 version.json 里的 file 字段拼出最新安装包地址（相对它自己的站点根）。
+         ★ 这里原来是 /\/[^\/]*$/ —— 对「version.json」这种**没有斜杠**的路径不匹配，
+         整个文件名会被留下，拼出 version.json/dl/xxx.zip 这种 404 地址（实测线上得物那格就是这样）。
+         改成只去掉文件名、留下目录（末尾带 /）；在站点根时目录就是空串。 */
+      if (v.file) {
+        var base = p.versionUrl.replace(/[^\/]*$/, '');
+        var dl = base + String(v.file).replace(/^\/+/, '');
+        if (dl !== p.downloadUrl) { p.downloadUrl = dl; updated = true; }
+      }
+
+      /* saveAs：浏览器「另存为」用的文件名（URL 里仍是 ASCII 名，避开中文路径的 CDN 缓存坑） */
+      if (v.saveAs && String(v.saveAs) !== String(p.saveAs)) { p.saveAs = String(v.saveAs); updated = true; }
+
+      if (v.changelog && v.changelog.length) {
+        var remote = v.changelog.slice(0, 3).map(function(r){
+          return { v: r.version, d: r.date, items: r.items || [] };
+        });
+        if (JSON.stringify(remote) !== JSON.stringify(p.changelog)) { p.changelog = remote; updated = true; }
+      }
+
+      if (updated && p.id === currentId) renderPanel(p);
+    })
+    .catch(function(e){
+      /* 读不到就继续用手写数据；留条 warn 方便排查，页面不受影响 */
+      if (window.console) console.warn('[插件中心] ' + p.id + ' 的 version.json 没读到，继续用内置数据：' + e.message);
+    });
+}
+
+/* ---------------- 交互 ---------------- */
+function scrollToStage(){
+  var bar = document.querySelector('.tabbar');
+  if (!bar) return;
+  var top = bar.getBoundingClientRect().top;
+  if (top >= 0) return;   /* tab 栏还在视口里，就别动滚动位置 */
+  window.scrollTo({ top: Math.max(top + window.pageYOffset - 70, 0), behavior: 'smooth' });
+}
+
+function bind(){
+  /* 顶栏 logo 点击回到第一个插件；同样不写 URL、不压历史 */
+  var brand = document.querySelector('.brand');
+  if (brand) brand.onclick = function(e){ e.preventDefault(); render('dewu'); };
+
+  var dl = viewEl.querySelector('[data-dl]');
+  if (dl) dl.onclick = function(){ toast('Demo 阶段：安装包下载链接待接入'); };
+}
+
+/* 切 tab 走 replaceState，不往历史栈里塞记录。
+   mac 上双指左右滑 = 浏览器前进 / 后退手势，如果每次切 tab 都 push 一条历史，
+   滑一下就会顺着历史误切页面。 */
+tabsEl.addEventListener('click', function(e){
+  var btn = e.target.closest ? e.target.closest('.tab') : null;
+  if (!btn) return;
+  var id = btn.getAttribute('data-id');
+  if (id && id !== currentId) render(id);
+});
+
+/* ---------------- 路由 ---------------- */
+function render(id){
+  var p = find(id) || find(DEFAULT_ID) || PLUGINS[0];
+
+  /* 这里刻意不写 location.hash、也不 pushState / replaceState。
+     原因：mac 上双指左右滑是浏览器的「前进 / 后退」手势，它翻的是**历史记录**。
+     只要页面内部一条历史都不产生，这个手势就没有目标可去，也就不会把页面切走。
+     所以切 tab 只改内存里的状态，URL 从头到尾不动。
+     （仍然支持打开时带 #/xxx 直达某个插件，见下面的 route） */
+  currentId = p.id;
+  applyTheme(p);
+  renderTabs();
+  renderPanel(p);
+  bind();
+
+  if (firstPaint) { window.scrollTo(0, 0); firstPaint = false; }
+  else scrollToStage();
+}
+
+function route(){ render(decodeURIComponent(location.hash.replace(/^#\/?/, ''))); }
+
+/* 初始化：先把主题定下来（优先 URL 上的 ?theme=，其次上次的选择），再渲染 */
+(function(){
+  var saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+  var q = location.search.match(/[?&]theme=(light|dark)/);
+  if (q) saved = q[1];
+  setTheme(saved === 'dark' ? 'dark' : 'light');   /* 默认日间 */
+})();
+
+document.getElementById('themebtn').onclick = function(){
+  var now = document.documentElement.getAttribute('data-theme');
+  setTheme(now === 'light' ? 'dark' : 'light');
+};
+
+window.addEventListener('hashchange', route);
+route();
+
+/* ---------------- 回到顶部 + 工具箱目录 ----------------
+   一个全局滚动监听搞定两件事：
+   · 滚过一屏后显示右下角的回顶按钮
+   · 工具箱面板的左目录跟着高亮当前所在的区块
+   （onScroll 只注册一次；切 tab 后目录不存在就自然跳过） */
+var totopEl = document.getElementById('totop');
+if (totopEl) totopEl.onclick = function(){ window.scrollTo({ top: 0, behavior: 'smooth' }); };
+
+var TOC_SECS = ['tf', 'sl', 'log'];
+function onScroll(){
+  if (totopEl) totopEl.classList.toggle('on', window.pageYOffset > 380);
+
+  var toc = document.getElementById('tool-toc');
+  if (!toc) return;
+
+  var cur = TOC_SECS[0];
+  for (var i = 0; i < TOC_SECS.length; i++) {
+    var el = document.getElementById(TOC_SECS[i]);
+    if (el && el.getBoundingClientRect().top <= 150) cur = TOC_SECS[i];
+  }
+  var links = toc.querySelectorAll('a');
+  for (var j = 0; j < links.length; j++) {
+    links[j].classList.toggle('on', links[j].getAttribute('data-sec') === cur);
+  }
+}
+window.addEventListener('scroll', onScroll, { passive: true });
+onScroll();
+
+/* 目录点击 → 滚到对应区块（留出顶栏的高度） */
+document.addEventListener('click', function(e){
+  var a = e.target.closest ? e.target.closest('#tool-toc a') : null;
+  if (!a) return;
+  var el = document.getElementById(a.getAttribute('data-sec'));
+  if (!el) return;
+  var y = el.getBoundingClientRect().top + window.pageYOffset - 96;
+  window.scrollTo({ top: Math.max(y, 0), behavior: 'smooth' });
+});
+
+/* 打开后静默同步各插件的线上版本信息（只有配了 versionUrl 的才会发请求） */
+PLUGINS.forEach(syncVersion);
+</script>
+</body>
+</html>

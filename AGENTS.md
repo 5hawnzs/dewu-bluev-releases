@@ -81,3 +81,17 @@
 > workspace 根 = `D:\work`）。文里仍会看到 `/Users/shuo/...`，但**每一处都标了「macOS 历史」**
 > （回滚快照 tar、录屏源文件、node 20.18.0 那几行）—— 那是**出处记录**，不是操作指令，别照着敲。
 > Windows 侧一律以本文件 + `docs/WINDOWS-E2E.md` 为准。
+
+---
+
+## 六、知识库与交接单（2026-10-05 新增）
+
+| 文件 | 内容 |
+| --- | --- |
+| `docs/HANDOFF-CODEX.md` | **一页纸交接单**：git 里已有什么、git 外还缺什么（环境 / 凭据 / 设备）、当前状态快照、验收标准、已知遗留。**接手前先看这一份** |
+| `docs/knowledge/` | **知识库**。原本全在仓库之外（WorkBuddy 私有目录），clone 拿不到 ⇒ 已收进仓库：`RULES-得物蓝V.md` 项目规则全文（`§A`~`§CA`，4159 行 + 实测数字）、`MEMORY-INDEX.md` 38 条索引、`RULES-通用.md` 跨项目规范、`skills/` 28 个技能、`docs/` 90 份历史文档、`archive/worklog/` 6 份工作日志、`deployed-sites/` 站点源码。**索引见 `docs/knowledge/README.md`，按需查、别整读** |
+
+> ★ `docs/` **不在** `build.files` 白名单里（只有 `src/**` + `package.json` 进包）⇒ 知识库不会被打进安装包、终端用户看不到。
+> ★ 知识库是**快照**（截至 2026-10-05），里面的断言数 / 体积 / 耗时**每次都要实测重取**。
+> ★ 规则全文里唯一算是"凭据"的，是一个 Supabase **`anon`** key（已确认 `role: anon`，随公开看板发布过）；
+> 红线是 **`service_role` / secret key 绝不许进任何前端文件**——这条没被破。

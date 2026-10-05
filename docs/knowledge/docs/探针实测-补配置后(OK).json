@@ -1,0 +1,41 @@
+{
+  "execPath": "D:\\work\\_probe3\\得物蓝V素材发布工具.exe",
+  "resourcesPath": "D:\\work\\_probe3\\resources",
+  "isPackaged": true,
+  "version": "1.0.1",
+  "yamlPath": "D:\\work\\_probe3\\resources\\app-update.yml",
+  "yamlExisted": true,
+  "upd": {
+    "supported": true,
+    "status": "idle",
+    "current": "1.0.1",
+    "latest": "",
+    "percent": 0,
+    "transferred": 0,
+    "total": 0,
+    "bytesPerSecond": 0,
+    "message": "",
+    "at": 0,
+    "manual": false,
+    "channel": "stable",
+    "channelLabel": "正式版"
+  },
+  "check": {
+    "ok": true
+  },
+  "updAfter": {
+    "supported": true,
+    "status": "uptodate",
+    "current": "1.0.1",
+    "latest": "1.0.1",
+    "percent": 0,
+    "transferred": 0,
+    "total": 0,
+    "bytesPerSecond": 0,
+    "message": "已经是最新版本",
+    "at": 1790918045538,
+    "manual": true,
+    "channel": "stable",
+    "channelLabel": "正式版"
+  }
+}

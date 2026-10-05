@@ -1,0 +1,356 @@
+{
+  "generatedAt": "2026-10-04T20:16:22.060Z",
+  "version": "1.0.14",
+  "commit": "6c615c0",
+  "branch": "main",
+  "dirty": 2,
+  "tabs": [
+    {
+      "tab": 1,
+      "name": "素材整理",
+      "group": "生产",
+      "admin": false
+    },
+    {
+      "tab": 2,
+      "name": "合规检查",
+      "group": "生产",
+      "admin": false
+    },
+    {
+      "tab": 3,
+      "name": "文案生成",
+      "group": "生产",
+      "admin": false
+    },
+    {
+      "tab": 4,
+      "name": "货号颜色校验",
+      "group": "生产",
+      "admin": false
+    },
+    {
+      "tab": 12,
+      "name": "热词库",
+      "group": "生产",
+      "admin": false
+    },
+    {
+      "tab": 6,
+      "name": "模拟器发布",
+      "group": "执行",
+      "admin": false
+    },
+    {
+      "tab": 10,
+      "name": "运行日志",
+      "group": "执行",
+      "admin": false
+    },
+    {
+      "tab": 7,
+      "name": "设置",
+      "group": "其他",
+      "admin": false
+    },
+    {
+      "tab": 8,
+      "name": "品牌统计",
+      "group": "其他",
+      "admin": false
+    },
+    {
+      "tab": 9,
+      "name": "品牌与权限",
+      "group": "其他",
+      "admin": false
+    },
+    {
+      "tab": 11,
+      "name": "高级设置",
+      "group": "其他",
+      "admin": true
+    }
+  ],
+  "ipcTotal": 53,
+  "ipcByGuard": {
+    "admin": 11,
+    "login": 23,
+    "open": 19
+  },
+  "src": {
+    "files": 38,
+    "loc": 16880,
+    "byLayer": {
+      "src/renderer": {
+        "files": 3,
+        "loc": 3861
+      },
+      "src/main/services": {
+        "files": 19,
+        "loc": 9546
+      },
+      "src/main": {
+        "files": 13,
+        "loc": 3078
+      },
+      "src/main/util": {
+        "files": 2,
+        "loc": 309
+      },
+      "src/preload": {
+        "files": 1,
+        "loc": 86
+      }
+    }
+  },
+  "suites": [
+    "smoke",
+    "adbtest",
+    "pendingtest",
+    "compliancetest",
+    "videotest",
+    "batchtest",
+    "copytest",
+    "reporttest",
+    "brandtest",
+    "uicheck",
+    "logintest",
+    "gatetest",
+    "updatertest",
+    "releasetest",
+    "prunetest",
+    "logtest",
+    "cloudtest"
+  ],
+  "regression": {
+    "kind": "snapshot",
+    "when": "2026-10-05 04:05",
+    "total": 1531,
+    "allGreen": true,
+    "suites": {
+      "smoke": {
+        "pass": 42,
+        "fail": 0,
+        "ok": true
+      },
+      "adbtest": {
+        "pass": 367,
+        "fail": 0,
+        "ok": true
+      },
+      "pendingtest": {
+        "pass": 19,
+        "fail": 0,
+        "ok": true
+      },
+      "compliancetest": {
+        "pass": 46,
+        "fail": 0,
+        "ok": true
+      },
+      "videotest": {
+        "pass": 96,
+        "fail": 0,
+        "ok": true
+      },
+      "batchtest": {
+        "pass": 34,
+        "fail": 0,
+        "ok": true
+      },
+      "copytest": {
+        "pass": 201,
+        "fail": 0,
+        "ok": true
+      },
+      "reporttest": {
+        "pass": 57,
+        "fail": 0,
+        "ok": true
+      },
+      "brandtest": {
+        "pass": 82,
+        "fail": 0,
+        "ok": true
+      },
+      "uicheck": {
+        "pass": 205,
+        "fail": 0,
+        "ok": true
+      },
+      "logintest": {
+        "pass": 101,
+        "fail": 0,
+        "ok": true
+      },
+      "gatetest": {
+        "pass": 19,
+        "fail": 0,
+        "ok": true
+      },
+      "updatertest": {
+        "pass": 50,
+        "fail": 0,
+        "ok": true
+      },
+      "releasetest": {
+        "pass": 65,
+        "fail": 0,
+        "ok": true
+      },
+      "prunetest": {
+        "pass": 45,
+        "fail": 0,
+        "ok": true
+      },
+      "logtest": {
+        "pass": 45,
+        "fail": 0,
+        "ok": true
+      },
+      "cloudtest": {
+        "pass": 57,
+        "fail": 0,
+        "ok": true
+      }
+    }
+  },
+  "vendor": [
+    {
+      "name": "adb",
+      "bytes": 9620741
+    },
+    {
+      "name": "adbkeyboard",
+      "bytes": 17374
+    },
+    {
+      "name": "ffmpeg",
+      "bytes": 82872209
+    }
+  ],
+  "vendorBytes": 92510324,
+  "timelineSrc": "package.json",
+  "timeline": [
+    {
+      "version": "1.0.0",
+      "hash": "4622e1a",
+      "date": "2026-09-30",
+      "subject": "首次提交：得物蓝V素材发布工具",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.1-beta.1",
+      "hash": "5628c1e",
+      "date": "2026-10-01",
+      "subject": "feat: 发版脚本加「通道闸门」+ 发布 1.0.1-beta.1 到测试通道",
+      "prerelease": true
+    },
+    {
+      "version": "1.0.1-beta.2",
+      "hash": "1ddbbca",
+      "date": "2026-10-01",
+      "subject": "feat(icon): 换成字母标 L2「深锚」，并把「三份来源」绑进断言",
+      "prerelease": true
+    },
+    {
+      "version": "1.0.1",
+      "hash": "df82bbd",
+      "date": "2026-10-02",
+      "subject": "release: 发布正式版 1.0.1（内置 adb + 中文输入法）",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.2",
+      "hash": "1296633",
+      "date": "2026-10-02",
+      "subject": "登录页去黑框 + 删出厂账号提示；颜色校验不再拦发布；商品池去掉出厂示例数据（v1.0.2）",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.3",
+      "hash": "36d5c9b",
+      "date": "2026-10-02",
+      "subject": "发 v1.0.3（登录页「窗口＝卡片」+ 视频复用图文 + 删假序列号兜底）",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.4",
+      "hash": "86d095d",
+      "date": "2026-10-02",
+      "subject": "云端协作（阶段1）：发布结果增量上云 + 只读网页看板",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.5",
+      "hash": "6c3d56a",
+      "date": "2026-10-02",
+      "subject": "发 v1.0.5（抓发布页 + 动画页备用通道）",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.6",
+      "hash": "6aa17f3",
+      "date": "2026-10-03",
+      "subject": "发 v1.0.6：文案正文格式 + 话题来源 + 云端幂等修复 + 看板内置 SDK",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.7",
+      "hash": "5937b96",
+      "date": "2026-10-03",
+      "subject": "发 v1.0.7：删掉「前司」字样 / 设置页重复块 / 更新日志功能",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.8",
+      "hash": "fef2ef2",
+      "date": "2026-10-03",
+      "subject": "发 v1.0.8：版本号 1.0.7 → 1.0.8 + HANDOFF 本轮记录",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.9",
+      "hash": "2b6710d",
+      "date": "2026-10-03",
+      "subject": "发 v1.0.9：版本号 1.0.8 → 1.0.9（发版范围由用户当场选定「全量」）",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.10",
+      "hash": "37159d3",
+      "date": "2026-10-04",
+      "subject": "发 v1.0.10：版本号 1.0.9 → 1.0.10",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.11",
+      "hash": "57e91c5",
+      "date": "2026-10-04",
+      "subject": "发 v1.0.11：版本号 1.0.10 → 1.0.11",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.12",
+      "hash": "c5dabff",
+      "date": "2026-10-05",
+      "subject": "fix(发布): 中文/含空格文案改走 B64 精确通道 + 输入回读校验；落草稿立刻判失败；失败先留证",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.13",
+      "hash": "00dbb9f",
+      "date": "2026-10-05",
+      "subject": "chore(发版): 1.0.13",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.14",
+      "hash": "f40fa13",
+      "date": "2026-10-05",
+      "subject": "chore(发版): 1.0.14",
+      "prerelease": false
+    }
+  ]
+}
