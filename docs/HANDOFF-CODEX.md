@@ -1,8 +1,10 @@
 # 交接给 Codex（或任何 CLI 编码代理）
 
-> 最后更新：**2026-10-05 18:0x** · 仓库 HEAD `276a4db` · 版本 **1.0.15**
+> 最后更新：**2026-10-05 18:4x** · 版本 **1.0.15**
 >
-> 这份是**入口**。完整内容在 `docs/HANDOFF.md`（2423 行）；规则全文在 `docs/knowledge/`。
+> ★ 本文件**不再钉死 HEAD 哈希**（钉了就必然过期）：要用就现查 `git log -1 --format=%H`。
+>
+> 这份是**入口**。完整内容在 `docs/HANDOFF.md`（2400+ 行）；规则全文在 `docs/knowledge/`。
 
 ---
 
@@ -10,7 +12,7 @@
 
 | | 内容 | 状态 |
 | --- | --- | --- |
-| ✅ **git 里全都有** | 源码、17 套回归测试、给 AI 的入口文档（`AGENTS.md`）、全部交接文档、**以及新增的知识库 `docs/knowledge/`**（规则全文 / 跨项目规范 / 28 个技能 / 90 份历史文档 / 6 份工作日志 / 已部署站点源码） | clone 完就能开工 |
+| ✅ **git 里全都有** | 源码、17 套回归测试、给 AI 的入口文档（`AGENTS.md`）、全部交接文档、**以及新增的知识库 `docs/knowledge/`**（规则全文 / 跨项目规范 / 29 个技能 / 90 份历史文档 / 6 份工作日志 / 已部署站点源码） | clone 完就能开工 |
 | ⬜ **git 外，但本机已经就位** | 发版凭据 `D:\work\dewu-bluev-publisher\.env`（已 gitignore）、模拟器 MuMu 12、真机得物 App、推 gitee 的 SSH key、`node_modules`（重装即可） | **在同机运行 = 不用转移**；换机才需另给 |
 | ⬜ **git 外，二进制/原件** | 已发出的安装包 `dist\`、归档 `D:\work\_dist-archive\`、插件中心的 109 MB 安装包、411 个取证原件与截图 | 按需索取，**故意不进 git** |
 
@@ -19,7 +21,9 @@
 > ★★ **换到另一台机器跑？那是另一回事** —— 除了环境，还要搬三份**不能走 git 的敏感文件**
 > （`config.json` 含真实模型密钥与真机 UI 定位表、`auth.json` 含账号口令、`.env` 含 COS 密钥），
 > 并在新机重置两处（`cloud.machineId` / 绝对路径）。
-> **完整步骤见 [`HANDOFF-NEW-MACHINE.md`](HANDOFF-NEW-MACHINE.md)。**
+> ★ `config.json` **别整份拷**：用 **`node tools/config-portable.js`**（`inspect` / `export` / `import` / `selftest`）
+> —— 它会把绝对路径与 `machineId` 显式置空、默认抹掉密钥、导入前先备份、默认只预演。
+> **完整步骤见 [`HANDOFF-NEW-MACHINE.md`](HANDOFF-NEW-MACHINE.md)（§3.1 = 配置怎么搬）。**
 
 ---
 
@@ -29,8 +33,8 @@
 接手 D:\work\dewu-bluev-publisher（Electron / Windows 素材发布工具，当前 v1.0.15）。
 
 第一步按顺序读：AGENTS.md → docs/HANDOFF.md §0/§2/§3/§6 → docs/HANDOFF-CODEX.md。
-知识库在 docs/knowledge/（规则全文 RULES-得物蓝V.md 4159 行、跨项目规范 RULES-通用.md、
-28 个技能、90 份历史文档、6 份工作日志）—— 按 docs/knowledge/README.md 的索引查，别整读。
+知识库在 docs/knowledge/（规则全文 RULES-得物蓝V.md 4293 行、跨项目规范 RULES-通用.md、
+29 个技能、90 份历史文档、6 份工作日志）—— 按 docs/knowledge/README.md 的索引查，别整读。
 
 四条硬约束：
 ① 项目目录不许改名/移动（配置与构建产物里存的是绝对路径）；
@@ -50,12 +54,14 @@
 | --- | --- | --- |
 | `AGENTS.md` | **给 AI 代理的入口须知**（Codex 会自动读这个文件）：9 条硬约束、验收标准、环境表、做不到的事、文档索引 | 1 |
 | `docs/HANDOFF.md` | 全部交接内容：硬约束 / 已完成（**不要重做**）/ 待办 / 真机口径 / 发版 SOP / 回归套件表 | 1 |
+| `docs/HANDOFF-CODEX.md` | 本文件（一页纸入口） | 1 |
+| `docs/HANDOFF-NEW-MACHINE.md` | **换机方案**（含 §3.1 配置搬运工具用法） | 1 |
 | `docs/WINDOWS-E2E.md` | Windows + 模拟器端到端测试手册 | 1 |
-| `docs/knowledge/` | **知识库**（见上表与 `README.md`） | 149 |
+| `docs/knowledge/` | **知识库**（见 `docs/knowledge/README.md`） | 151 |
 | `docs/visual/` | 功能全景可视化文档（`build.js` 是生成器，数字从产物读） | 3 |
 | `docs/supabase-setup.sql` | 云端协作侧建表与策略 | 1 |
 | `src/` | 主进程 / 渲染层 / 服务（39 个文件） | 39 |
-| `tools/` | 17 套回归 + 假 adb 替身 + 发版工具（`upload-release.js` / `prune-release.js` / `verifypack.js`） | 33 |
+| `tools/` | 17 套回归 + 假 adb 替身 + 发版与维护工具（`upload-release.js` / `prune-release.js` / `verifypack.js` / `config-portable.js`） | 34 |
 | `vendor/` | **随包内置**：adb、ffmpeg、ADBKeyboard.apk、以及 `README.md`（逐文件 md5 对账） | 10 |
 | `web/` `build/` | 发布看板 + 图标源 | 4 |
 | `README.md` `package.json` `.gitignore` | 模块说明与测试套件表 / 构建与发布配置 / **忽略规则（含"凭据绝不入库"）** | 3 |
@@ -78,22 +84,23 @@
 | 5 | **真机得物 App** | 发布链路**只能在真机上验证**；没有设备就只能改代码、跑不依赖设备的回归 | 跑发布链路时挡 |
 | 6 | **素材** | 图片/视频/Excel 发布单（`报告*.xlsx`）；有些用例还要「Excel 被 WPS 占用」这种现场条件 | 跑发布链路时挡 |
 | 7 | **内置依赖** | `vendor/adb`、`vendor/ffmpeg`、`vendor/adbkeyboard/ADBKeyboard.apk` —— **这些在 git 里**，不用另外给 | 不挡 |
+| 8 | **运行时配置** | `%APPDATA%\dewu-bluev-publisher\config.json`（含模型密钥 + **真机 UI 定位表 38+41 步**）与 `auth.json`。**同机已就位**；换机用 `node tools/config-portable.js` 搬（**别整份拷**），并重置 `cloud.machineId` 与 `paths.*` | 跑发布链路时挡 |
 
 > ★ 内置的 adb / ffmpeg **不进 asar**（asar 里的 exe 不能执行），走 `build.extraResources` 搬到 `resources/`。
 > 用户手填路径优先于内置；手填的路径不存在但内置可用 ⇒ 退回内置并**在结果里说出来**。
 
 ---
 
-## 4. 当前状态快照（2026-10-05 18:0x）
+## 4. 当前状态快照（2026-10-05 18:4x）
 
 | 项 | 实测值 |
 | --- | --- |
 | 远端 / 分支 | `git@gitee.com:abulaitifans/dewu-bluev-publisher.git` / `main` |
-| HEAD | `276a4db8e75749ee0cb4d831ba4ef2b4626dfed9`（`git ls-remote origin refs/heads/main` 与之一致） |
-| 提交总数 | 96 |
+| HEAD | **现查** `git log -1 --format=%H`（本文件不钉哈希，钉了就必然过期） |
+| 提交总数 | 编制时 `git rev-list --count HEAD` = **101** |
 | 工作树 | 干净（`git status --short` 无输出） |
 | 版本号 | `package.json` = **1.0.15** |
-| 回归 | **17 套 1622 项全绿**（提交前工作树 + 打包快照同一份字节，两次数字一致） |
+| 回归 | **17 套 1622 项全绿**（2026-10-05 18:3x 实测；`adbtest` 单套就要 3 分钟以上，别用 90s 超时去卡它） |
 | 公网通道 | **1.0.15 已上线**，`latest.yml` = 1.0.15；`beta.yml` 未动 |
 | 更新源 | `package.json` `build.publish` = generic provider → `https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/`，`channel: latest`（**源地址编译进包，运行时不改**；通道名 `latest`/`beta` 只是读哪个 yml） |
 | 产物 | `dist\得物蓝V素材发布工具-1.0.15-x64-win.exe` = **107,095,416 B**（`dist\` 里恰好 1 个 exe） |
@@ -115,6 +122,8 @@
 - 造坏版反证时：**先备份再破坏**，**禁用 `git checkout -- <file>` 还原**（会把未提交的在制品整片抹回 HEAD，实测丢过整轮修复）⇒ 备份到临时目录、跑完 `cp` 还原。
 - 负向断言先剥注释（`codeOnly()`）再查；定点破坏先过「锚点唯一（`count==1`）」。
 - 改测试前先读 `docs/HANDOFF.md` §6 的套件表，别改错套件；用例之间必须互相隔离。
+- ★ 自己新写的工具也要有**能立刻抓到错的用例**：本案 `tools/config-portable.js` 首跑就真红了一条
+  （路径函数对**顶层键**返回 `undefined` ⇒ 那两个键没被置空）。**首跑全绿反而要怀疑断言在放水。**
 
 ---
 

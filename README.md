@@ -786,4 +786,9 @@ tools/                   回归测试（run-all.js 一键跑）+ 假 adb + make-
 tools/upload-release.js  发版上传（exe + 清单文件 + blockmap → 对象存储的桶根；清单名按通道，latest.yml / beta.yml）
 tools/prune-release.js   清理源上堆积的老包（保留策略，**默认 dry-run**，要 --apply 才真删；三条 fail-closed 闸门）
 tools/logtest.js         运行日志导出格式的回归（条数不许谎报 / 完整日期时间 / 行尾固定 \n / 真落盘；纯 Node）
+tools/config-portable.js 配置搬运（换机 / 交接用）：export / import / inspect / selftest —— 把 userData/config.json
+                         拆成「可搬运」「必须重置（绝对路径 / machineId / 窗口位置）」「密钥（默认剔除）」三类；
+                         导入**默认预演**、真写前先备份 config.json；自带 33 条往返自测（用临时目录，不碰真配置）。
+                         ★ 为什么需要它：界面那个「导出配置」只管云端协作三个字段（cloudsync.js），
+                         uiMap（38+41 步）、品牌、话题池、密钥一个都不在里面
 ```

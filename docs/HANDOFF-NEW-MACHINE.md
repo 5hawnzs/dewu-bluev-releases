@@ -1,6 +1,6 @@
 # 换机方案：把项目搬到另一台机器跑（Codex / 别人接手）
 
-> 2026-10-05 编制 · 对应仓库 HEAD `5c96db8` · 版本 **1.0.15**
+> 2026-10-05 编制 · 版本 **1.0.15**（对应仓库 `main` 的最新提交，别照抄旧哈希：见 `git log -1`）
 >
 > 与「同机交接」的区别只有一句话：
 > **同机 = 只缺一次 `npm install`；换机 = 多出一件「搬钥匙」的活，而钥匙不能走 git。**
@@ -25,8 +25,8 @@
 | --- | --- | --- |
 | 源码 / 17 套回归 / `docs/` / `docs/knowledge/` / `AGENTS.md` | **`git clone`** | 公开级 |
 | `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` | **`git clone`**（★ 这些二进制**已经在 git 里**，不用另外拷） | 公开级 |
-| **`config.json`** | 加密包 / U 盘 / 内网共享 —— **绝不许走 git、不许贴聊天** | ★★ 含真实模型密钥 |
-| **`auth.json`** | 同上 | ★★ 含账号口令哈希 |
+| **`config.json`** | ★ **别整份拷** —— 用 `node tools/config-portable.js` 导出/导入（见 §3.1），再走加密包 / U 盘 / 内网共享。**绝不许走 git、不许贴聊天** | ★★（默认导出已抹密钥；加了 `--with-secrets` 就是 ★★） |
+| **`auth.json`** | 同上（或改用种子文件，见 §3.3） | ★★ 含账号口令哈希 |
 | **`.env`** | 同上（只有要发版的机器才需要） | ★★★ COS 对象存储 SecretKey |
 | **`~/.ssh` 私钥** | 同上，或在新机重新生成一把 | ★★★ |
 | 模拟器 + 得物 App + 登录态 | 新机自己装 | — |
@@ -65,22 +65,80 @@ npm run addon:win
 
 **再说一遍口径**：这三份加起来 ≈ 这个项目的全部「钥匙」。**一旦提交进 git，即使之后删掉也留在历史里，只能去轮换密钥。**
 
-### 3.1 ★ 可以不搬 `config.json` —— 但要接受三个代价
+### 3.1 ★ `config.json` 怎么搬：用 `tools/config-portable.js`（2026-10-05 新增）
 
-系统里**没有「整份配置导出」**这个功能：界面上那个「导出配置 / 导入配置」只针对**云端协作**（`cloud.url` + `anonKey`），**不含模型密钥、不含 UI 定位表**。（源码：`src/main/services/cloudsync.js` 的 `exportConfig()` 只返回这三个字段。）
+**先讲清问题**：`config.json` 是**三类东西混在一个文件里**，整份照拷必踩两个坑
+（`paths.*` **静默失效**、两台机器共用一个 `machineId`）。而界面上那个
+「导出配置 / 导入配置」按钮**只管云端协作的三个字段**（`cloud.url` / `cloud.anonKey` / `cloud.org`，
+见 `src/main/services/cloudsync.js`）——**不含**模型密钥、品牌、话题池，**更不含**
+`publish.uiMap`（真机实测的 UI 定位表：**38 步图文 + 41 步视频**，这个项目最贵的资产）。
 
-所以「不搬、在新机重建」完全可以，代价是：
+⇒ 本项目自带搬运工具，把三类东西分开处理：
 
-1. **模型密钥要重填**：「文案生成」页填 endpoint + apiKey。不填 ⇒ 文案只会走本地模板（工具不报错，是静默降级）。
-2. **UI 定位表要重抓**：得物发布页那套 `publish.uiMap.steps / videoSteps` 只在 `config.json` 里（`src/` 里没有内置默认值）。
-   ⇒ 要连上设备，在「模拟器发布」页**抓取页面结构 → 导入**。**这是最贵的一步**，而且得物改版后本来也要重抓。
-3. **路径要重选**：素材目录 / 输出目录 / 隔离目录。
+| 类别 | 字段 | 工具怎么处理 |
+| --- | --- | --- |
+| **可搬运** | `publish.uiMap.*`、`brands[]`、`copy.pool`、`copy.hotwords`、`compliance.*`、`verify.*`、`publish.devices[]`、主题 / 更新通道 / 各类阈值 | 原样带走 |
+| **必须重置**（机器专属） | `paths.output/rejected/source`、`publish.adbPath`、`publish.ffmpegPath`、`cloud.machineId`、`cloud.machineName`、`window.bounds`、`window.maximized` | **显式置空**（理由见 §4.1 / §4.2） |
+| **密钥** | `copy.llm.apiKey`、`verify.api.apiKey`（按**叶子键名**认；`cloud.anonKey` **不算** —— 那是公开设计） | **默认剔除**（新机重填）；要一起搬就加 `--with-secrets` |
 
-⇒ **结论**：要跑发布链路就把 `config.json` 带过去；单纯改代码就重填（更省事也更安全）。
+用法（**旧机导出 → 新机导入**）：
+
+```bat
+REM 旧机：先看现状（只读），再导出（默认抹掉密钥）
+node tools/config-portable.js inspect
+node tools/config-portable.js export --out D:\config-portable.json
+REM       想连密钥一起搬就加 --with-secrets（那时这个文件属敏感件）
+REM       想连项目状态一起搬就再加 --with-project（会置空其中的绝对路径）
+
+REM 新机（先 clone + npm install）：先预演，看它打算写什么
+node tools/config-portable.js import D:\config-portable.json
+REM 确认无误再真写 —— 会先把原 config.json 备份成 config.json.bak-before-portable-<时间戳>
+node tools/config-portable.js import D:\config-portable.json --yes
+```
+
+★ **导入前把 App 关掉** —— `config.json` 是 App 启动时读进内存、之后整份写回的
+（`src/main/store.js` 的 `scheduleSave`，250ms 防抖）⇒ App 开着导进去，很可能被内存里的旧值刷掉。
+★ 工具自带**往返自测**（用临时目录，**不碰真配置**）：`node tools/config-portable.js selftest`（33 条断言）。
+★ 导入侧**不会**把本机已有的密钥抹空：包里被标为「已剔除」的密钥，本机若已有值则保留本机值。
+★ 工具**不含**下面 §3.2 那四份文件 —— 它们各有各的处理方式。
+
+### 3.2 另外四份**不要**照搬的文件
+
+| 文件 | 为什么 |
+| --- | --- |
+| `cloud-sync.json` | **上行游标**（`offset` / `uploaded`）。照搬 ⇒ 新机接着老机器的位置推，可能漏推一截。**删掉让它自己重建** |
+| `.updaterId` | 更新器的设备标识，新机应当自己生成 |
+| `pool.json` | 商品池缓存（原机**没有**这个文件）。需要就在新机重新导入商品池 |
+| `auth.json` | 账号库。两种带法见 §3.3 |
+
+### 3.3 `auth.json` 的两种带法
+
+1. **要保留账户与品牌权限 ⇒ 搬文件**（含 scrypt 哈希，解不出明文**但能直接登录** ⇒ 按密钥对待）。
+   适合还要保留 `testbeta` 测试账号、以及各账号的品牌权限分配。
+2. **只想保住管理员口令 ⇒ 放种子文件**（更安全，明文不留盘）。
+   在新机 `%APPDATA%\dewu-bluev-publisher\` 放一个 `auth.seed.json`：
+
+   ```json
+   { "username": "admin", "password": "你的口令" }
+   ```
+
+   App **首次启动**读走后**立即删除**（`src/main/auth.js` 的 `seedFrom()`）。
+   也可改用环境变量 `BLUEV_ADMIN_USER` / `BLUEV_ADMIN_PASS`（优先级更高）。
+   ★ 既不设种子、也不搬 `auth.json` ⇒ 新机建的是**出厂账号 `admin` / `BlueV@2026`**，并会提示改口令。
+
+### 3.4 不搬 `config.json` 也可以，代价是三个
+
+1. **模型密钥要重填**：不填 ⇒ 文案只走本地模板（**工具不报错，是静默降级**）。
+2. **UI 定位表要重抓**：要连设备，在「模拟器发布」页「抓取页面结构 → 导入」。**最贵的一步**（得物改版后本来也要重抓）。
+3. **路径要重选**。
+
+⇒ **要跑发布链路就用 §3.1 的工具搬过去；单纯改代码就重填（更省事也更安全）。**
 
 ---
 
-## 4. ★★ 第三步：新机上必须「重置」的三处（直接照搬 `config.json` 会踩）
+## 4. ★★ 第三步：新机上必须「重置」的三处（整份照搬 `config.json` 会踩）
+
+> §3.1 的工具已经**自动**把 4.1 / 4.2 这两处置空了；这里写清楚**为什么**，用来判断工具是否按预期工作。
 
 ### 4.1 `cloud.machineId` 必须清空
 
@@ -149,6 +207,7 @@ git rev-parse HEAD
 git ls-remote origin refs/heads/main    REM ★ 两条必须一致，才算「代码到位」
 npm install
 npm run addon:win
+node tools/config-portable.js selftest  REM ★ 33 PASS / 0 FAIL
 node tools/run-all.js                   REM ★ 17 套应全绿
 ```
 
@@ -159,13 +218,14 @@ node tools/run-all.js                   REM ★ 17 套应全绿
 逐项确认：
 
 - [ ] `npx electron .` 能起界面、能进主界面、版本号显示 **1.0.15**
+- [ ] `node tools/config-portable.js inspect` 里 `uiMap` 显示 **38 步图文 / 41 步视频**（说明定位表搬到了）
 - [ ] 「运行日志」页有内容（说明 `paths.output` 设对了）
-- [ ] 若搬了 `config.json`：**「文案生成」页能看到密钥**、「模拟器发布」页**UI 定位表在**
+- [ ] 「文案生成」页能看到密钥；看不到就重填（导出时用了默认的「抹密钥」就会是空的）
 - [ ] `cloud.machineId` 已是**新生成的** `m_xxxxxxxx`（不是 `m_fb6e1a86`）
 - [ ] `adb devices` 能列出设备，App 里「扫描设备 → 加入并使用」成功
 - [ ] 中文输入法「一键装」跑通（真机输入用得上）
 - [ ] 要发版的话：`仓库根\.env` 在、`node tools/upload-release.js --channel stable` 能读到凭据（**别真发**，看它打印目标域名即可）
-- [ ] ★ 检查 `publish.mock` —— 原机当前是 **`true`**（干跑）。照搬后如果没注意，会以为在真发。发布前务必确认这个开关
+- [ ] ★ 检查 `publish.mock` —— 原机当前是 **`true`**（干跑）。搬运会把原值带过来，不注意会以为在真发。发布前务必确认这个开关
 
 ---
 

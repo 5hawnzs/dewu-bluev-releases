@@ -92,6 +92,9 @@
 | `docs/HANDOFF-NEW-MACHINE.md` | **换机方案**：目标机系统前提、通道总表（什么走 git、什么只能单独搬）、三份敏感文件（`config.json` / `auth.json` / `.env`）、新机必做的两处重置（`cloud.machineId` 与绝对路径）、设备侧、验收清单。**换机器跑就照这份走** |
 | `docs/knowledge/` | **知识库**。原本全在仓库之外（WorkBuddy 私有目录），clone 拿不到 ⇒ 已收进仓库：`RULES-得物蓝V.md` 项目规则全文（`§A`~`§CA`，4159 行 + 实测数字）、`MEMORY-INDEX.md` 38 条索引、`RULES-通用.md` 跨项目规范、`skills/` 28 个技能、`docs/` 90 份历史文档、`archive/worklog/` 6 份工作日志、`deployed-sites/` 站点源码。**索引见 `docs/knowledge/README.md`，按需查、别整读** |
 
+> ★ 换机搬配置**不要整份拷 `config.json`**：用 `node tools/config-portable.js`
+> （`inspect` / `export` / `import` / `selftest`）—— 它会把绝对路径与 `cloud.machineId` **显式置空**、
+> 默认抹掉密钥、导入前先备份、默认只预演。用法与理由见 `docs/HANDOFF-NEW-MACHINE.md` §3.1~§3.3。
 > ★ `docs/` **不在** `build.files` 白名单里（只有 `src/**` + `package.json` 进包）⇒ 知识库不会被打进安装包、终端用户看不到。
 > ★ 知识库是**快照**（截至 2026-10-05），里面的断言数 / 体积 / 耗时**每次都要实测重取**。
 > ★ 规则全文里唯一算是"凭据"的，是一个 Supabase **`anon`** key（已确认 `role: anon`，随公开看板发布过）；
