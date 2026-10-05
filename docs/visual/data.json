@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-05T08:47:23.525Z",
-  "version": "1.0.14",
-  "commit": "ccc6b9f",
+  "generatedAt": "2026-10-05T09:06:12.894Z",
+  "version": "1.0.15",
+  "commit": "62340ea",
   "branch": "main",
-  "dirty": 15,
+  "dirty": 0,
   "tabs": [
     {
       "tab": 1,
@@ -125,7 +125,7 @@
   ],
   "regression": {
     "kind": "snapshot",
-    "when": "2026-10-05 16:45",
+    "when": "2026-10-05 17:02",
     "total": 1622,
     "allGreen": true,
     "suites": {
@@ -350,6 +350,13 @@
       "hash": "f40fa13",
       "date": "2026-10-05",
       "subject": "chore(发版): 1.0.14",
+      "prerelease": false
+    },
+    {
+      "version": "1.0.15",
+      "hash": "62340ea",
+      "date": "2026-10-05",
+      "subject": "chore(发版): 1.0.15",
       "prerelease": false
     }
   ]

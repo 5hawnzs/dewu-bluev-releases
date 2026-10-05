@@ -1,8 +1,8 @@
 {
-  "when": "2026-10-05 16:45",
+  "when": "2026-10-05 17:02",
   "total": 1622,
   "failedSuites": [],
-  "note": "来自快照文件 D:/tmp/emoji-bak-20261005/runall-emoji.txt（由 build.js --save-record 写入）",
+  "note": "来自快照文件 E:/WORKBUDDY/2026-09-30-17-35-35/_rv/runall-worktree-2.txt（由 build.js --save-record 写入）",
   "suites": {
     "smoke": {
       "pass": 42,
