@@ -15,6 +15,11 @@
 | ⬜ **git 外，二进制/原件** | 已发出的安装包 `dist\`、归档 `D:\work\_dist-archive\`、插件中心的 109 MB 安装包、411 个取证原件与截图 | 按需索取，**故意不进 git** |
 
 > **一句话**：让 Codex 在**这台机器上**、**这个仓库里**干活，它缺的只有 `node_modules`（跑一次 `npm install`）。
+>
+> ★★ **换到另一台机器跑？那是另一回事** —— 除了环境，还要搬三份**不能走 git 的敏感文件**
+> （`config.json` 含真实模型密钥与真机 UI 定位表、`auth.json` 含账号口令、`.env` 含 COS 密钥），
+> 并在新机重置两处（`cloud.machineId` / 绝对路径）。
+> **完整步骤见 [`HANDOFF-NEW-MACHINE.md`](HANDOFF-NEW-MACHINE.md)。**
 
 ---
 
