@@ -47,7 +47,6 @@ function defaults() {
       extraTopics: 4,
       brand: '',                       // 【已降级为 legacy】出厂留空：不预设任何品牌；只在旧版本升级时作迁移种子
       defaultBrandId: '',              // 「设置 → 品牌管理」里选的默认品牌（brd_xxx），新建任务时预选
-      promptFilter: '',                // 筛选排序提示词
       promptWrite: '',                 // 文案生成提示词
       // ★ 2026-10-02：endpoint / model 出厂**留空 = 跟随内置**（src/main/llmdefaults.js，
       //   读时兜底、**不写回**；和 cloud.url 同一套规矩）—— 用户实测过「配了 key 但地址空着，
@@ -63,7 +62,7 @@ function defaults() {
       pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] },  // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
       // ★★ 标题热词库的用户版（「热词库」页保存的）。**出厂必须是 null** —— 不许预置业务数据：
       //   null = 用 hotwords.js 里的内置基线；存了 = 用户改过的版本（按组名合并，见 currentGroups）。
-      //   「恢复内置」＝置回 null。收尾组与 T01~T10 骨架**不落这里**（它们不可编辑）。
+      //   「恢复内置」＝置回 null。收尾组与 T01~T15 骨架**不落这里**（它们不可编辑）。
       hotwords: null
     },
     // 真机是调接口查得物后台（SKU APIKey），查不到仅告警不阻断

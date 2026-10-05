@@ -63,8 +63,7 @@ function normalize(b) {
     name,
     enabled: b.enabled !== false,
     note: normNote(b.note),
-    // 品牌自己的提示词。留空 = 没配：文案生成会**明确报错**，不拿别的品牌的口吻顶替
-    promptFilter: normPrompt(b.promptFilter),
+    // 品牌自己的文案提示词。留空 = 没配：文案生成会**明确报错**，不拿别的品牌的口吻顶替
     promptWrite: normPrompt(b.promptWrite),
     createdAt: Number(b.createdAt) || Date.now()
   };
@@ -135,7 +134,6 @@ function add(input) {
     id: newId(), name,
     enabled: (input && input.enabled) !== false,
     note: normNote(input && input.note),
-    promptFilter: normPrompt(input && input.promptFilter),
     promptWrite: normPrompt(input && input.promptWrite),
     createdAt: Date.now()
   };
@@ -158,7 +156,6 @@ function update(id, patch) {
   }
   if (p.enabled != null) next.enabled = !!p.enabled;
   if (p.note != null) next.note = normNote(p.note);
-  if (p.promptFilter != null) next.promptFilter = normPrompt(p.promptFilter);
   if (p.promptWrite != null) next.promptWrite = normPrompt(p.promptWrite);
   cur[i] = next;
   save(cur);

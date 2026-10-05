@@ -363,6 +363,8 @@ body:not(.locked) .gate{display:none}
 }
 .mta:focus{outline:none;border-color:var(--teal)}
 .mta[readonly]{opacity:.62}
+/* 品牌弹窗里的「文案生成提示词」：比默认高，能一眼看到十几行，少滚动 */
+.mta.tall{min-height:260px}
 .mchk{display:flex;align-items:center;gap:7px;margin:0 0 9px;font-size:12.5px;color:var(--tx2);cursor:pointer}
 .mchk input{cursor:pointer}
 .mchk[data-off="1"]{cursor:not-allowed;opacity:.55}

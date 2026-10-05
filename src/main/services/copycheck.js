@@ -249,6 +249,61 @@ function declaredColorsIn(title) {
 }
 
 /**
+ * 「彩色 emoji → 色系」表 —— 只收**无歧义**的颜色符号：9 个爱心 ＋ 9 个圆圈。
+ * ★★ 为什么只收这些（2026-10-05 加 ⑩ 判据时定的）：🍂🍁🔥🐻🧥✨🌿 这类**看着像有颜色**
+ *   但语义不是颜色的 emoji 一律**不认** —— 认了就会把「燕麦色毛衣🍂」判成颜色不一致（误杀）。
+ * ★ `❤`(U+2764) 有时写成 `❤️`（带变体选择符 `FE0F`）；`for...of` 按**码点**迭代 ⇒ FE0F 单独成一项、
+ *   表里查不到，天然被跳过，**不需要**再特判。
+ */
+const EMOJI_COLOR = new Map([
+  ['\u2764', '红'],           // ❤
+  ['\u{1F9E1}', '橙'],        // 🧡
+  ['\u{1F49B}', '黄'],        // 💛
+  ['\u{1F49A}', '绿'],        // 💚
+  ['\u{1F499}', '蓝'],        // 💙
+  ['\u{1F49C}', '紫'],        // 💜
+  ['\u{1F5A4}', '黑'],        // 🖤
+  ['\u{1F90D}', '白'],        // 🤍
+  ['\u{1F90E}', '棕'],        // 🤎
+  ['\u{1F534}', '红'],        // 🔴
+  ['\u{1F7E0}', '橙'],        // 🟠
+  ['\u{1F7E1}', '黄'],        // 🟡
+  ['\u{1F7E2}', '绿'],        // 🟢
+  ['\u{1F535}', '蓝'],        // 🔵
+  ['\u{1F7E3}', '紫'],        // 🟣
+  ['\u26AB', '黑'],           // ⚫
+  ['\u26AA', '白'],           // ⚪
+  ['\u{1F7E4}', '棕']         // 🟤
+]);
+
+/** 从文字里挑出所有「彩色 emoji」，返回 `[{ char, family }]`（保持出现顺序、不去重） */
+function colorEmojiIn(text) {
+  const s = String(text == null ? '' : text);
+  const out = [];
+  for (const ch of s) {
+    const family = EMOJI_COLOR.get(ch);
+    if (family) out.push({ char: ch, family });
+  }
+  return out;
+}
+
+/**
+ * 某个「基础色系」允许配哪些 emoji 色系。三条例外都是实测出来的，不是拍的：
+ *   ① **灰 / 浅灰 → 空数组**：爱心与圆圈**都没有灰色**（`🩶` 是 Unicode 15 / 2022 年才加的，
+ *      老机型显示成豆腐块）⇒ 灰的那一行本来就该避开 T15，出现**任何**彩色 emoji 都算对不上。
+ *   ② **橙 ↔ 棕 互认**：`卡其 / 驼 / 米 / 燕麦色 / 流沙金 / 棕 / 咖啡` 走 `colors.coarse` 都是「橙」
+ *      （hue < 45），而提示词表让它们用 🤎/🟤 ⇒ **不互认就会把自己的合规写法判成错**。
+ *   ③ **青 → 绿 / 蓝 都放行**：`青` 夹在绿蓝之间，认死一边必误杀。
+ */
+function emojiFamiliesFor(coarse) {
+  if (!coarse) return [];
+  if (coarse === '灰') return [];
+  if (coarse === '橙' || coarse === '棕') return ['橙', '棕'];
+  if (coarse === '青') return ['绿', '蓝'];
+  return [coarse];
+}
+
+/**
  * 话题行的样式：整行只有 `#话题`（可以在一行里连着好几个）。
  * ★ 判据与 `copywriter.stripTrailingTopics` **同一套**：`#` + 汉字/字母/数字，**遇到标点就停**
  *   （写成「`#` 后面直到空白」会把「#小故事，讲给你听。」整段当成话题）。
@@ -383,6 +438,33 @@ function check(row, opts = {}) {
       + '建议补一个收尾（「太帅了」「松弛感拉满」）或连接字（的 / 才是 / 穿出）');
   }
 
+  // ⑩ 标题里的「彩色 emoji」跟文字说的颜色对不对得上（2026-10-05 加）
+  //
+  // ★ 补的是什么缺口：T15 是第一条**把 emoji 当语义用**的骨架（两个同色爱心 / 圆圈，
+  //   颜色必须=本行颜色）。在这之前这件事**只有提示词约束** —— 模型真写错了
+  //   （比如灰色那件写了 💙💙），报告里**不会标黄**，只能靠人一行行看图。
+  //   这条判据就是那个缺口的兜底。（改前这里是一句「现无此类判据」的如实声明，现在补上了。）
+  // ★ 三条设计取舍，全为了「宁可漏报也不误杀」：
+  //   ① 只认 `EMOJI_COLOR` 里那 18 个爱心 / 圆圈，装饰性 emoji 不认（见常量注释）；
+  //   ② 比对的色词取**标题里所有色词**（`colorWordsIn`），不是只看「紧挨单品的声明色」
+  //      （`declaredColorsIn`）—— 后者会把 `{色}系` 这种写法当氛围词跳过，而那正是 T15
+  //      要判的位置；只要**有一个**色词跟 emoji 同族就算对得上（宽进）。
+  //   ③ 标题里的色词一个都认不出色系（电商怪名）⇒ **不判**（判不了的宁可不报）。
+  const emoHits = colorEmojiIn(title);
+  if (emoHits.length) {
+    const hits = colorWordsIn(title);
+    const knowns = hits.map(w => coarseOf(w)).filter(Boolean);
+    if (knowns.length) {
+      const allow = new Set();
+      knowns.forEach(c => emojiFamiliesFor(c).forEach(f => allow.add(f)));
+      const bad = [...new Set(emoHits.filter(h => !allow.has(h.family)).map(h => h.char))];
+      if (bad.length) {
+        add('warn', `标题里的 emoji「${bad.join('')}」跟文字说的颜色（${hits.join('、')}）对不上`
+          + '（emoji 的颜色要和本行颜色一致；灰 / 浅灰没有对应的灰色 emoji，灰的那条改用 T13 那种写法）');
+      }
+    }
+  }
+
   const level = issues.some(i => i.level === 'bad') ? 'bad'
     : (issues.length ? 'warn' : 'ok');
   const text = issues.length ? issues.map(i => i.text).join('；') : '一致';
@@ -436,6 +518,7 @@ module.exports = {
   bodyWithoutTrailingTopics,
   BANNED, GARMENTS, DESCRIPTORS, DESCRIPTOR_MAX, COLOR_TAIL_SKIP,
   PASTE_SYMBOLS, LINKERS, prefixWords, PASTE_MIN_LEN, looksLikeWordPaste,
+  EMOJI_COLOR, colorEmojiIn, emojiFamiliesFor,
   TITLE_MAX, BODY_MIN, BODY_MAX,
   BODY_LINES_MIN, BODY_LINES_MAX, BODY_LINES_SOFT_MAX, BODY_LINE_MAX, BODY_EMOJI_MAX
 };

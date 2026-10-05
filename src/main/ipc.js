@@ -110,13 +110,12 @@ function register() {
     // 不回全量是为了防一手「前端过滤漏了 → 成员打开别人的品牌看到空 → 一保存把人家的模板清了」
     const okIds = a.all ? null : a.ids;
     const promptOf = b => (okIds && !okIds.includes(b.id)) ? '' : (b.promptWrite || '');
-    const filterOf = b => (okIds && !okIds.includes(b.id)) ? '' : (b.promptFilter || '');
     return {
       ok: true,
       isAdmin: a.all,
       brands: brands.list().map(b => ({
         id: b.id, name: b.name, enabled: b.enabled, note: b.note,
-        promptWrite: promptOf(b), promptFilter: filterOf(b)
+        promptWrite: promptOf(b)
       })),
       mine: a.all ? brands.enabledList().map(b => b.id) : a.ids,
       defaultBrandId: store.get('copy.defaultBrandId') || ''
@@ -142,7 +141,7 @@ function register() {
     if (!b) return { ok: false, error: '品牌不存在' };
     if (!a.all && !a.ids.includes(b.id)) return { ok: false, error: `没有「${b.name}」的操作权限` };
     const p = patch || {};
-    const r = brands.update(id, { promptFilter: p.promptFilter, promptWrite: p.promptWrite });
+    const r = brands.update(id, { promptWrite: p.promptWrite });
     // 日志里只记品牌名：整段模板上千字，抄进 runlog 每条都占一大截
     if (r.ok) logbus.ok(`已更新品牌「${r.brand.name}」的提示词`);
     return r;

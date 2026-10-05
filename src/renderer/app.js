@@ -609,9 +609,20 @@ TABS[3] = {
   }
 };
 
+/* ---------------- 页签 4：货号颜色校验（仅管理员可见） ----------------
+ * ★ 2026-10-05 用户要求：这一页「对除了管理员的用户隐藏」。
+ *   两条线一起上，缺一条就漏：
+ *     ① index.html 那个按钮带 data-admin="1" ⇒ syncAdminNav() 把按钮 hidden 掉；
+ *     ② 这里 admin:true ⇒ 即使当前正停在这一页（老配置里存过 tab=4、或按了 Ctrl+4），
+ *        renderAll 开头的 syncAdminNav() 也会把 state.tab 兜回第 1 页。
+ *   ★ 与「高级设置」是同一个机制（canAdmin()：免登录/开发模式算有权限，否则看 role）。
+ *   ★ 注意这是**界面隐藏**：主进程那道「只有管理员能做」的口径没跟着加 ——
+ *     校验本身是只读比对、不写别人的数据，所以按用户这次的要求只做隐藏。
+ */
 TABS[4] = {
   title: '货号颜色校验',
-  desc: '比对得物商品池 · 多颜色货号必须填对应颜色 · 附图片取色反查',
+  admin: true,
+  desc: '比对得物商品池 · 多颜色货号必须填对应颜色 · 附图片取色反查（仅管理员可见）',
   actions: () => [
     { act: 'verify:pool', label: '同步商品池' },
     { act: 'verify:run', label: '开始校验', primary: true }
@@ -744,8 +755,10 @@ TABS[6] = {
         : `<div class="empty">还没有发布队列，先点右上角「导出 xlsx」生成一份。</div>`}
       <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
       发布时按你填的<b>货号</b>在「关联好物」里搜出结果，<b>默认选第一件商品</b>发出去（这条做法已实测可行）。
-      要精确到某个颜色，就到「货号颜色校验」页把颜色核对准。要让机器真按这条做，需要在 UI 定位表里、
-      「搜索货号」后面补一步「点第一件商品」（「设置 → 高级设置 → 抓取页面结构」生成的候选表里改）。</p>
+      ${canAdmin()
+        ? `要精确到某个颜色，就到「货号颜色校验」页把颜色核对准。要让机器真按这条做，需要在 UI 定位表里、
+      「搜索货号」后面补一步「点第一件商品」（「设置 → 高级设置 → 抓取页面结构」生成的候选表里改）。`
+        : `要精确到某个颜色，请联系管理员核对颜色校验（这一页只对管理员开放）。`}</p>
       <p class="hint"><b>内容主图</b>：默认用这个叶子里<b>排在最前面那张</b>（你实拍一般就是先拍的正面照）。
       想让某一张当主图，把它的文件名改成以 <code>1</code> 开头（如 <code>1_微信图片_2026-10-05_031033_240.jpg</code>）——
       程序会把那张排到相册第 1 格（<b>得物取相册第 1 格当内容主图</b>）；<code>10</code>/<code>12</code> 这种编号不会被误认。
@@ -789,9 +802,7 @@ TABS[7] = {
   //   副标题就不该提它 —— 界面文字得跟界面上真有的东西对得上。
   // ★ 2026-10-04：副标题里原来的「路径、」也一并去掉 —— 那一块已经从页面上撤掉，
   //   副标题再提它就是「界面文字跟界面上真有的东西对不上」（见下面那条注释的同一条原则）。
-  desc: () => (canAdmin()
-    ? '内容校验、应用更新、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'
-    : '内容校验、外部依赖（文案模型 / SKU 接口 / adb 与 ffmpeg 路径已挪进「高级设置」；主题切换在最上面标题栏）'),
+  desc: () => (canAdmin() ? '应用更新、外部依赖' : '外部依赖'),
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const info = state.info || {};
@@ -835,10 +846,7 @@ TABS[7] = {
         <div class="row"><span class="lbl">运行环境</span>
           <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
         </div>
-        <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。
-          要手填外部工具的路径（adb / ffmpeg）去「<b>高级设置</b>」页 —— 那两个都是装完即用，正常不用填。</p>
-      </div>
-      <p class="hint">品牌、账号、以及「谁能用哪些品牌」原先挤在这一页最下面 —— 已经挪到左侧的「<b>品牌与权限</b>」页。</p>`;
+      </div>`;
   }
 };
 
@@ -935,8 +943,7 @@ TABS[11] = {
           并在「设置 → 外部依赖」表里如实标出<b>「路径不存在」</b>（不会静默忽略你拼错的路径）。
           改完<b>立刻生效、不用重启</b>。</p>
         <p class="hint">ffmpeg 用来把 <code>.mov</code> / <code>.m4v</code> 等转成 <code>.mp4</code>（得物只收 mp4）：
-          优先<b>无损转封装</b>（秒级、画质零损失），转封装放不下（如 ProRes）才转码成 H.264/AAC，转完会校验产物确实是 mp4。</p>
-        <p class="hint">配置与工程数据存在 <code>${esc(info.userData || '')}</code>，卸载时保留。</p>`,
+          优先<b>无损转封装</b>（秒级、画质零损失），转封装放不下（如 ProRes）才转码成 H.264/AAC，转完会校验产物确实是 mp4。</p>`,
         '内置即用 · 没特殊情况不要动')}
       ${advBox('云端协作（可选 · 默认关）', false,
         `<div class="row" style="margin-bottom:9px">
@@ -974,9 +981,7 @@ TABS[11] = {
           <b>绝不要把 service_role key 填进来</b> —— 那个 key 能绕过策略读写整张表，泄了等于裸奔。</p>
         <p class="hint">★ 同步失败<b>不影响本机发布</b>：结果早就在本机 <code>publish-log.jsonl</code> 里落盘了，
           云上少几条只是看板不全，最多界面上如实标「同步失败」。发布核心也<b>不依赖</b>这个开关。</p>`,
-        '只上行结果 · 不参与发布')}
-      <p class="hint">这一页只有管理员看得到。日常操作在「模拟器发布」「设置」两页；
-        <b>中文输入法</b>不在这里 —— 它按需出现在「检查能不能发布」的结果里（没装才会冒出来）。</p>`;
+        '只上行结果 · 不参与发布')}`;
   }
 };
 
@@ -1355,7 +1360,7 @@ TABS[8] = {
  * ★ 为什么单开一屏：它是**低频维护**（想加几个词才来一次），而「生成文案」是**高频动作** ——
  *   混一屏既容易误触生成，跑生成时又被词表挡路。（这条口径 2026-10-03 之前就定了。）
  * ★ 可编辑的是 **7 组词**（风格 / 氛围 / 色感 / 场景 / 人群 / 季节 / 情绪）。
- *   「收尾」组这一版**锁定**（用户拍板：先不放开）；T01~T10 **句式骨架一律不可编辑** ——
+ *   「收尾」组这一版**锁定**（用户拍板：先不放开）；T01~T15 **句式骨架一律不可编辑** ——
  *   骨架是**语法**（连接字在第几位、收尾在末尾），改坏会直接产出病句，而判据只能事后告警、拦不住。
  * ★★ 「改了到底吃不吃得到」：词库的读法已经全部改成**现取**（`hotwords.currentGroups()` /
  *   `copycheck.prefixWords()`），所以**保存完下一次生成就用新词，不用重启**。
@@ -1413,9 +1418,7 @@ TABS[12] = {
       <div class="box">
         <h3>这个库是怎么被用到的</h3>
         <p class="hint">每生成一条标题，程序把下面这些词交给模型挑（提示词里那段「【标题热词库】」就是它），
-          并按行轮换 10 种<b>句式骨架</b>（T01~T10）。所以<b>你在这里改的词，下一次生成就会用上，不用重启</b>。</p>
-        <p class="hint">★ 例外：<b>关掉模型 / 离线</b>时走的是程序自带的本地模板（F01~F10），
-          那条路<b>本来就不读词库</b> —— 那种情况下改了也不会变，别当成「没生效」。</p>
+          并按行轮换 15 种<b>句式骨架</b>（T01~T15）。所以<b>你在这里改的词，下一次生成就会用上，不用重启</b>。</p>
       </div>
       <div class="box">
         <h3>三条红线（进不去的词会当场告诉你原因）</h3>
@@ -1425,17 +1428,18 @@ TABS[12] = {
       ${lockeds.map(g => `<div class="box lxlock">
         <h3>${esc(g.key)}（${g.words.length} 词）· 已锁定，不可编辑</h3>
         <div class="lxwords">${g.words.map(w => `<span class="chip lxw">${esc(w)}</span>`).join('')}</div>
-        <p class="hint">「收尾」组这一版<b>锁定</b>（你要求先不放开）。它<b>照样参与生成</b>（词照给模型），
-          只是不给编辑。要放开跟我说一声就行。</p>
+        <p class="hint">它<b>照样参与生成</b>（词照给模型），只是不给编辑。</p>
       </div>`).join('')}
       <div class="box">
-        <h3>10 种句式骨架（T01~T10）· 不可编辑</h3>
+        <h3>15 种句式骨架（T01~T15）· 不可编辑</h3>
         <div class="tw"><table>
           <thead><tr><th>编号</th><th>名称</th><th>结构</th><th>形状示例</th></tr></thead>
           <tbody>${L.styles.map(s => `<tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${esc(s.formula)}</td><td class="mono">${esc(s.sample)}</td></tr>`).join('')}</tbody>
         </table></div>
         <p class="hint">骨架是<b>语法</b>（连接字在第几位、收尾在末尾）—— 改坏会直接产出病句 / 标签串，
           而判据只能事后告警、拦不住，所以锁死在程序里。上面那些<b>词</b>才是你可以随便换的。</p>
+        <p class="hint">★ <b>T15</b> 那两个 emoji（爱心 / 圆圈）的<b>颜色跟着本行的颜色走</b>（黑🖤 白🤍 红❤️ 橙🧡 黄💛 绿💚 蓝💙 紫💜 棕🤎）。
+          本行颜色是<b>灰 / 浅灰</b>时没有对应的灰色 emoji，这一行会自动退回 T13 的写法（不加 emoji 对）。</p>
         <p class="hint">点「<b>恢复内置</b>」＝丢弃你在这一页做的全部增删改，回到程序自带的那份词库。</p>
       </div>`;
   }
@@ -2028,7 +2032,6 @@ const HELP = {
         <b>只有视频、没有实拍图的素材</b>会从视频里抽 <b>1 帧</b>当图发过去（抽帧在本机做，
         送出去的还是这 1 张、跟视频多长无关；抽到的帧是黑场/纯色就一张都不送）。
         模型连不上时会<b>直接停下来报错</b>，不会拿本地模板冒充 AI 文案；要先确认接口就点「设置 → 高级设置 → 文案模型 → 接口自检」。</p>
-      <p class="hint"><b>并发路数</b>是「同时发几路请求」的旋钮，<b>不是内容参数</b> —— 已收进「高级设置」，出厂 6 路，一般不用动。</p>
     `
   }
 };
@@ -2108,10 +2111,11 @@ function advBox(title, open, body, hint) {
 }
 
 /**
- * 管理员专属页签（现在只有「高级设置」）：非管理员整个按钮都不显示。
+ * 管理员专属页签（「高级设置」与「货号颜色校验」）：非管理员整个按钮都不显示。
  * ★ 这只是「不给人添乱」—— 真正拦住的是主进程那几道 guard。但这条不能省：
  *   否则普通成员能点进一个自己改不动、也不该动的页面，只会一头雾水。
- * 顺带把「当前正停在一个自己已经看不到的页签上」拉回来（退出登录 / 换账号时会遇到）。
+ * ★ 两条线都在这里收口：① 按钮 hidden；② 当前 `state.tab` 若正落在一个自己看不到的页签上，
+ *   兜回第 1 页（退出登录 / 换账号 / 老配置里存过 tab=4 或 tab=11 时会遇到）。
  */
 function syncAdminNav() {
   const ok = canAdmin();
@@ -2174,7 +2178,7 @@ function bmEditHtml(id) {
   const isNew = !id;
   const m = state.brandsMeta || {};
   const b = isNew
-    ? { id: '', name: '', enabled: true, promptWrite: '', promptFilter: '' }
+    ? { id: '', name: '', enabled: true, promptWrite: '' }
     : (m.brands || []).find(x => x.id === id);
   if (!b) {
     return `<div class="mh"><h3>品牌不见了</h3><span class="grow"></span>
@@ -2196,14 +2200,9 @@ function bmEditHtml(id) {
       </label>
 
       <label class="mfld"><span>文案生成提示词</span>
-        <textarea class="mta" id="bmWrite" placeholder="写清这个品牌的口吻、面向谁、要写什么、别写什么……">${esc(b.promptWrite)}</textarea>
+        <textarea class="mta tall" id="bmWrite" placeholder="写清这个品牌的口吻、面向谁、要写什么、别写什么……">${esc(b.promptWrite)}</textarea>
       </label>
       <p class="mnote">这段是「文案生成」发给模型的角色设定。<b>输出格式</b>（JSON 字段名、标题字数上限）由程序另外追加，不用写在这儿。</p>
-
-      <label class="mfld" style="margin-top:13px"><span>筛选排序提示词</span>
-        <textarea class="mta" id="bmFilter" placeholder="留空即可">${esc(b.promptFilter)}</textarea>
-      </label>
-      <p class="mnote warn">「筛选排序提示词」这个版本<b>还没接进任何流程</b>（工具里没有素材筛选/排序这一步），先存着 —— 接上后按品牌生效。它现在不产生任何作用，别以为配了就有效果。</p>
 
       <label class="mchk" style="margin-top:13px" ${meta ? '' : 'data-off="1"'}>
         <input type="checkbox" id="bmEnabled" ${b.enabled === false ? '' : 'checked'} ${meta ? '' : 'disabled'}> 启用该品牌
@@ -2658,8 +2657,8 @@ const ACTS = {
       return;
     }
 
-    // 提示词：有权限的人都能改（主进程会再校验一次归属，只认这两个字段）
-    const r1 = await appApi.brandPrompts(id, { promptWrite, promptFilter });
+    // 提示词：有权限的人都能改（主进程会再校验一次归属，只认文案提示词这一个字段）
+    const r1 = await appApi.brandPrompts(id, { promptWrite });
     if (!r1.ok) { toast(r1.error, 'err'); return; }
 
     // 品牌名 / 启停 / 选用：只归管理员

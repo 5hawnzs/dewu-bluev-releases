@@ -476,16 +476,22 @@ function startServer() {
     /产品词/.test(sys) && /热门词/.test(sys) && /词包/.test(sys));
   ok('③b system 里带着内置热词库（有具体词可挑，不是让模型自己编）',
     /标题热词库/.test(sys) && /简约百搭/.test(sys) && /冬日神器/.test(sys) && /韩系氛围感/.test(sys));
-  ok('③b system 里列全了 10 种标题句式（T01~T10 一个不少）',
+  ok('③b system 里列全了 15 种标题句式（T01~T15 一个不少）',
     hotwords.STYLES.every(st => sys.includes(st.code + ' ' + st.name) && sys.includes(st.sample)),
     hotwords.STYLES.map(st => st.code).join(','));
   ok('③b system 里明确禁止「写成商品描述」',
     /不许写成商品描述/.test(sys) && /款式特征/.test(sys));
-  ok('③b 10 种格式的 code 唯一、正好 10 种',
-    hotwords.STYLES.length === 10 && new Set(hotwords.STYLES.map(st => st.code)).size === 10);
-  ok('③b 轮换函数走满 10 种再回头（第 11 条回到 T01）',
-    hotwords.styleOf(0).code === 'T01' && hotwords.styleOf(9).code === 'T10' && hotwords.styleOf(10).code === 'T01',
-    [hotwords.styleOf(0).code, hotwords.styleOf(9).code, hotwords.styleOf(10).code].join(' / '));
+  ok('③b 15 种格式的 code 唯一、正好 15 种',
+    hotwords.STYLES.length === 15 && new Set(hotwords.STYLES.map(st => st.code)).size === 15);
+  // ★ 2026-10-05 补：上面那条**抓不到「改号」** —— 把 T15 改成 TXX，长度还是 15、code 也唯一，照样绿
+  //   （定点破坏 G 组实测暴露）。而编号是 UI 表格、`styleOf` 断言、user 里「本行标题格式」的公共锚点，
+  //   所以钉一条「必须连续 T01…T15」。
+  ok('③b 15 个 code 是连续的 T01~T15（改号会让界面与断言对不上，必须显式改）',
+    hotwords.STYLES.every((st, i) => st.code === 'T' + String(i + 1).padStart(2, '0')),
+    hotwords.STYLES.map(st => st.code).join(','));
+  ok('③b 轮换函数走满 15 种再回头（第 16 条回到 T01）',
+    hotwords.styleOf(0).code === 'T01' && hotwords.styleOf(14).code === 'T15' && hotwords.styleOf(15).code === 'T01',
+    [hotwords.styleOf(0).code, hotwords.styleOf(14).code, hotwords.styleOf(15).code].join(' / '));
   ok('③b 热词库里的 {色} 模板写明「用本行给的颜色去套」，不是让模型编颜色',
     /\{色\}/.test(sys) && /本行给的颜色/.test(sys));
   // ★ 词库的边界：热词只许是「风格/氛围/场景/人群/季节/情绪」。
@@ -521,9 +527,97 @@ function startServer() {
     code: st.code,
     text: st.sample.replace(/\{色\}/g, '灰').replace(/\{色\}/g, '灰')
   }));
-  ok('③b ★ 行为级：10 条句式示例代入真颜色后，没有一条会被判成「标签串/病句」',
+  ok('③b ★ 行为级：15 条句式示例代入真颜色后，没有一条会被判成「标签串/病句」',
     SAMPLE_FILLED.every(x => copycheck.looksLikeWordPaste(x.text) === false),
     SAMPLE_FILLED.filter(x => copycheck.looksLikeWordPaste(x.text)).map(x => x.code + ':' + x.text).join(' | ') || '无');
+  // ★★ 2026-10-05 新增（用户给了 4 条实发标题当形状，收成 T11~T14）：
+  //   ① **故意不带单品**的句式不能被当成错误 —— 但也不能一条都没有（那就等于没加上）。
+  //   ② 光加骨架不够：系统提示词里钉着「标题 = 单品 + 颜色 + 热门词」，模型会**硬塞**一件单品回来，
+  //      所以提示词里必须有一句解绑。这条**行为级**验的是 `promptBlock()`（真正拼进 system 的那段），
+  //      另有源码级一条盯 `copywriter` 的**看图分支**（运行时走的那条），强度如实标注。
+  const noGarment = hotwords.STYLES.filter(st => !copycheck.GARMENTS.some(g => st.sample.includes(g))).map(st => st.code);
+  ok('③b ★ 骨架里**存在**「故意不带单品」的句式（T11/T13/T14/T15；一条都没有 = 这次没加上）',
+    noGarment.length >= 2, noGarment.join(',') || '无');
+  // ★ 上面那条只说「≥2 条」—— 真正要盯的是**口径**：故意不带单品的到底是哪几条。
+  //   将来多一条 / 少一条都得显式改这里，不许悄悄漂移。
+  ok('③b ★ 不带单品的句式正好是 T11/T13/T14/T15（口径漂移要显式改这一条）',
+    noGarment.join(',') === 'T11,T13,T14,T15', noGarment.join(',') || '无');
+  ok('③b ★★ 行为级：拼进 system 的那段里明说了「轮到不带单品的句式别硬塞单品」',
+    /别硬塞一件单品/.test(hotwords.promptBlock()) && /不带单品/.test(hotwords.promptBlock()));
+  {
+    const cw = fs.readFileSync(path.join(base, 'src/main', 'services', 'copywriter.js'), 'utf8');
+    ok('③b 源码级：`copywriter` 的看图分支也写了这句（运行时走的是那条，但这条断言只能证明「源码里有」）',
+      /别硬塞一件单品/.test(cw) && /故意不带单品/.test(cw));
+  }
+  /* ---- ★★ 2026-10-05 新增：T15「双同色 emoji」----
+     这条骨架是**第一个把 emoji 当语义用**的（T01~T14 的 emoji 只是行尾装饰、不带信息），
+     所以它有三件必须钉住的事：① 形状（正好两个、一模一样、在允许清单里）
+     ② 映射表真的进了 system ③ 灰 / 浅灰 的例外写清楚了。
+     ★ 强度如实标注：这几条能证明的是「程序把规矩写对了」——
+       模型最终照不照做，**拦不住**（只在事后核对）。不过 2026-10-05 起已有**事后判据**：
+       `copycheck` ⑩ 会核对「彩色 emoji 的颜色 ↔ 标题里的色词」，对不上就标黄 ——
+       判据本身的正反两面见下面 ③b-⑩ 那组（含「灰那件写了 💙💙 必须点名」的反向对照）。 */
+  const T15 = hotwords.STYLES.find(st => st.code === 'T15');
+  // ★ 数 emoji 用**不含变体选择符 FE0F** 的字符类：否则 `❤️` 会被算成 2 个（心 + FE0F）。
+  const EMOJI_UNIT = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu;
+  const OK_EMOJI = ['🖤', '⚫', '🤍', '⚪', '❤', '🔴', '🧡', '🟠', '💛', '🟡', '💚', '🟢', '💙', '🔵', '💜', '🟣', '🤎', '🟤'];
+  const t15e = T15 ? (T15.sample.match(EMOJI_UNIT) || []) : [];
+  ok('③b ★ T15 存在、且示例是**两个相同的 emoji**（双爱心 / 双圆圈，不是零散装饰）',
+    !!T15 && t15e.length === 2 && t15e[0] === t15e[1], JSON.stringify(t15e));
+  ok('③b ★ T15 那两个 emoji 在「颜色 → emoji」允许清单里（黑🖤 白🤍 红❤ 橙🧡 黄💛 绿💚 蓝💙 紫💜 棕🤎 / 圆圈同理）',
+    t15e.length === 2 && t15e.every(x => OK_EMOJI.indexOf(x) >= 0), JSON.stringify(t15e));
+  ok('③b ★ 只有 T15 是两个 emoji，其余骨架示例最多 1 个（emoji 对别滥用到别的形状上）',
+    hotwords.STYLES.every(st => st.code === 'T15' || (st.sample.match(EMOJI_UNIT) || []).length <= 1),
+    hotwords.STYLES.filter(st => st.code !== 'T15' && (st.sample.match(EMOJI_UNIT) || []).length > 1).map(st => st.code).join(',') || '无');
+  {
+    const pb = hotwords.promptBlock();
+    const mapRows = ['黑→🖤/⚫', '白→🤍/⚪', '红→❤️/🔴', '橙→🧡/🟠', '黄→💛/🟡', '绿→💚/🟢', '蓝→💙/🔵', '紫→💜/🟣',
+      '棕（含卡其 / 驼 / 米 / 燕麦）→🤎/🟤'];
+    ok('③b ★★ T15 的「颜色 → emoji」映射表真的拼进了 system（9 个色系一个不少）',
+      mapRows.every(s => pb.indexOf(s) >= 0),
+      mapRows.filter(s => pb.indexOf(s) < 0).join(' | ') || '无');
+    ok('③b ★ T15 的「灰色例外」也写进了 system（灰 / 浅灰 没有对应 emoji ⇒ 这一行别用 T15）',
+      /灰 \/ 浅灰/.test(pb) && /别用 T15/.test(pb) && /T13/.test(pb));
+    ok('③b ★ system 里写明「其余句式只放 1 个 emoji、只有 T15 是两个夹在句中」',
+      /只有 T15 是两个/.test(pb) && /1 个 emoji/.test(pb));
+  }
+  /* ---- ③b-⑩ 「彩色 emoji ↔ 标题色词」判据（2026-10-05 加；补的就是上面那句「只能靠人看」的缺口）----
+     这类判据最容易犯两个错，所以正反两面都要钉：
+       · **认太宽** ⇒ 把「燕麦色毛衣🍂」判成颜色不一致（误杀）⇒ ①③④ 三条守着；
+       · **认太死** ⇒ 暖棕系（卡其/驼/米/燕麦 的 coarse 是「橙」）配 🤎 反被判错 ⇒ ⑤ 守着。
+     ⑦ 是「反向对照」：同一段示例，代入蓝不报、代入灰必须报 —— 只测一个方向等于没测。 */
+  const emojiWarn = t => /emoji「/.test(copycheck.check({ title: t, body: BODY4 }, {}).text);
+  const t15fill = c => String((T15 || {}).sample || '').replace(/\{色\}/g, c);
+  const DECO = ['🍂', '🍁', '🔥', '🐻', '🧥', '✨', '🌿', '☕'];
+  ok('③b-⑩ ★ 常量：彩色 emoji 表**正好** 18 个（9 爱心 + 9 圆圈），装饰 emoji 一个都没误收',
+    copycheck.EMOJI_COLOR.size === 18 && DECO.every(c => copycheck.colorEmojiIn(c).length === 0),
+    '表大小=' + copycheck.EMOJI_COLOR.size + '，误收=' + (DECO.filter(c => copycheck.colorEmojiIn(c).length).join(',') || '无'));
+  ok('③b-⑩ ★ 常量：灰这个色系没有任何可配的 emoji（允许集为空 ⇒ 灰那件出现彩色 emoji 一律算对不上）',
+    copycheck.emojiFamiliesFor('灰').length === 0, JSON.stringify(copycheck.emojiFamiliesFor('灰')));
+  ok('③b-⑩ ★ 常量：暖棕系与橙**互认**（卡其 / 驼 / 米 / 燕麦 的 coarse 是「橙」，emoji 却该用 🤎/🟤）',
+    copycheck.emojiFamiliesFor('橙').indexOf('棕') >= 0 && copycheck.emojiFamiliesFor('棕').indexOf('橙') >= 0,
+    JSON.stringify(copycheck.emojiFamiliesFor('橙')));
+  ok('③b-⑩ ★★ 行为级（正向）：T15 示例代入「蓝」后**不该**冒出「emoji 跟颜色对不上」',
+    !!T15 && !emojiWarn(t15fill('蓝')), t15fill('蓝'));
+  ok('③b-⑩ ★★ 行为级（反向对照）：T15 示例代入「灰」后**必须**点名（灰没有灰色 emoji ⇒ 该走 T13）',
+    !!T15 && emojiWarn(t15fill('灰')),
+    copycheck.check({ title: t15fill('灰'), body: BODY4 }, {}).text.slice(0, 90));
+  ok('③b-⑩ ★ 不误杀：装饰 emoji 配任何颜色都不触发这条判据（🍂🍁🔥🐻🧥✨🌿☕ 都不是颜色）',
+    ['燕麦色圆领毛衣🍂', '军绿夹克🧥松弛感拉满', '驼色毛衣✨好有少年感', '红色羽绒服🔥过冬就靠它',
+      '黑色卫衣🐻小熊刺绣'].every(t => !emojiWarn(t)),
+    ['燕麦色圆领毛衣🍂', '军绿夹克🧥松弛感拉满', '驼色毛衣✨好有少年感', '红色羽绒服🔥过冬就靠它',
+      '黑色卫衣🐻小熊刺绣'].filter(t => emojiWarn(t)).join(' | ') || '无');
+  ok('③b-⑩ ★ 判不了的不报：标题只有彩色 emoji、一个色词都没有 ⇒ 不判',
+    !emojiWarn('韩系叠穿💙💙松弛感拉满'));
+  ok('③b-⑩ ★ 暖棕系配棕心 / 橙心都放行（不误杀自己的合规写法）',
+    !emojiWarn('卡其夹克🤎松弛感拉满') && !emojiWarn('驼色毛衣🧡好有少年感'));
+  ok('③b-⑩ ★ 真·色系对不上要报：军绿那件写了黑心 🖤 ⇒ 点名',
+    emojiWarn('军绿夹克🖤松弛感拉满'));
+  // ★ 长度闸门：示例本身超 15 字 = 在教模型写「会被 warn 的标题」。
+  //   T12 的示例正好 15 字（＝TITLE_MAX，顶格没余量）—— 所以这里钉的是「不超过」，不是「小于」。
+  ok('③b ★ 15 条句式示例都不超 TITLE_MAX（示例超长 = 在教模型写会被 warn 的标题）',
+    hotwords.STYLES.every(st => copycheck.textLen(st.sample) <= copycheck.TITLE_MAX),
+    hotwords.STYLES.filter(st => copycheck.textLen(st.sample) > copycheck.TITLE_MAX).map(st => st.code + ':' + copycheck.textLen(st.sample)).join(' | ') || '无');
   ok('③b 新加了「收尾」词组（用户要的「太帅了」这类就在里面）',
     hotwords.GROUPS.some(g => g.key === '收尾' && g.words.indexOf('太帅了') >= 0),
     hotwords.GROUPS.map(g => g.key).join('/'));
@@ -855,8 +949,8 @@ function startServer() {
   ok('⑬ 可编辑组正好 7 组，且不含收尾',
     hotwords.EDITABLE_GROUPS.length === 7 && hotwords.EDITABLE_GROUPS.indexOf('收尾') < 0,
     hotwords.EDITABLE_GROUPS.join('/'));
-  ok('⑬ T01~T10 骨架一个不少、都是有 code 的对象（骨架不许被做成可编辑）',
-    hotwords.STYLES.length === 10 && hotwords.STYLES.every(s => !!s.code && !!s.sample));
+  ok('⑬ T01~T15 骨架一个不少、都是有 code 的对象（骨架不许被做成可编辑）',
+    hotwords.STYLES.length === 15 && hotwords.STYLES.every(s => !!s.code && !!s.sample));
   ok('⑬ 出厂基线里没有材质 / 参数词（与 ③b 同一口径，这里再钉一次）',
     hotwords.allWords().every(w => !SPEC_RE.test(w)),
     hotwords.allWords().filter(w => SPEC_RE.test(w)).join('、') || '无');
@@ -883,7 +977,7 @@ function startServer() {
     JSON.stringify(lexRej.rejected.map(x => x.word)));
   ok('⑬ ★ 缺失的组＝沿用基线（渲染层少传一个组，不许把那组词悄悄清掉）',
     hotwords.sanitizeLibrary([{ key: '风格', words: ['简约百搭'] }]).groups.find(g => g.key === '氛围').words.length === 8);
-  ok('⑬ ★ 收尾组与 T01~T10 骨架**不落盘**（保存下来的东西里连「收尾」都不该出现）',
+  ok('⑬ ★ 收尾组与 T01~T15 骨架**不落盘**（保存下来的东西里连「收尾」都不该出现）',
     JSON.stringify(store.get('copy.hotwords')).indexOf('收尾') < 0);
   ok('⑬ {色} 占位被删光时给出告警（那时颜色就不会跟着本行颜色走了）',
     hotwords.sanitizeLibrary([{ key: '色感', words: ['高级感'] }]).warnings.some(s => s.indexOf('{色}') >= 0));

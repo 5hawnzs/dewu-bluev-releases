@@ -293,10 +293,12 @@ const day = n => Date.now() - n * 86400000;
   const copywriter = require(path.join(base, 'src/main/services/copywriter.js'));
 
   const PW = '你是得物社区的内容运营专家，服务对象是 brandx 品牌蓝V账号。\n一、文案要根据配图内容设计，适配得物种草调性。';
-  const r9 = brands.update(A.brand.id, { promptWrite: PW, promptFilter: '  \r\n  先按图片清晰度排序\r\n' });
+  const r9 = brands.update(A.brand.id, { promptWrite: PW });
   ok('⑨ 品牌能各带一份自己的提示词，读回来一致',
-    r9.ok && r9.brand.promptWrite === PW && r9.brand.promptFilter === '先按图片清晰度排序',
-    JSON.stringify({ w: r9.brand.promptWrite.slice(0, 14), f: r9.brand.promptFilter }));
+    r9.ok && r9.brand.promptWrite === PW,
+    JSON.stringify({ w: r9.brand.promptWrite.slice(0, 14) }));
+  ok('⑨ 已废弃的「筛选排序提示词」(promptFilter) 彻底不在品牌对象里了 —— 删模块要连字段一起删',
+    !('promptFilter' in r9.brand), JSON.stringify(Object.keys(r9.brand)));
   ok('⑨ 提示词里的 \\r\\n 被归一成 \\n（Windows 粘来的模板会带 \\r，直接拼进 system 会多出空行）',
     !/\r/.test(r9.brand.promptWrite), JSON.stringify(r9.brand.promptWrite.slice(0, 20)));
 

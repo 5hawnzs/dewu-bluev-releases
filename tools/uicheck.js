@@ -268,7 +268,7 @@ app.whenReady().then(async () => {
       hasRedlines: /三条红线/.test(txt),
       editableBoxes: h3.filter(t => /^(风格|氛围|色感|场景|人群|季节|情绪)（/.test(t)).length,
       lockedBox: h3.findIndex(t => t.indexOf('收尾') >= 0 && t.indexOf('锁定') >= 0),
-      hasStyles: /T01/.test(txt) && /T10/.test(txt),
+      hasStyles: /T01/.test(txt) && /T15/.test(txt),
       inputs: pane.querySelectorAll('[data-lx-in]').length,
       addBtns: pane.querySelectorAll('[data-lx-add]').length,
       delBtns: pane.querySelectorAll('[data-lx-del]').length,
@@ -281,7 +281,7 @@ app.whenReady().then(async () => {
     lexPage.editableBoxes === 7, String(lexPage.editableBoxes));
   ok('★ 「收尾」组在页面上、且明确标着「已锁定，不可编辑」',
     lexPage.lockedBox >= 0, '第 ' + (lexPage.lockedBox + 1) + ' 个 box');
-  ok('★ T01~T10 句式骨架照实列出来（只读展示）', lexPage.hasStyles === true);
+  ok('★ T01~T15 句式骨架照实列出来（只读展示）', lexPage.hasStyles === true);
   ok('★ 免登录态（没有账号 ＝ 不是管理员）这一页是只读：没有任何加词框、增删按钮',
     lexPage.inputs === 0 && lexPage.addBtns === 0 && lexPage.delBtns === 0,
     `inputs=${lexPage.inputs} add=${lexPage.addBtns} del=${lexPage.delBtns}`);
@@ -391,7 +391,6 @@ app.whenReady().then(async () => {
     ok('页签 6 紧挨着就有「发布间隔」下拉（导入完接着选间隔 → 开始发布）', onSix === true);
     ok('页签 6 的「开始发布」还在', await onTab(6, 'pub:run'));
   }
-
   // ★ 2026-10-05：**内容主图**怎么定，必须在界面上看得见 —— 这是用户唯一能控制主图的入口，
   //   界面上找不到就等于这个功能没做（用户口径：标记用数字 1）。读真 DOM 的 innerText，
   //   不查源码字符串（源码里有不代表用户看得见）。
@@ -741,11 +740,13 @@ app.whenReady().then(async () => {
         head: head.textContent,
         h3: [...pane.querySelectorAll('.box h3')].map(e => e.textContent),
         // ★ 2026-10-04：原来这里用「有路径块」当「这一页还在正常渲染」的正向对照。
-        //   现在路径块按用户要求撤了 ⇒ 对照改用「外部依赖 + 保存按钮 + 页脚提示」；
+        //   现在路径块按用户要求撤了 ⇒ 对照改用「外部依赖 + 保存按钮 + 运行环境那一行」；
         //   同时把它翻成**负向**判据：这一页恰恰不许再出现「输出目录 / 隔离目录」。
+        // ★ 2026-10-05：设置页页脚那句「品牌与权限」提示按用户要求删了 ⇒ 对照换成
+        //   「运行环境」（外部依赖盒里那一行，页面上稳定存在），不再挂在被删掉的文字上。
         hasPathBlock: /输出目录|隔离目录/.test(pane.textContent),
         hasDeps: /外部依赖/.test(pane.textContent),
-        hasFooter: /品牌与权限/.test(pane.textContent),
+        hasRuntime: /运行环境/.test(pane.textContent),
         descText: (document.querySelector('#head') || {}).textContent || '',
         saveBtn: !!document.querySelector('[data-act="cfg:save"]')
       };
@@ -781,9 +782,9 @@ app.whenReady().then(async () => {
     ok('★ 设置页副标题跟着改口：不再提「路径」（界面文字得跟界面上真有的东西对得上）',
       !!gate && !/路径、/.test(gate.admin.head + gate.nonadmin.descText),
       gate ? JSON.stringify((gate.nonadmin.descText || '').replace(/\s+/g, ' ').slice(0, 90)) : '');
-    ok('★ 正向对照：非管理员这一页**照常渲染**（外部依赖 / 保存 / 页脚提示 都在，不是白页）—— 防「空==空」假绿',
-      !!gate && gate.nonadmin.hasDeps && gate.nonadmin.saveBtn && gate.nonadmin.hasFooter,
-      gate ? 'deps=' + gate.nonadmin.hasDeps + ' save=' + gate.nonadmin.saveBtn + ' footer=' + gate.nonadmin.hasFooter : '');
+    ok('★ 正向对照：非管理员这一页**照常渲染**（外部依赖 / 保存 / 运行环境 都在，不是白页）—— 防「空==空」假绿',
+      !!gate && gate.nonadmin.hasDeps && gate.nonadmin.saveBtn && gate.nonadmin.hasRuntime,
+      gate ? 'deps=' + gate.nonadmin.hasDeps + ' save=' + gate.nonadmin.saveBtn + ' runtime=' + gate.nonadmin.hasRuntime : '');
     ok('测试自己收尾：还原登录态后「应用更新」又回来了（证明上面的消失是权限造成的，不是渲染坏了）',
       !!gate && gate.restored.updBox === true && gate.restored.canAdmin === true,
       JSON.stringify(gate && gate.restored));
@@ -840,6 +841,78 @@ app.whenReady().then(async () => {
     const bare = /\$\{updateHtml\(\)\}/.test(codeA);
     ok('★ 源码级：设置页那一行是**门控**渲染（canAdmin() ? updateHtml() : \'\'），没有裸的 updateHtml() 调用',
       gated && !bare, 'gated=' + gated + ' bare=' + bare);
+  }
+
+  // ---- 2026-10-05 用户要求：**货号颜色校验**（页签 4）对非管理员隐藏 ----
+  // ★ 与「高级设置」是同一套机制，但这一页是**新加**的门控 ⇒ 断言要能抓住「只藏了按钮、
+  //   Ctrl+4 却还能进去」这种半拉子改法。所以三条线都验，缺一条就是假绿：
+  //   ① 按钮 hidden；② 当前正停在 4 会被兜回第 1 页（老配置里存过 tab=4）；
+  //   ③ 真按 Ctrl+4（走 document 上的 keydown 处理器，不是直接改 state）也进不去。
+  {
+    const t4 = await win.webContents.executeJavaScript(`(async () => {
+      const nav4 = () => document.querySelector('.nav[data-tab="4"]');
+      const saved = state.auth, savedTab = state.tab;
+      const out = {};
+      // ① 管理员视角（当下就是这一支）：按钮在、点得进、这一页真渲染 —— 下面「消失」的对照基线
+      nav4().click();
+      await new Promise(r => setTimeout(r, 200));
+      out.admin = {
+        navHidden: !!nav4().hidden,
+        tab: state.tab,
+        title: (document.querySelector('#head h2') || {}).textContent || '',
+        size: (document.querySelector('#pane') || { innerHTML: '' }).innerHTML.length,
+        tabsAdmin: !!(TABS[4] && TABS[4].admin)
+      };
+      // ② 切成普通成员：按钮收起 + 当前页兜回第 1 页
+      state.auth = { requireLogin: true, isAdmin: false, user: { username: 'u1', displayName: '普通成员', role: 'user' } };
+      state.tab = 4;
+      renderAll();
+      out.nonadmin = {
+        canAdmin: canAdmin(),
+        navHidden: !!nav4().hidden,
+        tabAfterRender: state.tab,
+        title: (document.querySelector('#head h2') || {}).textContent || '',
+        nav11Hidden: !!document.querySelector('.nav[data-tab="11"]').hidden
+      };
+      // ③ 真按 Ctrl+4：keydown 处理器这条线也得堵上
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '4', ctrlKey: true, bubbles: true }));
+      await new Promise(r => setTimeout(r, 200));
+      out.ctrl4 = { tab: state.tab, title: (document.querySelector('#head h2') || {}).textContent || '' };
+      // ④ 还原登录态与所在页（别污染后面的套件）
+      state.auth = saved; state.tab = savedTab;
+      renderAll();
+      out.restored = { canAdmin: canAdmin(), navHidden: !!nav4().hidden };
+      return out;
+    })()`);
+    ok('★ 货号颜色校验页（管理员视角）：页签在、点得进、这一页真渲染出内容 —— 下面非管理员那一支的对照基线',
+      !!t4 && t4.admin.navHidden === false && t4.admin.tab === 4 && t4.admin.title === '货号颜色校验' && t4.admin.size > 20,
+      t4 ? JSON.stringify(t4.admin) : 'null');
+    ok('★ TABS[4] 自己也声明了 admin:true（机制自证，免得断言建在「只改了 HTML 按钮」的空地基上）',
+      !!t4 && t4.admin.tabsAdmin === true, JSON.stringify(t4 && t4.admin.tabsAdmin));
+    ok('★ 切到普通成员后 renderAll：canAdmin() 真的变 false（机制先自证）',
+      !!t4 && t4.nonadmin.canAdmin === false, JSON.stringify(t4 && t4.nonadmin.canAdmin));
+    ok('★★ 非管理员：左侧「货号颜色校验」按钮收起（hidden，不是靠肉眼看不见）',
+      !!t4 && t4.nonadmin.navHidden === true, t4 ? 'navHidden=' + t4.nonadmin.navHidden : 'null');
+    ok('★★ 非管理员：正停在这一页时被兜回第 1 页（老配置里存过 tab=4 也进不来）',
+      !!t4 && t4.nonadmin.tabAfterRender === 1 && t4.nonadmin.title === '素材整理',
+      t4 ? 'tab=' + t4.nonadmin.tabAfterRender + ' title=' + JSON.stringify(t4.nonadmin.title) : 'null');
+    ok('★★ 非管理员：真按 Ctrl+4 也回不到这一页（keydown 处理器这条线同样堵上）',
+      !!t4 && t4.ctrl4.tab === 1 && t4.ctrl4.title !== '货号颜色校验',
+      t4 ? JSON.stringify(t4.ctrl4) : 'null');
+    ok('★ 同一时刻「高级设置」对非管理员也是收起的（两页走的是同一套口径，不是各写各的）',
+      !!t4 && t4.nonadmin.nav11Hidden === true, t4 ? 'nav11Hidden=' + t4.nonadmin.nav11Hidden : 'null');
+    ok('测试自己收尾：还原登录态后按钮又回来了（证明上面的消失是权限造成的，不是渲染坏了）',
+      !!t4 && t4.restored.canAdmin === true && t4.restored.navHidden === false,
+      JSON.stringify(t4 && t4.restored));
+
+    // 源码级两条：① 按钮真的带 data-admin（DOM 层的门控不靠运气）；② 只有该藏的页签带它（数量可数）
+    const html4 = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
+    const nav4tag = (html4.match(/<button class="nav" data-tab="4"([^>]*)>/) || [])[1] || '';
+    ok('★ 源码级：index.html 里页签 4 的按钮带 data-admin="1"',
+      /data-admin="1"/.test(nav4tag), JSON.stringify(nav4tag.trim()));
+    const admNavs = [...html4.matchAll(/<button class="nav" data-tab="(\d+)"[^>]*data-admin="1"/g)].map(m => m[1]);
+    ok('★ 源码级：带 data-admin 的页签恰好是 4 与 11 两个（哪几页仅管理员可见，一眼可数）',
+      admNavs.length === 2 && admNavs.includes('4') && admNavs.includes('11'), JSON.stringify(admNavs));
   }
 
   // ---- 发布间隔的「连续发布」档（0 秒）----
@@ -968,6 +1041,51 @@ app.whenReady().then(async () => {
     JSON.stringify(picks.afterPick) + ' · target=' + picks.target);
   ok('★「默认选择」= 写进配置（重启后还是它）',
     !!picks.target && picks.defaultAfter === picks.target, `默认品牌 → ${picks.defaultAfter}`);
+
+  // ---- 品牌弹窗的编辑视图（2026-10-05 用户要求）----
+  // ① 「筛选排序提示词」这个模块**整块删除**（它从没接进任何流程，只存不用）；
+  // ② 「文案生成提示词」输入框**拉长**（改前 100px 只够看五行）。
+  // 这两条都只能靠**真的渲染出来量**才算数：CSS 写没写对、模块删没删净，
+  // computedStyle 与真实 DOM 说了算 —— 源码里 grep 到一行字证明不了界面上是什么样。
+  const edView = await win.webContents.executeJavaScript(`
+    (async () => {
+      document.querySelector('.nav[data-tab="3"]').click();
+      await new Promise(r => setTimeout(r, 120));
+      document.querySelector('[data-act="copy:prompt"]').click();
+      await new Promise(r => setTimeout(r, 220));
+      const box = document.getElementById('bmBox');
+      const openBtn = box.querySelector('[data-act="bm:open"]');
+      if (openBtn) openBtn.click();
+      await new Promise(r => setTimeout(r, 220));
+      const ta = document.getElementById('bmWrite');
+      const cs = ta ? getComputedStyle(ta) : null;
+      const mb = box.querySelector('.mb');
+      const out = {
+        hasWrite: !!ta,
+        height: ta ? Math.round(ta.getBoundingClientRect().height) : 0,
+        minH: cs ? parseFloat(cs.minHeight) : 0,
+        filterBox: !!document.getElementById('bmFilter'),
+        filterWord: /筛选排序/.test(box.textContent),
+        boxH: Math.round(box.getBoundingClientRect().height),
+        winH: window.innerHeight,
+        rowsHint: (function () {
+          const lh = cs ? parseFloat(cs.lineHeight) : 0;
+          return (ta && lh) ? Math.floor(ta.getBoundingClientRect().height / lh) : 0;
+        })()
+      };
+      const c = box.querySelector('[data-act="bm:close"]');
+      if (c) c.click();
+      return out;
+    })()
+  `);
+  ok('★「文案生成提示词」输入框够高（≥240px；改前 100px 只够看五行）',
+    edView.hasWrite && edView.height >= 240,
+    `实测 ${edView.height}px（约 ${edView.rowsHint} 行）· min-height ${edView.minH}px`);
+  ok('★「筛选排序提示词」模块已整块删除：弹窗里连输入框和标题都没有',
+    !edView.filterBox && !edView.filterWord,
+    JSON.stringify({ input: edView.filterBox, 标题: edView.filterWord }));
+  ok('★ 弹窗编辑视图没有被撑到窗口外（超长时靠 .mb 自己滚动）',
+    edView.boxH <= edView.winH + 1, `mbox ${edView.boxH}px / 窗口高 ${edView.winH}px`);
 
   // ---- 设置项要在**每一页**都能存 ----
   // 「文案生成」和「模拟器发布」两页里也有设置项（轮换策略 / 发布间隔 / adb 路径），
@@ -1409,7 +1527,7 @@ app.whenReady().then(async () => {
     document.querySelector('.nav[data-tab="7"]').click();
     const pane = document.querySelector('#pane');
     return {
-      barePrompt: !!pane.querySelector('[data-cfg="copy.promptWrite"]') || !!pane.querySelector('[data-cfg="copy.promptFilter"]'),
+      barePrompt: !!pane.querySelector('[data-cfg="copy.promptWrite"]'),
       dupBox: /内容与校验/.test(pane.textContent),
       promptBtn: !!pane.querySelector('[data-act="copy:prompt"]'),
       logRow: /更新日志/.test(pane.textContent) || !!pane.querySelector('[data-act^="upd:log"]')
