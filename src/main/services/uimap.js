@@ -548,8 +548,20 @@ function normalizeScreenCond(step, at) {
     if (raw == null) continue;
     const keys = String(raw).split(',').map(x => x.trim()).filter(Boolean);
     for (const key of keys) {
-      if (!/^[A-Za-z0-9_.]+\/[A-Za-z0-9_.]+$/.test(key)) {
-        throw new Error(`${at}的 ${k} 只能写 resource-id（形如 com.xx.yy:id/zz），`
+      // ★★★ 2026-10-05 修复：这里的值就是 **Android 的 resource-id**，格式是 `包名:type/name`
+      //   （例如 com.shizhuang.duapp:id/tvCancel）—— **必须带 `:type/`**。
+      //   旧正则是 `^[A-Za-z0-9_.]+/[A-Za-z0-9_.]+$`，**不允许 `:`**，于是两类都判反了：
+      //     · **拒绝** com.shizhuang.duapp:id/tvCancel（dump 里的真格式）
+      //     · **放行** com.shizhuang.duapp/tvCancel（根本不是 resource-id，运行时永远匹配不上）
+      //   而运行时的判据是 screenCondOk 里的 `n.id === id`，n.id 就是 dump 的 resource-id
+      //   （见 parseNodes 的 `id: attr['resource-id']`）⇒ **合法值 100% 被拒**。
+      //   实测后果（端到端复刻 publish.importMap）：把真机 dump 喂给 suggest() 生成的候选表
+      //   **21 份全部导入失败**（suggest 无条件挂两条守卫步，见 DEWU.draft / DEWU.resumeDialog）
+      //   ⇒ 「抓取页面结构 → 改 → 导入」这条路整个走不通，而报错还指着一个合法值说「不是 resource-id」。
+      //   为什么一直没暴露：这里原先**只有负向断言**（写了文字要报错），**没有一条正向**（合法 id 必须能导入）。
+      if (!/^[A-Za-z0-9_.]+:[A-Za-z0-9_.]+\/[A-Za-z0-9_.]+$/.test(key)) {
+        throw new Error(`${at}的 ${k} 只能写 resource-id（形如 com.xx.yy:id/zz，`
+          + `必须带 :id/ —— 少了冒号就不是 resource-id，运行时永远匹配不上），`
           + `多个用逗号分隔，不能写「${raw}」`);
       }
     }

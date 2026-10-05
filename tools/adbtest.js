@@ -1232,6 +1232,51 @@ const state = {
     uimap.screenCondOk({ whenNotOn: DRAFT_TITLE }, aNodes21).ok === true
     && uimap.screenCondOk({ whenNotOn: DRAFT_TITLE }, dNodes21).ok === false);
 
+  // ---- ㉑c ★★★ 2026-10-05：「合法的 resource-id **必须能导入**」这条正向断言以前根本没有 ----
+  //   旧正则 `^[A-Za-z0-9_.]+/[A-Za-z0-9_.]+$` **不允许 `:`** ⇒ 两类都判反了：
+  //     · **拒绝** com.shizhuang.duapp:id/tvCancel ← dump 里的真格式（parseNodes 的 resource-id）
+  //     · **放行** com.shizhuang.duapp/tvCancel   ← 不是 resource-id，运行时永远匹配不上
+  //   而运行时的判据是 screenCondOk 的 `n.id === id` ⇒ **合法值 100% 被拒**。
+  //   实测后果（端到端复刻 publish.importMap：真机 dump → suggest() → normalizeSteps）：
+  //     **21 份 dump 21 份全被拒**（suggest 无条件挂两条守卫步）⇒「抓取 → 导入」整条路走不通，
+  //     而报错还指着一个**合法值**说「不是 resource-id」——最难查的那种。
+  //   为什么一直没暴露：这里原先**只有负向**（㉑：写了文字要报错）、**没有正向**。
+  //   ⇒ 下面三条缺一不可：① 正向（合法 id 能过）② 负向（假格式仍要拦）③ 端到端（suggest 产出能导入）。
+  let e21cPos = null;
+  try {
+    uimap.normalizeSteps([
+      { action: 'tapId', value: DRAFT_EXIT, whenOn: DRAFT_TITLE },
+      { action: 'tapId', value: 'com.shizhuang.duapp:id/tvCancel', whenOn: 'com.shizhuang.duapp:id/tvCancel' },
+      { action: 'tapId', value: 'com.shizhuang.duapp:id/rlPublish',
+        whenNotOn: 'com.shizhuang.duapp:id/rlPublish,com.shizhuang.duapp:id/etSearch' }
+    ], 'steps');
+  } catch (e) { e21cPos = e; }
+  ok('㉑c ★★★ 正向：合法 resource-id（pkg:id/name，含 `:id/`）**必须能导入**——不许再把它当成非法值拒掉',
+    !e21cPos, e21cPos && e21cPos.message);
+
+  const neg21c = [];
+  for (const bad of ['tvCancel', 'com.shizhuang.duapp/tvCancel', '草稿箱']) {
+    try { uimap.normalizeSteps([{ action: 'tapId', value: DRAFT_EXIT, whenOn: bad }]); neg21c.push(''); }
+    catch (e) { neg21c.push(e.message); }
+  }
+  ok('㉑c 负向：「裸 id」「少了 :id/ 的假格式」「文字」三种写法仍要当场报错（不能为了修正向把它们一起放了）',
+    neg21c.every(m => !!m && /resource-id/.test(m)),
+    JSON.stringify(neg21c.map(m => (m || '★没报错').slice(0, 24))));
+
+  // 端到端：suggest() 的候选表**自己**必须能过导入校验 —— 这才是「抓取 → 导入」那条路
+  const sug21c = uimap.suggest(uimap.parseNodes(draftXml21));
+  let e21cSug = null;
+  try {
+    uimap.normalizeSteps(sug21c.steps, 'steps');
+    if (Array.isArray(sug21c.videoSteps) && sug21c.videoSteps.length) {
+      uimap.normalizeSteps(sug21c.videoSteps, 'videoSteps');
+    }
+  } catch (e) { e21cSug = e; }
+  const sug21cGuards = (sug21c.steps || []).filter(s => s.whenOn || s.whenNotOn).length
+    + (sug21c.videoSteps || []).filter(s => s.whenOn || s.whenNotOn).length;
+  ok('㉑c ★★★ 端到端：suggest() 生成的候选表（自带草稿箱/点「放弃」两条守卫步）必须能通过导入校验',
+    sug21cGuards > 0 && !e21cSug, `守卫步 ${sug21cGuards} 条 · ` + (e21cSug ? e21cSug.message : '通过'));
+
   const win21bak = fs.readFileSync(FAKE_WINDOW, 'utf8');
   // ★★ 行为级两组都要 try/catch 兜住异常，并把「抛异常」本身算成 FAIL。
   //   为什么：不兜的话，守卫一旦被拆掉，这里会**抛异常直接中断整个套件** ——
