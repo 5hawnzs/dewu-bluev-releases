@@ -186,6 +186,101 @@ async function mediaScan(serial, remoteFile) {
   return { ok: r2.ok, how: abs ? 'scan_file→scan_volume' : 'scan_volume', raw };
 }
 
+/** 设备端 sh 的单引号包裹（路径都是我们自己拼的，不会含单引号） */
+function shq(p) { return `'${String(p)}'`; }
+
+/**
+ * ★★★ 2026-10-05 新增：**把指定那张设成「这一组里时间最新的」**。
+ *
+ * 为什么必须有它（得物相册第 1 格 = 内容主图，而第 1 格只认文件时间的倒序）：
+ *   真机三步实验（127.0.0.1:16384 / MuMu 12，全部可复算，见交付文档 `主图顺序-方案-20261005.md`）：
+ *     ① 4 张纯色图，把「文件名顺序 / adb push 顺序 / 文件时间」三个键**故意做成互相矛盾** ⇒
+ *        相册第一屏顺序**只与文件时间倒序吻合**（文件名、推送顺序都被否掉）；
+ *     ② 只改文件时间、**不重扫媒体库** ⇒ 相册顺序**纹丝不动**（得物读的是库里的缓存值）；
+ *     ③ 改完文件时间再 `scan_file` ⇒ 顺序立刻跟着变（闭环）。
+ *   ⇒ 想指定主图，唯一可行操作 = **推完之后、入库之前**在设备端 `touch` 那张，再重扫它。
+ *     调用方（publisher）先 makeNewest 再 mediaScan，**两步缺一不可**。
+ *
+ * ★ 为什么**不在本地**改文件时间（所以这一步必须落在设备端）：
+ *   素材整理出来的扁平副本是**硬链接**（真机素材实测链接数 = 4）⇒ 本地 utimes 会把用户的**原图**
+ *   一起改掉。设备端 touch 只动设备上那一份。
+ * ★ 为什么不做在 push 上（"最后推它就行"）：相册不看推送顺序（实验①已否掉）。
+ * ★ 为什么不用 `now`：只要比这一组里其他文件都新就够了。用「组内最大时间 + 2 秒」既不依赖主机与
+ *   设备时钟一致，也天然满足「秒级、至少隔 1 秒」这条（实测 date_modified 是秒级，同一秒不分先后）。
+ *
+ * @param {string} serial
+ * @param {string} target 要置顶的那个远端文件
+ * @param {string[]} others 同一组里的其它文件（算「最大时间」用）
+ * @returns {{ok:boolean, at?:number, maxOther?:number, error?:string}}
+ */
+async function makeNewest(serial, target, others) {
+  const t = toMediaPath(target);
+  if (!t) return { ok: false, error: '没给要置顶的文件路径' };
+  const all = [];
+  for (const p of [t].concat(Array.isArray(others) ? others : [others])) {
+    const m = toMediaPath(p);
+    if (m && all.indexOf(m) < 0) all.push(m);
+  }
+  const st = await shell(serial, 'stat -c %Y ' + all.map(shq).join(' '), { timeout: 30000 });
+  if (!st.ok) {
+    return { ok: false, error: `读文件时间失败：${((st.stderr || '') + (st.stdout || '')).trim() || 'stat 返回非 0'}` };
+  }
+  const nums = String(st.stdout || '').trim().split(/\s+/).filter(s => /^\d+$/.test(s)).map(Number);
+  if (nums.length !== all.length) {
+    // ★ 读不到就**不许往下走**：少读一个 ⇒ 算出来的"最新"可能是错的 ⇒ 主图会排错
+    return { ok: false, error: `读文件时间没读全（要读 ${all.length} 个，只回了 ${nums.length} 个）` };
+  }
+  const max = Math.max.apply(null, nums);
+  const at = max + 2;
+  const tr = await shell(serial, `touch -d @${at} ${shq(t)}`, { timeout: 30000 });
+  if (!tr.ok) {
+    return { ok: false, error: `设置文件时间失败：${((tr.stderr || '') + (tr.stdout || '')).trim() || 'touch 返回非 0'}` };
+  }
+  // 设完当场回读文件系统：读到别的值就当失败（touch 在权限不足时也可能"安静地没生效"）
+  const back = await shell(serial, `stat -c %Y ${shq(t)}`, { timeout: 30000 });
+  const got = Number(String(back.stdout || '').trim());
+  if (!back.ok || got !== at) {
+    return { ok: false, error: `设置后回读不是刚设的值（回读「${String(back.stdout || '').trim() || '(空)'}」，应为 ${at}）` };
+  }
+  return { ok: true, at, maxOther: max };
+}
+
+/**
+ * ★★★ 2026-10-05 新增：回读 MediaStore 里这几个文件的 `date_modified`，判**哪个是最新的**。
+ *
+ * 为什么不拿 makeNewest 的回读当结论：那一步读的是**文件系统**的时间，而得物相册读的是
+ * **媒体库里缓存的值**（实验②：只改文件时间不重扫库，界面顺序不动）。所以"排成没排成"必须以
+ * 库里的值为准 —— 这也正好是**独立于 touch 那条代码路径**的一次复查。
+ *
+ * 读不到（命令失败 / 有文件在库里查不到）一律 `ok:false` + 原因，**不假装知道顺序**。
+ *
+ * @returns {{ok:boolean, newest?:string, times?:object, want?:string[], error?:string}}
+ */
+async function mediaNewest(serial, remoteFiles) {
+  const want = [];
+  for (const p of (Array.isArray(remoteFiles) ? remoteFiles : [remoteFiles])) {
+    const m = toMediaPath(p);
+    if (m && want.indexOf(m) < 0) want.push(m);
+  }
+  if (!want.length) return { ok: false, error: '没给要比的文件' };
+  const r = await shell(serial, 'content query --uri content://media/external/images/media --projection _data:date_modified', { timeout: 30000 });
+  if (!r.ok) {
+    return { ok: false, error: `回读媒体库失败：${((r.stderr || '') + (r.stdout || '')).trim() || 'content query 返回非 0'}` };
+  }
+  const times = {};
+  for (const line of String(r.stdout || '').split('\n')) {
+    const m = line.match(/_data=(.+?),\s*date_modified=(\d+)/);
+    if (m) times[m[1].trim()] = Number(m[2]);
+  }
+  const missing = want.filter(p => !(p in times));
+  if (missing.length) {
+    return { ok: false, error: `媒体库里回读不到这几个文件的入库时间：${missing.map(p => p.split('/').pop()).join('、')}` };
+  }
+  let best = want[0];
+  for (const p of want) if (times[p] > times[best]) best = p;
+  return { ok: true, newest: best, times, want };
+}
+
 /**
  * 「推的素材真落到设备上了吗」的落地确认（**诊断用**，主流程不再走这条）。
  *
@@ -1920,6 +2015,7 @@ async function probe(serial) {
 
 module.exports = {
   execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
+  makeNewest, mediaNewest, toMediaPath,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   readTextOf, unxml,
   dumpAnimOff, animRestoreCmd, shellQuoteForInputText, offlineHint,

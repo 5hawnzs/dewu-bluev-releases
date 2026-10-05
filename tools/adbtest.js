@@ -4,7 +4,11 @@
         **视频条**（推视频 → 等媒体库索引 → 走 videoSteps，没配 videoSteps 就复用图文 steps；媒体库一直看不到必失败）/
         **页面不 idle**（自动关动画兜底并还原；兜不住就明确失败；★ 抓不到时绝不返回上一页的残留结构）
    假 adb 在 child_process.execFile 这一层做替身（见 tools/fakeadb/adb.js 顶部的说明：
-   Windows 的 execFile('adb') 只认 adb.exe，无扩展名的 bash 脚本跑不起来，故改为函数级替身）。 */
+   Windows 的 execFile('adb') 只认 adb.exe，无扩展名的 bash 脚本跑不起来，故改为函数级替身）。
+   ★ 2026-10-05 增：**主图排序** —— 相册第 1 格（= 得物的内容主图）只认设备上文件时间的倒序，
+   所以产品在「推完之后、入库之前」把要当主图那张 touch 成最新再重扫；这里用「设备上的 mtime /
+   库里的 date_modified」两侧事实来验它，并验「排不成就不发」这条闸门。 */
+
 const Module = require('module');
 const fs = require('fs');
 const path = require('path');
@@ -589,6 +593,10 @@ const state = {
   ok('⑥ videoSteps 的点击真的执行了（不是图文那 4 步）',
     /input tap 162 160/.test(vlog) && /input tap 162 280/.test(vlog) && /input tap 920 2250/.test(vlog) && /input tap 220 1540/.test(vlog));
   ok('⑥ 日志标的是 [视频]', vlogs.some(l => /\[视频\] 发布完成/.test(l)), vlogs.filter(l => /发布完成/.test(l)).join(' | '));
+  // ★★★ 2026-10-05：视频条**不参与**主图排序（用户口径：只有图文才有"内容主图"）——
+  //   所以整条视频流程里一条 `touch -d @…` 都不许出现（不许去碰设备上的文件时间）。
+  ok('⑥ ★ 视频条不参与主图排序：整条流程里一次 `touch -d @…` 都没有',
+    !/touch -d @/.test(vlog), (vlog.match(/touch .*/g) || []).join(' | ') || '（一条都没发）');
 
   // 7) 视频条没配 videoSteps → **复用图文 steps**（2026-10-02 用户实测：图文与视频发布位置一样）
   //    注意：store.set 是**深合并**，只写 steps 的话上一份表的 videoSteps 会被留下来，
@@ -2961,6 +2969,164 @@ const state = {
       iEarly >= 0 && i1b >= 0 && iEarly < i1b,
       `数文件@${iEarly} / 强停@${i1b}`);
     resetX();
+  }
+
+  // ============ ㉜ ★★★ 主图排序：相册第 1 格 = 内容主图 = 「设备上时间最新的那张」 ============
+  //   真机定论（2026-10-05，详见 src/main/services/adb.js#makeNewest 的注释）：
+  //     · 「得物取相册第 1 格作内容主图」是用户口径；
+  //     · 第 1 格只认设备上文件时间（MediaStore date_modified）的**倒序** —— 4 张纯色图把
+  //       「文件名顺序 / push 顺序 / 文件时间」三个键故意做成互相矛盾，相册只跟文件时间走；
+  //     · 只改文件时间不重扫媒体库 ⇒ 顺序纹丝不动；改完时间再 scan ⇒ 顺序立刻跟着变。
+  //   ⇒ 产品做法：推完之后在设备端把要当主图那张 touch 成最新 + 重扫它，再读库复查。
+  //   ★ 本组判据是**设备上的事实**（夹具里的 mtime / 库里的 date_modified），不是"发过 touch 命令"。
+  {
+    const mainimg = require(path.join(base, 'src/main/services/mainimg.js'));
+    const wp3 = require(path.join(base, 'src/main/util/winpath.js'));
+    const fakeExec = require('child_process').execFile;
+    const F = (name, type) => ({ name, type: type || 'image' });
+
+    // ---- ㉜-1 纯逻辑：该挑哪张 ----
+    ok('㉜ 纯逻辑：名字以 1 开头 ⇒ 认成主图标记（1_x.jpg / 1封面.jpg / 1.jpg / 1-主图.jpg 都算）',
+      ['1_x.jpg', '1封面.jpg', '1.jpg', '1-主图.jpg'].every(n => mainimg.isMainMarked(n)),
+      ['1_x.jpg', '1封面.jpg', '1.jpg', '1-主图.jpg'].map(n => n + '=' + mainimg.isMainMarked(n)).join(' '));
+    ok('㉜ ★ 纯逻辑：`10.jpg` / `12.jpg` / `100.jpg` **不算**标记（数字编号不许被误当主图）',
+      !['10.jpg', '12.jpg', '100.jpg'].some(n => mainimg.isMainMarked(n)),
+      ['10.jpg', '12.jpg', '100.jpg'].map(n => n + '=' + mainimg.isMainMarked(n)).join(' '));
+    ok('㉜ ★ 纯逻辑：标记只认**开头**（`微信图片_1.jpg` / `a1.jpg` 里的 1 是名字的一部分，不算标记）',
+      !mainimg.isMainMarked('微信图片_1.jpg') && !mainimg.isMainMarked('a1.jpg'));
+    const pNoMark = mainimg.pickMainImage([F('a.jpg'), F('b.jpg'), F('c.jpg')]);
+    ok('㉜ 纯逻辑：没有标记 ⇒ 按第 1 张（最先拍到 / 收到的那张）',
+      pNoMark.main.name === 'a.jpg' && pNoMark.why === 'first', pNoMark.main.name + ' / ' + pNoMark.why);
+    const pMark = mainimg.pickMainImage([F('a.jpg'), F('1_b.jpg'), F('c.jpg')]);
+    ok('㉜ ★ 纯逻辑：有一张带标记 ⇒ 用它（**哪怕它排在第 2 位** —— 这正是"用户指定优先"的意义）',
+      pMark.main.name === '1_b.jpg' && pMark.why === 'marker' && pMark.index === 1,
+      pMark.main.name + ' / ' + pMark.why + ' / idx=' + pMark.index);
+    const pMany = mainimg.pickMainImage([F('1_a.jpg'), F('1_b.jpg'), F('c.jpg')]);
+    ok('㉜ ★ 纯逻辑：两张都带标记 ⇒ 取最前那张 + why=marker-many（要提醒用户，但不能因此不发）',
+      pMany.main.name === '1_a.jpg' && pMany.why === 'marker-many' && pMany.marked.length === 2,
+      pMany.main.name + ' / ' + pMany.why + ' / 带标记 ' + pMany.marked.join('、'));
+    ok('㉜ 纯逻辑：只有一张图 ⇒ why=only；视频/垃圾文件不参与挑图（图片清单只认 type=image）',
+      mainimg.pickMainImage([F('a.jpg')]).why === 'only'
+      && mainimg.pickMainImage([F('v.mp4', 'video')]).main === null
+      && mainimg.pickMainImage([F('v.mp4', 'video'), F('.DS_Store', 'junk'), F('1_x.jpg')]).main.name === '1_x.jpg');
+
+    // ---- ㉜-2 端到端：真跑一次发布，看设备上那张图有没有变成"时间最新" ----
+    //   现场隔离（用例之间必须隔离，否则前面各段留下的开关会让这组假红/假绿）：
+    //   SCAN_FAIL / MEDIA_LAG / DIR_STALE / DIR_UNREADABLE / FOCUS / UISIZE …… 全部清掉，
+    //   只留「中文输入法已启用」这一条必须的状态。
+    for (const f of fs.readdirSync(FDB)) {
+      if (/^[A-Z_]+$/.test(f) && f !== 'IME_ACTIVE') {
+        try { fs.unlinkSync(path.join(FDB, f)); } catch (e) { /* 目录之类就跳过 */ }
+      }
+    }
+    store.set({ publish: { uiMap, device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1 } });
+
+    const dir3 = path.join(TMP, 'flat3', '26FW-YB160+煤黑+1');
+    fs.mkdirSync(dir3, { recursive: true });
+    const BASE_T = 1791000000;
+    // 名字升序 = 本地时间升序（对齐真机：先拍的在前面）。本地时间会被 push 原样带到设备上。
+    const put3 = names => {
+      for (const f of fs.readdirSync(dir3)) fs.unlinkSync(path.join(dir3, f));
+      names.forEach((n, i) => {
+        const p = path.join(dir3, n);
+        fs.writeFileSync(p, jpgBuf(200 - i * 8, 200, 200));
+        const t = BASE_T + (i + 1) * 10;
+        fs.utimesSync(p, t, t);
+      });
+    };
+    const rem3 = n => '/sdcard/DCIM/Camera/bluev/' + n;
+    const devMt = n => fakeExec.__mtimes.get(fakeExec.__mtKey(rem3(n)));
+    const devDb = n => fakeExec.__dbTimes.get(fakeExec.__mtKey(rem3(n)));
+    const files3 = async () => (await wp3.readdirSafe(dir3)).filter(e => e.isFile())
+      .map(e => ({ name: e.name, type: wp3.isVideo(e.name) ? 'video' : (wp3.isJunk(e.name, false) ? 'junk' : 'image') }));
+    const mkState3 = async () => {
+      const id = '26FW-YB160+煤黑+1';
+      return {
+        items: [{ id, dir: dir3, absDir: dir3, sku: '26FW-YB160', color: '煤黑', files: await files3() }],
+        copyRows: [{ id, title: '黑色的鞋谁懂', body: '这双煤黑真的很百搭', topics: ['#品牌甲'] }],
+        verify: { rows: [{ id, conclusion: '通过' }] },
+        publish: {
+          rows: [{ seq: 1, id, dir: id, goods: 1, images: 3, startAt: '', status: '排队', result: '', retries: 0, reason: '' }],
+          mode: 'adb', device: '127.0.0.1:5555'
+        }
+      };
+    };
+
+    // ==== A) 没有标记：应当挑「第 1 张」（= 最早拍到的那张） ====
+    const NA = ['01_front.jpg', '02_side.jpg', '03_back.jpg'];
+    put3(NA);
+    const orderA = (await files3()).map(f => f.name);
+    // ★ 前置反证：夹具必须让「最后一张」的本地时间最新 —— 否则"改前就是对的"，这组用例什么都证明不了
+    ok('㉜ 前置（反证）：夹具里本地时间最新的是**最后一张** `03_back.jpg`（旧行为＝挑它当主图）',
+      orderA.join('|') === NA.join('|')
+      && fs.statSync(path.join(dir3, NA[0])).mtimeMs < fs.statSync(path.join(dir3, NA[2])).mtimeMs,
+      orderA.join(' | '));
+
+    clearCalls();
+    const logs3 = [];
+    const ctx3 = { log: (m, l) => logs3.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} };
+    const r31 = await publisher.run(await mkState3(), ctx3);
+    const call31 = calls();
+    ok('㉜ 端到端：这一条照常发布成功（主图排序没把正常流程弄挂）',
+      r31.okCount === 1, ((r31.rows[0] || {}).result || '') + ' / ' + ((r31.rows[0] || {}).reason || ''));
+    const mtA = NA.map(devMt);
+    ok('㉜ ★★★ 端到端：设备上时间最新的变成了**第 1 张** `01_front.jpg`（= 相册第 1 格 = 内容主图）',
+      mtA.every(t => typeof t === 'number') && mtA[0] === Math.max.apply(null, mtA),
+      NA.map((n, i) => n + '=' + mtA[i]).join(' '));
+    const dbA = NA.map(devDb);
+    ok('㉜ ★★ 端到端：**库里的** date_modified（得物真正读的那个）也以第 1 张为最新',
+      dbA.every(t => typeof t === 'number') && dbA[0] === Math.max.apply(null, dbA),
+      NA.map((n, i) => n + '=' + dbA[i]).join(' '));
+    const iPushA = call31.lastIndexOf('push ');
+    const iTouchA = call31.indexOf('touch -d @');
+    ok('㉜ ★ 顺序：touch 必须排在**所有 push 之后**（反了的话"最新"会少算一个文件 ⇒ 主图可能排错）',
+      iTouchA > 0 && iPushA > 0 && iTouchA > iPushA, '最后一次 push@' + iPushA + ' / touch@' + iTouchA);
+    const scanRe = new RegExp('content call --uri content://media/external/file --method scan_file --arg '
+      + "'/storage/emulated/0/DCIM/Camera/bluev/01_front\\.jpg'");
+    ok('㉜ ★ 顺序：touch 完必须**重扫**那张（不重扫库里的值不变 ⇒ 相册顺序不会动，这条真机实测过）',
+      scanRe.test(call31.slice(iTouchA)),
+      (call31.slice(iTouchA).match(/content call.*/g) || []).join(' | ').slice(0, 200));
+    ok('㉜ 日志如实写了主图是哪张、以及凭什么挑的',
+      logs3.some(l => /主图 = 01_front\.jpg/.test(l) && /没有 1 标记/.test(l)),
+      logs3.filter(l => /主图/.test(l)).join(' | ').slice(0, 200));
+
+    // ==== B) 带标记：`02_side.jpg` 改名成 `1_02_side.jpg` ⇒ 用户指定的那张当主图 ====
+    //   ★ 特意让带标记的名字**不是**名字排最前的那张（`01_…` < `03_…` < `1_02_…`）——
+    //     否则"按第 1 张"与"按标记"会给出同一个答案，这条用例就证明不了标记真的生效。
+    const NB = ['01_front.jpg', '1_02_side.jpg', '03_back.jpg'];
+    put3(NB);
+    const orderB = (await files3()).map(f => f.name);
+    ok('㉜ 前置：带标记的 `1_02_side.jpg` **不是**名字排最前的那张（排最前的是 `01_front.jpg`）',
+      orderB[0] === '01_front.jpg' && orderB[orderB.length - 1] === '1_02_side.jpg', orderB.join(' | '));
+
+    clearCalls();
+    const r32 = await publisher.run(await mkState3(), ctx3);
+    const call32 = calls();
+    ok('㉜ 端到端（带标记）：照常发布成功', r32.okCount === 1, ((r32.rows[0] || {}).result || ''));
+    const mtB = NB.map(devMt);
+    ok('㉜ ★★★ 端到端（带标记）：时间最新的变成了**带 1 标记的那张**（既不是名字最前的，也不是最后拍的）',
+      mtB.every(t => typeof t === 'number') && mtB[1] === Math.max.apply(null, mtB),
+      NB.map((n, i) => n + '=' + mtB[i]).join(' '));
+    ok('㉜ ★ 带标记时不该再对别的图动手：整条流程只发了**一条** touch',
+      (call32.match(/touch -d @/g) || []).length === 1,
+      (call32.match(/touch -d @[^\n]*/g) || []).join(' | '));
+    ok('㉜ 日志里说清了凭什么挑的（名字以 1 开头）',
+      logs3.some(l => /主图 = 1_02_side\.jpg/.test(l) && /名字以 1 开头/.test(l)),
+      logs3.filter(l => /主图 =/.test(l)).join(' | ').slice(-260));
+
+    // ==== C) 排不成 ⇒ 这一条**不发**（不许默默发一条主图放错的帖子） ====
+    //   现场开关 SCAN_FAIL：让「重扫媒体库」这一步失效。得物读的是库里的缓存时间 ⇒
+    //   重扫不成功 = 相册顺序根本不会变 = 主图会放错 ⇒ 必须当场失败，而不是"当作排上了"往下发。
+    fs.writeFileSync(path.join(FDB, 'SCAN_FAIL'), '1');
+    put3(NA);
+    const r33 = await publisher.run(await mkState3(), ctx3);
+    fs.unlinkSync(path.join(FDB, 'SCAN_FAIL'));
+    ok('㉜ ★★ 排不成（重扫失效）⇒ 这一条**失败**，不是"照发不误"',
+      r33.okCount === 0 && /失败/.test(String((r33.rows[0] || {}).result || '')),
+      String((r33.rows[0] || {}).result || '') + ' / ' + String((r33.rows[0] || {}).reason || '').slice(0, 160));
+    ok('㉜ ★★ 而且理由必须点到"主图/媒体库"上（不许只说一句"失败了"让人猜）',
+      /主图|媒体库/.test(String((r33.rows[0] || {}).reason || '')),
+      String((r33.rows[0] || {}).reason || '').slice(0, 200));
   }
 
   console.log('\n--- 日志样例 ---');

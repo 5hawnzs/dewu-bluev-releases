@@ -85,6 +85,23 @@ function makeFakeAdb(dir) {
   //   （实测：不调的话得物相册里根本看不到这个文件）。所以 content query 只回 scanned、
   //   不回 pushed —— 否则「扫描没生效」这种情况永远测不出来（恒绿）。
   const scanned = [];
+
+  // ★★★ 2026-10-05 新增：**每个文件的 mtime**（epoch 秒）+ **库里记的 date_modified**。
+  //   为什么要分两套（得物相册第 1 格 = 内容主图，而第 1 格只认库里 date_modified 的倒序）：
+  //     真机实测 ① `adb push` **保留源文件时间**；② 只改文件时间、不重扫媒体库 ⇒ 相册顺序**纹丝不动**
+  //     （得物读的是库里的缓存值）；③ 改完文件时间再 `scan_file` ⇒ 顺序立刻跟着变。
+  //   ⇒ 夹具必须把「文件时间」与「进库那一刻抄下来的时间」分开，否则「推完之后 touch、touch 完必须
+  //     重扫」这一整条因果链在回归里等于没测 —— 代码怎么写都绿（典型假绿）。
+  const mtimes = new Map();                       // '/sdcard/...' -> epoch 秒（文件系统上的时间）
+  const dbTimes = new Map();                      // '/sdcard/...' -> epoch 秒（媒体库里缓存的值）
+  const mtKey = p => String(p).replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+  const mtOf = p => mtimes.get(mtKey(p));
+  const dbTimeOf = p => {
+    const k = mtKey(p);
+    if (dbTimes.has(k)) return dbTimes.get(k);
+    const t = mtimes.get(k);
+    return t == null ? 1700000000 : t;
+  };
   // ★★ 2026-10-04：给每条进库的记录分配一个**稳定 id**。
   //   真机 MediaStore 的 `_id` 是主键 —— 删掉一条**不会**让别的记录改号。
   //   老夹具拿「下标 + 100」当 id ⇒ 删掉中间一条会让后面所有记录改号，于是
@@ -565,6 +582,28 @@ function makeFakeAdb(dir) {
       delete anim[key];
       return okOut('');
     }
+    // ★★★ 2026-10-05 新增：文件时间原语 `stat -c %Y` 与 `touch -d @epoch`。
+    //   产品里「排主图」= 推完之后在设备端 touch 那张 + 重扫它（见 src/main/services/adb.js#makeNewest）。
+    //   夹具不认这两条的话，那一步会直接抛错 —— 那是**夹具缺能力**，不是产品错，不能靠"放宽产品"绕过去。
+    if (/^stat -c %Y /.test(cmd)) {
+      const paths = (cmd.match(/'[^']*'/g) || []).map(s => s.slice(1, -1));
+      if (!paths.length) return fail('stat: bad args');
+      let out = '';
+      for (const p of paths) {
+        const t = mtOf(p);
+        // 真机语义：文件不在就报错、码非 0（**不是**回 0 —— 回 0 会把"读不到"变成"读到 0"）
+        if (t == null) return { out: out + `stat: '${p}': No such file or directory\n`, code: 1 };
+        out += t + '\n';
+      }
+      return okOut(out);
+    }
+    if (/^touch -d @\d+ /.test(cmd)) {
+      const m = cmd.match(/^touch -d @(\d+) '([^']+)'$/);
+      if (!m) return fail('touch: bad args');
+      mtimes.set(mtKey(m[2]), Number(m[1]));
+      return okOut('');
+    }
+
     // ★ 2026-10-03 新增：推完素材的「落地确认」（adb.js#filesMissing 发的命令）。
     //   真机语义就是「文件在磁盘上吗」。夹具里「在不在」= 有没有真实 push 过 ——
     //   这样「推完却在设备上找不到」这种失败才测得到（不会恒为 EXISTS 造成假绿）。
@@ -584,12 +623,13 @@ function makeFakeAdb(dir) {
         const asSd = arg.replace(/^\/storage\/emulated\/0\//, '/sdcard/');
         if (!failScan && asSd && pushed.includes(asSd)) {
           if (!scanned.includes(asSd)) scanned.push(asSd);
+          dbTimes.set(mtKey(asSd), mtOf(asSd));     // ★ 进库这一刻才把文件时间抄进库
           return okOut(`Result: Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/${mediaIdOf(asSd)}}]\n`);
         }
         return okOut('Result: Bundle[{android.intent.extra.STREAM=null}]\n');
       }
       if (/--method scan_volume/.test(cmd)) {
-        if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) { scanned.push(p); mediaIdOf(p); } });
+        if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) { scanned.push(p); mediaIdOf(p); } dbTimes.set(mtKey(p), mtOf(p)); });
         return okOut('Result: Bundle[{}]\n');
       }
       return okOut('Result: Bundle[{}]\n');
@@ -604,8 +644,14 @@ function makeFakeAdb(dir) {
       //   （**逗号分隔、带 _id**），clearMediaDir 的正则抓的就是这个格式。
       //   旧夹具回的是 `Row: N _data=路径`（没 _id）⇒ 会把**所有记录都漏掉**，
       //   于是「按记录删库」这一半在回归里等于没测（假绿）。
+      // ★★★ 2026-10-05：投影里要 `date_modified` 就带上它（= **进库那一刻**抄下来的文件时间；
+      //   之后改文件时间不会自动跟着变 —— 对齐真机「得物读的是库里的缓存值」）。
+      //   格式与真机实测一致：`Row: 0 _id=446, _data=/storage/..., date_modified=1791141061`。
+      const projM = cmd.match(/--projection\s+(\S+)/);
+      const proj = projM ? projM[1] : '';
       return okOut(list.map((p, i) =>
         `Row: ${i} _id=${mediaIdOf(p)}, _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`
+        + (/date_modified/.test(proj) ? `, date_modified=${dbTimeOf(p)}` : '')
       ).join('\n') + (list.length ? '\n' : ''));
     }
     if (/^content delete /.test(cmd)) {
@@ -621,6 +667,7 @@ function makeFakeAdb(dir) {
           const gone = scanned[idx];
           scanned.splice(idx, 1);
           mediaIds.delete(String(gone));
+          dbTimes.delete(mtKey(gone));
           for (let i = pushed.length - 1; i >= 0; i--) {
             if (norm(pushed[i]).replace(/^\/storage\/emulated\/0\//, '/sdcard/') ===
                 norm(gone).replace(/^\/storage\/emulated\/0\//, '/sdcard/')) pushed.splice(i, 1);
@@ -802,8 +849,15 @@ function makeFakeAdb(dir) {
       return okOut('Success\n');
     }
     if (args[0] === 'push') {
+      const local = args[1];
       const remote = args[args.length - 1];
       if (remote && !pushed.includes(remote)) pushed.push(remote);
+      // ★★★ 2026-10-05：真机 `adb push` **保留源文件时间**（实测）⇒ 夹具照抄本地文件的 mtime。
+      //   这一条不照抄的话，「相册按时间倒序」与「主图靠设备端 touch 置顶」都测不出来。
+      let mt = null;
+      try { mt = Math.floor(fs.statSync(local).mtimeMs / 1000); } catch (e) { mt = null; }
+      if (mt == null) mt = 1700000000 + pushed.length;
+      mtimes.set(mtKey(remote), mt);
       return okOut('1 file pushed. 0.4 MB/s\n');
     }
 
@@ -879,6 +933,13 @@ function makeFakeAdb(dir) {
   //       "锁已经没了"往下跑 ⇒ 该红的用例反而绿（典型串味假绿）。
   fakeExec.__appStops = appStops;
   fakeExec.__appReset = () => { appStopped = false; };
+  // ★★★ 2026-10-05：把「设备上的文件时间 / 库里的 date_modified」也挂出来。
+  //   断言侧要证明的是**设备上的事实**（那张图真的成了时间最新的），而不是「我们发过一条
+  //   touch 命令」—— 手段发了但没生效（比如没重扫库），那样必须照样红。
+  //   读法：`fakeExec.__mtimes.get(fakeExec.__mtKey('/sdcard/DCIM/Camera/bluev/x.jpg'))`。
+  fakeExec.__mtimes = mtimes;
+  fakeExec.__dbTimes = dbTimes;
+  fakeExec.__mtKey = mtKey;
   return fakeExec;
 }
 

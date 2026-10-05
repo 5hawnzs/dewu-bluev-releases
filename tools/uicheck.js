@@ -392,6 +392,23 @@ app.whenReady().then(async () => {
     ok('页签 6 的「开始发布」还在', await onTab(6, 'pub:run'));
   }
 
+  // ★ 2026-10-05：**内容主图**怎么定，必须在界面上看得见 —— 这是用户唯一能控制主图的入口，
+  //   界面上找不到就等于这个功能没做（用户口径：标记用数字 1）。读真 DOM 的 innerText，
+  //   不查源码字符串（源码里有不代表用户看得见）。
+  {
+    const mainHint = await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.nav[data-tab="6"]').click();
+      await new Promise(r => setTimeout(r, 150));
+      const el = document.getElementById('pane');
+      const t = el ? el.innerText : '';
+      return { hasMain: t.indexOf('内容主图') >= 0,
+               hasFirst: t.indexOf('排在最前面那张') >= 0,
+               hasMark: t.indexOf('以 1 开头') >= 0 };
+    })()`);
+    ok('★ 页签 6 界面上写清了「内容主图」怎么定（默认第 1 张 / 名字以 1 开头）',
+      mainHint.hasMain && mainHint.hasFirst && mainHint.hasMark, JSON.stringify(mainHint));
+  }
+
   // ---- ★ 主题：app 默认浅色 + 顶栏「项目」左边一点即切（用户 2026-10-03 要求） ----
   //   为什么不能只查源码里有没有这个按钮：位置错了（塞进设置页）、点了不生效（没走 IPC）、
   //   切了不落盘（下次启动忘掉）—— 三种都是「看起来做了」。这里全用真窗口真点一遍。

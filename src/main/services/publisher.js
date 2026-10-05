@@ -17,6 +17,7 @@ const fs = require('fs');
 const adb = require('./adb');
 const uimap = require('./uimap');
 const verifySvc = require('./verify');
+const mainimg = require('./mainimg');
 const store = require('../store');
 const sheet = require('./sheet');
 const wp = require('../util/winpath');
@@ -705,6 +706,8 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
 async function runReal(row, item, copyRow, serial, map, ctx) {
   const log = ctx.log || (() => {});
   const cancelled = ctx.cancelled || (() => false);
+  // 大结论通道（见 logbus.tierOf / jobs.js）：工具里直接干跑没有 conclude 时退回 log，旧行为不变
+  const conclude = ctx.conclude || log;
   const c = cfg();
 
   // 0) 这条发视频还是图文：报告标了就以报告为准，没标按目录推断；两边都有又没标 → 这里必须拦住
@@ -854,6 +857,54 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     const sc = await adb.mediaScan(serial, remote);
     if (!sc.ok) log(`${row.dir}：${f.name} 的媒体扫描没做成功（试了 ${sc.how}）——下面用「进库确认」兜底`, 'warn');
     remotes.push(remote);
+  }
+
+  // ★★★ 2026-10-05（第四十一轮）**主图排序** —— 这里是「哪张当内容主图」的唯一开关。
+  //   得物取**相册第 1 格**作内容主图（用户口径）；而第 1 格 = 设备上文件时间（MediaStore
+  //   `date_modified`）**最新的那张** —— 真机三步实验的结论与出处见 adb.makeNewest 的注释。
+  //   所以要某张当主图，就得把它在设备上的时间设成这一组里最新的。
+  //   ★ 挑哪张：名字以 1 开头（`1_xxx.jpg`）优先，否则按**第 1 张**（最先拍到 / 收到的那张）。
+  //     用户真实素材实测 3 个叶子：「第 1 张」3/3 合格；而改前的实际行为（最后一张）有 2/3 是
+  //     背面图 —— 用户报的就是这个（「不然老是放一些人物的背面图在主图上」）。挑法见 services/mainimg.js。
+  //   ★ 视频不参与：只有图文才拿相册里的图当内容图（用户口径）。
+  //   ★★ 排不成 ⇒ **这一条就不发**（抛错，不默默发一条主图放错的帖子）：主图放错是用户明确报过
+  //     的损失，而「发不出去」他当场就能看见；含糊过去等于让界面骗人。
+  if (!isVideo) {
+    const pick = mainimg.pickMainImage(item.files);
+    if (pick.main && media.length > 1) {
+      const idx = media.findIndex(f => f && f.name === pick.main.name);
+      if (idx < 0) {
+        throw new Error(`内部不一致：挑出来的主图「${pick.main.name}」不在要推的图片清单里`
+          + `（清单：${media.map(f => f.name).join('、')}）—— 先查 services/mainimg.js 的挑法，别猜。`);
+      }
+      row.status = '排主图';
+      if (ctx.onRow) ctx.onRow(row);
+      const mr = await adb.makeNewest(serial, remotes[idx], remotes);
+      if (!mr.ok) {
+        throw new Error(`没能把主图「${pick.main.name}」排到相册第 1 格：${mr.error}`
+          + ' —— 相册第 1 格就是得物的内容主图，排不成就只能按「最后拍的那张」当主图'
+          + '（实测那就是你说的背面图）。这步靠设备端 touch + 重扫媒体库两步完成。');
+      }
+      const rescan = await adb.mediaScan(serial, remotes[idx]);
+      if (!rescan.ok) {
+        throw new Error(`主图「${pick.main.name}」的时间戳改了，但没能重扫进媒体库（试了 ${rescan.how}）`
+          + ' —— 得物读的是库里的缓存时间，不重扫的话相册顺序不会变（这条实测过）。');
+      }
+      const nw = await adb.mediaNewest(serial, remotes);
+      if (!nw.ok) {
+        throw new Error(`排完主图后回读媒体库没读成：${nw.error}`
+          + ' —— 读不到就不算排成（不许按「应该是排上了」往下发）。');
+      }
+      if (nw.newest !== adb.toMediaPath(remotes[idx])) {
+        throw new Error(`排完主图后回读媒体库，最新的仍是「${nw.newest.split('/').pop()}」，`
+          + `不是要当主图的「${pick.main.name}」—— 这一条的主图会放错，先不发。`);
+      }
+      log(`${row.dir}：主图 = ${pick.main.name}（${mainimg.whyText(pick)}），已排到相册第 1 格`, 'info');
+      if (pick.why === 'marker-many') {
+        conclude(`${row.dir}：这个叶子里有 ${pick.marked.length} 张图的名字都以 1 开头`
+          + `（${pick.marked.join('、')}）—— 只取了排在最前的那张当主图，其余的 1 请去掉`, 'warn');
+      }
+    }
   }
 
   // ★★ 2026-10-03 真机实测（127.0.0.1:16384 / MuMu 12 / Android 12，全部可复算）：
