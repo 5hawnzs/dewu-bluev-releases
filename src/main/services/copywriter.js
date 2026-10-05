@@ -641,6 +641,10 @@ function unescapeNewlines(s) {
 /** 并发按路数均分：6 路 × ~N/6 篇，而不是切成 15 条/批 */
 async function generate(items, ctx = {}) {
   const log = ctx.log || (() => {});
+  // ★ 2026-10-05 用户口径「给用户只看大结论」：`log`（= ctx.log）现在是**过程明细**（界面不显示）。
+  //   `conclude` 是**会直接出现在用户眼前**的那几句 —— 只有「用户据此要改设置 / 要换做法」的才配用它：
+  //   比如「这次根本没看图」。工具直接调本模块时 ctx 里没有 conclude ⇒ 退回 log（老行为）。
+  const conclude = ctx.conclude || log;
   const progress = ctx.progress || (() => {});
   const cancelled = ctx.cancelled || (() => {});
   const concurrency = Math.max(1, Math.min(8, store.get('copy.concurrency') || 6));
@@ -678,16 +682,16 @@ async function generate(items, ctx = {}) {
     log(`接口：${cfg.endpoint}（${cfg.endpointSource}）· 模型 ${pf.modelId}${pf.switched ? `（${pf.modelHow}）` : ''}`, pf.switched ? 'warn' : 'info');
     if (pf.listErr) log(`拉不到模型清单（${pf.listErr}），按配置的模型名直接试 —— 失败原因会原样报出来`, 'warn');
     if (pf.image === false) {
-      log(`模型「${pf.modelId}」的清单里没有 image 输入能力 ⇒ 这次不看图，标题只能按货号/颜色写（会偏「像 AI 批量做的」）`, 'warn');
+      conclude(`模型「${pf.modelId}」的清单里没有 image 输入能力 ⇒ 这次不看图，标题只能按货号/颜色写（会偏「像 AI 批量做的」）`, 'warn');
     } else if (!cfg.vision) {
-      log('「设置 → 文案 → 看图」关着 ⇒ 这次不送图，标题只能按货号/颜色写', 'warn');
+      conclude('「设置 → 文案 → 看图」关着 ⇒ 这次不送图，标题只能按货号/颜色写', 'warn');
     } else {
       log(`看图写：每条送前 ${cfg.imageCount} 张实拍图（缩到 ${cfg.imageMaxSide}px 再发，不落盘）`, 'info');
       if (cfg.videoFrames > 0) {
         log(`只有视频、没有实拍图的素材：从视频里抽 ${cfg.videoFrames} 帧当图送去`
           + '（抽帧在本机做；送出去的还是这个常数，不随视频变长而变多）', 'info');
       } else {
-        log('抽帧张数被设成 0 ⇒ 只有视频的素材一张图都不送，标题只能按货号/颜色写', 'warn');
+        conclude('抽帧张数被设成 0 ⇒ 只有视频的素材一张图都不送，标题只能按货号/颜色写', 'warn');
       }
     }
   }
@@ -741,7 +745,7 @@ async function generate(items, ctx = {}) {
           vision = false;
           images = [];
           visionOff++;
-          log(`${pf.modelId} 不收图（${e.message.slice(0, 80)}）⇒ 整批改成只发文字，标题会偏货号/颜色`, 'warn');
+          conclude(`${pf.modelId} 不收图（${e.message.slice(0, 80)}）⇒ 整批改成只发文字，标题会偏货号/颜色`, 'warn');
           continue;
         }
         if (attempt < 2) await new Promise(r => setTimeout(r, 600 * (attempt + 1)));

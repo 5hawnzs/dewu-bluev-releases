@@ -147,24 +147,32 @@ async function dispatch(type, args, ctx) {
       const res = await flatten.run(dir, store.get('flatten'), ctx);
       if (!res.ok) throw new Error(res.message);
       project.patch({ sourceDir: dir, flatDir: res.flatDir, items: res.items, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: res.items.length, colCount: 26, locked: false, exportedAt: 0 } });
+      // 大结论（2026-10-05）：一行说清这次整理出来多少
+      ctx.conclude(`素材整理完成【${res.summary}】`);
       return res;
     }
     case 'compliance.scan': {
       if (!st().items.length) throw new Error('请先做素材整理');
       const { rows, stats } = await compliance.scan(st().items, ctx);
       project.patch({ compliance: { rows, stats, scannedAt: Date.now() } });
+      // 大结论（2026-10-05）：逐条的判定过程在明细里，这里只给用户几个数
+      ctx.conclude(`合规检查完成【检查 ${stats.total} 个文件 · 通过 ${stats.ok} · 待处理 ${stats.todo} · 需人工 ${stats.manual}】`,
+        stats.manual ? 'warn' : 'ok');
       return { rows, stats };
     }
     case 'compliance.scanParent': {
       const dir = needSourceDir(args.dir || st().sourceDir);
       const r = await compliance.scanParent(dir, ctx);
       project.patch({ compliance: { rows: r.rows, stats: r.stats, groups: r.groups, scannedAt: Date.now() } });
+      ctx.conclude(`父目录检查完成【${r.groups.length} 个批次 · ${r.stats.total} 个文件 · 可自动处理 ${r.stats.todo} · 需人工 ${r.stats.manual}】`,
+        r.stats.manual ? 'warn' : 'ok');
       return { groups: r.groups.map(g => ({ name: g.name, stats: g.stats })), stats: r.stats };
     }
     case 'compliance.fix': {
       const s = st();
       const r = await compliance.fix(s.items, s.compliance.rows, ctx);
       project.patch({ compliance: { rows: r.rows, stats: s.compliance.stats, scannedAt: s.compliance.scannedAt } });
+      ctx.conclude(`合规处理完成【转换 ${r.converted} · 隔离 ${r.isolated} · 失败 ${r.failed}】`, r.failed ? 'warn' : 'ok');
       return r;
     }
     case 'copy.generate': {
@@ -213,6 +221,11 @@ async function dispatch(type, args, ctx) {
         } else if (rep.rows) {
           logbus.ok(`[${batchId}] ${rep.rows} 行的文案/货号/颜色自动核对全部「一致」`, { batch: batchId });
         }
+        // 大结论（2026-10-05）：一行说完这批「目标/成功/失败」，并如实标出文案到底是不是 AI 写的
+        //   —— 「看起来像 AI、其实是本地模板」正是用户最恼的那种，必须一眼看得见（不许瞒）。
+        const okN = r.rows.filter(x => x.status === '已生成').length;
+        ctx.conclude(`文案生成成功【目标 ${items.length} 条，成功 ${okN} 条，失败 ${r.failed} 条】（${r.genSource || (r.llm ? 'AI' : '本地模板')}）`,
+          r.failed ? 'warn' : 'ok');
         return {
           batchId, count: r.rows.length, file, warning: r.warning, llm: r.llm,
           genSource: r.genSource || '', modelId: r.modelId || '', vision: !!r.vision,
@@ -234,6 +247,10 @@ async function dispatch(type, args, ctx) {
       });
       logbus.ok(`AI 内容报告（${rep.rows} 行）→ ${wp.toDisplay(rep.file)}`);
       if (rep.flagged) logbus.warn(`报告里 ${rep.flagged} 行的「文案核对」不是「一致」—— 打开报告按那一列筛一下`);
+      // 大结论（2026-10-05）：与「按素材目录起批次」那条**同一个口径**
+      const okN = r.rows.filter(x => x.status === '已生成').length;
+      ctx.conclude(`文案生成成功【目标 ${s0.items.length} 条，成功 ${okN} 条，失败 ${r.failed || 0} 条】（${r.genSource || (r.llm ? 'AI' : '本地模板')}）`,
+        r.failed ? 'warn' : 'ok');
       return {
         count: r.rows.length, warning: r.warning, llm: r.llm, genSource: r.genSource || '',
         reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged, reportByLevel: rep.byLevel
@@ -274,6 +291,9 @@ async function dispatch(type, args, ctx) {
       if (!st().items.length) throw new Error('请先做素材整理');
       const r = await verify.check(st().items, ctx);
       project.patch({ verify: { rows: r.rows, stats: r.stats, checkedAt: Date.now() } });
+      // 大结论（2026-10-05）：只有「会被拦下不发」才是用户要立刻知道的
+      ctx.conclude(`货号颜色校验完成【${r.rows.length} 条 · 通过 ${r.stats.pass} · 需人工 ${r.stats.manual}`
+        + ` · 会被拦下不发 ${r.stats.blocked}】`, r.stats.blocked ? 'warn' : 'ok');
       return r;
     }
     case 'sheet.export': {
@@ -547,6 +567,23 @@ async function dispatch(type, args, ctx) {
         }
       }
       notify('发布批次结束', `成功 ${r.okCount} / ${r.total} 条，记得回查审核状态`);
+      // ★ 大结论（2026-10-05 用户要的格式）：一行说完「目标 / 成功 / 失败」。
+      //   三种情况分开说，**既不许拿绿灯盖红字、也不许拿「成功 0」糊弄**：
+      //     · 真机全成功 → 发布成功【目标 N 条，成功 N 条，失败 0 条】
+      //     · 真机有失败 → 发布结束（有失败）【…】＋ 去哪看逐条原因
+      //     · 模拟通道   → 模拟发布完成【…】：模拟本来就没真发出去，报「成功 K 条」会被当成发出去了
+      const failCount = r.failCount || 0;
+      if (failCount) {
+        ctx.conclude(`发布结束（有失败）【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 ${failCount} 条】`, 'warn');
+        ctx.conclude(`这 ${failCount} 条为什么没发出去：逐条原因见「发布单」的结果列（失败截图在输出目录的 failures 文件夹）`, 'warn');
+      } else if (r.mode === 'mock') {
+        const mockOk = (r.rows || []).filter(x => x.result === '模拟成功').length;
+        ctx.conclude(`模拟发布完成【目标 ${r.total} 条，模拟成功 ${mockOk} 条，失败 0 条】`
+          + '· 模拟通道不接触设备，**不算真发布**（要真发请先「连接模拟器」并点「检查能不能发布」通过）', 'warn');
+      } else {
+        ctx.conclude(`发布成功【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 0 条】`
+          + '· 发完 ≠ 发出去了，记得回查审核状态', 'ok');
+      }
       return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch };
     }
     case 'publish.exportLog': {
@@ -565,6 +602,10 @@ async function dispatch(type, args, ctx) {
       project.patch({ publish: Object.assign({}, s.publish, { rows: s.publish.rows }) });
       if (s.sheet.file) await sheet.mergeResults(s.sheet.file, r.results);
       if (s.publish.reportFile) await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
+      // 大结论（2026-10-05）：与整批发布同一个口径（重跑就是「只发这一条」的一批）
+      ctx.conclude(r.okCount >= 1
+        ? `重跑成功【目标 1 条，成功 1 条，失败 0 条】`
+        : `重跑结束（失败）【目标 1 条，成功 0 条，失败 1 条】`, r.okCount >= 1 ? 'ok' : 'warn');
       return { okCount: r.okCount, total: 1 };
     }
     case 'pool.import': {
@@ -622,6 +663,23 @@ async function run(type, args = {}) {
   if (!byType.has(type)) byType.set(type, new Set());
   byType.get(type).add(id);
 
+  // ★ 2026-10-05 用户口径（「运行日志太细了…就给大结论」）：
+  //   `ctx.log` 是**过程流水**通道（每步耗时 / 坐标 / 屏幕守卫 / 清相册 / 抽帧…）⇒ 一律标成明细，
+  //   主界面（底部日志栏 + 「运行日志」页）不再刷屏；但它照样落 run-log.jsonl（管理员台账），
+  //   任务行的「查看详情」也能按批次逐条回看 —— 只是不再往用户脸上刷。
+  //   两条例外，它们本身就是结论，必须让用户看见：
+  //     ① level === 'error'：真出错了。「太细」不是把错误藏起来的理由；
+  //     ② ctx.conclude(...)：调用点显式声明的结论行（任务级「成功【目标/成功/失败】」这类）。
+  const emit = (msg, level, opts) => {
+    const fn = { ok: logbus.ok, warn: logbus.warn, error: logbus.error }[level] || logbus.info;
+    const meta = Object.assign({ jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo);
+    // 该条算「大结论」还是「过程明细」的规则只在 logbus.tierOf 里写一次（error 与 opts.ui 例外）
+    const detail = logbus.tierOf(level, opts) === 'detail';
+    // 日志带上批次，界面「查看详情」能按批次把这一步的日志筛出来
+    fn(`[${label}] ${msg}`, meta, detail ? logbus.DETAIL : null);
+    // 同时落盘：logbus 只有内存 500 条，关了程序就没了，管理员事后查不到
+    runlog.append(Object.assign({ kind: 'log', level: level || 'info', msg: String(msg), jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo));
+  };
   const ctx = {
     jobId: id,
     batch: job.batch,
@@ -632,14 +690,9 @@ async function run(type, args = {}) {
     brandFull: brand,
     actor: actorInfo,
     cancelled: () => job.token.cancel,
-    log: (msg, level) => {
-      const fn = { ok: logbus.ok, warn: logbus.warn, error: logbus.error }[level] || logbus.info;
-      const meta = Object.assign({ jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo);
-      // 日志带上批次，界面「查看详情」能按批次把这一步的日志筛出来
-      fn(`[${label}] ${msg}`, meta);
-      // 同时落盘：logbus 只有内存 500 条，关了程序就没了，管理员事后查不到
-      runlog.append(Object.assign({ kind: 'log', level: level || 'info', msg: String(msg), jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo));
-    },
+    log: emit,
+    // 大结论：只有这句会直接出现在用户眼前（其余 ctx.log 都沉到明细里）
+    conclude: (msg, level) => emit(msg, level, { ui: true }),
     progress: p => {
       job.progress = Object.assign({ done: 0, total: 0 }, p);
       send('job:progress', Object.assign({ id, type, label, batch: job.batch }, p));

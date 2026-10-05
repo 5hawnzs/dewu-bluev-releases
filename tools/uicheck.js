@@ -467,6 +467,10 @@ app.whenReady().then(async () => {
 
     logbus.info('ENG-INFO 自检：这段只用来验证「运行日志」页与底部日志栏同步');
     logbus.error('ENG-ERR 自检：故意造一条错误日志（用来验级别筛选）');
+    // ★ 2026-10-05 用户口径「只给大结论」：再灌一条**过程明细**（tier='detail'）——
+    //   它必须**不进界面**（底部日志栏与运行日志页都不许有它），
+    //   但要留在 state.logs 里：任务行「查看详情」与 run-log.jsonl 台账都靠它。
+    logbus.info('ENG-DETAIL 自检：这条是过程明细，不该出现在界面任何地方', null, logbus.DETAIL);
     await new Promise(r => setTimeout(r, 250));
 
     const gotoLogPage = `document.querySelector('.nav[data-tab="10"]').click(); await new Promise(r => setTimeout(r, 200));`;
@@ -476,7 +480,8 @@ app.whenReady().then(async () => {
       return {
         bar: txt([...document.querySelectorAll('#log > div')]),
         pane: txt([...document.querySelectorAll('#logPaneLines > div')]),
-        badge: (document.querySelector('[data-st="10"]') || {}).textContent || '',
+        hasLogBadge: !!document.querySelector('[data-st="10"]'),
+        detailInState: state.logs.filter(e => e.tier === 'detail').length,
         count: (document.querySelector('#logPaneCount') || {}).textContent || '',
         barCount: (document.querySelector('#logBarCount') || {}).textContent || '',
         countOnTitleRow: (function () { var c = document.querySelector('#logPaneCount'); var r = c && c.closest ? c.closest('.row') : null; return !!(r && r.querySelector('h3')); })(),
@@ -490,6 +495,13 @@ app.whenReady().then(async () => {
     ok('刚灌进去的那两条两处都看得到（说明走的是真推送链路，不是各自造的数据）',
       ui0.pane.some(l => /ENG-INFO/.test(l)) && ui0.bar.some(l => /ENG-INFO/.test(l)),
       ui0.pane.slice(-2).join(' | ').slice(0, 120));
+    ok('★★ 过程明细（tier=detail）**不进界面**：底部日志栏与运行日志页都不许有它（2026-10-05 用户：只给大结论）',
+      !ui0.bar.some(l => /ENG-DETAIL/.test(l)) && !ui0.pane.some(l => /ENG-DETAIL/.test(l)),
+      JSON.stringify({ bar: ui0.bar.slice(-2), pane: ui0.pane.slice(-2) }).slice(0, 200));
+    ok('★★ 但明细**留在 state.logs 里**（任务行「查看详情」与 run-log.jsonl 台账都靠它，不许丢）',
+      ui0.detailInState >= 1, `${ui0.detailInState} 条明细在内存里`);
+    ok('★ 左侧「运行日志」模块上**不再有角标**（2026-10-05 用户：不要显示有多少条）',
+      ui0.hasLogBadge === false, String(ui0.hasLogBadge));
     ok('★ 运行日志页的条数在标题那一行的右边（2026-10-03 用户：右边不显示有多少条）',
       ui0.countOnTitleRow && /共 \d+ 条|显示 \d+ \/ 共 \d+ 条/.test(ui0.count),
       JSON.stringify({ onTitleRow: ui0.countOnTitleRow, count: ui0.count }));
@@ -575,14 +587,14 @@ app.whenReady().then(async () => {
       return {
         bar: document.querySelectorAll('#log > div').length,
         pane: document.querySelectorAll('#logPaneLines > div').length,
-        badge: (document.querySelector('[data-st="10"]') || {}).textContent || '',
+        hasLogBadge: !!document.querySelector('[data-st="10"]'),
         count: (document.querySelector('#logPaneCount') || {}).textContent || ''
       };
     })()`);
     ok('★「清空」把底部日志栏与页内**一起**清掉（只清一边就不叫同步了）',
       cleared.bar === 0 && cleared.pane === 0, JSON.stringify(cleared));
-    ok('清空后角标回到「—」、条数回到「共 0 条」（界面不许还留着旧数字）',
-      cleared.badge === '—' && /共 0 条/.test(cleared.count), `${cleared.badge} / ${cleared.count}`);
+    ok('清空后条数回到「共 0 条」，且左侧仍无角标（界面不许还留着旧数字）',
+      cleared.hasLogBadge === false && /共 0 条/.test(cleared.count), `${cleared.hasLogBadge} / ${cleared.count}`);
 
     // 清空后再来一条：两处必须**同时**长出来（推送这个方向最容易漏）
     // ★ 这一条才是「同步」的真正守门人：上面那条「逐行一致」是切页时比对的，
@@ -600,10 +612,14 @@ app.whenReady().then(async () => {
       JSON.stringify(afterClear).slice(0, 150));
 
     // 源码锚点：两处不许各写一套渲染逻辑（那正是「两份数据」的前兆）
+    // ★ 2026-10-05：先剥掉整行注释再匹配、窗口放宽到 1200 —— 原来的 400/500 字符窗口是
+    //   拍脑袋定的，加进「明细不进界面」那几行代码后立刻**假红**（函数本身没变味，
+    //   只是变长）。要不要共用一套渲染，判据是「有没有调用同一个函数」，不是「隔多少字符」。
     const appSrcLog = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
+    const appCodeLog = appSrcLog.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
     ok('★ 两边共用同一个数组与同一套渲染函数（没有第二份日志）',
-      /function pushLog\(e\)[\s\S]{0,400}appendToLogPane\(e\)/.test(appSrcLog)
-        && /function renderLogs\(\)[\s\S]{0,500}renderLogPaneLines\(\)/.test(appSrcLog)
+      /function pushLog\(e\)[\s\S]{0,1200}appendToLogPane\(e\)/.test(appCodeLog)
+        && /function renderLogs\(\)[\s\S]{0,1200}renderLogPaneLines\(\)/.test(appCodeLog)
         && !/state\.logs2|state\.paneLogs/.test(appSrcLog),
       `pushLog→页内=${/appendToLogPane\(e\)/.test(appSrcLog) ? '有' : '缺'} · renderLogs→页内=${/renderLogPaneLines\(\)/.test(appSrcLog) ? '有' : '缺'}`);
     ok('★ 导出走 IPC（渲染层没有 fs），且主进程会把失败如实报回来（不吞）',

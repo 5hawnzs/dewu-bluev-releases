@@ -107,6 +107,14 @@ function applyTheme(t) {
  * ★ 这两处必须永远一致（用户要求「同步」）⇒ 推送 / 重绘 / 清空 三件事都只走下面这几个函数。
  *   别在别处直接碰 #log 或 #logPaneLines —— 那样迟早变成「一边更新、一边不更新」。
  * ★ 筛选只作用于「运行日志」页，底部日志栏永远是全量（它就是「刚才发生了什么」）。
+ *
+ * ★★ 2026-10-05 用户口径：「运行日志太细了…给用户没必要，就给大结论」。
+ *   日志条目分两级（主进程 logbus 打的 `tier`）：
+ *     tier === 'detail' → **过程明细**（每步耗时 / 坐标 / 屏幕守卫 / 清相册 / 抽帧…）
+ *     其余（没有 tier）  → **大结论**（任务开始 / 结束 / 结果【目标/成功/失败】/ 真出错的告警）
+ *   明细**不进界面**：底部日志栏与「运行日志」页都只画大结论（见 uiLogs()）。
+ *   但 `state.logs` 里**原样留着**明细 —— 任务行「查看详情」还得靠它按批次逐条回看，
+ *   `run-log.jsonl` 台账也一条不少。⇒ 「用户看着干净」与「事后查得清」两件事都要。
  */
 const LOG_KEEP = 500;      // 内存里留多少条：与主进程 logbus 的环形缓冲 MAX 对齐
 const LOG_BAR_MAX = 300;   // 底部日志栏最多渲染多少行（DOM 行数多了会拖慢整页重排）
@@ -117,15 +125,19 @@ function logCls(level) { return LOG_LEVEL_CLS[level] || 'inf'; }
 function logLineHtml(e) {
   return `<span class="t">${hhmm(e.t)}</span><span class="${logCls(e.level)}">${esc(e.msg)}</span>`;
 }
+/** 过程明细：不进底部日志栏 / 运行日志页，只在「查看详情」和台账里出现 */
+function isDetailLog(e) { return !!(e && e.tier === 'detail'); }
+/** 面向用户的日志（大结论）：底部日志栏、运行日志页、导出、条数统计，一律以它为准 */
+function uiLogs() { return (state.logs || []).filter(e => !isDetailLog(e)); }
 function logFilterOn() {
   const f = state.logFilter || {};
   return !!(f.level || String(f.q || '').trim());
 }
-/** 当前筛选下该出现在「运行日志」页里的那些（无筛选 = 全部） */
+/** 当前筛选下该出现在「运行日志」页里的那些（无筛选 = 全部大结论） */
 function filteredLogs() {
   const f = state.logFilter || { level: '', q: '' };
   const q = String(f.q || '').trim().toLowerCase();
-  return (state.logs || []).filter(e => {
+  return uiLogs().filter(e => {
     if (f.level && e.level !== f.level) return false;
     if (q && !String(e.msg || '').toLowerCase().includes(q)) return false;
     return true;
@@ -134,11 +146,12 @@ function filteredLogs() {
 /** 命中条数文案。★ 筛选时两个数都要写出来 —— 只写「3 条」会让人以为日志丢了 */
 function logCountText() {
   const hit = filteredLogs().length;
-  const total = (state.logs || []).length;
+  const total = uiLogs().length;
   return logFilterOn() ? `显示 ${hit} / 共 ${total} 条` : `共 ${total} 条`;
 }
 /** 一条日志追加到「运行日志」页（只在该页开着时才动 DOM，且要过一遍当前筛选） */
 function appendToLogPane(e) {
+  if (isDetailLog(e)) return;
   const box = $('#logPaneLines');
   if (!box) return;
   const f = state.logFilter || { level: '', q: '' };
@@ -156,7 +169,8 @@ function appendToLogPane(e) {
 function pushLog(e) {
   state.logs.push(e);
   if (state.logs.length > LOG_KEEP) state.logs.shift();
-  const box = $('#log');
+  // ★ 明细只进 state.logs（供「查看详情」/台账），不往底部日志栏画
+  const box = isDetailLog(e) ? null : $('#log');
   if (box) {
     const div = document.createElement('div');
     div.innerHTML = logLineHtml(e);
@@ -171,7 +185,7 @@ function renderLogs() {
   const box = $('#log');
   if (box) {
     box.innerHTML = '';
-    state.logs.slice(-LOG_BAR_MAX).forEach(e => {
+    uiLogs().slice(-LOG_BAR_MAX).forEach(e => {
       const div = document.createElement('div');
       div.innerHTML = logLineHtml(e);
       box.appendChild(div);
@@ -198,27 +212,29 @@ function clearLogs() {
   renderLogPaneLines();
   updateLogBadge();
 }
-/** 侧栏「运行日志」的角标：有错误先报错误数（那才是要去看的信号），否则给总条数 */
+/** 条数：只更新底部日志栏右上角那个 chip（★ 2026-10-05 用户：左侧「运行日志」模块上不要显示条数
+ *  —— 侧栏那个角标（`[data-st="10"]`）已整个去掉，连元素都没了）。
+ *  口径与「运行日志」页里那个 chip 一致：同一个 state.logs 缓冲区（上限 500），**都只数大结论**
+ *  （明细不算进去，否则用户会看到「共 3 条」而屏幕上只有 1 行）。 */
 function updateLogBadge() {
-  const total = (state.logs || []).length;
-  const errs = (state.logs || []).filter(e => e.level === 'error').length;
-  const el = document.querySelector('[data-st="10"]');
-  if (el) {
-    el.textContent = total ? (errs ? `${errs} 错` : `${total} 条`) : '—';
-    el.className = 'st' + (total ? (errs ? ' warn' : ' ok') : '');
-  }
-  // ★ 底部日志栏右上角也要有条数（2026-10-03 用户：「运行日志模块右边不显示有多少条」）。
-  //   口径必须与页里那个 chip 一致（同一个 state.logs，上限 500）—— 底部日志栏**不跟筛选**走，
-  //   它永远是「全量刚才发生了什么」，所以这里写的是总数而不是命中数。
+  const total = uiLogs().length;
+  const errs = uiLogs().filter(e => e.level === 'error').length;
   const bar = $('#logBarCount');
   if (bar) {
     bar.textContent = total ? `共 ${total} 条${errs ? ` · ${errs} 错` : ''}` : '还没有日志';
     bar.className = 'chip' + (errs ? ' warn' : '');
   }
 }
-/** 需要导出给主进程的那些：**当前筛选下来的**，外加上下文（筛选条件 + 缓冲区总数） */
+/** 需要导出给主进程的那些：**当前筛选下来的**，外加上下文（筛选条件 + 缓冲区总数 + 明细条数） */
 function logExportPayload() {
-  return { entries: filteredLogs(), filter: { level: state.logFilter.level, q: state.logFilter.q }, bufferTotal: (state.logs || []).length };
+  const ui = uiLogs();
+  return {
+    entries: filteredLogs(),
+    filter: { level: state.logFilter.level, q: state.logFilter.q },
+    bufferTotal: ui.length,
+    // ★ 明细也要报个数：界面上看不见它们，导出文件里得说清「还有 N 条流水在 run-log.jsonl」
+    bufferDetail: Math.max(0, (state.logs || []).length - ui.length)
+  };
 }
 
 /* ---------------- 任务（实例化：同一时间可以有多个批次在跑） ---------------- */
@@ -1636,8 +1652,8 @@ function logPaneHtml() {
   const f = state.logFilter || { level: '', q: '' };
   const opts = [['', '全部级别'], ['info', '信息'], ['ok', '成功'], ['warn', '警告'], ['error', '错误']]
     .map(([v, t]) => `<option value="${v}"${f.level === v ? ' selected' : ''}>${t}</option>`).join('');
-  const errs = (state.logs || []).filter(e => e.level === 'error').length;
-  const warns = (state.logs || []).filter(e => e.level === 'warn').length;
+  const errs = uiLogs().filter(e => e.level === 'error').length;
+  const warns = uiLogs().filter(e => e.level === 'warn').length;
   const ex = state.logExport;
   return `
   <div class="box">
@@ -1649,12 +1665,15 @@ function logPaneHtml() {
       ${warns ? `<span class="chip">${warns} 条警告</span>` : ''}
     </div>
     <p class="hint" style="margin:6px 0 0">与最下面的日志栏是同一份内容；这里筛完了再导出，导出的就是屏幕上这些。
-      条数是<b>内存缓冲区里的</b>（上限 500 条），不是磁盘上历史日志的总数。</p>
+      条数是<b>内存缓冲区里的</b>（上限 500 条），不是磁盘上历史日志的总数。
+      ★ 只有「大结论」进这里（任务开始 / 结束 / 结果【目标·成功·失败】与真出错的告警）；
+      每步耗时、坐标、清相册这类<b>过程明细</b>不在界面上刷，但一条不少地记在输出目录的
+      <code>run-log.jsonl</code> 台账里，任务行的「查看详情」也能按批次回看。</p>
     <div class="row" style="margin-top:9px">
       <select class="inp" id="logLv">${opts}</select>
       <input class="inp" id="logQ" style="flex:1;min-width:180px" placeholder="按关键字筛（标题 / 批次 / 文件路径…）" value="${esc(f.q)}" spellcheck="false">
-      <button class="btn sm" data-act="log:clear"${(state.logs || []).length ? '' : ' disabled'}>清空日志</button>
-      <button class="btn sm primary" data-act="log:export"${(state.logs || []).length ? '' : ' disabled'}>导出日志</button>
+      <button class="btn sm" data-act="log:clear"${uiLogs().length ? '' : ' disabled'}>清空日志</button>
+      <button class="btn sm primary" data-act="log:export"${uiLogs().length ? '' : ' disabled'}>导出日志</button>
     </div>
   </div>
   <div class="box">
@@ -1683,8 +1702,8 @@ TABS[10] = {
   title: '运行日志',
   desc: '与底部日志栏同一份内容 · 可按级别/关键字筛 · 可导出成 .log 与 .jsonl',
   actions: () => [
-    { act: 'log:clear', label: '清空', disabled: !(state.logs || []).length },
-    { act: 'log:export', label: '导出日志', primary: true, disabled: !(state.logs || []).length }
+    { act: 'log:clear', label: '清空', disabled: !uiLogs().length },
+    { act: 'log:export', label: '导出日志', primary: true, disabled: !uiLogs().length }
   ],
   render() {
     return logPaneHtml();
@@ -2700,7 +2719,9 @@ const ACTS = {
   // ★ 清空走统一的 clearLogs()：底部日志栏与页面必须一起清。
   //   说清「清的是什么」—— 主进程那份还在，重新登录会再拉回来；不写清就会被当成"清了个假的"。
   'log:clear': () => {
-    const before = (state.logs || []).length;
+    // ★ 报「清了多少条」要按**界面上看的那些**（大结论）算：明细本来就不在界面上，
+    //   把它算进去会报出一个用户从没见过的数字（屏幕上 12 行、提示「已清空 300 条」）。
+    const before = uiLogs().length;
     clearLogs();
     toast(before
       ? `已清空 ${before} 条运行日志（清的是界面这份缓存；主进程还留着最近 500 条，重新登录会再拉回来）`

@@ -1047,6 +1047,10 @@ async function runMock(row, ctx) {
 
 async function run(state, ctx = {}) {
   const log = ctx.log || (() => {});
+  // ★ 2026-10-05 用户口径「给用户只看大结论」：`log`（= ctx.log）现在一律是**过程明细**，
+  //   界面不显示；只有 `conclude`（= ctx.conclude）那几句会出现在用户眼前。
+  //   这里准备一个兜底：工具/干跑脚本传进来的 ctx 没有 conclude 时，退回 log（老行为，别抛）。
+  const conclude = ctx.conclude || log;
   // ★ 2026-10-03 提速：批次内共享「哪一步这一屏不会 idle」的缓存（见 runStep 的 wantAnimOff）。
   //   只在这一次发布里有效，不落盘 —— 下次发布会重新学一遍（设备/App 版本变了也自然失效）。
   if (!ctx.animOffSteps) ctx.animOffSteps = {};
@@ -1092,9 +1096,9 @@ async function run(state, ctx = {}) {
   const actor = ctx.actor || {};
   const tAll = Date.now();   // 批量总耗时（真机日志：批量发布完成，总耗时 86.6s）
 
-  log(`本次归属：品牌「${who.brandName || '未标品牌'}」${actor.username ? ' · 执行人 ' + (actor.displayName || actor.username) : ''}`,
+  conclude(`本次归属：品牌「${who.brandName || '未标品牌'}」${actor.username ? ' · 执行人 ' + (actor.displayName || actor.username) : ''}`,
     who.brandId ? 'info' : 'warn');
-  if (!who.brandId) log('这条批次没有品牌归属：发布日志里会记成「未标品牌」，统计时单独列出（不会并进任何品牌）', 'warn');
+  if (!who.brandId) conclude('这条批次没有品牌归属：发布日志里会记成「未标品牌」，统计时单独列出（不会并进任何品牌）', 'warn');
 
   const todo = rows.filter(r => r.result !== '发布成功');
   // 预估要按图文/视频分开算：视频单条更慢（推得久 + 还要等媒体库索引），混着算会明显偏短
@@ -1105,8 +1109,8 @@ async function run(state, ctx = {}) {
   }, { image: 0, video: 0 });
   const est = estimate(todo.length, estKinds);
   const mix = estKinds.video ? `（图文 ${estKinds.image} · 视频 ${estKinds.video}）` : '';
-  log(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条${mix}，预计 ${est.minutes} 分钟`, mode === 'adb' ? 'ok' : 'warn');
-  if (mode === 'mock') log('模拟通道不接触设备，只演练节奏/回写；要真发请先「连接模拟器」并点「检查能不能发布」通过', 'warn');
+  conclude(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条${mix}，预计 ${est.minutes} 分钟`, mode === 'adb' ? 'ok' : 'warn');
+  if (mode === 'mock') conclude('模拟通道不接触设备，只演练节奏/回写；要真发请先「连接模拟器」并点「检查能不能发布」通过', 'warn');
   log('发布期间不占用发布单文件，结果先写 publish-log.jsonl', 'info');
 
   const copyById = new Map((state.copyRows || []).map(r => [r.id, r]));
