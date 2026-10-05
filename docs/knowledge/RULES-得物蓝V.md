@@ -4256,3 +4256,38 @@ WorkBuddy 侧活文档（本文件 / 工作区 `MEMORY.md` / `~/.workbuddy/skill
 - ★ 照搬 `config.json` 后**务必检查 `publish.mock`**：原机当前是 **`true`**（干跑）——
   不注意会以为在真发。
 - 推送：gitee SSH key 可拷（敏感）或新机 `ssh-keygen` 新生成并把公钥加进 gitee；设好 `git config user.name/email`。
+
+## §CC 2026-10-05：**`config.json` 怎么搬** —— 新工具 `tools/config-portable.js`
+
+**问题（先有依据再动手）**：`config.json` 是**三类东西混在一个文件里**：
+① 可搬运的业务配置（`publish.uiMap`＝真机定位表 38+41 步、`brands[]`、`copy.pool/hotwords`、各阈值）；
+② 机器专属（`paths.*` 绝对路径、`publish.adbPath/ffmpegPath`、`cloud.machineId/machineName`、`window.*`）；
+③ 明文密钥（`copy.llm.apiKey` 35 字符、`verify.api.apiKey`）。
+整份照拷必踩两坑：路径**静默失效**、两机共用一个 `machineId`。
+★ 界面那个「导出配置 / 导入配置」**只管云端协作三个字段**（`cloud.url/anonKey/org`，见
+`src/main/services/cloudsync.js`）——**不含**密钥、品牌、话题池，**更不含 `uiMap`**。⇒ 必须自己有工具。
+
+**工具**：`tools/config-portable.js`，四个子命令
+`inspect`（只读看现状）/ `export`（默认抹密钥，`--with-secrets` `--with-project` 可加）/
+`import`（**默认只预演**，`--yes` 才真写且先备份 `config.json.bak-before-portable-<时间戳>`）/ `selftest`（33 条往返自测，临时目录，不碰真配置）。
+★ **故意不进 `run-all.js` 的 `SUITES`**（那张表是硬编码数组）⇒ 17 套 1622 项的基线不动；与 `fixuimap/verifypack/upload-release` 同类，属维护工具。
+★ 导入侧**不会**把本机已有的密钥抹空（包里标为 redacted 的路径，本机有值就保留本机值）。
+★ `cloud.anonKey` **不算**密钥（公开设计，靠 RLS 收口）⇒ 密钥正则不许写裸 `key`。
+
+**实测数字（真机）**：源 `config.json` 43 KB → 搬运包 45 KB；`apiKey`（35 字符）在包**全文搜不到**；
+`cloud.machineId` = `""`、`paths` 三项 = `""`、`window.bounds` = `null`；`uiMap` **38 图文 / 41 视频**原样；
+逐键比对 **71 键一致 / 4 条差异**（那 4 条全是 `window.bounds.{x,y,width,height}` 随父置 null 消失，属预期的 9 项置空之一）；
+**预演导入前后 `config.json` md5 一致**（真没写盘）。
+
+**首跑就红了一条（这是断言在查东西的正据，别删）**：`parentOf(o, p)` 对**顶层键**（`sourceDir`/`flatDir`）
+返回 `undefined` ⇒ 被当成「父不存在」整条跳过 ⇒ 这两个键**没被置空**。
+修法：`ks.length === 1` 时直接返回根对象本身。**教训**：路径工具函数一定要有「顶层键」的用例。
+
+**另有四份文件不该照搬**：`cloud-sync.json`（**上行游标** `offset/uploaded`，照搬会漏推一截 ⇒ 删掉让它重建）、
+`.updaterId`（更新器设备标识，新机自生成）、`pool.json`（商品池缓存，原机根本没有）、`auth.json`（见下）。
+
+**`auth.json` 两种带法**：① 要保留账号与品牌权限 ⇒ 搬文件（含 scrypt 哈希，解不出明文**但能直接登录**）；
+② 只想保住管理员口令 ⇒ 新机放 `auth.seed.json`（`{username,password}`，**首次启动读走后立即删除**，
+见 `src/main/auth.js` 的 `seedFrom()`；环境变量 `BLUEV_ADMIN_USER/PASS` 优先级更高）。
+两者都没有 ⇒ 建出厂账号 `admin / BlueV@2026` 并提示改口令。
+
