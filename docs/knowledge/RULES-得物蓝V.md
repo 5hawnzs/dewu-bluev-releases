@@ -4291,3 +4291,13 @@ WorkBuddy 侧活文档（本文件 / 工作区 `MEMORY.md` / `~/.workbuddy/skill
 见 `src/main/auth.js` 的 `seedFrom()`；环境变量 `BLUEV_ADMIN_USER/PASS` 优先级更高）。
 两者都没有 ⇒ 建出厂账号 `admin / BlueV@2026` 并提示改口令。
 
+**★ 顺带查出的两条事实（原机 `auth.json` 实测）**：
+① 里面 `remember` **有值** ⇒ 照搬 `auth.json` 等于把**已登录态**（7 天免密）一起搬过去 ——
+   这是它比「一串哈希」更该按密钥对待的原因。
+② `admin.mustChange === true`，而 `auth.js` 里**只有 `changePassword()` 会置 false**
+   ⇒ **原机管理员口令至今仍是出厂值 `BlueV@2026`**（`testbeta` 是普通成员、`mustChange=false`）。
+   含义：换机**不搬账号文件也能用默认账号登进去**（`auth.json` 其实是可选的）；
+   同时这是一条**该修的风险**（出厂口令公开，建议在「品牌与权限 → 账号与安全」改掉）。
+   两个账号的**品牌权限都是 0 个**（`admin` 是管理员不看这个字段）。
+
+

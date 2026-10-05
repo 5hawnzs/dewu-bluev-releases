@@ -90,7 +90,7 @@
 | --- | --- |
 | `docs/HANDOFF-CODEX.md` | **一页纸交接单**：git 里已有什么、git 外还缺什么（环境 / 凭据 / 设备）、当前状态快照、验收标准、已知遗留。**接手前先看这一份** |
 | `docs/HANDOFF-NEW-MACHINE.md` | **换机方案**：目标机系统前提、通道总表（什么走 git、什么只能单独搬）、三份敏感文件（`config.json` / `auth.json` / `.env`）、新机必做的两处重置（`cloud.machineId` 与绝对路径）、设备侧、验收清单。**换机器跑就照这份走** |
-| `docs/knowledge/` | **知识库**。原本全在仓库之外（WorkBuddy 私有目录），clone 拿不到 ⇒ 已收进仓库：`RULES-得物蓝V.md` 项目规则全文（`§A`~`§CA`，4159 行 + 实测数字）、`MEMORY-INDEX.md` 38 条索引、`RULES-通用.md` 跨项目规范、`skills/` 28 个技能、`docs/` 90 份历史文档、`archive/worklog/` 6 份工作日志、`deployed-sites/` 站点源码。**索引见 `docs/knowledge/README.md`，按需查、别整读** |
+| `docs/knowledge/` | **知识库**。原本全在仓库之外（WorkBuddy 私有目录），clone 拿不到 ⇒ 已收进仓库：`RULES-得物蓝V.md` 项目规则全文（`§A`~`§CC`，4300+ 行 + 实测数字）、`MEMORY-INDEX.md` 索引、`RULES-通用.md` 跨项目规范、`skills/` 29 个技能、`docs/` 90 份历史文档、`archive/worklog/` 6 份工作日志、`deployed-sites/` 站点源码。**索引见 `docs/knowledge/README.md`，按需查、别整读** |
 
 > ★ 换机搬配置**不要整份拷 `config.json`**：用 `node tools/config-portable.js`
 > （`inspect` / `export` / `import` / `selftest`）—— 它会把绝对路径与 `cloud.machineId` **显式置空**、

@@ -33,7 +33,7 @@
 接手 D:\work\dewu-bluev-publisher（Electron / Windows 素材发布工具，当前 v1.0.15）。
 
 第一步按顺序读：AGENTS.md → docs/HANDOFF.md §0/§2/§3/§6 → docs/HANDOFF-CODEX.md。
-知识库在 docs/knowledge/（规则全文 RULES-得物蓝V.md 4293 行、跨项目规范 RULES-通用.md、
+知识库在 docs/knowledge/（规则全文 RULES-得物蓝V.md 4300+ 行、跨项目规范 RULES-通用.md、
 29 个技能、90 份历史文档、6 份工作日志）—— 按 docs/knowledge/README.md 的索引查，别整读。
 
 四条硬约束：
@@ -97,7 +97,7 @@
 | --- | --- |
 | 远端 / 分支 | `git@gitee.com:abulaitifans/dewu-bluev-publisher.git` / `main` |
 | HEAD | **现查** `git log -1 --format=%H`（本文件不钉哈希，钉了就必然过期） |
-| 提交总数 | 编制时 `git rev-list --count HEAD` = **101** |
+| 提交总数 | 编制时 `git rev-list --count HEAD` = **102** |
 | 工作树 | 干净（`git status --short` 无输出） |
 | 版本号 | `package.json` = **1.0.15** |
 | 回归 | **17 套 1622 项全绿**（2026-10-05 18:3x 实测；`adbtest` 单套就要 3 分钟以上，别用 90s 超时去卡它） |

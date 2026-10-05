@@ -115,6 +115,12 @@ node tools/config-portable.js import D:\config-portable.json --yes
 
 1. **要保留账户与品牌权限 ⇒ 搬文件**（含 scrypt 哈希，解不出明文**但能直接登录** ⇒ 按密钥对待）。
    适合还要保留 `testbeta` 测试账号、以及各账号的品牌权限分配。
+   ★★ 再多看一眼：`auth.json` 里那个 **`remember` 字段**（「记住登录」的会话）**也会被一起搬过去**
+   —— 照搬等于把「已登录态」带过去，这是它比「一串哈希」更该按密钥对待的原因。
+   ★ 实测事实（原机）：`admin` 账号的 `mustChange` 仍是 `true`，而源码 `src/main/auth.js` 里
+   **只有改过口令才会把它置 `false`** ⇒ **这台机器的管理员口令至今还是出厂值 `BlueV@2026`**。
+   两个含义：① 换机其实**不搬 `auth.json` 也能用默认账号登进去**；
+   ② 这是一条该修的风险 —— 出厂口令谁都知道，建议在「品牌与权限 → 账号与安全」改掉。
 2. **只想保住管理员口令 ⇒ 放种子文件**（更安全，明文不留盘）。
    在新机 `%APPDATA%\dewu-bluev-publisher\` 放一个 `auth.seed.json`：
 
