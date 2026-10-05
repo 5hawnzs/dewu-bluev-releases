@@ -406,3 +406,31 @@
   `install-manifest.json` 的 `appVersion` 与 `cli/product.json` 的 `genieVersion` 都是 **`5.5.6`**
   （`date: 2026-09-10`）。更新服务按 `productVersion` 比较，于是**永远认为需要更新**。
 
+
+## §交接给别的代理 / 换机：先分类「git 内 / 外」（2026-10-05 实测）
+
+用户问「要让 Codex 接你的班，我得给他什么？」—— 正确回答的骨架**不是「给他源码」**，而是先**分类**：
+
+| 类别 | 结论 |
+| --- | --- |
+| **git 里全都有** | clone 完就能开工：源码 + 测试 + 入口文档 + 知识库 |
+| **git 外，但本机已就位** | ★ 最常见答案：**同机运行 = 只缺一次 `npm install`**（凭据文件已 gitignore、设备/模拟器/SDK 本机已有、SSH key 已有） |
+| **git 外，二进制/原件** | 已发布产物、归档、大 zip、取证件 ⇒ 按需索取，**故意不进 git** |
+
+★★ **知识资产默认在仓库之外、clone 拿不到**：项目规则全文 / 记忆索引 / 技能 / 历史文档 / 工作日志，
+都在客户端私有目录（`<工作区>/.workbuddy/memory/`、`~/.workbuddy/skills/`）⇒ 必须**收进仓库**（如 `docs/knowledge/`），
+否则交接时「等于不存在」。
+★★ **入库前必做三道检查**：① 确认该目录**不在构建白名单**（读 `package.json` 的 `build.files`）——
+否则内部规则会随安装包**外发给终端用户**；② 扫凭据字面量（`eyJ…` / `AKID…` / `sb_secret_` / `sk-…`），
+命中的**解 JWT 载荷看 `role`** 再逐条判死（`anon` 且本就随公开前端发布过 ⇒ 可接受；`service_role` ⇒ 停手），别一把删；
+③ 剔 `__pycache__` / `*.bak`（★ `find -prune -exec rm -rf` **实测没删掉**，直接 `rm -rf <路径>` 才干净）。
+★★ **入口写进「那个工具会自动读的文件」**：Codex = 仓库根 **`AGENTS.md`**；Claude Code = `CLAUDE.md`。
+入口**只放祈使句 + 指针**（它每轮都进上下文，塞长了会被截断），详细内容放知识库并注明「按需查、别整读」。
+★★ **知识库是快照、会过期**：客户端活文档一改，仓库里的那份就错了，接手方会按**旧规则**干活 ⇒
+顶部写明「快照 + 导出时间 + 活文档路径」，并留一条「改完活文档要重新导出」的规则 + 导出脚本路径。
+★ 必须写进交接单的一项：**「已知遗留（明知未修）」** —— 不写，接手方会把老问题当新 bug 重查一遍。
+★ 推送取证只认 `git ls-remote origin refs/heads/main` == `git rev-parse HEAD`；
+`git commit -F` 的路径要给 **Windows 形式**（`E:/…`；Git Bash 的 `/e/…` 会被 git 报 `could not read log file`）。
+
+⇒ 完整可复用流程、脚本模式与坑速查表见技能 `repo-handoff-to-external-agent`。
+

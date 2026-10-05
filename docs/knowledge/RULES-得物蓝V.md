@@ -4157,3 +4157,102 @@ git log -p --format=$'\x01%h\t%ad\t%s' --date=short -- package.json
 `#bmFilter` 输入框**已从品牌弹窗删掉** ⇒ `val()` 恒返回 `''`；主进程 `brands.add` 显式挑字段 ⇒ 不会存进品牌对象
 （`brandtest` ⑨ 实测通过）。属「删功能没连读取链一起删」的残留。**当时没动它**：动它要重打包 + 重跑回归，
 会让**已经验完的包作废** —— 「已经验完的产物」与「顺手清洁一行」冲突时，选前者，把清洁留到下一版。
+
+---
+
+## §CB 交接给外部编码代理（Codex / Claude CLI 等）：知识库已收进仓库
+
+**2026-10-05 建立**，commit `5c96db8` 已推 gitee（`5c96db8` 与 `git ls-remote` 一致、工作树干净、tracked 252）。
+
+### 一、交接前先分类：git 里有什么 / 缺什么
+
+| 类别 | 内容 | 结论 |
+| --- | --- | --- |
+| **git 里全都有** | 源码、17 套回归、`AGENTS.md`（Codex 自动读）、`docs/HANDOFF.md`、**新增 `docs/knowledge/`**（150 文件 / 3.7 MB：规则全文 + 28 技能 + 90 份文档 + 6 份日志 + 站点源码） | clone 完就能开工 |
+| **git 外但本机已就位** | 发版凭据 `仓库根\.env`（518 B，已 gitignore）、MuMu 12（`D:\MUMU\MuMuPlayer\nx_main`）、真机得物 App、推 gitee 的 SSH key、`node_modules` | **同机运行 = 不用转移**；换机才要另给 |
+| **git 外，二进制/原件** | `dist\`、`D:\work\_dist-archive\`、插件中心 `dl\`（109 MB）、411 个取证件与截图 | 按需索取，**故意不进 git** |
+
+⇒ 一句话：让 Codex 在**这台机器上、这个仓库里**干活，它缺的只有 `node_modules`（`npm install`）。
+
+### 二、★★ 知识库是「快照」，会过期
+
+WorkBuddy 侧活文档（本文件 / 工作区 `MEMORY.md` / `~/.workbuddy/skills/`）**还在继续长**；
+`docs/knowledge/` 是 2026-10-05 的导出快照。**那边更新后必须重新导出**，否则 Codex 拿旧规则干活。
+导出脚本：`E:\WORKBUDDY\2026-09-30-17-35-35\_build-knowledge-pack.sh`（幂等，可重跑；跑完 `git add docs/knowledge` 再提交）。
+
+### 三、★★ 把内部文档塞进仓库前的三道检查（缺一条都可能出事）
+
+1. **确认它不进安装包**：读 `package.json` 的 `build.files` —— 本案是 `["src/**/*","package.json",…]`
+   ⇒ `docs/**` 不进包。若换成通配 `**/*`，内部规则会随 exe 外发。
+2. **扫凭据字面量**：`eyJ[A-Za-z0-9_-]{30,}` / `AKID[A-Za-z0-9]{12,}` / `sb_secret_` / `sk-[A-Za-z0-9]{24,}` /
+   `postgres://user:pass@` / `-----BEGIN … PRIVATE KEY`。
+   本案实测命中 3 处，逐条判死：COS 指引里的 `AKIDxxxxxxxx…` 是**待用户填的占位符**；
+   `pluginhub-site/dashboard*.html` 里的 Supabase key **解 JWT 载荷得 `{"role":"anon"}`**
+   ⇒ 随公开看板发布过的公开端凭据，**非 `service_role`**（红线是 service_role/secret 进前端，没破）。
+3. **剔垃圾**：`__pycache__` / `*.pyc` / `*.bak*`。
+   ★ 坑：`find -type d -name X -prune -exec rm -rf {} +` **没删掉**（顺序不对）；改用直接 `rm -rf <path>` 才干净。
+
+### 四、踩坑记录
+
+- ★ **`git commit -F` 的路径必须给 Windows 形式**（`E:/WORKBUDDY/…`）。
+  Git Bash 的 `/e/WORKBUDDY/…` 会让 git 报 `could not read log file … No such file or directory`（git 是 Windows 程序，不认 MSYS 路径）。
+- ★ `git add` 前先 `git config core.quotepath false`，否则中文文件名在 `--name-only` 里显示成八进制转义、看不清都加了什么。
+- ★ 入库时 git 会刷一屏 `LF will be replaced by CRLF` 警告（本仓库 `core.autocrlf=true`）—— **属正常**，
+  用 `git show HEAD:<path> | wc -l` 对行数自证即可（实测 `RULES-得物蓝V.md` 库内 4159 行 == 源文件 4159 行）。
+
+### 五、当前交接状态（2026-10-05 18:0x）
+
+远端 `git@gitee.com:abulaitifans/dewu-bluev-publisher.git` · 分支 `main` · HEAD `5c96db8` · 提交 96+1=97 条 ·
+版本 1.0.15 · 回归 17 套 **1622 项**全绿 · 公网通道 1.0.15 · 本机已装副本仍 1.0.13（按 SOP 不换 asar）·
+`README.md` 套件表数字停在 **1005（10-03）已过时** ⇒ 每次实测重取。
+入口：`docs/HANDOFF-CODEX.md`（一页纸）+ `docs/knowledge/README.md`（索引）。
+
+---
+
+## §CB-2 换机方案（跨机器交接）—— 2026-10-05 实测
+
+**同机 vs 换机，差别只有一句**：同机 = 只缺一次 `npm install`；
+**换机 = 多出一件「搬钥匙」的活，而钥匙不能走 git**。完整 runbook：`docs/HANDOFF-NEW-MACHINE.md`（commit `955754c`）。
+
+### 一、通道分类（换机时照这张表走）
+
+| 东西 | 通道 |
+| --- | --- |
+| 源码 / 17 套回归 / `docs/` / `docs/knowledge/` / `AGENTS.md` | `git clone` |
+| `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` | **`git clone`（二进制本来就在 git 里，不用另拷）** |
+| `config.json`（**含真实模型密钥 + 真机 UI 定位表**）、`auth.json`（账号口令哈希）、`.env`（COS SecretKey）、`~/.ssh` 私钥 | **只能单独搬**（加密/U盘），**绝不许走 git** |
+| 模拟器 + 得物 App + 登录态 | 新机自装 |
+| `dist\`、`_dist-archive\`、插件中心 `dl\`、411 个取证件 | 按需，二进制，故意不进 git |
+
+### 二、★★ 本机实测：换机必须知道的六件事
+
+1. **`config.json`（`%APPDATA%\dewu-bluev-publisher\`）里有真密钥**：`copy.llm.apiKey` = **35 字符**（模型密钥）；
+   `publish.uiMap.*` = **真机实测的 UI 定位表**，**`src/` 里没有内置默认值** ⇒ 不搬就要重抓（最贵的一步）。
+   它同时含 `paths.*` / `publish.device` / 主题。⇒ 搬 `config.json` **等于搬密钥**，按密钥保护。
+2. **★★ 没有「整份配置导出」这个功能**：界面上的「导出配置 / 导入配置」**只针对云端协作**
+   （`cloudsync.exportConfig()` 只返回 `url` / `anonKey` / `org`），**不含模型密钥、不含 UI 定位表**。
+   ⇒ 所以 `config.json` 只能「搬文件」或「新机重填」，没有第三条路。
+3. **★★ `cloud.machineId` 是「有就复用、没有才生成」**（`cloudsync.machineOf()`：
+   `let id = String(cfg.machineId||''); if(!id){ id='m_'+randomUUID().slice(0,8); store.set(...) }`）。
+   原机是 `m_fb6e1a86` ⇒ **照搬 config.json 会让两台机器共用一个 machineId**，云端看板把两台当一台。
+   ⇒ 新机把 `cloud.machineId` 置 `""`，App 下次启动自生成。（`machineName` 留空时取 `os.hostname()`。）
+4. **`paths.*` 是绝对路径**（原机 `C:\Users\Administrator\素材` / `...\输出\得物` / `...\素材\_rejected`），
+   换用户名/盘符全失效且**不会报错**。
+   ★ 且**原机 `paths.source` 指向的目录现在已经不存在**（`C:\Users\Administrator\素材` 已没有）
+   ⇒ 「沿用原值」本来也没意义，新机务必重选。
+5. **台账在 `paths.output`，不在 userData**：`publish-log.jsonl`（88 KB，发布台账）、
+   `run-log.jsonl`（717 KB，界面「运行日志」读它）、`pending-results.json`（被占用时暂存、恢复后补写）、
+   `发布单_*.xlsx`、`batches/` `dumps/` `failures/`。⇒ 要留历史就整个带 `输出\得物`。
+6. **`auth.json` 是 `{version, users, remember, usingDefault, updatedAt}`**；
+   原机 users = `admin`（管理员，★ `mustChange: true` ⇒ 还是出厂口令没改）+ `testbeta`（普通成员）。
+   口令是 salt+hash（128 字符），**解不出明文但可直接登录** ⇒ 按密钥保护。
+
+### 三、其它前提
+
+- **要跑发布链路，目标机必须是 Windows x64**：`vendor/adb/adb.exe`、`vendor/ffmpeg/ffmpeg.exe` 都是 Windows 二进制；
+  产品只打 `--win --x64` NSIS。**只改代码**才可在 mac/Linux 跑，但要换 vendor 两个平台件 + `@img/sharp-*`
+  （注意 `npm run addon:win` 是**强制取 Windows 版**，在 mac 上会把 mac 版顶掉）。
+- 工程建议放**同一个绝对路径** `D:\work\dewu-bluev-publisher`（省掉一整类「扫不到素材」的怪问题）。
+- ★ 照搬 `config.json` 后**务必检查 `publish.mock`**：原机当前是 **`true`**（干跑）——
+  不注意会以为在真发。
+- 推送：gitee SSH key 可拷（敏感）或新机 `ssh-keygen` 新生成并把公钥加进 gitee；设好 `git config user.name/email`。
