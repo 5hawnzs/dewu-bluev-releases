@@ -125,6 +125,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+/* ★★ 退出前必须**同步**落盘（2026-10-08 用户要求：「记住最后一次选的皮肤，下次打开默认还是它」）。
+ *
+ * 原来这里写的是 `store.set({})` —— 那是**假兜底**：store.set 内部只是
+ * scheduleSave() 再排一个 **250ms 防抖定时器**，而进程退出根本等不到它。
+ * 实测：点顶栏「玻璃」图标后 **60ms** 关窗口，磁盘上 `ui.theme` 仍是旧值 `'light'`
+ * ⇒ 用户会以为「皮肤选了没记住」。⇒ 改成 store.flush()：取消定时器并当场 writeFileSync。
+ * （顺带把窗口尺寸、品牌选择等所有 250ms 内的改动一起救回来。）
+ */
 app.on('before-quit', () => {
-  try { store.set({}); } catch (e) { /* ignore */ }
+  try { store.flush(); } catch (e) { /* ignore */ }
 });

@@ -248,17 +248,39 @@ function set(patch) {
   return cache;
 }
 
-function scheduleSave() {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    try {
-      fs.mkdirSync(path.dirname(file()), { recursive: true });
-      const tmp = file() + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
-      fs.renameSync(tmp, file());
-    } catch (e) { /* 只读盘等场景静默降级 */ }
-  }, 250);
+/** 同步把 cache 写盘。只被 scheduleSave 的定时器、和退出时的 flush() 调。 */
+function writeNow() {
+  if (!cache) return;                 // 从没 load 过 ⇒ 没有可写的东西（别凭空造一份默认配置）
+  try {
+    fs.mkdirSync(path.dirname(file()), { recursive: true });
+    const tmp = file() + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
+    fs.renameSync(tmp, file());
+  } catch (e) { /* 只读盘等场景静默降级 */ }
 }
 
-module.exports = { get, set, load, defaults, file, migrateLegacyPublishIntervals, takeMigrations };
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; writeNow(); }, 250);
+}
+
+/**
+ * ★★ 立刻同步落盘 —— **退出路径专用**（`src/main/index.js` 的 before-quit 调它）。
+ *
+ * 为什么非要有这个函数：scheduleSave 是 **250ms 防抖**，而 Electron 退出**不会等这个定时器**
+ * ⇒ 用户在 250ms 内关掉窗口，这次改动**永久丢失**。
+ *
+ * 实测（2026-10-08，真 app + 临时 userData）：点顶栏「玻璃」图标后 **60ms** 关窗口，
+ * 磁盘上 config.json 里 `ui.theme` 仍是旧值 `'light'` ⇒ 下次打开皮肤又变回日间，
+ * 用户看到的就是「我选了玻璃，它没记住」。
+ *
+ * ★ 原来的兜底写法 `store.set({})`（before-quit 里那句）**是假兜底**：store.set 只是
+ *   `scheduleSave()` 再排一个一模一样的防抖定时器，一样等不到 ⇒ 必须显式同步写。
+ * ★ 只在退出路径调；平时仍走 250ms 防抖，别在这里改成每次 set 都同步写（发布跑批时写盘频繁）。
+ */
+function flush() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  writeNow();
+}
+
+module.exports = { get, set, load, defaults, file, flush, migrateLegacyPublishIntervals, takeMigrations };

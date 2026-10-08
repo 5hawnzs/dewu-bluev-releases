@@ -643,6 +643,43 @@ app.whenReady().then(async () => {
   ok('★ 启动时在**建窗口之前**就把主题应用上（窗口底色按它算，晚了会先闪一下）',
     /winmod\.applyStoredTheme\(\);\r?\n\s*project\.load\(\);/.test(fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8')));
 
+  // ★★ 「记住最后一次选的皮肤」不能只验「切完能存进配置」（上面已验那几条）——
+  //   那只证明值写进了**内存**。真会丢的是「防抖还没到就退出」这一段：
+  //   store.set 排的是 **250ms 防抖定时器**，而进程退出不会等它。
+  //   本机实测（真 app + 临时 userData）：点「玻璃」图标后 **60ms** 关窗口，
+  //   config.json 里 `ui.theme` 仍是旧值 'light' ⇒ 用户看到的就是「选了没记住」。
+  //   ⇒ 这里做**行为级**验证：排一次写入（故意不等）→ 立刻 flush() → 磁盘上必须已经是新值。
+  {
+    const cfgFile = store.file();
+    const themeOnDisk = () => {
+      try { return JSON.parse(fs.readFileSync(cfgFile, 'utf8')).ui.theme; }
+      catch (e) { return '(读不到: ' + e.code + ')'; }
+    };
+    store.flush();                                   // ① 先落一次盘：保证文件存在、并清掉可能挂着的旧定时器
+    const before = themeOnDisk();
+    const other = before === 'glass' ? 'dark' : 'glass';
+    store.set({ ui: { theme: other } });             // ② 只排队（250ms 防抖），故意不等
+    const mid = themeOnDisk();                       // ③ 防抖窗口内：必须还是旧值
+    store.flush();                                   // ④ 退出路径干的事
+    const after = themeOnDisk();                     // ⑤ 必须已经是新值
+    store.set({ ui: { theme: before } });            // ⑥ 还原，别影响后面的用例
+    store.flush();
+    ok('★ store.flush() 把「还没到防抖点」的皮肤改动**同步**写进 config.json（退出不丢最后一次选择）',
+      mid === before && after === other,
+      `防抖窗口内=${mid} → flush 后=${after}（期望 ${before} → ${other}）`);
+  }
+  {
+    const idxSrc = fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8');
+    const m = idxSrc
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .match(/app\.on\('before-quit'[\s\S]{0,400}?\n\}\);/);
+    const body = m ? m[0] : '';
+    ok('★ 退出钩子调的是 store.flush()（同步落盘），不是那个「只重排防抖定时器」的旧写法',
+      /store\.flush\(\)/.test(body) && !/store\.set\(/.test(body),
+      body ? body.replace(/\s+/g, ' ').slice(0, 140) : '没找到 before-quit 处理器');
+  }
+
 
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
 
