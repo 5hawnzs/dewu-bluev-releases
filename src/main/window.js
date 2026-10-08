@@ -35,24 +35,62 @@ const GATE_BG = '#ffffff';
 const MAIN_MIN_W = 960;
 const MAIN_MIN_H = 640;
 
-/** 主界面窗口底色：按**当前主题**（不是系统主题）—— 见 normTheme */
-function bgColor() { return nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed'; }
+/**
+ * 主界面窗口底色：按**当前皮肤**（不是系统主题）—— 见 normSkin。
+ * ★ 玻璃档必须返回**全透明**（`#00000000`）：窗口下面挂着系统亚克力（见 createWindow 的
+ *   backgroundMaterial），底色不透明就把亚克力彻底盖死、一点也透不出来。
+ *   浅色/深色照旧给实心色 —— 反正页面底色本来也是不透明的，两层一致。
+ */
+function bgColor() {
+  if (normSkin(store.get('ui.theme')) === 'glass') return '#00000000';
+  return nativeTheme.shouldUseDarkColors ? '#111113' : '#f2f1ed';
+}
 
 /**
- * 主题口径（2026-10-03 用户拍板）：「app 颜色默认为浅色」，并且「跟随 Windows 设置」这一档取消 ——
- * 只有浅色 / 深色两种，点一下顶栏那个按钮就切。
+ * 皮肤切换后重算窗口底色。
+ * ★ 为什么非要有这个函数：切 深色→玻璃 时 `nativeTheme.themeSource` **没变**（两者在原生层都是
+ *   dark，见 nativeForSkin）⇒ 那个 `nativeTheme.on('updated')` 根本不会触发 ⇒ 窗口底色会一直
+ *   停在上一次的实心色，玻璃档就变成「界面透明、后面却是一块实心暗色」，亚克力透不出来。
+ *   所以 theme:set / theme:toggle 必须显式叫一次它。
+ */
+function refreshBackdrop() {
+  if (!win || win.isDestroyed() || loginMode) return;   // 登录门底色固定浅色（GATE_BG），不掺和
+  win.setBackgroundColor(bgColor());
+}
+
+/**
+ * 原生窗口那一层的主题口径（2026-10-03 用户拍板）：「app 颜色默认为浅色」，
+ * 并且「跟随 Windows 设置」这一档取消。
  * ★ 判据只认 'dark'，别的（老配置里的 'system'、空值、写坏的值）**一律当浅色**：
  *   反过来写（只认 'light'）会让 'system' 落进「既不是浅也不是深」的缝里，
  *   那就又变回「跟着系统走」了 —— 正是这次要取消的东西。
+ * ★★ 这个函数**只管两档**（原生窗口/滚动条/窗口底色），别把「玻璃」塞进来 ——
+ *    玻璃是界面上的皮肤，在原生层按深色走即可（见 nativeForSkin）。
  */
 function normTheme(v) { return v === 'dark' ? 'dark' : 'light'; }
+
+/**
+ * 界面皮肤口径（2026-10-08 用户要求）：「玻璃」和 日间 / 夜间 是**同一级别**的第三档，
+ * 点顶栏那个按钮三档循环：浅色 → 深色 → 玻璃 → 浅色。
+ * ★ 为什么不复用 normTheme：那个函数有测试盯着它「只认两档」，
+ *   而且它表达的是「原生窗口该用深色还是浅色」，和「界面上用哪张皮」根本不是一回事。
+ */
+const SKINS = ['light', 'dark', 'glass'];
+function normSkin(v) { return v === 'dark' ? 'dark' : (v === 'glass' ? 'glass' : 'light'); }
+function nextSkin(v) { return SKINS[(SKINS.indexOf(normSkin(v)) + 1) % SKINS.length]; }
+
+/**
+ * 皮肤 → 原生窗口层面该走哪一档。玻璃是深色磨砂玻璃 ⇒ 窗口底色/滚动条/原生控件都按深色，
+ * 免得出现「界面是玻璃、原生那块却是浅色」的半浅半深。
+ */
+function nativeForSkin(s) { return normSkin(s) === 'light' ? 'light' : 'dark'; }
 
 /**
  * 把存下来的主题真正应用上。★ 必须在 createWindow **之前**调 ——
  * 窗口底色 bgColor() 就是按它算的，晚了会在深色系统上先闪一块近黑（用户要的是「默认浅色」）。
  */
 function applyStoredTheme() {
-  nativeTheme.themeSource = normTheme(store.get('ui.theme'));
+  nativeTheme.themeSource = nativeForSkin(store.get('ui.theme'));
   return nativeTheme.themeSource;
 }
 
@@ -87,7 +125,14 @@ function createWindow(locked) {
     resizable: !locked,           // 登录门是个「刚好装下卡片」的小窗，不允许拉伸
     maximizable: !locked,
     frame: false,                 // 自绘 Windows 标题栏（最小化/最大化/关闭在右上角）
-    backgroundColor: locked ? GATE_BG : bg,   // 登录门是固定浅色，见 GATE_BG
+    backgroundColor: locked ? GATE_BG : bg,   // 登录门是固定浅色，见 GATE_BG；玻璃档是全透明，见 bgColor
+    // ★ 系统亚克力（Win11 的 DWM 材料）——「玻璃」档的磨砂就是它（模糊后的桌面壁纸）。
+    //   ★★ 必须在这里（**建窗时**）挂上：实测运行时 `win.setBackgroundMaterial('acrylic')`
+    //      会把窗口画成纯黑（探针 P3），所以只能在构造选项里定。
+    //   ★ 浅色/深色档不会受影响：页面底色本就不透明（styles.css `body{background:var(--bg)}`），
+    //     亚克力在它下面、被盖得严严实实。登录门同理（底色是纯白 GATE_BG）。
+    //   ★ Win10 会忽略这个选项 ⇒ 玻璃档退化成「清晰透出桌面」（仍然能透，只是不磨砂）。
+    backgroundMaterial: 'acrylic',
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -219,7 +264,10 @@ function fitGate(cardHeight) {
 function theme() {
   return {
     shouldUseDarkColors: nativeTheme.shouldUseDarkColors,
-    themeSource: nativeTheme.themeSource
+    themeSource: nativeTheme.themeSource,
+    // ★ 界面皮肤的真值（light / dark / glass）。渲染层**必须**按这个切 class ——
+    //   拿 shouldUseDarkColors 反推会把「玻璃」认成「深色」（它在原生层就是深色）。
+    theme: normSkin(store.get('ui.theme'))
   };
 }
 
@@ -239,5 +287,6 @@ function clamp(v, lo, hi, dflt) {
 // 不能在测试里另写一个数字（两处各写一份 = 改了一处测试就假绿）。
 module.exports = {
   createWindow, getWindow, attach, theme, normTheme, applyStoredTheme, setLoginMode, fitGate, fitToWorkArea,
+  normSkin, nextSkin, nativeForSkin, SKINS, bgColor, refreshBackdrop,
   MAIN_MIN: { w: MAIN_MIN_W, h: MAIN_MIN_H }
 };

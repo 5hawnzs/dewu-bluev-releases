@@ -300,27 +300,31 @@ function register() {
     }
   }));
 
-  // 主题：只有浅色 / 深色两种（口径见 window.normTheme）。★ 必须**落盘** ——
+  // 主题：日间 / 夜间 / 玻璃 三档（口径见 window.normSkin / SKINS）。★ 必须**落盘** ——
   // 只改 nativeTheme 的话下次启动又回到默认值，用户会以为「切了没记住」。
+  // ★ 返回值统一成 window.theme() 那整个对象（含 theme 字段）：渲染层要靠它区分「玻璃」和「深色」，
+  //   只回一个 shouldUseDarkColors 的话，玻璃和夜间在渲染层长得一模一样。
   ipcMain.handle('theme:get', () => {
     // ★ 先做一次幂等的归一（把配置里的口径真正套到 nativeTheme 上）。
     //   只报 themeSource 是不够的：nativeTheme 还是 'system' 时 shouldUseDarkColors 会跟着 Windows 走，
     //   于是「themeSource=light」和「界面是深色」同时成立 —— 真窗口自检抓到过。
     winmod.applyStoredTheme();
-    return { shouldUseDarkColors: nativeTheme.shouldUseDarkColors, themeSource: nativeTheme.themeSource };
+    return winmod.theme();
   });
   ipcMain.handle('theme:set', (_e, source) => {
-    const t = winmod.normTheme(source);
-    nativeTheme.themeSource = t;
-    store.set({ ui: { theme: t } });
-    return nativeTheme.shouldUseDarkColors;
+    const s = winmod.normSkin(source);
+    nativeTheme.themeSource = winmod.nativeForSkin(s);
+    store.set({ ui: { theme: s } });
+    winmod.refreshBackdrop();      // ★ 见 window.refreshBackdrop：深色↔玻璃 不触发 updated，必须显式重算
+    return winmod.theme();
   });
-  // 顶栏那个按钮走这条：切到「另一边」。返回值 = 切完之后是不是深色。
+  // 顶栏那个按钮走这条：**三档循环** 浅色 → 深色 → 玻璃 → 浅色。返回值 = 切完之后的完整主题。
   ipcMain.handle('theme:toggle', () => {
-    const t = winmod.normTheme(nativeTheme.themeSource) === 'dark' ? 'light' : 'dark';
-    nativeTheme.themeSource = t;
-    store.set({ ui: { theme: t } });
-    return nativeTheme.shouldUseDarkColors;
+    const s = winmod.nextSkin(store.get('ui.theme'));
+    nativeTheme.themeSource = winmod.nativeForSkin(s);
+    store.set({ ui: { theme: s } });
+    winmod.refreshBackdrop();      // ★ 同上
+    return winmod.theme();
   });
 
   ipcMain.handle('job:run', guard((_e, type, args) => jobs.run(type, args || {})));

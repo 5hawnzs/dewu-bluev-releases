@@ -411,35 +411,159 @@ app.whenReady().then(async () => {
   // ---- ★ 主题：app 默认浅色 + 顶栏「项目」左边一点即切（用户 2026-10-03 要求） ----
   //   为什么不能只查源码里有没有这个按钮：位置错了（塞进设置页）、点了不生效（没走 IPC）、
   //   切了不落盘（下次启动忘掉）—— 三种都是「看起来做了」。这里全用真窗口真点一遍。
+  //   ★ 2026-10-08 起是**三档**（日间 / 夜间 / 玻璃），控件是**Dock**（三个图标常驻、
+  //     指针靠近按距离弹簧放大）。**不再是单键循环** ⇒ 这里改成「点某一档的图标，直接切到那一档」。
+  //     ★ 只查 class 只能证明「class 切了」，证明不了「皮肤真换了」⇒ 玻璃那档配一条**实算证据**
+  //       （.app 真的不再铺底色 + .side 真的是半透明底）。
+  //     ★★ 玻璃的「磨砂」不是 CSS 给的，是**系统亚克力**（建窗时 backgroundMaterial:'acrylic'），
+  //       做法是把页面底色挖空让它透上来 ⇒ 所以这里必须钉住「.app 透明」和「有 backgroundMaterial」，
+  //       缺了任何一条，「玻璃」都会退化成一块实心暗色。
+  //     ★ 弹簧放大不能只查源码（源码里写了 rAF ≠ 真会放大）⇒ 另配一条**真窗口实测**（见下面 mag）。
+  const clickSkin = async (skin) => {
+    await win.webContents.executeJavaScript(
+      `document.querySelector('#themeDock .tdock[data-skin="${skin}"]').click()`);
+    await new Promise(r => setTimeout(r, 320));
+    return win.webContents.executeJavaScript(`(() => {
+      const de = document.documentElement;
+      const appEl = document.querySelector('.app');
+      const sideEl = document.querySelector('.side');
+      const sb = sideEl ? getComputedStyle(sideEl) : null;
+      const onEl = document.querySelector('#themeDock .tdock.on');
+      return {
+        dark: de.classList.contains('dark'),
+        glass: de.classList.contains('glass'),
+        on: onEl ? onEl.dataset.skin : '',
+        appBg: appEl ? getComputedStyle(appEl).backgroundColor : '',
+        sideBg: sb ? sb.backgroundColor : '',
+        sideBlur: sb ? (sb.backdropFilter || sb.webkitBackdropFilter || 'none') : 'none',
+        bodyBg: getComputedStyle(document.body).backgroundColor
+      };
+    })()`);
+  };
+
   const themeDom = await win.webContents.executeJavaScript(`(() => {
-    const btn = document.getElementById('themeBtn');
+    const dock = document.getElementById('themeDock');
     const proj = document.getElementById('chipProj');
     return {
-      found: !!btn && !!proj,
-      sameParent: !!(btn && proj && btn.parentElement === proj.parentElement),
-      beforeProj: !!(btn && proj && (btn.compareDocumentPosition(proj) & Node.DOCUMENT_POSITION_FOLLOWING) > 0),
-      inTitlebar: !!(btn && btn.closest('.titlebar')),
+      found: !!dock && !!proj,
+      sameParent: !!(dock && proj && dock.parentElement === proj.parentElement),
+      beforeProj: !!(dock && proj && (dock.compareDocumentPosition(proj) & Node.DOCUMENT_POSITION_FOLLOWING) > 0),
+      inTitlebar: !!(dock && dock.closest('.titlebar')),
+      skins: dock ? [...dock.querySelectorAll('.tdock')].map(b => b.dataset.skin) : [],
+      on: dock && dock.querySelector('.tdock.on') ? dock.querySelector('.tdock.on').dataset.skin : '',
+      // 用户要求「不要新增（当前：日间 这种东西）」⇒ Dock 里只许有图标，不许有文字/标签元素
+      text: dock ? dock.textContent.trim() : 'x',
+      labelEls: dock ? dock.querySelectorAll('span,.chip,.label').length : -1,
+      hasEmptyBtn: dock ? [...dock.querySelectorAll('.tdock')].some(b => !b.querySelector('svg')) : true,
       dark: document.documentElement.classList.contains('dark'),
-      title: btn ? btn.title : ''
+      glass: document.documentElement.classList.contains('glass')
     };
   })()`);
-  ok('★ 主题切换按钮在标题栏、且紧挨在「项目」左边（用户指定的位置）',
+  ok('★ 主题 Dock 在标题栏、紧挨在「项目」左边（用户指定的位置）',
     themeDom.found && themeDom.sameParent && themeDom.beforeProj && themeDom.inTitlebar,
     JSON.stringify(themeDom));
-  ok('★ app 默认浅色（出厂默认就是 light，老配置里的 system 也按浅色算）',
-    themeDom.dark === false, JSON.stringify({ dark: themeDom.dark, title: themeDom.title }));
-  await win.webContents.executeJavaScript(`document.getElementById('themeBtn').click()`);
-  await new Promise(r => setTimeout(r, 320));
-  const themeDark = await win.webContents.executeJavaScript(`document.documentElement.classList.contains('dark')`);
-  ok('★ 点一下真的切成深色，并且存进了配置（下次启动还是这个）',
-    themeDark === true && store.get('ui.theme') === 'dark',
-    JSON.stringify({ dark: themeDark, saved: store.get('ui.theme') }));
-  await win.webContents.executeJavaScript(`document.getElementById('themeBtn').click()`);
-  await new Promise(r => setTimeout(r, 320));
-  const themeLight = await win.webContents.executeJavaScript(`document.documentElement.classList.contains('dark')`);
-  ok('★ 再点一下切回浅色，也存进了配置',
-    themeLight === false && store.get('ui.theme') === 'light',
-    JSON.stringify({ dark: themeLight, saved: store.get('ui.theme') }));
+  ok('★ Dock 正好三档、顺序是 日间→夜间→玻璃，且每个图标都画得出来（没有空按钮）',
+    JSON.stringify(themeDom.skins) === JSON.stringify(['light', 'dark', 'glass']) && !themeDom.hasEmptyBtn,
+    JSON.stringify({ skins: themeDom.skins, hasEmptyBtn: themeDom.hasEmptyBtn }));
+  ok('★ Dock 里**只有图标**，没有任何文字/标签（用户：不要「当前：日间」那种东西）',
+    themeDom.text === '' && themeDom.labelEls === 0,
+    JSON.stringify({ text: themeDom.text, labelEls: themeDom.labelEls }));
+  ok('★ app 默认浅色，且默认点亮的正是「日间」那一档',
+    themeDom.dark === false && themeDom.glass === false && themeDom.on === 'light',
+    JSON.stringify({ dark: themeDom.dark, glass: themeDom.glass, on: themeDom.on }));
+  // 点「夜间」
+  const skin1 = await clickSkin('dark');
+  ok('★ 点 Dock 的「夜间」图标 → 切到夜间、点亮该档、并存进配置（下次启动还是这个）',
+    skin1.dark === true && skin1.glass === false && skin1.on === 'dark' && store.get('ui.theme') === 'dark',
+    JSON.stringify(skin1) + ' saved=' + store.get('ui.theme'));
+  // 点「玻璃」（★ 第三档，与日/夜同级）
+  const skin2 = await clickSkin('glass');
+  ok('★ 点「玻璃」图标 → 切到第三档「玻璃」，点亮该档、也存进配置',
+    skin2.glass === true && skin2.dark === false && skin2.on === 'glass' && store.get('ui.theme') === 'glass',
+    JSON.stringify(skin2) + ' saved=' + store.get('ui.theme'));
+  ok('★ 「玻璃」不只是换了个 class：页面底色真的挖空了（.app 透明 + body 透明）、.side 真的是半透明底',
+    /rgba?\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)|transparent/.test(skin2.appBg)
+    && /rgba?\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)|transparent/.test(skin2.bodyBg)
+    && /rgba\([^)]*,\s*0?\.\d+\s*\)/.test(skin2.sideBg),
+    JSON.stringify({ appBg: skin2.appBg, bodyBg: skin2.bodyBg, sideBg: skin2.sideBg }));
+  // 点回「日间」（把状态还给后面的用例）
+  const skin3 = await clickSkin('light');
+  ok('★ 点「日间」图标 → 转回日间，且**只有日间这一档被点亮**（选中态唯一）',
+    skin3.dark === false && skin3.glass === false && skin3.on === 'light'
+    && store.get('ui.theme') === 'light'
+    && await win.webContents.executeJavaScript(`document.querySelectorAll('#themeDock .tdock.on').length`) === 1,
+    JSON.stringify(skin3) + ' saved=' + store.get('ui.theme'));
+
+  // ★★ 「按距离放大」分两层验：
+  //   ① 映射本身（纯函数 dockGain）—— 确定性，不受 rAF 时序影响；
+  //   ② 真窗口接线 —— 合成 pointer 事件，**轮询到收敛**。
+  //   ⚠️ 为什么②不能「等固定时长再看」：隐藏窗口里 rAF 被节流且不稳（同一页面实测 2~170fps 都有，
+  //      第一版写成固定等 500ms ⇒ 只走了 1 个积分步、断言读到 [0,0,0] 的假红）。
+  {
+    const map = await win.webContents.executeJavaScript(`(() => {
+      const R = 52;
+      return {
+        has: typeof dockGain === 'function',
+        at0: dockGain(0, R),            // 正下方：满增益
+        atHalf: dockGain(R / 2, R),     // 半径一半
+        atR: dockGain(R, R),            // 半径处：完全不放大
+        beyond: dockGain(R * 3, R),     // 更远：仍不放大（已 clamp）
+        mono: dockGain(10, R) > dockGain(30, R) && dockGain(30, R) > dockGain(50, R)
+      };
+    })()`);
+    ok('★ 「距离→放大」是平滑单调衰减：正下方=1、半径一半=0.5、到半径就归零（纯函数实测）',
+      map.has && Math.abs(map.at0 - 1) < 1e-9 && Math.abs(map.atHalf - 0.5) < 1e-9
+      && Math.abs(map.atR) < 1e-9 && Math.abs(map.beyond) < 1e-9 && map.mono,
+      JSON.stringify(map));
+
+    const mag = await win.webContents.executeJavaScript(`(async () => {
+      const dock = document.getElementById('themeDock');
+      const items = [...dock.querySelectorAll('.tdock')];
+      const cx = items.map(el => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; });
+      const read = () => items.map(el => (+el.style.getPropertyValue('--s')) || 1);
+      dock.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true }));
+      // 指针正对中间那个（夜间）
+      dock.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx[1], clientY: 10 }));
+      const t0 = Date.now();
+      let hit = read();
+      while (Date.now() - t0 < 8000 && !(hit[1] > 1.3 && hit[1] > hit[0] + 0.05 && hit[1] > hit[2] + 0.05)) {
+        await new Promise(r => setTimeout(r, 120)); hit = read();
+      }
+      dock.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      const t1 = Date.now();
+      let back = read();
+      while (Date.now() - t1 < 8000 && !back.every(v => Math.abs(v - 1) < 0.02)) {
+        await new Promise(r => setTimeout(r, 120)); back = read();
+      }
+      return { hit, back, ms: Date.now() - t0 };
+    })()`);
+    ok('★ 真窗口实测：指针正对的图标被放到最大、两侧更小（「按距离放大」真的生效，不是只写了源码）',
+      mag.hit[1] > 1.3 && mag.hit[1] > mag.hit[0] + 0.05 && mag.hit[1] > mag.hit[2] + 0.05,
+      JSON.stringify(mag));
+    ok('★ 指针离开后三个图标都弹回 1（弹簧收尾、不留放大残留）',
+      mag.back.every(v => Math.abs(v - 1) < 0.02), JSON.stringify({ back: mag.back, ms: mag.ms }));
+  }
+  {
+    const appSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
+    ok('★ 放大是**按需启停的 rAF 弹簧**：绝不挂常驻 rAF（收敛且指针离开就停）',
+      /function bindThemeDock\(\)/.test(appSrc)
+      && /if \(moving \|\| hot\) \{ raf = requestAnimationFrame\(frame\); \}/.test(appSrc)
+      && /else \{ raf = 0; prev = 0; \}/.test(appSrc)
+      && /bindThemeDock\(\);/.test(appSrc));
+    ok('★ 弹簧按**真实 dt** 推进（不是每帧固定推 H 秒，否则手感会随帧率变）',
+      /const dt = prev \? Math\.min\(\(now - prev\) \/ 1000, 0\.05\) : H;/.test(appSrc)
+      && /const n = Math\.max\(1, Math\.min\(Math\.round\(dt \/ H\), 60\)\);/.test(appSrc));
+    ok('★ 放大增益只走那一个纯函数 dockGain（自检测的就是它，不是另抄一份公式）',
+      /function dockGain\(d, R\)/.test(appSrc) && /st\[i\]\.ts = 1 \+ \(TDOCK\.max - 1\) \* g;/.test(appSrc)
+      && /const g = dockGain\(clientX - cx\[i\], TDOCK\.R\);/.test(appSrc));
+  }
+  {
+    const cssSrc2 = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8');
+    ok('★ 旧单键的图标显隐规则已整段删除、新 Dock 样式已就位（不留「三档皮肤下仍只显一个图标」的死规则）',
+      !/#themeBtn\b/.test(cssSrc2.replace(/\/\*[\s\S]*?\*\//g, ''))
+      && /\.theme-dock \.tdock\{/.test(cssSrc2)
+      && /\.theme-dock \.tdock\.on\{/.test(cssSrc2));
+  }
 
   // 设置页那个下拉要**整条撤掉**（不是藏起来）：入口只留顶栏那一个，否则两处状态迟早各说各话
   const appSrcTheme = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
@@ -464,9 +588,36 @@ app.whenReady().then(async () => {
       await win.webContents.executeJavaScript(`/运行环境/.test(document.querySelector('#pane').innerText)`));
   }
   const winSrc = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
-  ok('★ 主进程的主题口径只有浅色/深色两档（「跟随 Windows 设置」已取消）',
+  ok('★ 主进程的主题口径 = 日间/夜间/玻璃 三档（「跟随 Windows 设置」已取消）',
     /function normTheme\(v\) \{ return v === 'dark' \? 'dark' : 'light'; \}/.test(winSrc)
+    && /const SKINS = \['light', 'dark', 'glass'\]/.test(winSrc)
+    && /function normSkin\(v\)/.test(winSrc)
+    && /function nextSkin\(v\)/.test(winSrc)
     && /function applyStoredTheme\(\)/.test(winSrc));
+  // ★ 两条容易写错的地方，各钉一条：
+  //   ① 玻璃在**原生窗口层**按深色走（否则「界面玻璃、原生标题栏浅色」半浅半深）；
+  //   ② 界面皮肤的真值走 `theme` 字段 —— 渲染层若拿 shouldUseDarkColors 反推，玻璃会被认成夜间。
+  ok('★ 玻璃在原生窗口层按深色走、界面皮肤的真值单独走 theme 字段',
+    /function nativeForSkin\(s\) \{ return normSkin\(s\) === 'light' \? 'light' : 'dark'; \}/.test(winSrc)
+    && /theme: normSkin\(store\.get\('ui\.theme'\)\)/.test(winSrc));
+  // ★★ 「玻璃」的磨砂 = **系统亚克力**（不是 CSS）。它有两个只能靠源码钉住的硬约束，都实测过：
+  //   ① 必须**建窗时**挂 backgroundMaterial —— 运行时 win.setBackgroundMaterial('acrylic') 会把窗口画成纯黑；
+  //   ② 深色↔玻璃 切换时 nativeTheme.themeSource **不变**（两者在原生层都是 dark，见 nativeForSkin）
+  //      ⇒ `nativeTheme.on('updated')` 不触发 ⇒ 必须显式调 refreshBackdrop() 重算窗口底色，
+  //      否则玻璃档后面还停在上一次的实心色，亚克力一点也透不出来。
+  ok('★ 亚克力在**建窗时**挂上（backgroundMaterial: acrylic）—— 运行时再设会变纯黑',
+    /backgroundMaterial:\s*'acrylic'/.test(winSrc));
+  ok('★ 玻璃档窗口底色 = 全透明，且 bgColor/refreshBackdrop 都导出了（否则把亚克力盖死）',
+    /normSkin\(store\.get\('ui\.theme'\)\) === 'glass'[\s\S]{0,80}return '#00000000'/.test(winSrc)
+    && /bgColor, refreshBackdrop/.test(winSrc));
+  ok('★ theme:set / theme:toggle 都显式调 refreshBackdrop()（深色↔玻璃 不触发 updated，必须手动重算）',
+    (fs.readFileSync(path.join(ROOT, 'src/main/ipc.js'), 'utf8').match(/winmod\.refreshBackdrop\(\)/g) || []).length >= 2);
+  {
+    const cssSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8');
+    ok('★ 玻璃档页面底色真透明（body 挖空），旧的自画「极光底」已删除',
+      /html\.glass body\{background:transparent\}/.test(cssSrc)
+      && !/radial-gradient\(1100px 720px at 12% 6%/.test(cssSrc));
+  }
   ok('★ 启动时在**建窗口之前**就把主题应用上（窗口底色按它算，晚了会先闪一下）',
     /winmod\.applyStoredTheme\(\);\r?\n\s*project\.load\(\);/.test(fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8')));
 

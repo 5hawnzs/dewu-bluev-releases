@@ -86,20 +86,106 @@ function kindOf(s) {
 
 /* ---------------- 主题 ----------------
  * ★ 2026-10-03 用户拍板：app **默认浅色**，切换按钮放在「app 最上面、项目左边」，点一下就切。
- *   「跟随 Windows 设置」这一档同时取消（只有浅色/深色）。主进程 window.normTheme() 是同一个口径，
+ *   「跟随 Windows 设置」这一档同时取消。主进程 window.normTheme() 是同一个口径，
  *   老配置里的 'system' 一样按浅色算 —— 否则会出现「界面浅色、窗口底色深色」这种半深半浅。
- * ★ 图标不在这里换：两个图标都在 DOM 里（styles.css 按 html.dark 决定显哪个），
- *   这里只切 class + 同步提示语，就不会出现「图标和实际主题不一致」。
+ * ★★ 2026-10-08 用户要求：加第三档「玻璃」，**和 日间 / 夜间 同一级别**。
+ *   三档：日间 / 夜间 / 玻璃。
+ * ★ 判据只认主进程报回来的 `theme`（light / dark / glass）—— **不要**拿 shouldUseDarkColors 反推：
+ *   玻璃在原生窗口层就是按深色走的（原生标题栏 / 滚动条 / 窗口底色），反推会把玻璃认成夜间。
+ * ★★ 2026-10-08 二次需求：控件从「一个圆键循环三档」改成 **Dock**（三个图标常驻、
+ *   指针靠近按距离弹簧放大）。所以这里**只点亮当前那一档**（.tdock.on），
+ *   **不再**改某个单键的 title / aria-pressed —— 图标不换 innerHTML、也不加文字说明。
  */
 function applyTheme(t) {
-  const dark = !!(t && t.shouldUseDarkColors);
-  document.documentElement.classList.toggle('dark', dark);
-  const b = document.getElementById('themeBtn');
-  if (b) {
-    b.title = dark ? '当前：深色 —— 点一下切浅色' : '当前：浅色 —— 点一下切深色';
-    b.setAttribute('aria-label', b.title);
-    b.setAttribute('aria-pressed', dark ? 'true' : 'false');
+  const skin = (t && t.theme) || ((t && t.shouldUseDarkColors) ? 'dark' : 'light');
+  document.documentElement.classList.toggle('dark', skin === 'dark');
+  document.documentElement.classList.toggle('glass', skin === 'glass');
+  const dock = document.getElementById('themeDock');
+  if (dock) {
+    dock.querySelectorAll('.tdock').forEach(b => {
+      const on = b.dataset.skin === skin;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
   }
+}
+
+/* ---------------- 主题 Dock：按距离弹簧放大 ----------------
+ * 用户要求把「日间 / 夜间 / 玻璃」的切换做成 Dock 那种「指针靠近 → 按距离放大」的效果。
+ * 这是 React 组件里 useMotionValue / useSpring 的**原生等价物**，拆开就三件事：
+ *   ① 指针到每个图标中心的水平距离 d
+ *   ② distance → 目标缩放：target = 1 + (max-1) * cos²(π/2 · min(d/R, 1))   （余弦平方 = 平滑 1→0）
+ *   ③ 一个真弹簧，每帧把当前值朝 target 推过去（**不是** CSS transition，所以有回弹/拖尾手感）
+ * ★★ 性能红线：**绝不挂常驻 rAF**。桌面端一个永远在跑的 rAF 是实打实的耗电/掉帧源（本项目做过卡顿诊断）。
+ *   做法：只在指针进 Dock 时启动；「全部收敛 且 指针已离开」就停（见 frame() 里那个三元的终态）。
+ * ★ 为什么不量一次就完事：图标会因右侧 chips 的文字变化（runChip「空闲/运行中」）整体左右移位
+ *   ⇒ 每次 pointerenter 重新量一遍中心。
+ * ★ 缩放用 transform-origin 居中 ⇒ **缩放不改 rect 的中心**，所以拿 rect 中心当基准不会被自己的动画带偏
+ *   （用 offsetLeft 也行，但那要求 .theme-dock 是 offsetParent，两个前提都是隐式的，rect 中心更省心）。
+ */
+const TDOCK = { max: 1.4, R: 52, k: 420, c: 30, lift: 0 };
+/** Dock 的「距离 → 放大增益」：**纯函数**（0 表示不放大，1 表示放到最大）。
+ *  单独抽出来是为了能被自检直接调用 —— 隐藏窗口的 rAF 会被节流（实测 2~170fps 都有），
+ *  「等一会儿再看 --s」这种断言必然脆；映射本身不该被环境时序拖累。
+ *  d=指针到图标中心的距离、R=影响半径；余弦平方 = 平滑的 1→0 衰减（d>=R 起完全不放大）。 */
+function dockGain(d, R) {
+  const t = Math.min(Math.abs(d) / R, 1);
+  const f = Math.cos(t * Math.PI / 2);
+  return f * f;
+}
+function bindThemeDock() {
+  const dock = document.getElementById('themeDock');
+  if (!dock) return;
+  const items = [...dock.querySelectorAll('.tdock')];
+  const st = items.map(() => ({ s: 1, ts: 1, vs: 0, l: 0, tl: 0, vl: 0 }));
+  let cx = items.map((el) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; });
+  let raf = 0, hot = false, prev = 0;
+  const measure = () => { cx = items.map((el) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; }); };
+
+  const frame = (now) => {
+    // ★ 必须按**真实经过的时间**推进，不能「每帧固定推 H 秒」——
+    //   后者会把模拟时间绑死在帧率上：60fps 时每帧只推进 1/480s ⇒ 实际慢 8 倍、
+    //   而在 240Hz 屏上又快 4 倍（同一份参数手感完全不同）。开头的 prev=0 是「刚启动/长暂停」的兜底。
+    const H = 1 / 480;                        // 固定子步长：k 调大也不发散
+    const dt = prev ? Math.min((now - prev) / 1000, 0.05) : H;
+    prev = now;
+    const n = Math.max(1, Math.min(Math.round(dt / H), 60));
+    let moving = false;
+    for (let k = 0; k < n; k++) {
+      for (let i = 0; i < items.length; i++) {
+        const a = st[i];
+        a.vs += (-TDOCK.k * (a.s - a.ts) - TDOCK.c * a.vs) * H; a.s += a.vs * H;
+        a.vl += (-TDOCK.k * (a.l - a.tl) - TDOCK.c * a.vl) * H; a.l += a.vl * H;
+      }
+    }
+    items.forEach((el, i) => {
+      const a = st[i];
+      if (Math.abs(a.s - a.ts) < 1e-3 && Math.abs(a.vs) < 1e-3) { a.s = a.ts; a.vs = 0; } else { moving = true; }
+      if (Math.abs(a.l - a.tl) < 1e-3 && Math.abs(a.vl) < 1e-3) { a.l = a.tl; a.vl = 0; } else { moving = true; }
+      el.style.setProperty('--s', a.s.toFixed(4));
+      el.style.setProperty('--lift', a.l.toFixed(2) + 'px');
+    });
+    if (moving || hot) { raf = requestAnimationFrame(frame); }
+    else { raf = 0; prev = 0; }               // 收敛且指针已离开 ⇒ 停 rAF（不常驻）
+  };
+  const kick = () => { if (!raf) { prev = 0; raf = requestAnimationFrame(frame); } };
+  const aim = (clientX) => {
+    items.forEach((el, i) => {
+      const g = dockGain(clientX - cx[i], TDOCK.R);
+      st[i].ts = 1 + (TDOCK.max - 1) * g;
+      st[i].tl = TDOCK.lift * g;
+    });
+  };
+
+  dock.addEventListener('pointerenter', () => { measure(); hot = true; kick(); });
+  dock.addEventListener('pointermove', (e) => { hot = true; aim(e.clientX); kick(); });
+  dock.addEventListener('pointerleave', () => {
+    hot = false;
+    st.forEach((a) => { a.ts = 1; a.tl = 0; });   // 离开就回位（弹簧自己收尾，然后停 rAF）
+    kick();
+  });
+  // chips 里的文字一变（如 runChip）dock 会整体移位 ⇒ 尺寸变化后重量基准
+  window.addEventListener('resize', measure);
 }
 
 /* ---------------- 日志 ----------------
@@ -2440,10 +2526,11 @@ function upPwdHtml(id) {
 
 /* ---------------- 交互 ---------------- */
 const ACTS = {
-  // ★ 顶栏那个主题按钮（浅色 ⇄ 深色）。落盘在主进程做，这样下次启动还是这个。
-  'theme:toggle': async () => {
-    const dark = await appApi.themeToggle();
-    applyTheme({ shouldUseDarkColors: !!dark });
+  // ★ 顶栏主题 Dock（日间 / 夜间 / 玻璃，三个图标）。点哪个图标就直接切哪一档。
+  //   落盘仍在主进程做（theme:set），所以下次启动还是这个。
+  //   返回值是完整的主题对象 ⇒ 直接把 applyTheme 的结果喂给它，别自己再拼 { shouldUseDarkColors }。
+  'theme:set': async (el) => {
+    applyTheme(await appApi.themeSet(el.dataset.skin));
   },
 
   // ---- 云端协作：推一次 / 试一下 / 下发配置。发布本身不依赖这里的任何一个 ----
@@ -3141,7 +3228,7 @@ function bindCfgInputs() {
 
 /** 设置页 + 「品牌与权限」页的绑定。两页共用：按 id 找，找不到就跳过（原先有个 early return，会把另一页的绑定一起跳过） */
 function bindSettings() {
-  // 主题那个下拉已删（2026-10-03）：入口搬到顶栏的「themeBtn」，不需要在这里绑。
+  // 主题那个下拉已删（2026-10-03）：入口搬到顶栏的「主题 Dock」（#themeDock），不需要在这里绑。
   // data-cfg 的绑定不在这里了 —— 改成每个页签都绑（见 bindCfgInputs）
   // 「品牌权限」那条下拉工具栏已删（2026-10-02 用户要求）：现在从账号管理表每行右侧的
   // 「配置权限」进弹窗，弹窗自己带状态，不必在这里按「当前选中的账号」重画。
@@ -3172,6 +3259,7 @@ function bindOnce() {
 }
 
 function bind() {
+  bindThemeDock();          // 顶栏主题 Dock 的「按距离弹簧放大」（点击走 data-act=theme:set）
   $('#btnLogout').onclick = () => doLogout();
 
   // 标题栏的「当前品牌」：改了就记住（下次进来还是它）。

@@ -14,7 +14,7 @@
   --mono: "Cascadia Mono","Cascadia Code","Consolas","Microsoft YaHei UI","Courier New",monospace;
   --caption-h:38px;
 }
-html.dark{
+html.dark,html.glass{
   --bg:#111113; --panel:#1b1b1e; --panel2:#212125; --side:#191919;
   --bd:#2e2e33; --bd2:#404046;
   --tx:#eaeae7; --tx2:#a3a19c; --tx3:#7a786f;
@@ -24,6 +24,48 @@ html.dark{
   --red:#f09595; --red-bg:#3a1313;
   --gray:#b4b2a9; --gray-bg:#26262a;
 }
+
+/* ================= ★ 第三档皮肤「玻璃」（2026-10-08 用户要求） =================
+   用户口径：玻璃**和 日间 / 夜间 是同一级别**的第三档，点顶栏那个按钮三档循环。
+   ★ 只动「颜色 + 模糊」——尺寸 / 间距 / 圆角 / 层级 / 交互一律不碰，结构零变化。
+   ★★ 磨砂**不是** CSS 做的，是**系统亚克力**（window.js 建窗时挂的 backgroundMaterial:'acrylic'）。
+      所以这里唯一要做的就是把页面底色**挖空**（透明），让亚克力透上来：
+        ① body 透明（原来的「极光底」已删 —— 那是自画的假磨砂，后面是纯色、不透桌面）
+        ② .app 不铺底色
+        ③ 面板给半透明深色底 ⇒ 就成了「烟熏玻璃」：亚克力（模糊后的桌面壁纸）从下面透出来
+   ★ 为什么语义色跟深色合写（上面那条 html.dark,html.glass）：玻璃是深色烟熏 ⇒
+     直接沿用深色的 --teal/--amber/--blue/--red，两处各写一份迟早对不上。
+   ★ 兜底：Win10 没有系统亚克力（该选项被忽略）⇒ 玻璃档退化成「清晰透出桌面」，仍然能透、只是不糊。
+   ★ 玻璃在**原生窗口层**按深色走（window.js 的 nativeForSkin）——否则会出现
+     「界面是玻璃、原生标题栏/滚动条却是浅色」的半浅半深。 */
+html.glass{
+  --bg:#0b0d12;
+  --panel:rgba(22,23,29,.62);
+  --panel2:rgba(31,32,40,.50);
+  --side:rgba(17,18,24,.58);
+  --bd:rgba(255,255,255,.10);
+  --bd2:rgba(255,255,255,.20);
+  --tx:#eef1f6; --tx2:#b7bec9; --tx3:#8b93a1;
+}
+/* 挖空页面底色 ⇒ 露出系统亚克力。★ 必须是 transparent：填任何颜色都会把亚克力盖死。 */
+html.glass body{background:transparent}
+html.glass .app{background:transparent}
+/* 面板的半透明深色底由上面的 --panel/--side 变量给出（烟熏感）。
+   这里的 backdrop-filter 只对**页面内**位于面板下层的元素生效，桌面在窗口外、糊不到它 ——
+   真正糊桌面的是系统亚克力。留着它是为了让弹层/浮窗叠在面板上时有轻微过渡。 */
+html.glass .titlebar,
+html.glass .side,
+html.glass .main,
+html.glass .logbar,
+html.glass .mbox,
+html.glass .toast{
+  backdrop-filter:blur(26px) saturate(165%);
+  -webkit-backdrop-filter:blur(26px) saturate(165%);
+}
+/* 下面这两处原来写死在 html.dark 选择器上，玻璃也是深色底 ⇒ 得跟着一份 */
+html.glass ::-webkit-scrollbar-thumb{background:rgba(150,150,150,.35);background-clip:content-box}
+html.glass ::-webkit-scrollbar-thumb:hover{background:rgba(180,180,180,.6);background-clip:content-box}
+html.glass .cap button:hover{background:rgba(255,255,255,.10)}
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
@@ -216,14 +258,31 @@ code{font-family:var(--mono);font-size:11.5px;background:var(--panel);border:1px
   padding:3px 9px;cursor:pointer;
 }
 .tbbtn:hover{color:var(--tx);border-color:var(--bd2)}
-/* 主题切换键（顶栏「项目」左边）：圆形、只放一个图标，点一下就切。
-   ★ 两个图标靠 html.dark 决定显哪个 —— 浅色时显月亮（点它去深色），深色时显太阳。
-     不要用 JS 换 innerHTML：那样每次重绘都得记得同步，迟早出现「图标和实际主题不一致」。 */
 .tbbtn.ico{width:24px;height:24px;padding:0;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
 .tbbtn.ico svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round}
-#themeBtn .i-sun{display:none}
-html.dark #themeBtn .i-moon{display:none}
-html.dark #themeBtn .i-sun{display:block}
+/* 主题 Dock（顶栏「项目」左边）：日间 / 夜间 / 玻璃 三个图标常驻。
+   ★ 2026-10-08：原来是「一个圆键循环三档」，用户要求改成 Spring dock 那种
+     「指针靠近 → 按距离弹簧放大」。三档语义不变，控件形态换了。
+   ★ 放大**不是 CSS transition** —— 是 app.js 里一个按需启停的 rAF 弹簧
+     （React 里 useMotionValue/useSpring 的原生等价物）。这里只消费它每帧写下的
+     两个自定义属性：--s(缩放) / --lift(上浮)，transform 由它们算。
+   ★ 撤掉的老写法：原来三个 SVG 都留 DOM、靠 html.dark/html.glass 决定显哪一个。
+     现在三个图标**同时可见**，所以那 5 条 `#themeBtn .i-*` 显隐规则已整段删除 ——
+     留着就是「三档皮肤下仍只显一个」的死规则。
+   ★ 栏高只有 --caption-h(38px)：放大上限必须压在栏内（origin 居中、不上浮），
+     否则 icon 会顶到窗口上沿、被 .app 的 overflow:hidden 裁掉。 */
+.theme-dock{display:flex;align-items:center;gap:2px;flex:0 0 auto}
+.theme-dock .tdock{
+  width:24px;height:24px;padding:0;border:0;border-radius:50%;
+  background:transparent;color:var(--tx3);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transform:scale(var(--s,1)) translateY(calc(var(--lift,0px) * -1));
+  will-change:transform;
+}
+.theme-dock .tdock svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.theme-dock .tdock:hover{color:var(--tx)}
+/* 当前那一档点亮（这是 Dock 的选中态，不是新增的状态芯片） */
+.theme-dock .tdock.on{color:var(--teal);background:var(--teal-bg)}
 
 /* ---------- 登录门（未登录时盖住整个窗口） ---------- */
 body.locked .app{display:none}
