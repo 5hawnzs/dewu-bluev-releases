@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('api', {
 
   configGet: key => ipcRenderer.invoke('config:get', key),
   configSet: patch => ipcRenderer.invoke('config:set', patch),
+  // 「模型配置」弹窗：读当前**实际生效**的模型与来源（不发网络请求，只解析配置）
+  llmEffective: () => ipcRenderer.invoke('llm:effective'),
   // 标题热词库：get 所有人可用；save / reset 主进程侧 guardAdmin（改的是全员口径）
   hotwordsGet: () => ipcRenderer.invoke('hotwords:get'),
   hotwordsSave: (groups, opts) => ipcRenderer.invoke('hotwords:save', groups, opts),
@@ -55,17 +57,12 @@ contextBridge.exposeInMainWorld('api', {
   pickFile: opts => ipcRenderer.invoke('dialog:file', opts),
   openPath: p => ipcRenderer.invoke('shell:open', p),
   reveal: p => ipcRenderer.invoke('shell:reveal', p),
+  // 把**内置**的得物安装包另存到本机（弹「另存为」；装进模拟器那条路见 run('publish.installDewuApk')）
+  apkSaveDewu: () => ipcRenderer.invoke('apk:saveDewu'),
 
   themeGet: () => ipcRenderer.invoke('theme:get'),
   themeSet: s => ipcRenderer.invoke('theme:set', s),
   themeToggle: () => ipcRenderer.invoke('theme:toggle'),
-
-  // 云端协作（可选）：状态里不含密钥，密钥只存在于主进程配置
-  cloudStatus: () => ipcRenderer.invoke('cloud:status'),
-  cloudSync: () => ipcRenderer.invoke('cloud:sync'),
-  cloudTest: () => ipcRenderer.invoke('cloud:test'),
-  cloudExport: () => ipcRenderer.invoke('cloud:export'),
-  cloudImport: cfg => ipcRenderer.invoke('cloud:import', cfg),
 
   min: () => ipcRenderer.send('win:min'),
   toggleMax: () => ipcRenderer.send('win:toggle-max'),

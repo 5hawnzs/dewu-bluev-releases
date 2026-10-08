@@ -50,7 +50,7 @@ app.whenReady().then(async () => {
   const VENDOR_KBD = path.join(ROOT, 'vendor', 'adbkeyboard');
   const VENDOR_FF = path.join(ROOT, 'vendor', 'ffmpeg');
   const md5 = p => require('crypto').createHash('md5').update(fs.readFileSync(p)).digest('hex');
-  const prov = ['adb/adb.exe', 'adb/AdbWinApi.dll', 'adb/AdbWinUsbApi.dll', 'adbkeyboard/ADBKeyboard.apk', 'ffmpeg/ffmpeg.exe'].map(rel => {
+  const prov = ['adb/adb.exe', 'adb/AdbWinApi.dll', 'adb/AdbWinUsbApi.dll', 'adbkeyboard/ADBKeyboard.apk', 'ffmpeg/ffmpeg.exe', 'dewu/dewu_6.0.5.apk'].map(rel => {
     const p = path.join(ROOT, 'vendor', rel);
     if (!fs.existsSync(p)) return { rel, ok: false, md5: '' };
     const hex = md5(p);
@@ -87,6 +87,23 @@ app.whenReady().then(async () => {
   // ffmpeg 是**真的能执行**才叫内置成功（存着但跑不起来 = 假内置）
   ok('★ 内置那份 ffmpeg 真能跑起来（不是只把文件放那儿）',
     videoMod.status().source === 'bundled' && videoMod.status().usable, JSON.stringify(videoMod.status()));
+
+  // ★★ 2026-10-08 新增：**得物 App 安装包**（MuMu 自带的应用商店里搜不到得物 ⇒ 设置页给两个按钮）。
+  //   与 adb/ffmpeg 同一套口径：文件在不在、代码里的常量与实际文件对不对得上、打包配置搬不搬。
+  const dewuMod = require(path.join(ROOT, 'src/main/services/dewuapk.js'));
+  dewuMod.setBundledDir(path.join(ROOT, 'vendor', 'dewu'));
+  const dStat = dewuMod.status();
+  const dProv = prov.find(x => x.rel === 'dewu/dewu_6.0.5.apk') || { ok: false, md5: '' };
+  ok('★ 得物安装包也随包内置了（仓库里那份在，且大小与 dewuapk.js 里写死的 BYTES 一致）',
+    dStat.exists && dStat.sizeOk && dProv.ok,
+    `exists=${dStat.exists} bytes=${dStat.bytes} expect=${dStat.expectBytes}`);
+  // 三处必须一致：实际文件算出来的 md5 / 代码里写死的 MD5 / vendor/README.md 台账里那一行。
+  // 少一处对账，「发给每个人的是不是同一份」就没人能核（md5 只能证明没被换过，见 vendor/README.md）
+  ok('★ 得物安装包三处对账一致：实际文件 md5 == dewuapk.js 里的 MD5 == vendor/README.md 台账',
+    dProv.md5 === dewuMod.MD5 && readmeTxt.includes(dewuMod.MD5) && dStat.md5 === dewuMod.MD5,
+    `file=${dProv.md5.slice(0, 8)}… · code=${dewuMod.MD5.slice(0, 8)}… · readme=${readmeTxt.includes(dewuMod.MD5) ? '有' : '缺'}`);
+  ok('★ 打包配置会把 vendor/dewu 搬进 resources/dewu（否则"内置了"也进不了安装包）',
+    erTxt.includes('vendor/dewu'), erTxt);
 
   // 播两个品牌：「提示词配置」里那组「选择 / 默认选择」的断言要有行可点。
   // 自检跑在临时 userData 上，碰不到本机的 config.json / auth.json
@@ -608,6 +625,72 @@ app.whenReady().then(async () => {
       !setHeads.includes('外观'), JSON.stringify(setHeads));
     ok('★ 但「运行环境」没跟着一起丢（已挪进「外部依赖」）',
       await win.webContents.executeJavaScript(`/运行环境/.test(document.querySelector('#pane').innerText)`));
+
+    // ★★ 2026-10-08 新增：得物安装包那一行（MuMu 自带的应用商店里搜不到得物的兜底）。
+    //   必须读**真 DOM** —— 源码里有那行字证明不了页面上真渲染了它。
+    const apkUi = await win.webContents.executeJavaScript(`(function(){
+      var rows = [].slice.call(document.querySelectorAll('#pane table tbody tr'));
+      var tr = rows.filter(function(r){ return r.textContent.indexOf('得物 App 安装包') >= 0; })[0] || null;
+      var btns = tr ? [].slice.call(tr.querySelectorAll('[data-act]')) : [];
+      return {
+        rowCount: rows.length,
+        found: !!tr,
+        rowText: tr ? tr.textContent : '',
+        acts: btns.map(function(b){ return b.dataset.act; }),
+        disabled: btns.filter(function(b){ return b.disabled; }).map(function(b){ return b.dataset.act; }),
+        paneText: (document.querySelector('#pane') || {}).innerText || ''
+      };
+    })()`);
+    ok('★ 设置页「外部依赖」表里多了「得物 App 安装包」那一行（模拟器商店里搜不到得物时的兜底）',
+      apkUi.found, `共 ${apkUi.rowCount} 行 · ${String(apkUi.rowText).replace(/\s+/g, ' ').slice(0, 80)}`);
+    ok('★ 那一行挂着「下载到本机 / 装进模拟器」两枚按钮，且内置那份在的时候**是能点的**（不是灰的）',
+      apkUi.acts.join(',') === 'apk:save,apk:install' && apkUi.disabled.length === 0,
+      `acts=${apkUi.acts.join(',')} disabled=[${apkUi.disabled.join(',')}]`);
+    ok('★ 旁边写着「把 apk 拖进 MuMu 窗口就会自动安装」这句提示（用户要的就是这个动作）',
+      /拖进 MuMu 窗口/.test(apkUi.paneText) && /已经装过得物就不会再动它/.test(apkUi.paneText),
+      String(apkUi.paneText).replace(/\s+/g, ' ').slice(0, 130));
+
+    // 负向对照：把「内置那份」指到空目录 ⇒ 两枚按钮必须灰掉、状态变「缺」。
+    // 少了这一条，「disabled 跟着 apk 状态走」与「写死 disabled」在回归里长得一模一样（拆不开的假绿）。
+    dewuMod.setBundledDir(path.join(ROOT, 'vendor', '__not_here__'));
+    await win.webContents.executeJavaScript(`(async function(){ state.info = await window.api.info(); renderAll(); })()`);
+    await new Promise(r => setTimeout(r, 200));
+    const apkGone = await win.webContents.executeJavaScript(`(function(){
+      var rows = [].slice.call(document.querySelectorAll('#pane table tbody tr'));
+      var tr = rows.filter(function(r){ return r.textContent.indexOf('得物 App 安装包') >= 0; })[0] || null;
+      var btns = tr ? [].slice.call(tr.querySelectorAll('[data-act]')) : [];
+      return { found: !!tr, n: btns.length, disabled: btns.filter(function(b){ return b.disabled; }).length, text: tr ? tr.textContent : '' };
+    })()`);
+    ok('★ 负向对照：内置的得物安装包「不在」时两枚按钮都变灰、状态写「缺」（disabled 跟着真实状态走，不是写死的）',
+      apkGone.found && apkGone.n === 2 && apkGone.disabled === 2 && /缺/.test(apkGone.text),
+      `n=${apkGone.n} disabled=${apkGone.disabled} · ${String(apkGone.text).replace(/\s+/g, ' ').slice(0, 70)}`);
+    // ★ 还原 + 自证：不还原 ⇒ 后面所有断言都建在「得物安装包缺失」的界面上
+    dewuMod.setBundledDir(path.join(ROOT, 'vendor', 'dewu'));
+    await win.webContents.executeJavaScript(`(async function(){ state.info = await window.api.info(); renderAll(); })()`);
+    await new Promise(r => setTimeout(r, 200));
+    ok('★ 测试自己收尾：把内置目录还原后那一行又变回「内置」且按钮可点（证明上面的变灰是状态造成的，不是渲染坏了）',
+      await win.webContents.executeJavaScript(`(function(){
+        var rows = [].slice.call(document.querySelectorAll('#pane table tbody tr'));
+        var tr = rows.filter(function(r){ return r.textContent.indexOf('得物 App 安装包') >= 0; })[0] || null;
+        var btns = tr ? [].slice.call(tr.querySelectorAll('[data-act]')) : [];
+        return !!tr && btns.length === 2 && btns.every(function(b){ return !b.disabled; }) && tr.textContent.indexOf('内置') >= 0;
+      })()`));
+
+    // ★★ 全链路活体：真的**点一下**「装进模拟器」。
+    //   自检环境里没有设备 ⇒ 必须如实报「还没选设备」，而且这句必须从**主进程**回来
+    //   （按钮 → ACTS → preload → ipc → jobs → dewuapk 这条链上断一处，这里就收不到这句话，
+    //    只会静悄悄地什么都不发生 —— 那正是"按钮点了没反应"这种最难查的毛病）。
+    await win.webContents.executeJavaScript(`(async function(){ document.querySelector('[data-act="apk:install"]').click(); })()`);
+    await new Promise(r => setTimeout(r, 1200));
+    const apkToast = await win.webContents.executeJavaScript(`(document.querySelector('#toast') || {}).textContent || ''`);
+    ok('★ 点「装进模拟器」真的走完整条链（没设备时如实回「还没选设备」，不是点了没反应）',
+      /还没选设备/.test(apkToast), JSON.stringify(apkToast).slice(0, 110));
+    // ★ 三枚按钮都得有处理器：界面上有按钮、ACTS 里没处理器 = 死按钮（点了什么都不发生）。
+    //   「覆盖重装」那一枚平时不渲染（只在"设备上已经装了"之后才出现），所以只能源码级钉住它。
+    const apkSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
+    ok('★ 三枚按钮在 ACTS 里都接着处理器（apk:save / apk:install / apk:installForce）',
+      /'apk:save':\s*async/.test(apkSrc) && /'apk:install':\s*async/.test(apkSrc) && /'apk:installForce':\s*async/.test(apkSrc),
+      ['apk:save', 'apk:install', 'apk:installForce'].map(a => a + '=' + (new RegExp("'" + a + "':\\s*async").test(apkSrc) ? '有' : '缺')).join(' '));
   }
   const winSrc = fs.readFileSync(path.join(ROOT, 'src/main/window.js'), 'utf8');
   ok('★ 主进程的主题口径 = 日间/夜间/玻璃 三档（「跟随 Windows 设置」已取消）',
@@ -1444,73 +1527,64 @@ app.whenReady().then(async () => {
     !/paths\.source/.test(srcMain) && !/paths: \{ source\b/.test(srcMain),
     `paths.source=${(srcMain.match(/paths\.source/g) || []).length} · 配置键=${(srcMain.match(/paths: \{ source\b/g) || []).length}`);
   // 而高级设置页里它们都在（而且「文案模型 / 货号颜色 / 外部依赖路径」三块默认是**收起**的）
-  // ★ 自检的 userData 是临时目录 ⇒ 配置里云地址必然是空的（留空＝跟随内置），
-  //   所以「主进程实际在用的地址」可以直接从主进程问出来，再和界面显示的对比。
-  const csNow = require(path.join(ROOT, 'src/main/services/cloudsync.js')).status();
+  // ★ 2026-10-08：云端协作整块已从这一页删掉 ⇒ 这里不再需要等它、也不再比对「实际在用的地址」。
   const advUi = await win.webContents.executeJavaScript(`(async () => {
-    const EXPECT = ${JSON.stringify({ url: csNow.url, src: csNow.urlSource })};
     document.querySelector('.nav[data-tab="11"]').click();
-    // refreshCloudState 是异步的（要过一次 IPC），别抢在它前面读
-    for (let i = 0; i < 20; i++) {
-      const t = (document.querySelector('#pane #cloudEff') || {}).textContent || '';
-      if (t && !/读取中/.test(t)) break;
-      await new Promise(r => setTimeout(r, 100));
-    }
+    await new Promise(r => setTimeout(r, 200));
     const pane = document.querySelector('#pane');
     const has = s => !!pane.querySelector(s);
     const ds = [...pane.querySelectorAll('details.box')];
-    const effEl = pane.querySelector('#cloudEff');
-    const effText = effEl ? (effEl.textContent || '') : '';
-    // ★ 只认「来源：」**后面那一段**：整段里本来就同时有「跟随内置」和「本机指定」两个词
-    //   （前面的徽章 + 后面的说明），拿整段去 test 会**两边都命中** ⇒ 说反了也照样绿（假通过）。
-    const srcSeg = effText.split('来源：')[1] || '';
-    const srcRig = EXPECT.src === 'custom' ? '本机指定' : '跟随内置';
-    const srcWrong = EXPECT.src === 'custom' ? '跟随内置' : '本机指定';
+    // ★★ 2026-10-08 用户要求：「云端协作」整块**从界面上删掉**（不给任何人看到）⇒ 负向断言。
+    //   整块一起盯（5 个控件 / 4 个按钮 / 2 个状态行），少列一个键都会漏。
+    const cloudBlock = has('[data-cfg="cloud.enabled"]') || has('[data-cfg="cloud.url"]')
+      || has('[data-cfg="cloud.anonKey"]') || has('[data-cfg="cloud.machineName"]')
+      || has('[data-cfg="cloud.intervalSec"]') || has('[data-act="cloud:test"]')
+      || has('[data-act="cloud:sync"]') || has('[data-act="cloud:exp"]')
+      || has('[data-act="cloud:imp"]') || has('#cloudState') || has('#cloudEff');
+    const cloudModalDom = !!document.querySelector('#cmodal');
     return {
       adbPath: has('[data-cfg="publish.adbPath"]'), ffPath: has('[data-cfg="publish.ffmpegPath"]'),
       dump: has('[data-act="pub:dump"]'), map: has('[data-act="pub:map"]'),
       recover: has('[data-act="pub:recoverEdit"]'),
-      llm: has('[data-cfg="copy.llm.enabled"]'),
-      // ★ 2026-10-02：「看图写」这一整套要能在界面上被看见 / 被关掉 / 被自检
-      vision: has('[data-cfg="copy.llm.vision"]'), imgCount: has('[data-cfg="copy.llm.imageCount"]'),
-      imgSide: has('[data-cfg="copy.llm.imageMaxSide"]'), llmTest: has('[data-act="copy:llmtest"]'), sku: has('[data-cfg="verify.api.endpoint"]'),
+      // ★ 2026-10-08 用户要求：「文案模型」整块从这一页**搬走**（到「文案生成 → 模型配置」弹窗），
+      //   并且成为**唯一**模型入口 ⇒ 这一页必须**一个模型控件都不剩**（含旧的接口自检按钮）。
+      //   少列一个键都会漏 —— 上一版就是只删了「启用」忘了别的（负向断言要覆盖整块）。
+      llmBlock: has('[data-cfg="copy.llm.enabled"]') || has('[data-cfg="copy.llm.vision"]')
+        || has('[data-cfg="copy.llm.imageCount"]') || has('[data-cfg="copy.llm.imageMaxSide"]')
+        || has('[data-cfg="copy.llm.endpoint"]') || has('[data-cfg="copy.llm.apiKey"]') || has('[data-cfg="copy.llm.model"]')
+        || has('[data-act="copy:llmtest"]') || has('[data-act="copy:model"]'),
+      sku: has('[data-cfg="verify.api.endpoint"]'),
       mode: has('[data-cfg="verify.mode"]'), conc: has('[data-cfg="copy.concurrency"]'),
-      cloud: has('#cloudState') && has('[data-cfg="cloud.url"]') && has('[data-cfg="cloud.anonKey"]')
-        && has('[data-act="cloud:exp"]') && has('[data-act="cloud:imp"]'),
-      effPresent: !!effEl, effText: effText.slice(0, 120),
-      effShown: !!EXPECT.url && effText.includes(EXPECT.url),
-      // ★ 来源词必须和主进程报的一致，且**不许出现反面的词**（说反了＝骗人）
-      effSrcMatch: srcSeg.includes(srcRig) && !srcSeg.includes(srcWrong),
-      effSrcShown: /跟随内置|本机指定/.test(effText),
-      srcSeg: srcSeg.slice(0, 60),
-      stateUrl: EXPECT.url, stateSrc: EXPECT.src,
+      cloudBlock, cloudModalDom,
       collapsed: ds.length, openCount: ds.filter(d => d.open).length
     };
   })()`);
-  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 文案模型 / 并发路数 / SKU 接口 / adb、ffmpeg 路径 / 云端协作含导出导入）',
+  ok('★ 高级设置页收齐了这些入口（UI 定位表 / 并发路数 / SKU 接口 / adb、ffmpeg 路径）',
     advUi.adbPath && advUi.ffPath && advUi.dump && advUi.map
-      && advUi.llm && advUi.sku && advUi.mode && advUi.conc && advUi.cloud, JSON.stringify(advUi));
+      && advUi.sku && advUi.mode && advUi.conc, JSON.stringify(advUi));
+  // ★★ 2026-10-08 用户要求：「云端协作」整块**从界面上删掉**（原话「不用给任何人看到」）
+  //   ⇒ 负向断言盯着整块（控件 / 按钮 / 状态行 / 弹窗一个都不能剩）。哪天被加回来这里必红；
+  //   只删一半（例如控件删了、弹窗留着）也会红。
+  ok('★★ 高级设置页不再有「云端协作」整块（控件 / 导出导入按钮 / 状态行 / 弹窗）',
+    advUi.cloudBlock === false && advUi.cloudModalDom === false,
+    JSON.stringify({ cloudBlock: advUi.cloudBlock, cloudModalDom: advUi.cloudModalDom }));
+  // ★★ 2026-10-08 用户要求「设置里的模型直接删了」：负向断言盯着整块搬走，不然哪天被加回来照样全绿
+  ok('★ 高级设置页不再有「文案模型」整块（含旧的接口自检按钮）—— 已搬到「文案生成 → 模型配置」',
+    advUi.llmBlock === false, JSON.stringify({ llmBlock: advUi.llmBlock }));
   // ★ 2026-10-03 用户要求删掉的那一块：负向断言盯着（不然哪天被加回来，整套回归照样全绿）
   ok('★ 高级设置页不再有「失败恢复动作」（整块删了，不是藏起来）',
     advUi.recover === false, JSON.stringify({ recover: advUi.recover }));
-  // ★★ 2026-10-02 第六轮：云端配置改成「留空＝跟随内置」后，删掉了 applyCloudDefaults，
-  //    于是守「界面骗人」的担子全压在这一行上 —— 它必须**无条件**显示主进程真正在用的地址。
-  //    （以前是靠「把内置值写回配置」让框里的值 = 在用的值；那条会固化，已删。）
-  ok('★ 云端协作块里有「当前实际在用」这一行（「留空＝跟随内置」唯一的可见出口）',
-    advUi.effPresent === true, JSON.stringify({ present: advUi.effPresent, text: advUi.effText }));
-  ok('★★ 界面显示的地址 == 主进程真正在用的地址（不许「框里空着、后台照推别处」）',
-    advUi.effShown === true, JSON.stringify({ stateUrl: advUi.stateUrl, text: advUi.effText }));
-  ok('★ 那一行同时说清来源，且**说的和主进程报的一致**（跟随内置 / 本机指定说反了就是骗人）',
-    advUi.effSrcShown === true && advUi.effSrcMatch === true && (advUi.stateSrc === 'builtin' || advUi.stateSrc === 'custom'),
-    JSON.stringify({ src: advUi.stateSrc, seg: advUi.srcSeg, text: advUi.effText }));
-  // 五块：文案模型 / 并发路数 / 货号颜色 / 外部依赖路径 / 云端协作（2026-10-02 新增云端协作）
-  ok('★ 高级设置里「可选」的五块默认是收起的（折叠区，不占地方）',
-    advUi.collapsed === 5 && advUi.openCount === 0, JSON.stringify(advUi));
-  // ★★ 2026-10-02（本轮）：文案模型这一块必须让人能「看见自己在看图写」——
-  //   看图开关 / 每条几张图 / 缩到多大 / 一个「接口自检」按钮，缺一个都不行。
-  //   （上一版这些事只有跑生成时才暴露，而失败还被静默吞成「本地模板」⇒ 用户只看到模板货。）
-  ok('★ 文案模型块里有「看图」开关 + 送图张数 + 缩放尺寸 + 接口自检按钮',
-    advUi.vision && advUi.imgCount && advUi.imgSide && advUi.llmTest, JSON.stringify(advUi));
+  // 【已删】原来这 3 条钉的是云端协作块里「当前实际在用」那一行（界面上「留空＝跟随内置」的
+  //   唯一可见出口）。2026-10-08 用户要求整块删掉 ⇒ 这几条的**对象已不存在**，
+  //   改由上面那条负向断言盯着（块不许回来）。别再照抄回来 —— 它守的那个界面已经没有了。
+  // 三块：并发路数 / 货号颜色 / 外部依赖路径
+  //   （★ 2026-10-08 起是 3 块：「文案模型」已搬到「文案生成 → 模型配置」弹窗，
+  //     「云端协作」整块已删）
+  //   ★ 数字要跟着块数改：不改的话删/搬一块之后这里会**假红**（不是那一块出问题，是计数过期）。
+  ok('★ 高级设置里「可选」的三块默认是收起的（折叠区，不占地方）',
+    advUi.collapsed === 3 && advUi.openCount === 0, JSON.stringify(advUi));
+  // 【已迁走】原来这里钉「文案模型块里有 看图开关 / 送图张数 / 缩放尺寸 / 接口自检」——
+  //   2026-10-08 用户要求搬进「文案生成 → 模型配置」弹窗 ⇒ 这几条改为在下面那一段里钉（同口径，只是换了地方）。
 
   // 「文案生成」页要说清两件事：标题是看图写的、跑完会落一份 AI 内容报告（可反向导入）。
   // 同时钉住**旧口径已删**：「标题格式轮换」那套壳不再对用户宣传（它就是「像 AI 做的」的来源）。
@@ -1525,6 +1599,105 @@ app.whenReady().then(async () => {
     copyUi.report === true && copyUi.back === true, JSON.stringify(copyUi));
   ok('★ 旧口径「标题格式轮换」不再出现在这一页（F01~F10 已降级为离线模板专用）',
     copyUi.oldFmt === false, JSON.stringify(copyUi));
+
+  // ★★ 2026-10-08 用户要求：模型配置搬到「文案生成」页（做成弹窗），并且成为**唯一**模型入口。
+  //   原话：「后续模型调用都通过这个口子来，设置里的模型直接删了」「可设置默认模型，
+  //   第一次填写后，后续默认选用这个」。逐条钉住：
+  //     ① 按钮在「提示词配置」**左边**（用户指定位置）；② 点它是**开弹窗**，不是跳设置页；
+  //     ③ 弹窗里配得全（启用 / 地址 / Key / 默认模型 / 拉清单 / 自检 / 保存）；
+  //     ④ 「实际在用」显示真值，且**不带明文 key**；
+  //     ⑤ 改完点「保存」真落进 copy.llm.model —— 这就是「后续默认选用这个」的落点。
+  //   ★ 高级设置那一块的**负向**断言在上面 advUi 段（哪天被加回来要能抓）。
+  //   ★ 注：注入代码里**不写正则转义**（`\s` 这类在模板串里会被吃掉一个反斜杠 ⇒ 静默变味），
+  //     需要比对就看子串，不做空白归一。
+  {
+    const lmUi = await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.nav[data-tab="3"]').click();
+      await new Promise(r => setTimeout(r, 250));
+      // ★ 动作按钮在 #head 的 .act 里（不是 #pane —— #pane 是页面正文）
+      const act = document.querySelector('#head .act');
+      const modelBtn = act ? act.querySelector('[data-act="copy:model"]') : null;
+      const promptBtn = act ? act.querySelector('[data-act="copy:prompt"]') : null;
+      const sameRow = !!(modelBtn && promptBtn && modelBtn.parentElement === promptBtn.parentElement);
+      const beforePrompt = !!(modelBtn && promptBtn
+        && (modelBtn.compareDocumentPosition(promptBtn) & Node.DOCUMENT_POSITION_FOLLOWING) > 0);
+      if (modelBtn) modelBtn.click();
+      // 「实际在用」那一行要过一次 IPC：等它从「读取中」变成真值
+      for (let i = 0; i < 30; i++) {
+        const t = (document.getElementById('lmCur') || {}).textContent || '';
+        if (t && t.indexOf('读取中') < 0) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      const mask = document.getElementById('lmmodal');
+      const box = document.getElementById('lmBox');
+      const has = s => !!(box && box.querySelector(s));
+      const eff = await window.api.llmEffective();
+      return {
+        modelBtn: !!modelBtn, sameRow, beforePrompt,
+        open: !!mask && mask.hidden === false,
+        fEnabled: has('#lmEnabled'), fEndpoint: has('#lmEndpoint'), fKey: has('#lmKey'), fModel: has('#lmModel'),
+        listBtn: has('[data-act="lm:list"]'), testBtn: has('[data-act="lm:test"]'), saveBtn: has('[data-act="lm:save"]'),
+        effText: (document.getElementById('lmCur') || {}).textContent || '',
+        effKeys: Object.keys(eff).sort(),
+        effKeyLeak: Object.prototype.hasOwnProperty.call(eff, 'apiKey') || Object.prototype.hasOwnProperty.call(eff, 'key')
+      };
+    })()`);
+    ok('★ 「模型配置」按钮在「文案生成」页，紧挨在「提示词配置」**左边**（用户指定位置）',
+      lmUi.modelBtn && lmUi.sameRow && lmUi.beforePrompt,
+      JSON.stringify({ btn: lmUi.modelBtn, sameRow: lmUi.sameRow, before: lmUi.beforePrompt }));
+    ok('★ 点它**开弹窗**（不是跳到设置页）：启用 / 接口地址 / API Key / 默认模型 / 拉清单 / 自检 / 保存 一个不缺',
+      lmUi.open && lmUi.fEnabled && lmUi.fEndpoint && lmUi.fKey && lmUi.fModel
+        && lmUi.listBtn && lmUi.testBtn && lmUi.saveBtn, JSON.stringify(lmUi));
+    ok('★ 弹窗里「实际在用」显示的是**真值**（不是空框、不是停在「读取中」）',
+      lmUi.effText.indexOf('实际在用') >= 0 && lmUi.effText.indexOf('读取中') < 0,
+      JSON.stringify({ eff: lmUi.effText }));
+    ok('★ 「实际在用」只回一个「配没配」的布尔，**不带明文 key**（少一条泄漏面）',
+      lmUi.effKeyLeak === false && lmUi.effKeys.indexOf('apiKeySet') >= 0, JSON.stringify(lmUi.effKeys));
+  }
+  // 改「默认模型」→ 保存 → 真落进配置
+  {
+    const oldModel = store.get('copy.llm.model') || '';
+    const sv = await win.webContents.executeJavaScript(`(async () => {
+      const box = document.getElementById('lmBox');
+      const m = box && box.querySelector('#lmModel');
+      if (!m) return { ok: false, why: '弹窗里的 #lmModel 找不到' };
+      m.value = '__uicheck_default_model__';
+      box.querySelector('[data-act="lm:save"]').click();
+      await new Promise(r => setTimeout(r, 400));
+      return { ok: true, closed: document.getElementById('lmmodal').hidden === true };
+    })()`);
+    const after = store.get('copy.llm.model');
+    ok('★ 改完点「保存」真的写进 copy.llm.model、并自动关掉弹窗（＝「后续默认选用这个」）',
+      sv.ok && after === '__uicheck_default_model__' && sv.closed === true,
+      JSON.stringify({ saved: after, closed: sv.closed, why: sv.why || '' }));
+    // 还原：自检共用一个临时 userData，别把后面的用例带偏
+    store.set({ copy: { llm: { model: oldModel } } });
+  }
+  // 「拉取模型清单」这条链路：要么真列出可选模型，要么把「拉不到」的原因写出来（不许静默）
+  {
+    const lr = await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.nav[data-tab="3"]').click();
+      await new Promise(r => setTimeout(r, 200));
+      document.querySelector('[data-act="copy:model"]').click();
+      await new Promise(r => setTimeout(r, 250));
+      const box = document.getElementById('lmBox');
+      if (!box) return { brows: 0, text: '弹窗没开', err: false };
+      box.querySelector('[data-act="lm:list"]').click();
+      // 一次网络往返（拿不到清单时是真失败，要给足时间；共 20s 上限）
+      let brows = 0, text = '';
+      for (let i = 0; i < 80; i++) {
+        const b = document.getElementById('lmList');
+        text = (b && b.textContent) || '';
+        brows = b ? b.querySelectorAll('.brow').length : 0;
+        if (brows > 0 || text.indexOf('拉不到清单') >= 0) break;
+        await new Promise(r => setTimeout(r, 250));
+      }
+      return { brows, text: text.slice(0, 160), err: text.indexOf('拉不到清单') >= 0 };
+    })()`);
+    ok('★ 「拉取模型清单」不静默失败：要么列出可选模型，要么把「拉不到」的原因写在弹窗里',
+      lr.brows > 0 || lr.err === true, JSON.stringify(lr));
+    await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('[data-act="lm:close"]'); if (b) b.click(); })()`);
+  }
 
   // ★ 2026-10-04 用户要求：文案生成页那张表**不摆「货号 / 颜色」两列**
   //   原话：「反正 AI 内容报告会显示具体货号和颜色，这里就不展示了」。
@@ -1556,18 +1729,13 @@ app.whenReady().then(async () => {
   }
 
   // ★ 2026-10-02（第三轮）：云端配置的「下发」—— 导出 / 导入两个动作 + 一个弹窗。
-  //   ① 结构：弹窗必须写在 index.html 里，且**在 .app 外面**。
-  //      （2026-10-02 真踩过：塞进 #pane 会被 overflow 裁掉，底部按钮点不到；
-  //        而且 renderAll 会被进度事件频繁触发 —— 挂在 #pane 里，正在粘贴的内容会被重画没。）
-  //   ② 行为：真点一下「导入配置」（它只是开弹窗，不需要任何凭据），确认能开、Esc 能关。
+  //   【已删 2026-10-08】用户要求「云端协作」整块从界面删掉 ⇒ 弹窗 #cmodal 已从 index.html 移除，
+  //   原来那条「弹窗必须挂在 .app 外面」的正向断言随之作废（负向断言在下面「高级设置页」那组）。
+  //   下面这几个变量**必须保留** —— 紧随其后的「说明书弹窗」那条断言还在用它们。
   const idxHtml = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
   const iLines = idxHtml.split(/\r?\n/);
   const appOpen = iLines.findIndex(l => /<div class="app">/.test(l));
   const appClose = iLines.findIndex((l, i) => i > appOpen && /^<\/div>/.test(l));
-  const cmodalAt = iLines.findIndex(l => /id="cmodal"/.test(l));
-  ok('★ 云端配置弹窗在 index.html 且挂在 .app 外面（塞进 #pane 会被裁掉、底部按钮点不到）',
-    appOpen >= 0 && appClose > appOpen && cmodalAt > appClose && /id="cmBox"/.test(idxHtml),
-    JSON.stringify({ appOpen, appClose, cmodalAt }));
 
   // ---- ★ 2026-10-03：「批次设置」那六百多字长文 ⇒ 「说明书」弹窗（用户要求）----
   //   ① 结构：弹窗在 index.html 且挂在 .app 外面（跟上面那个同规矩）
@@ -1633,26 +1801,12 @@ app.whenReady().then(async () => {
   ok('★ 那 4 段长文已不在页面上（是搬进说明书，不是复制一份贴两处）',
     helpUi.longOnPage === false, JSON.stringify({ longOnPage: helpUi.longOnPage }));
 
-  const cloudModalUi = await win.webContents.executeJavaScript(`(async () => {
-    document.querySelector('.nav[data-tab="11"]').click();
-    await new Promise(r => setTimeout(r, 200));
-    const btn = document.querySelector('[data-act="cloud:imp"]');
-    if (!btn) return { hasBtn: false };
-    btn.click();
-    await new Promise(r => setTimeout(r, 150));
-    const mask = document.querySelector('#cmodal');
-    const box = document.querySelector('#cmBox');
-    const open = !!mask && !mask.hidden;
-    const outsidePane = !!mask && !mask.closest('#pane');
-    const hasArea = !!(box && box.querySelector('#cmText'));
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await new Promise(r => setTimeout(r, 150));
-    return { hasBtn: true, open, outsidePane, hasArea, closed: !!mask && mask.hidden };
-  })()`);
-  ok('★ 点「导入配置」真开出弹窗，且在 #pane 外面、有可粘贴的输入区',
-    cloudModalUi.hasBtn && cloudModalUi.open && cloudModalUi.outsidePane && cloudModalUi.hasArea,
-    JSON.stringify(cloudModalUi));
-  ok('★ Esc 能关掉云端配置弹窗（关不掉的弹窗会挡住整页）', cloudModalUi.closed === true, JSON.stringify(cloudModalUi));
+  // 【已删】原来这里点「导入配置」验弹窗能开、Esc 能关。2026-10-08 用户要求删掉云端协作整块，
+  //   按钮和弹窗都不在了 ⇒ 改成**负向**：容器本身也不许留在 index.html 里
+  //   （留一个空容器，就等于给「藏起来的入口」留了后门）。
+  ok('★★ 云端配置弹窗的容器已从 index.html 里删掉（不是留着藏起来）',
+    !fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8').includes('id="cmodal"'),
+    '#cmodal 仍在 index.html');
 
   // ★ 2026-10-02（第二轮）：用户点名「并发路数」也挪进高级设置 —— 它是运行参数（撞接口限流的旋钮），
   //   和「必带话题 / 轮换策略」那种**改产出**的业务内容不是一回事。两件事都要验：

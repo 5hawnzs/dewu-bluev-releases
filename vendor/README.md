@@ -8,16 +8,19 @@
 | `vendor/adb/` | `<安装目录>/resources/adb/` | `src/main/index.js` → `adb.setBundledAdbDir()` |
 | `vendor/adbkeyboard/` | `<安装目录>/resources/adbkeyboard/` | `src/main/index.js` → `adb.setBundledApkPath()` |
 | `vendor/ffmpeg/` | `<安装目录>/resources/ffmpeg/` | `src/main/index.js` → `video.setBundledFfmpegDir()` |
+| `vendor/dewu/` | `<安装目录>/resources/dewu/` | `src/main/index.js` → `dewuapk.setBundledDir()` |
 
 **为什么要内置**：以前 adb 要用户自己去模拟器安装目录里翻（`D:\MUMU\MuMuPlayer\nx_main\adb.exe`）
 填进设置里 —— 这是新同事的第一道墙。adb 三件套才 8 MB 出头，内置之后「装上就能用」。
 中文输入法同理：不装它，中文标题/正文根本打不进得物发布页。
 ffmpeg 是为了**把达人给的 `.mov` / `.m4v` / `.avi` / `.webm` / `.mkv` 自动转成 `.mp4`** ——
 得物只收 mp4，以前非 mp4 只能标「需手动转 MP4」让运营自己去开转换器，这是发布链路上最烦的一块手工活。
+得物 App 安装包是为了兜**MuMu 自带的应用商店里搜不到得物** —— 新模拟器/新同事卡在这一步就没法开始，
+设置页「外部依赖」给「下载到本机 / 装进模拟器」两个按钮（见 `src/main/services/dewuapk.js`）。
 
 > ⚠️ 这些二进制**故意进 git**。仓库的 `.gitignore` 一般不许提交二进制（`node_modules`/`dist` 那种几百 MB 的），
 > 但这一份是**每次打包都必须有**的，走「构建时下载」会让没网的机器打不出包。
-> adb + 输入法约 9.6 MB、ffmpeg 约 79 MB，合计约 88 MB。
+> adb + 输入法约 9.6 MB、ffmpeg 约 79 MB、得物安装包约 127 MB，合计约 216 MB。
 
 ---
 
@@ -85,7 +88,43 @@ ffmpeg 是为了**把达人给的 `.mov` / `.m4v` / `.avi` / `.webm` / `.mkv` �
 - ★ **不要再额外内置 `ffprobe`**（另外 78.8 MB，等于白烧一倍体积）：
   读时长用现有的纯 JS `moov → mvhd` 解析就够了（`imaging.videoDurationSec`），实测 MOV 也能读。
 
-## 4. 怎么更新到新版本
+## 4. `vendor/dewu/` —— 得物 App 的安卓安装包（模拟器商店里搜不到得物时的兜底）
+
+| 文件 | 字节 | md5 |
+|---|---|---|
+| `dewu_6.0.5.apk` | 133,315,131 | `50092bccb263498a16e4fbb57762ae5f` |
+
+- **包里到底是什么**（★ 这几项是**从包的 `AndroidManifest.xml` 里读出来的**，不是按文件名猜的 ——
+  解析脚本见本轮工作记录；读法：APK 里那份 manifest 是二进制 XML，按 AXML 字符串池 + start-element 属性逐条解）：
+  - `package` = `com.shizhuang.duapp`
+  - `versionName` = `6.0.5` · `versionCode` = `1140`（⇒ 文件名里的 `6.0.5` 对得上）
+  - `compileSdkVersion` = `35`
+  - `lib/` 里只有 `arm64-v8a` / `armeabi-v7a`，**没有 `x86_64`**
+- ★ **ABI 这条要记住**：MuMu 12 是 x86_64 模拟器，这个包只有 arm64 ⇒ 装是靠 MuMu 自带的
+  **ARM 兼容层**跑的。`adb install` 本身不看 ABI（照样 Success），所以**"装上了但打不开"**
+  的第一嫌疑就是这条，不是包坏了。
+- **来源**：**装机师傅本机上已有的一份**（这台机器上同一 md5 的两份副本：
+  `C:\Users\Administrator\WorkBuddy\2026-09-18-19-34-22\dewu-kol\dewu_6.0.5.apk` 与
+  `E:\WORKBUDDY\2026-09-22-18-26-20\dewu_pcap\dewu.apk`，两边 md5 一模一样 ⇒ 同一份）。
+  - ★★ **老实说清楚：这一份没有跟得物官方渠道对过。** 得物官方没有稳定的直链
+    （下的是下载页 / 应用商店跳转），所以只能拿本机已有的副本，用**字节数 + md5 固定住**
+    （`src/main/services/dewuapk.js` 里的 `BYTES` / `MD5`），保证"发给每个人的是同一份、
+    且装之前能判出这份完不完整"。**md5 只能证明"没被换过/没坏"，证明不了"它出自官方"**——
+    要更强的保证，只能去得物官方渠道下同一版本、再重算 md5 换掉这两处常量与本表。
+- **许可/合规**：得物 App 是**第三方商业应用**，版权在得物，这里是**原样分发、未做任何修改**。
+  - ★★ **当前只按「公司/团队内部装机使用」放进来。**
+  - ★★ **一旦要对外分发这个安装包**（给客户、代运营、外部合作方），先解决授权问题 ——
+    换成「让用户在得物官方渠道自己下」的指引，而不是随包发（同 `vendor/ffmpeg` 那条 GPL 提醒的性质）。
+- **怎么用**：设置页「外部依赖」那一行两个按钮 ——
+  - 「下载到本机」= 另存为一份到用户选的位置（`dewuapk.saveAs`，存完回读大小，半截文件不许说"存好了"）；
+  - 「装进模拟器」= `adb install -r` 装进已选中的设备，**装之前先读设备**：
+    已经装了得物就**一条安装命令都不发**（得物里是登录状态和本地草稿），只回报版本；
+    覆盖重装必须由用户再点一次「覆盖重装」（那时才加 `-d` 允许降级）。
+    装完**回读** `pm list packages` 确认，`adb install` 说 Success 不算数。
+- ★ 换新版本（例如 6.1.0）：把新 apk 放进本目录 → 改 `dewuapk.js` 里的 `FILE`/`BYTES`/`MD5`/`VERSION`/`VERSION_CODE`
+  → 改本表这几行 → 跑 `node tools/run-all.js`（`uicheck` 会核对内置文件的 md5 能不能在本表里对上）。
+
+## 5. 怎么更新到新版本
 
 ```bash
 # ① 下载官方 platform-tools 并解压

@@ -111,7 +111,11 @@ async function scan(items, ctx = {}) {
         if (e === '.heic' || e === '.heif') {
           rows.push({
             item: item.id, file: name, type: '图片', issue: 'HEIC 格式，必须为 JPG',
-            action: imaging.hasHeif() ? '转 JPG' : '需 HEIF 解码器（sharp/libheif）',
+            // ★ 2026-10-08：`imaging.hasHeif()` 现在**恒 false**（预编译 libvips 无 HEVC 解码器，
+            //   见 imaging.js 里那段实测）⇒ 这里走 else 分支：**扫到就预判为人工**，
+            //   不再白试一次转换、再拿 catch 报一条「处理失败」。
+            //   文案也不提 sharp/libheif —— 那会让人以为「装个 sharp 就行」，而它本来就在包里。
+            action: imaging.hasHeif() ? '转 JPG' : '需先转 JPG（本工具不含 HEVC 解码器）',
             status: imaging.hasHeif() ? 'todo' : 'manual', size
           });
         } else {

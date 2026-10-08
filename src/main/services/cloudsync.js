@@ -7,8 +7,11 @@
  *   发布本身仍然只能由本机 adb 驱动模拟器完成 —— 浏览器碰不到 adb，这是硬边界。
  *
  * ★★ 四条红线（改这个文件前先读一遍）：
- *   1) **绝不内置密钥**。地址与 anon key 只从配置里读（管理员在「高级设置 → 云端协作」里填）。
+ *   1) **只许内置 anon / publishable key**。地址与 anon key 的取值：本机 config.json 里
+ *      显式填的 > `clouddefaults.js` 的内置组织值（读取时兜底、**不写回**）。
  *      这里**任何地方**都不许出现 service_role key —— 那个 key 能绕过 RLS 读写全表，泄了等于裸奔。
+ *      ★ 2026-10-08 起界面上**没有配置入口了**（用户要求：这块不给任何人看到）⇒
+ *        改配置只能改 config.json，组织级切换走「发新包」。
  *   2) **失败绝不能阻断发布**。上行失败只记状态、静默退避；发布结果早就在本机 jsonl 里落盘了，
  *      云上少几条只是看板不全，绝不能反过来让发布挂掉（和 sheet.appendLog 一个口径）。
  *   3) **只上行结构化结果，不上行素材内容、不上行绝对路径**（dir 只取最后一段目录名）。
@@ -69,6 +72,64 @@ function writeState(s) {
   } catch (e) { /* 只读盘 / 没权限：同步状态存不下，但绝不能因此让发布失败 */ }
 }
 
+/**
+ * 把一次失败写成「能定位」的一句话（给界面与落盘共用）。
+ *
+ * ★★ 为什么必须把 cause 串起来：Node 的 fetch 在 DNS / 连接层失败时，`e.message` **只有六个字**
+ *    `fetch failed`，真正的原因（ENOTFOUND / ECONNRESET / ETIMEDOUT / other side closed / bad port）
+ *    全在 `e.cause` 里。2026-10-08 实测：DNS 解析失败与连接被拒**都**显示成 `fetch failed`，
+ *    看不出任何区别 ⇒ 本机代理一断，界面上就只有这六个字，排查成本极高。
+ *    undici 的 cause 可能还嵌一层（TypeError → SocketError → Error），所以往下扒最多 3 层。
+ * ★ 绝不抛：这函数本身在 catch 里跑，它抛了就把真正的错误吞掉。
+ */
+function describeErr(e) {
+  try {
+    const base = String((e && e.message) || e || '未知错误');
+    const bits = [base];
+    // HTTP 类错误的消息里已经带了状态码，别写两遍
+    if (e && e.status && base.indexOf('HTTP ') !== 0) bits.push('HTTP ' + e.status);
+    let c = e && e.cause;
+    for (let d = 0; c && d < 3; d++) {
+      const t = c.code
+        ? String(c.code) + (c.message && c.message !== c.code ? ' ' + c.message : '')
+        : String(c.message || c);
+      if (t && bits.indexOf(t) < 0) bits.push(t);
+      c = c.cause;
+    }
+    return bits.join(' · ').slice(0, 300);
+  } catch (_) {
+    return '描述失败信息时又出错了';
+  }
+}
+
+/** 同步失败的台账（一行一次）。放输出目录，和 publish-log.jsonl 并排，方便一起交上来 */
+function errorLogFile() {
+  return path.join(store.get('paths.output') || '', 'cloud-sync-errors.log');
+}
+
+const ERR_LOG_MAX = 1024 * 1024;   // 单文件上限 1MB，超了滚一次（保留 .1），绝不无限长
+
+/**
+ * 追加一行失败台账。
+ * ★ 为什么非落盘不可：`logbus` **只进内存**（环形缓存），而且成功后 `lastError` 立刻被清空 ⇒
+ *   事后在磁盘上一条痕迹都没有。2026-10-08 实测：`run-log.jsonl` / `config.json` / 整个工作区
+ *   搜「云端同步失败」**0 命中** ⇒ 出事只能靠猜。落盘之后，下次只要把这个文件拿出来就能定性。
+ * ★ 绝不抛：写不进去（盘满/只读/输出目录还没配）也只是少一条证据，绝不能反过来让同步或发布挂掉。
+ */
+function appendErrorLog(text) {
+  try {
+    const dir = store.get('paths.output') || '';
+    if (!dir) return;                        // 输出目录都没配，无处可写
+    fs.mkdirSync(wp.toLong(dir), { recursive: true });
+    const f = wp.toLong(errorLogFile());
+    try {
+      if (fs.statSync(f).size > ERR_LOG_MAX) fs.renameSync(f, f + '.1');
+    } catch (_) { /* 文件还不存在，正常 */ }
+    const line = `[${new Date().toISOString()}] ${text}\n`;
+    fs.appendFileSync(f, line, 'utf8');
+  } catch (_) { /* 写不进去就算了 —— 证据少一条，好过把发布拖下水 */ }
+}
+
 function logFile() {
   return path.join(store.get('paths.output') || '', 'publish-log.jsonl');
 }
@@ -117,8 +178,46 @@ function toRow(e, machine) {
 }
 
 /**
+ * 机器指纹：Windows 读注册表 MachineGuid（**装系统时生成**）。
+ * ★ 为什么需要它：machineId 原来是**随机** UUID，一旦配置被搬运/清空就换一个新的 ⇒
+ *   同一台物理机在云上变成两台，且整本台账会以新 id 重推一遍（唯一键含 machine_id，去不掉）⇒ 看板数字翻倍。
+ *   实测证据（2026-10-08 真库）：189 项真实工作占了 367 行，其中 178 项**同时**挂
+ *   `m_ce61ca24` 与 `m_fb6e1a86` 两个标识，且 ts 完全相同。
+ *   MachineGuid 在「重装 App / 清 config.json / 换 Windows 用户」下都不变，正好补上这个洞。
+ *   （读不到就返回空串 ⇒ 退回原来的随机行为，绝不因为读不到注册表就崩。）
+ */
+let fpCache = null;
+function machineFingerprint() {
+  if (fpCache !== null) return fpCache;
+  fpCache = '';
+  try {
+    if (process.platform === 'win32') {
+      const out = require('child_process').execFileSync(
+        'reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
+        { encoding: 'utf8', timeout: 4000, windowsHide: true });
+      const m = /MachineGuid\s+REG_SZ\s+([0-9a-fA-F-]{8,})/.exec(String(out));
+      if (m) fpCache = m[1].trim().toLowerCase();
+    }
+  } catch (e) { /* 读不到注册表（权限/非 Windows）⇒ 留空串，走随机兜底 */ }
+  return fpCache;
+}
+
+/** 纯函数：指纹 → 机器标识。**同一个指纹永远得到同一个 id**（这就是修「同一台机变两台」的关键）。 */
+function idFromFingerprint(fp) {
+  const s = String(fp || '').trim();
+  if (!s) return '';
+  return 'm_' + crypto.createHash('sha1').update('bluev|' + s).digest('hex').slice(0, 8);
+}
+
+/**
  * 机器标识：一次生成、写进配置，之后不变（否则同一台机器在云上会变成两台）。
  * create=false 时**不落盘、不生成**（给状态显示用 —— 没启用就先别往配置里写东西）。
+ *
+ * ★★ 生成顺序（**不要**改成「一律按指纹重算」）：
+ *   ① 配置里已有 machineId ⇒ 照用。**绝不因为指纹不同就迁移** ——
+ *      迁移＝换 id＝整本台账以新 id 重推一遍＝看板再翻一倍（真库实测过这个后果）。
+ *   ② 没有 ⇒ 由机器指纹派生（同一台机永远是同一个 id，清配置也认得回来）。
+ *   ③ 指纹也读不到 ⇒ 退回随机（保持原行为）。
  */
 function machineOf(create) {
   const cfg = store.get('cloud') || {};
@@ -127,7 +226,7 @@ function machineOf(create) {
   let id = String(cfg.machineId || '');
   if (!id) {
     if (create === false) return { id: '', name, org };
-    id = 'm_' + crypto.randomUUID().slice(0, 8);
+    id = idFromFingerprint(machineFingerprint()) || ('m_' + crypto.randomUUID().slice(0, 8));
     try { store.set({ cloud: { machineId: id } }); } catch (e) { /* 存不下就用内存里的 */ }
   }
   return { id, name, org };
@@ -264,8 +363,13 @@ async function syncOnce(opts = {}) {
   }
 
   syncing = true;
+  // ★ 留一份「这一轮读到的台账」给 catch 用：失败时要如实写「还差几条没上行」，
+  //   而 `pending()` 有 3 秒缓存（那边是给界面轮询用的），在 catch 里取到的是**上一轮的旧值** ——
+  //   把旧值当成本次失败时的积压写进证据文件，就是写了一个假数字（宁可写 ? 也不写错的 0）。
+  let ledgerRows = null;
   try {
     const all = readEntries();
+    ledgerRows = all;
     // ★ 台账被「数据清理」清空 / 换过输出目录后，游标会指到比文件更远的地方。
     //   不重置的话 offset 永远大于行数 ⇒ 之后再也不上行（界面看着像同步正常，云上却一条没有）
     if (st.offset > all.length) {
@@ -276,6 +380,17 @@ async function syncOnce(opts = {}) {
     const slice = all.slice(st.offset);
     if (!slice.length) {
       pendingCache = { at: Date.now(), value: 0 };
+      // ★★ 走到这里 = 台账读到了、且**一行待上行的都没有** ⇒ 上一次失败留下的红色标记此刻已经没有意义。
+      //    不清的话它会一直挂着（例如失败之后台账被「数据清理」清掉：offset 重置为 0、slice 为空，
+      //    从此每次同步都走这条分支，永远不回 catch、也永远不进成功分支 ⇒ 界面上「同步失败」永不消失，
+      //    用户会以为同步坏了，而实际上云上是齐的）。
+      // ★ 只在真有残留时才写盘：没残留就照旧什么都不写，避免每 30 秒无谓写一次文件。
+      if (st.lastError || st.fail || st.nextTryAt) {
+        st.lastError = '';
+        st.fail = 0;
+        st.nextTryAt = 0;
+        writeState(st);
+      }
       return { ok: true, uploaded: 0, pending: 0, offset: st.offset, lastSyncAt: st.lastSyncAt };
     }
     const machine = machineOf();
@@ -302,9 +417,16 @@ async function syncOnce(opts = {}) {
     // 退避：30s → 60s → 120s … 最多 5 分钟。失败不该一直重试着刷云端
     const backoff = Math.min(300, cfg.intervalSec * Math.pow(2, st.fail)) * 1000;
     st.nextTryAt = Date.now() + backoff;
-    st.lastError = String(e.message || e);
+    // ★★ 记「能定位」的那句话，而不是 `String(e.message)` —— 后者在 DNS/连接失败时只有 `fetch failed`
+    //    六个字（cause 被丢掉），正是 2026-10-08 排查「为什么时不时同步失败」时卡住的地方。
+    st.lastError = describeErr(e);
     writeState(st);
-    try { require('../logbus').warn(`云端同步失败（${st.fail} 次，${Math.round(backoff / 1000)}s 后重试）：${st.lastError}`); } catch (_) { /* 没日志总线就算了 */ }
+    try {
+      require('../logbus').warn(`云端同步失败（${st.fail} 次，${Math.round(backoff / 1000)}s 后重试）：${st.lastError}`);
+    } catch (_) { /* 没日志总线就算了 */ }
+    // 同时落一条盘：`logbus` 只进内存，而下次成功会把 lastError 清空 —— 不落盘就永远无法复盘
+    const pend = ledgerRows ? Math.max(0, ledgerRows.length - (st.offset || 0)) : '?';
+    appendErrorLog(`fail=${st.fail} backoff=${Math.round(backoff / 1000)}s offset=${st.offset} pending=${pend} err=${st.lastError}`);
     return { ok: false, uploaded: 0, error: st.lastError, pending: pending() };
   } finally {
     syncing = false;
@@ -398,4 +520,8 @@ function configure() {
   start();
 }
 
-module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, exportConfig, importConfig, explicitOf, stateFile, logFile, dataDir };
+module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, exportConfig, importConfig, explicitOf, stateFile, logFile, dataDir,
+  // 机器标识：idFromFingerprint 是纯函数（断言直接打它）；machineFingerprint 只读不写
+  idFromFingerprint, machineFingerprint,
+  // 失败可诊断性：describeErr 是纯函数（断言直接打它）；errorLogFile/appendErrorLog 给测试读落盘台账
+  describeErr, errorLogFile, appendErrorLog };

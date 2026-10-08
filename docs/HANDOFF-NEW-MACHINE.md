@@ -24,7 +24,7 @@
 | 东西 | 走什么通道 | 敏感度 |
 | --- | --- | --- |
 | 源码 / 18 套回归 / `docs/` / `docs/knowledge/` / `AGENTS.md` | **`git clone`** | ⚠️ **2026-10-08 起不再是「公开级」**：源码里现在含**内置模型 key**（`src/main/llmdefaults.js`）⇒ **这个仓库不许公开、不许推公网**（见 §3.0 第 3 条） |
-| `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` | **`git clone`**（★ 这些二进制**已经在 git 里**，不用另外拷） | 公开级 |
+| `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` `vendor/dewu/dewu_6.0.5.apk` | **`git clone`**（★ 这些二进制**已经在 git 里**，不用另外拷；得物安装包 127 MB，是这里面最大的一份） | 公开级 |
 | **`config.json`** | ★ **别整份拷** —— 用 `node tools/config-portable.js` 导出/导入（见 §3.1），再走加密包 / U 盘 / 内网共享。**绝不许走 git、不许贴聊天** | ★★（默认导出已抹密钥；加了 `--with-secrets` 就是 ★★） |
 | **`auth.json`** | 同上（或改用种子文件，见 §3.3） | ★★ 含账号口令哈希 |
 | **`.env`** | 同上（只有要发版的机器才需要） | ★★★ COS 对象存储 SecretKey |
@@ -48,7 +48,10 @@ npm run addon:win
 ```
 
 - `npm run addon:win` = `npm install --no-save --force --os=win32 --cpu=x64 @img/sharp-win32-x64@0.33.5 @img/sharp-libvips-win32-x64@1.0.4`
-  ★ **必须跑**：交叉打包时若带上 macOS 版 sharp，HEIC 解码会失效。
+  ★ **必须跑**：交叉打包时若带上别的平台的 sharp，Windows 上 `require('sharp')` 会直接失败
+  ⇒ **整个原生引擎降级**成 jpeg-js + pngjs（连 PNG/JPG 都退化、变慢）。
+  （注：**别拿「能不能解 HEIC」当这条命令的判据** —— 预编译版本来就不带 HEVC 解码器，
+  见 `src/main/services/imaging.js` 里 `hasHeif()` 的实测注释。）
 - 版本基线：Electron `^31.7.7`、electron-builder `^24.13.3`、electron-updater `^6.8.9`（`package.json` 没写 `engines`，Node 20/22 都能跑；本机用的是 Node 22.22.2）。
 
 ---

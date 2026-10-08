@@ -58,12 +58,13 @@
   <span class="grow"></span>
   <label class="hint"><input type="checkbox" id="auto" checked> 每 30 秒自动刷新</label>
   <button id="btnRefresh">刷新</button>
-  <button id="btnSetup">连接设置</button>
+  <button id="btnSetup" hidden>设置</button>
 </header>
 
 <main>
-  <!-- 连接设置：地址与 key 已按组织预填好（与 App 内置的是同一份），直接点「保存并连接」即可 -->
-  <div class="card" id="setupCard">
+  <!-- 连接设置：**平时是藏着的** —— 看板打开就自动连内置的那份配置（与 App 是同一份）。
+       只有连不上 / 读不到时才自动露出来，或在网址后加 #setup 手动打开。 -->
+  <div class="card" id="setupCard" hidden>
     <h2>连接设置</h2>
     <div class="rowbtns">
       <input id="cfgUrl" class="mono" style="min-width:320px" placeholder="https://xxxx.supabase.co">
@@ -71,19 +72,16 @@
       <button class="primary" id="btnSave">保存并连接</button>
     </div>
     <p class="hint">
-      <b>已经按组织预填好了</b>，直接点「保存并连接」就行（要换成别的项目就直接改这两个框）。
-      填过的值只存在<b>这台浏览器</b>的 localStorage 里，不上传到别处。
+      默认已内置本项目的地址和 anon key，<b>什么都不用填</b>；只有要连别的项目时才需要改这里。
+      改过的值只存在<b>这台浏览器</b>里，不上传到别处。
     </p>
     <p class="hint">
       ★ 这里<b>只能填 anon / publishable key</b>（它本来就是公开设计、靠数据库的行级策略收口）。
       <b>绝不要把 service_role / secret key 填进来</b> —— 那个 key 能绕过策略读写整张表。
     </p>
     <p class="hint">
-      还没有表？先在 Supabase 控制台的 SQL Editor 里跑一次仓库里的 <code>docs/supabase-setup.sql</code>。
-      各台机器<b>装完即连</b>（地址与 key 已内置在安装包里），不用手填。
-      ★ 各台机器那边<b>留空 = 跟随内置</b>，所以换项目只要<b>发新包</b>、让它们升级一次就会自动跟随；
-      只有升不了级的机器才需要「高级设置 → 云端协作 → 导入配置」。
-      <b>换了项目后这个看板也要改成同一个地址</b> —— 否则 App 往新库推、看板读旧库，会「少人」而且不报错。
+      ★ 换项目要<b>三处同改</b>：App 内置（要发新包）＋ 这个看板 ＋ 数据库里的表。
+      否则会出现「App 往新库推、看板还在读旧库」—— 两边都显示「已连接」，却查不到数，最难查。
     </p>
     <p class="hint err" id="setupErr" hidden></p>
   </div>
@@ -92,7 +90,7 @@
     <div class="kpis" id="kpis"></div>
 
     <div class="card">
-      <h2>款进度（每款目标篇数可改，默认 150）</h2>
+      <h2>款进度（只统计真实发布结果 · 每款目标篇数可改，默认 150）</h2>
       <div class="rowbtns">
         <label class="hint">每款目标 <input id="goal" type="number" min="1" value="150" style="width:90px"></label>
         <label class="hint">只看
@@ -115,12 +113,12 @@
     </div>
 
     <div class="card">
-      <h2>按机器 / 执行人</h2>
+      <h2>按机器 / 执行人（同名的多个机器标识已合并）</h2>
       <div class="tw"><table id="tWho"></table></div>
     </div>
 
     <div class="card">
-      <h2>最近明细（200 条）</h2>
+      <h2>最近明细（最新 200 条 · 含模拟/探针，灰色）</h2>
       <div class="tw"><table id="tRows"></table></div>
     </div>
   </div>
@@ -132,7 +130,7 @@
 /** 只读看板：只做 select，没有任何写操作。数字取不到就显示「—」，绝不拿 0 冒充。 */
 const $ = s => document.querySelector(s);
 const LS = 'bluev-board';
-let sb = null, timer = null, rows = [];
+let sb = null, timer = null, rows = [], dupFold = 0;
 
 /**
  * ★ 内置的组织默认值 —— 与 App 的 src/main/clouddefaults.js 是**同一份**，改一处必须同时改另一处。
@@ -146,11 +144,13 @@ const BUILTIN = {
   org: 'bluev'
 };
 
+// 本机存过就用存的（说明有人主动改过项目），否则一律用内置 —— 内置与 App 的 clouddefaults.js 是同一份
 const cfg = JSON.parse(localStorage.getItem(LS) || '{}');
-$('#cfgUrl').value = cfg.url || BUILTIN.url;
-$('#cfgKey').value = cfg.key || BUILTIN.key;
+const CUR = (cfg.url && cfg.key) ? cfg : BUILTIN;
+$('#cfgUrl').value = CUR.url;
+$('#cfgKey').value = CUR.key;
 // 组织标识：取数时按它过滤，免得将来同一个项目里混进别的组织的数据
-const ORG = cfg.org || BUILTIN.org;
+const ORG = CUR.org || BUILTIN.org;
 
 function fmt(ts){
   if(!ts) return '—';
@@ -160,14 +160,61 @@ function fmt(ts){
 }
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+/* ★★ 结果分类 —— 云上不只有「真实发布结果」，还有两类**不是发布**的行：
+ *    · 「模拟成功」：App 处于 mock 通道时写的（没真发）；
+ *    · 连通性探针：建库时的测试行（machine_id = __probe__conn__）。
+ *    把它们混进 KPI 会同时犯两个错：成功率被拖低（分子不含它们）、
+ *    款进度被抬高（分母含它们）—— 实测 2026-10-08：366 行里 88 条模拟 + 1 条探针。
+ *    ⇒ 只有 REAL 进统计，其余**另行计数并明示**（不藏起来，但也不冒充发布）。 */
+const REAL = new Set(['发布成功', '失败']);
+/* ★★ 判据**不能只看 result**：建库时留下的连通性探针里，有 3 条的 result 恰好写的就是「发布成功」
+ *    （见 docs/supabase-setup.sql 末尾的验收数据）。只看 result 的话，它们会冒充真实发布混进统计 ——
+ *    2026-10-08 真库实测：就是这 3 条把「机器数」从 1 撑成了 2。
+ *    所以再按「是不是探针机器」拦一道：machine_id = __probe__conn__ 或机器名带「探针」。 */
+const isProbe = r => String(r.machine_id || '') === '__probe__conn__' || /探针/.test(String(r.machine_name || ''));
+const isReal = r => REAL.has(String(r.result || '')) && !isProbe(r);
+const isNonReal = r => !isReal(r);
+const kindOf = r => (/模拟/.test(String(r.result || '')) || String(r.mode || '') === 'mock') ? '模拟'
+  : (isProbe(r) ? '探针' : '其他');
+
+/* ★★ 去重 —— 为什么云上会有重复行：
+ *    machine_id 原来随机生成，一旦配置被**搬运/清空**就换一个新的；
+ *    而唯一键是 (machine_id, ts, seq) ⇒ 换 id 后整本台账会以新 id **重推一遍**，去重键拦不住。
+ *    实测 2026-10-08：189 项真实工作占了 367 行，其中 178 项同时挂在两个机器标识下、ts 完全相同。
+ *    ⇒ 按「同一机器名 + 同一时刻 + 同一篇号 + 同一批次 + 同一款 + 同一结果」折叠。
+ *      （两台不同机器不太可能在**同一毫秒**发同一款的同一篇号，所以不会误合并。） */
+function dedupe(list){
+  const seen = new Set(), out = [];
+  for(const r of list){
+    const k = [r.machine_name || r.machine_id || '', r.ts, r.seq, r.batch_no || '', r.dir_name || '', r.result || ''].join('\u0001');
+    if(seen.has(k)) continue;
+    seen.add(k); out.push(r);
+  }
+  return out;
+}
+/** 机器归一的键：**用机器名**（同一台电脑换过 id 但名字没变 ⇒ 合并成一行） */
+const mkey = r => (r.machine_name || r.machine_id || '?');
+
 function conn(kind, text){ const el = $('#conn'); el.className = 'chip ' + (kind||''); el.textContent = text; }
 
-async function connect(){
+/** 出了问题才把「设置」露出来 —— 平时它不该出现在界面上（这个看板对使用者是「打开即看」） */
+function showSetup(msg){
+  $('#btnSetup').hidden = false;
+  $('#setupCard').hidden = false;
+  if(msg){ $('#setupErr').hidden = false; $('#setupErr').textContent = msg; }
+}
+
+/**
+ * ★ persist 只有「手点保存并连接」才为 true：自动连时**不写** localStorage，
+ *   免得把内置值存成本机值 —— 以后换了项目，本机旧值会悄悄盖住新内置值，
+ *   表现是「看板显示已连接、数字却是旧库的」，不报任何错。
+ */
+async function connect(persist){
   const url = $('#cfgUrl').value.trim().replace(/\/+$/,'');
   const key = $('#cfgKey').value.trim();
-  if(!url || !key){ $('#setupErr').hidden = false; $('#setupErr').textContent = '地址和 anon key 都要填。'; return; }
+  if(!url || !key){ showSetup('地址和 anon key 都要填。'); return; }
   $('#setupErr').hidden = true;
-  localStorage.setItem(LS, JSON.stringify({url, key}));
+  if(persist) localStorage.setItem(LS, JSON.stringify({url, key, org: ORG}));
   conn('wait','连接中…');
   try {
     // SDK 是同目录的 vendor/supabase.js 用普通 <script> 带进来的（解析期就执行完，比本段更早），
@@ -178,11 +225,16 @@ async function connect(){
     sb = window.supabase.createClient(url, key, { auth:{ persistSession:false } });
   } catch(e){
     conn('bad','连不上');
-    $('#setupErr').hidden = false;
-    $('#setupErr').textContent = '看板自带的 Supabase SDK 没能用上：' + (e && e.message || e);
+    showSetup('看板自带的 Supabase SDK 没能用上：' + (e && e.message || e));
     return;
   }
-  $('#setupCard').hidden = true;
+  // 连上就把设置收起来：使用者不该在这个页面上看到任何配置项。
+  // ★ 但**手动**打开的（网址后加 #setup）别给人关掉 —— 那正是他想要的东西。
+  if(!setupPinned){
+    $('#setupCard').hidden = true;
+    $('#setupErr').hidden = true;
+    $('#btnSetup').hidden = true;
+  }
   await load();
 }
 
@@ -196,8 +248,15 @@ async function load(){
     .eq('org', ORG)                     // ★ 只看本组织的行（其他组织的条目不上这张看板）
     .order('ts', { ascending: false }).limit(limit);
   $('#btnRefresh').disabled = false;
-  if(error){ conn('bad','读取失败'); $('#foot').innerHTML = `<span class="err">读取失败：${esc(error.message)}</span>`; return; }
-  rows = data || [];
+  if(error){
+    conn('bad','读取失败');
+    $('#foot').innerHTML = `<span class="err">读取失败：${esc(error.message)}</span>`;
+    $('#btnSetup').hidden = false;   // 读不到时给个出口，但不把设置卡片糊到人脸上
+    return;
+  }
+  const raw = data || [];
+  rows = dedupe(raw);
+  dupFold = raw.length - rows.length;
   conn('ok', `已连接 · ${rows.length} 条`);
   $('#main').hidden = false;
   render();
@@ -208,7 +267,7 @@ function filtered(){
   const cut = days ? Date.now() - days*86400000 : 0;
   const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
   return rows.filter(r => (!cut || Number(r.ts) >= cut)
-    && (!m || r.machine_id === m) && (!u || (r.display_name || r.username || '') === u)
+    && (!m || mkey(r) === m) && (!u || (r.display_name || r.username || '') === u)
     && (!b || (r.brand_name || '') === b));
 }
 
@@ -221,26 +280,30 @@ function fillFilters(){
   const u = [...new Set(rows.map(r => (r.display_name || r.username || '').trim()).filter(Boolean))].sort();
   const b = [...new Set(rows.map(r => (r.brand_name || '').trim()).filter(Boolean))].sort();
   sel($('#fUser'), u); sel($('#fBrand'), b);
-  const ms = [...new Map(rows.map(r => [r.machine_id, r.machine_name || r.machine_id])).entries()];
+  // ★ 机器按**名字**列（不是 machine_id）：同一台电脑换过 id 时只出现一次
+  const names = [...new Set(rows.map(mkey))].sort();
   const el = $('#fMachine');
   const cur = el.value;
   el.innerHTML = '<option value="">全部机器</option>' +
-    ms.map(([id,name]) => `<option value="${esc(id)}" ${id===cur?'selected':''}>${esc(name)}</option>`).join('');
+    names.map(n => `<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
 }
 
 function render(){
   fillFilters();
-  const list = filtered();
+  const all = filtered();                    // 筛选后的**全部**行（含模拟 / 探针）
+  const list = all.filter(isReal);           // ★ 只有真实发布结果进统计（口径见文件头的 REAL 说明）
+  const others = all.filter(isNonReal);
   const ok = list.filter(r => r.result === '发布成功').length;
   const bad = list.filter(r => r.result === '失败').length;
+  const done = ok + bad;                     // 成功率的分母＝真实已完成的条数
   const today = new Date(); today.setHours(0,0,0,0);
   const todayN = list.filter(r => Number(r.ts) >= today.getTime()).length;
-  const machines = new Set(list.map(r => r.machine_id)).size;
+  const machines = new Set(list.map(mkey)).size;
   const avg = list.length ? (list.reduce((s,r)=>s+(Number(r.elapsed)||0),0)/list.length) : 0;
 
   $('#kpis').innerHTML = [
-    ['已发布', list.length, ''], ['成功', ok, 'ok'], ['失败', bad, bad?'bad':''],
-    ['成功率', list.length ? Math.round(ok/list.length*100)+'%' : '—', ''],
+    ['已发布（真实）', list.length, ''], ['成功', ok, 'ok'], ['失败', bad, bad?'bad':''],
+    ['成功率', done ? Math.round(ok/done*100)+'%' : '—', ''],
     ['今天', todayN, ''], ['机器', machines, ''],
     ['平均单条耗时', avg ? avg.toFixed(1)+'s' : '—', '']
   ].map(([k,v,c]) => `<div class="kpi"><b class="${c?'err':''}" ${c==='ok'?'style="color:var(--ok)"':''}>${esc(v)}</b><span>${esc(k)}</span></div>`).join('');
@@ -262,37 +325,44 @@ function render(){
       return `<tr><td>${esc(k)}</td><td class="num">${o.n}</td><td class="num">${o.ok}</td><td class="num">${o.bad?'':''}${o.bad||''}</td>
         <td><div style="display:flex;align-items:center;gap:8px"><div class="bar"><i style="width:${pct}%"></i></div><span class="hint">${o.n}/${goal}</span></div></td>
         <td class="hint">${fmt(o.last)}</td></tr>`;
-    }).join('') : `<tr><td colspan="6" class="hint">还没有数据：先在电脑上跑一次发布，并打开「云端协作」开关。</td></tr>`) + '</tbody>';
+    }).join('') : `<tr><td colspan="6" class="hint">还没有数据：先在电脑上跑一次<b>真实发布</b>（只生成任务/文案、没走完发布流程的，这里不会有数据）。</td></tr>`) + '</tbody>';
 
   // ---- 按机器 / 执行人 ----
   const byWho = new Map();
   for(const r of list){
-    const k = (r.machine_name || r.machine_id || '?') + ' / ' + ((r.display_name || r.username || '').trim() || '未标执行人');
-    const o = byWho.get(k) || { n:0, ok:0, bad:0, last:0 };
+    const k = mkey(r) + ' / ' + ((r.display_name || r.username || '').trim() || '未标执行人');
+    const o = byWho.get(k) || { n:0, ok:0, bad:0, last:0, ids:new Set() };
     o.n++; if(r.result === '发布成功') o.ok++; else if(r.result === '失败') o.bad++;
     o.last = Math.max(o.last, Number(r.ts)||0);
+    o.ids.add(r.machine_id);            // ★ 同一台电脑换过 id 时，这里会 >1 ⇒ 界面上如实标出来
     byWho.set(k,o);
   }
   $('#tWho').innerHTML = `<thead><tr><th>机器 / 执行人</th><th class="num">已发</th><th class="num">成功</th><th class="num">失败</th><th class="num">成功率</th><th>最近</th></tr></thead><tbody>` +
-    ([...byWho.entries()].sort((a,b)=>b[1].n-a[1].n).map(([k,o]) => `<tr><td>${esc(k)}</td><td class="num">${o.n}</td>
+    ([...byWho.entries()].sort((a,b)=>b[1].n-a[1].n).map(([k,o]) => `<tr><td>${esc(k)}${o.ids.size>1?` <span class="hint">（含 ${o.ids.size} 个机器标识，已合并）</span>`:''}</td><td class="num">${o.n}</td>
       <td class="num">${o.ok}</td><td class="num">${o.bad||''}</td>
       <td class="num">${o.n?Math.round(o.ok/o.n*100)+'%':'—'}</td><td class="hint">${fmt(o.last)}</td></tr>`).join('') || `<tr><td colspan="6" class="hint">—</td></tr>`) + '</tbody>';
 
   // ---- 明细 ----
+  // ★ 明细列**全部**行（all，不是 list）：模拟/探针不参与统计，但**不许藏起来**，只是标成灰橙色的「模拟 / 探针」。
   $('#tRows').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>款</th><th class="num">篇号</th><th>类型</th><th>结果</th><th>原因</th><th class="num">耗时</th></tr></thead><tbody>` +
-    (list.slice(0,200).map(r => `<tr>
+    (all.slice(0,200).map(r => `<tr>
       <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
       <td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.brand_name||'')}</td>
       <td>${esc(r.dir_name||'')}</td><td class="num">${esc(r.seq==null?'':r.seq)}</td>
       <td>${esc(r.kind||'')}</td>
-      <td>${r.result==='发布成功'?'<span class="chip ok">成功</span>':(r.result==='失败'?'<span class="chip bad">失败</span>':esc(r.result||''))}</td>
+      <td>${r.result==='发布成功'?'<span class="chip ok">成功</span>':(r.result==='失败'?'<span class="chip bad">失败</span>':`<span class="chip wait" title="${esc(r.result||'')}">${esc(kindOf(r))}</span>`)}</td>
       <td class="hint">${esc(r.reason||'')}</td><td class="num">${r.elapsed==null?'—':Number(r.elapsed).toFixed(1)+'s'}</td></tr>`).join('') || `<tr><td colspan="10" class="hint">—</td></tr>`) + '</tbody>';
 
-  $('#foot').innerHTML = `数据来自各台机器上行的发布结果（最近 ${rows.length} 条，最多取 5000 条）。
-    <b>这一页是只读的，改不动任何东西</b> —— 完整对账请用本机导出的 Excel（本机 jsonl 才是完整账）。`;
+  $('#foot').innerHTML = `数据来自各台机器上行的<b>发布结果</b>（取回 ${rows.length + dupFold} 行，最多 5000 条）。
+    <br>· <b>统计口径：只算真实发布结果</b>（发布成功 / 失败）；另有 <b>${others.length}</b> 条「模拟 / 探针」<b>未计入</b>，
+      它们仍列在「最近明细」里（灰色标签），不会凭空消失。
+    <br>· 已折叠 <b>${dupFold}</b> 条重复行 —— 同一台电脑换过机器标识后会把整本台账重推一遍（唯一键含机器标识，去不掉），
+      按「机器名＋时间＋篇号＋款」折叠。
+    <br>· 机器按<b>机器名</b>合并：同一台电脑即使换过标识也只算一台。
+    <br>· <b>这一页是只读的，改不动任何东西</b> —— 完整对账请用本机导出的 Excel（本机 jsonl 才是完整账）。`;
 }
 
-$('#btnSave').onclick = connect;
+$('#btnSave').onclick = () => connect(true);
 $('#btnSetup').onclick = () => { $('#setupCard').hidden = !$('#setupCard').hidden; };
 $('#btnRefresh').onclick = load;
 ['#fMachine','#fUser','#fBrand','#fDays','#goal'].forEach(s => { $(s).onchange = render; $('#goal').oninput = render; });
@@ -302,7 +372,14 @@ $('#auto').onchange = () => {
 };
 timer = setInterval(load, 30000);
 
-if(cfg.url && cfg.key) connect(); else { $('#main').hidden = true; conn('wait','未连接'); }
+// ★★ 打开即连 —— 不需要点任何按钮。
+//   以前这里写的是「本机存过配置才自动连」，结果新访客第一次打开只看到一张空的「连接设置」卡片，
+//   等于给一个本该零配置的看板加了道门槛（实测反馈：打开不是看板、还要先设置）。
+//   现在：本机存过的 → 内置的，一律自动连；只在**连不上 / 读不到**时才把设置露出来。
+//   想主动改项目地址：网址后面加 #setup（这种情况下设置会一直开着，不会被自动连关掉）。
+const setupPinned = /#setup/.test(location.hash) || /[?&]setup\b/.test(location.search);
+if(setupPinned) showSetup('');
+connect(false);
 </script>
 </body>
 </html>

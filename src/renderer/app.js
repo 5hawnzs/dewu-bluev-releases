@@ -26,11 +26,12 @@ const state = {
   userModal: null,
   // 文案提示词弹窗：null=关着；{view:'list'} 品牌列表；{view:'edit', id} 编辑某个品牌（id 为空串 = 新增）
   brandModal: null,
-  // 云端配置弹窗：null=关着；'export' | 'import'。cloudCfg 是导出时从主进程取回的那份（含 url/key）
-  cloudModal: null,
   // 「说明书」弹窗：null=关着；'copy'=批次设置说明 / 'publish'=装置与节奏说明（2026-10-03 新增）
   helpModal: null,
-  cloudCfg: null,
+  // 「模型配置」弹窗（2026-10-08）：null=关着；开着时是
+  //   { eff, models, listErr, picked, busy } —— eff=当前生效值（llm:effective），
+  //   models=拉回来的清单，picked=刚点中的那个模型 id（保存才落盘）。
+  modelModal: null,
   upd: null,          // 应用更新状态（来自主进程）null=还没读到
   logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
   logFilter: { level: '', q: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
@@ -41,7 +42,10 @@ const state = {
   lex: null,          // 热词库快照（主进程 hotwords:get 的返回）；null = 还没读到
   lexBusy: false,
   lexTried: false,    // 读失败过就不再自动重试（否则 render → load → render 会打转）
-  lexDirty: false     // 界面上改了但还没点「保存」
+  lexDirty: false,    // 界面上改了但还没点「保存」
+  // 得物安装包：点过「装进模拟器」且**设备上本来就有**时置 true ——
+  // 只有这时才在设置页那一行多挂一枚「覆盖重装」按钮（用户没点过之前不给这个危险入口）
+  dewuAlready: false
 };
 
 /* ---------------- 工具 ---------------- */
@@ -630,6 +634,11 @@ TABS[3] = {
   title: '文案生成',
   desc: '看图写标题正文 · 话题组合去重 · 跑完落一份带时间戳的 AI 内容报告',
   actions: () => [
+    // ★ 2026-10-08 用户要求：模型配置搬到**这一页**，做成弹窗，并且是**唯一**入口
+    //   （原来在「高级设置 → 文案模型」的折叠框已删）。位置按用户指定，放在「提示词配置」左边。
+    // ★ 只给管理员看：它原来就住在**仅管理员可见**的「高级设置」里，搬过来不能顺手把它开放给所有人
+    //   （改的是全公司共用的接口地址与 Key）。与「高级设置」那套 canAdmin() 是同一个口径。
+    ...(canAdmin() ? [{ act: 'copy:model', label: '模型配置' }] : []),
     { act: 'copy:prompt', label: '提示词配置' },
     // ★ 2026-10-08 用户要求删掉「按当前素材生成」：用户原话「一般没点目录的时候不会有当前素材，
     //   所以这两个功能重复了」。文案生成只剩按批次这一条路（下面 ACTS 里的 'copy:run' 与
@@ -884,6 +893,33 @@ function ffBadge(f) {
   return ['warn', '走 PATH'];
 }
 
+/**
+ * 「外部依赖」表里**得物 App 安装包**那一行的文案与按钮。
+ *
+ * ★ 为什么这一行要单独给按钮：MuMu 自带的应用商店里**搜不到得物**，用户拿到一台新模拟器
+ *   就卡在这一步。这里给两个出口：① 把内置的 apk 另存到本机（好拖进 MuMu 窗口）；
+ *   ② 直接用内置的 adb 装进去。
+ * ★ 只写实际读到的事实：字节数按 info 里那份真实大小算，读不到就写「缺」——
+ *   不许出现「127 MB」这种写死的数字（换了个版本的包就变成假信息了）。
+ */
+function apkDesc(a) {
+  if (!a || !a.exists) return '没内置：要自己找安装包（模拟器自带的应用商店里搜不到得物）';
+  const mb = a.bytes ? (a.bytes / 1048576).toFixed(1) : '';
+  return `内置 dewu ${a.version}${mb ? `（${mb} MB` : '（'} · 只有 arm64 版）`;
+}
+function apkBadge(a) {
+  if (!a || !a.exists) return ['warn', '缺'];
+  if (!a.sizeOk) return ['warn', '不完整'];
+  return ['ok', '内置'];
+}
+function apkBtns(a, already) {
+  const dis = (a && a.exists && a.sizeOk) ? '' : ' disabled';
+  return `<button class="btn sm" data-act="apk:save"${dis}>下载到本机</button>`
+    + ` <button class="btn sm" data-act="apk:install"${dis}>装进模拟器</button>`
+    // 「覆盖重装」只在"设备上已经装了"之后出现 —— 用户没点过之前不给他这个危险按钮
+    + (already ? ` <button class="btn sm" data-act="apk:installForce"${dis}>覆盖重装</button>` : '');
+}
+
 TABS[7] = {
   title: '设置',
   // ★ desc 支持函数（renderAll 里求值）：非管理员这一页没有「应用更新」那块，
@@ -895,8 +931,20 @@ TABS[7] = {
   render() {
     const info = state.info || {};
     const dep = [
-      ['图片处理 / 取色', info.engine === 'sharp' ? 'sharp + libvips（含 HEIC）' : 'jpeg-js + pngjs（纯 JS 降级）', info.engine === 'sharp' ? ['ok', '内置'] : ['warn', '降级']],
-      ['HEIC 解码', info.hasHeif ? 'libheif（sharp 预编译）' : '未内置，HEIC 需人工处理', info.hasHeif ? ['ok', '可用'] : ['warn', '不可用']],
+      // ★ 2026-10-08：这句原来写「（含 HEIC）」—— 和下一行「HEIC 解码 · 不可用」直接打架，
+      //   而且不真：实测同一份 libvips 能读写 AVIF(av1)、但解码真 HEVC 必失败。
+      //   「图片处理 / 取色」这行讲的是引擎本身，编码能力交给下一行单独交代，这里不再提具体格式。
+      ['图片处理 / 取色', info.engine === 'sharp' ? 'sharp + libvips' : 'jpeg-js + pngjs（纯 JS 降级）', info.engine === 'sharp' ? ['ok', '内置'] : ['warn', '降级']],
+      // ★★ 2026-10-08：**写死为「不可用」**。
+      //   原来写的是 `info.hasHeif ? ['ok','可用'] : ...`，而 hasHeif() 只等于
+      //   `engine === 'sharp'`（sharp 原生模块加载成功），**从没探测过能不能解 HEIC**。
+      //   实测（sharp 0.33.5 预编译，包内那份 libvips-42.dll，sha256 92076cb1…）：
+      //     真 HEVC 的 .heic → metadata() 能读（compression=hevc），真解码必报
+      //     「heif: No decoding plugin installed for this compression format」；
+      //     dll 里 libde265 符号命中 0（对照 aom 41 / vips 2387），只有 AV1 解码。
+      //   ⇒ 面板原来那枚「可用」是**假绿**：装到哪台机器都一样解不开。
+      //   因专利原因预编译 libvips 不带 HEVC 解码器，这不是配置问题，所以这里不给它「可能可用」的余地。
+      ['HEIC 解码', '不可用 · HEIC 需先转 JPG', ['warn', '不可用']],
       ['发布单读写', 'exceljs', ['ok', '内置']],
       ['视频时长读取', '纯 JS MP4/MOV 解析（moov → mvhd）', ['ok', '内置']],
       ['视频转 MP4（得物只收 mp4）', ffDesc(info.ffmpeg), ffBadge(info.ffmpeg)],
@@ -908,6 +956,13 @@ TABS[7] = {
           ? '程序内置（首次要在「模拟器发布」页点一次「一键装上中文输入法」把它装进模拟器并启用）'
           : '没内置：要自己给设备装',
         (info.vendor && info.vendor.apkExists) ? ['ok', '内置'] : ['warn', '缺']],
+      // ★★ 2026-10-08 用户要求新增：MuMu 自带的应用商店里**搜不到得物**，新模拟器就卡在这一步。
+      //   这一行比别的行多两枚按钮（第 4 项，见下面 depRow 的注释）：
+      //     · 下载到本机   —— 把内置的 apk 另存到用户选的位置（存完自动打开那个文件夹，好拖进 MuMu）
+      //     · 装进模拟器   —— 用内置的 adb 直接装；**已经装过就不动它**（登录状态与草稿都在设备上）
+      //   ★ 两个按钮都能点的时候才给，内置那份缺失/不完整时一律 disabled ——
+      //     按钮点下去才发现装不了，比一开始就灰着更让人火大。
+      ['得物 App 安装包（模拟器商店里搜不到得物时用）', apkDesc(info.dewuApk), apkBadge(info.dewuApk), apkBtns(info.dewuApk, state.dewuAlready)],
       ['得物商品池', info.pool ? `${info.pool.size} 个货号 · ${info.pool.source}` : '—', info.pool && info.pool.size ? ['ok', '已导入'] : ['warn', '待同步']]
     ];
     return `
@@ -929,8 +984,18 @@ TABS[7] = {
         <h3>外部依赖</h3>
         <div class="tw"><table>
           <thead><tr><th>用途</th><th>依赖</th><th>状态</th></tr></thead>
-          <tbody>${dep.map(([a, b, s]) => `<tr><td>${esc(a)}</td><td class="mono">${esc(b)}</td><td>${badge(s[1], s[0])}</td></tr>`).join('')}</tbody>
+          <!-- 第 4 项（可选）= 状态栏里额外那几枚按钮的 HTML；只有得物安装包那一行有它，
+               其余行照旧只显示一枚 badge —— 与其为一行把整张表改宽，不如按行给。 -->
+          <tbody>${dep.map(([a, b, s, act]) => `<tr><td>${esc(a)}</td><td class="mono">${esc(b)}</td><td>${badge(s[1], s[0])}${act || ''}</td></tr>`).join('')}</tbody>
         </table></div>
+        <p class="hint">模拟器自带的应用商店里搜不到得物时，用上面那一行：
+          <b>①「下载到本机」</b> —— 把 apk 存到你选的位置（存完会自动打开那个文件夹），
+          然后<b>把 apk 直接拖进 MuMu 窗口</b>（或拖进 MuMu 的共享文件夹），拖进去就会自动安装。
+          <b>②「装进模拟器」</b> —— 本工具用内置的 adb 直接装，前提是：模拟器已启动、ADB 调试已打开，
+          并且「模拟器发布」页已经选中了这台设备。
+          <br>★ <b>已经装过得物就不会再动它</b>：动手前先读一遍设备，已经装了就把版本告诉你、一条安装命令都不发
+          （得物里是登录状态和本地草稿）。确实要覆盖重装时，这一行会多出一个「覆盖重装」按钮
+          （<code>-r</code> 安装：应用数据与登录状态保留）。</p>
         <div class="row"><span class="lbl">运行环境</span>
           <span class="chip">${info.isWin ? 'Windows' : esc(info.platform)} · Electron ${esc(info.electron || '')}</span>
         </div>
@@ -940,8 +1005,10 @@ TABS[7] = {
 
 /* ---------------- 页签 11：高级设置（仅管理员可见） ----------------
  * ★ 为什么单开一页：这里全是「装一次、之后再也不动」的配置 —— UI 定位表、
- *   文案模型、货号颜色接口、adb 与 ffmpeg 路径。把它们平铺在日常页面上只是干扰
+ *   货号颜色接口、adb 与 ffmpeg 路径。把它们平铺在日常页面上只是干扰
  *   （用户原话：「为什么放了这么多实际根本不会点击使用的功能」）。
+ * ★ 2026-10-08：「文案模型」这一块**已搬走** —— 用户要求模型配置成为**唯一入口**，
+ *   放到日常真正会用的「文案生成」页（做成弹窗），这一页不再有它。
  * ★ 但**不许删**：真实通道必须先有 UI 定位表（publisher.run 会直接 throw），
  *   中文输入法不装则中文一个字都发不出去 —— 它们只是「不常点」，不是「没用」。
  * ★ 仅管理员可见：藏起来只是不给人添乱，真正拦住的是主进程那几道 guard。
@@ -949,13 +1016,21 @@ TABS[7] = {
 TABS[11] = {
   title: '高级设置',
   admin: true,
-  desc: '装一次就不再动的配置：UI 定位表、文案模型、并发路数、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
+  desc: '装一次就不再动的配置：UI 定位表、并发路数、货号颜色接口、adb / ffmpeg 路径（仅管理员可见）',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const c = state.config;
     const info = state.info || {};
     const pub = c.publish || {};
-    const cl = c.cloud || {};      // 老配置里没有这一项：取不到就当空，别让整页渲染挂掉
+    // ★★ 2026-10-08 用户要求：「云端协作」整块从**界面上删掉**，不给任何人看到
+    //    （原话：「默认开，这个部分直接删了，不用给任何人看到」）。
+    //    ★ 删的是**界面**，不是功能：「cloud」块的 enabled 键出厂默认 true（src/main/store.js），
+    //      地址 / anon key / org 走 src/main/clouddefaults.js 的内置值，
+    //      上行链路（src/main/services/cloudsync.js）**一个字节没动** —— 各台机器照样上行，
+    //      只是没人能在界面上看见它、也没人能在界面上关掉它。
+    //    ★ 同步失败不影响发布（发布核心不依赖它）；要停某台机器仍然只能改它自己的
+    //      它自己 config.json 里那个「cloud」块的 enabled 键（界面不再提供入口，这是刻意的）。
+    //    ★★ 别再往这一页加回任何 cloud.* 控件或导出/导入弹窗 —— 用户要的就是「看不见」。
     const map = pub.uiMap || {};
     const steps = map.steps || [];
     const vsteps = map.videoSteps || [];
@@ -975,30 +1050,11 @@ TABS[11] = {
           视频会<b>自动复用</b>这套 steps，不用再抓一遍。哪天真机改版、视频那条路跟图文不一样了，
           再单独抓一次配 videoSteps 覆盖（配了就以它为准）。</p>
       </div>
-      ${advBox('文案模型', false,
-        `<div class="row" style="margin-bottom:9px">
-          <span class="lbl">启用</span>
-          <select class="inp" data-cfg="copy.llm.enabled"><option value="true" ${c.copy.llm.enabled ? 'selected' : ''}>调用模型（看图写）</option><option value="false" ${!c.copy.llm.enabled ? 'selected' : ''}>本地模板（离线）</option></select>
-          <span class="lbl">看图</span>
-          <select class="inp" data-cfg="copy.llm.vision"><option value="true" ${c.copy.llm.vision !== false ? 'selected' : ''}>送实拍图</option><option value="false" ${c.copy.llm.vision === false ? 'selected' : ''}>不送图</option></select>
-          <button class="btn sm" data-act="copy:llmtest">接口自检</button>
-        </div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">接口地址</span><input class="inp mono" value="${esc(c.copy.llm.endpoint)}" data-cfg="copy.llm.endpoint" placeholder="留空 = 跟随内置"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.copy.llm.apiKey)}" data-cfg="copy.llm.apiKey"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">模型</span><input class="inp mono" value="${esc(c.copy.llm.model)}" data-cfg="copy.llm.model" placeholder="留空 = 跟随内置"></div>
-        <div class="row">
-          <span class="lbl">每条送图</span>
-          <select class="inp" data-cfg="copy.llm.imageCount">${[1, 2, 3, 4].map(v => `<option value="${v}" ${Number(c.copy.llm.imageCount) === v ? 'selected' : ''}>${v} 张</option>`).join('')}</select>
-          <span class="lbl">单边缩到</span>
-          <select class="inp" data-cfg="copy.llm.imageMaxSide">${[512, 768, 1024, 1568].map(v => `<option value="${v}" ${Number(c.copy.llm.imageMaxSide) === v ? 'selected' : ''}>${v}px</option>`).join('')}</select>
-        </div>
-        <p class="hint"><b>留空 = 跟随内置</b>（地址与模型 id 都随包内置，换服务商发新包就行）—— 这一条只在你<b>填了</b>的时候才覆盖内置值。
-          <b>标题是看图写的</b>：每条素材把前几张实拍图缩到上面那个尺寸发给模型，标题里的品类 / 款式特征 / 颜色都来自图里真实看到的，
-          不是拿货号颜色套模板。<b>只有视频、没有实拍图的素材</b>会从视频里抽 1 帧当图（在本机抽，不往素材目录里落东西；
-          抽到的帧是黑场/纯色就一张都不送，报告里「生成来源」会写明是「视频抽帧」还是「视频没抽出帧」）。
-          ★ 模型连不上时<b>会直接停下来报错</b>，不会拿本地模板冒充 AI 文案
-          （要用模板就选「本地模板（离线）」，那时报告里会逐行标出「本地模板」）。</p>`,
-        '默认关闭 · 离线模板就够用')}
+      <!-- ★ 2026-10-08 用户要求：「模型配置」从这一页**直接删掉**，搬到「文案生成 → 模型配置」弹窗，
+           并且成为**唯一**入口（原话：「后续模型调用都通过这个口子来，设置里的模型直接删了」）。
+           ★ 删的是**入口**，不是功能：copy.llm.* 这些键、主进程 copywriter.cfgOf() 的读取口径一个字节没动，
+             弹窗写的还是同一份配置 ⇒ 旧的部署不用担心迁移（留空＝跟随内置那套也照旧）。
+           ★ 别在这里再放一份「模型」控件 —— 两处能改同一个键，改完谁生效就说不清了。 -->
       ${advBox('文案生成并发', false,
         `<div class="row">
           <span class="lbl">并发路数</span>
@@ -1033,43 +1089,7 @@ TABS[11] = {
         <p class="hint">ffmpeg 用来把 <code>.mov</code> / <code>.m4v</code> 等转成 <code>.mp4</code>（得物只收 mp4）：
           优先<b>无损转封装</b>（秒级、画质零损失），转封装放不下（如 ProRes）才转码成 H.264/AAC，转完会校验产物确实是 mp4。</p>`,
         '内置即用 · 没特殊情况不要动')}
-      ${advBox('云端协作（可选 · 默认关）', false,
-        `<div class="row" style="margin-bottom:9px">
-          <span class="lbl">启用</span>
-          <select class="inp" data-cfg="cloud.enabled">
-            <option value="true" ${cl.enabled ? 'selected' : ''}>开启（把本机新增的发布结果推到云端）</option>
-            <option value="false" ${!cl.enabled ? 'selected' : ''}>关闭（数据不出本机）</option>
-          </select>
-        </div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">项目地址</span><input class="inp mono" value="${esc(cl.url || '')}" data-cfg="cloud.url" placeholder="留空 = 跟随内置（见下方「实际在用」）"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">anon key</span><input class="inp mono" type="password" value="${esc(cl.anonKey || '')}" data-cfg="cloud.anonKey" placeholder="留空 = 跟随内置；只填 anon public key"></div>
-        <div class="row" style="margin-bottom:9px"><span class="lbl">本机名称</span><input class="inp mono" value="${esc(cl.machineName || '')}" data-cfg="cloud.machineName" placeholder="留空 = 用电脑名（看板上用来区分是谁在发）"></div>
-        <div class="row">
-          <span class="lbl">推送间隔</span>
-          <select class="inp" data-cfg="cloud.intervalSec">${[30, 60, 120, 300].map(v => `<option value="${v}" ${Number(cl.intervalSec || 30) === v ? 'selected' : ''}>${v} 秒</option>`).join('')}</select>
-          <button class="btn sm" data-act="cloud:test">测试连接</button>
-          <button class="btn sm primary" data-act="cloud:sync">立即同步</button>
-        </div>
-        <div class="row"><span class="lbl">下发配置</span>
-          <button class="btn sm" data-act="cloud:exp">导出配置</button>
-          <button class="btn sm" data-act="cloud:imp">导入配置</button>
-          <span class="hint">换项目、或给不方便重打包的机器下发凭据时用</span>
-        </div>
-        <div id="cloudEff" class="hint">读取中…</div>
-        <div id="cloudState" class="hint">读取中…</div>
-        <p class="hint"><b>上面两个框留空 = 跟随内置</b>（组织统一配置，已打进包里）：装完就能连，各台机器<b>不用填任何东西</b>，
-          机器名默认用电脑名。★ 留空的状态下换项目<b>只要发新包</b>——各台一升级就自动跟随新地址
-          （留空不会被写进本机配置，所以新包的内置值顶得住）。</p>
-        <p class="hint">只有要把<b>这一台</b>单独指到别的库（或临时调试）时，才往那两个框里填 —— 填了以填的为准，
-          且<b>只影响这一台</b>；想撤回就把框清空（又回到跟随内置）。做<b>组织级</b>的整体切换请走「发新包」，
-          别逐台手填：各台指向不同项目时，看板上会「少一个人」而且不报错。</p>
-        <p class="hint"><b>只上行「发布结果」这一张表</b>：时间 / 机器 / 执行人 / 品牌 / 批次 / 篇号 / 成功或失败 / 原因 / 耗时。
-          <b>素材内容、绝对路径、日志原文一概不上行</b>（目录只取最后一段款名）。关着的时候<b>一次都不联网</b>。</p>
-        <p class="hint">★ 这里只能填 <b>anon public key</b>（它本来就是设计成公开的，靠数据库的 RLS 策略收口）。
-          <b>绝不要把 service_role key 填进来</b> —— 那个 key 能绕过策略读写整张表，泄了等于裸奔。</p>
-        <p class="hint">★ 同步失败<b>不影响本机发布</b>：结果早就在本机 <code>publish-log.jsonl</code> 里落盘了，
-          云上少几条只是看板不全，最多界面上如实标「同步失败」。发布核心也<b>不依赖</b>这个开关。</p>`,
-        '只上行结果 · 不参与发布')}`;
+    `;
   }
 };
 
@@ -1139,94 +1159,6 @@ function updateHtml() {
 async function refreshUpdate() {
   try { state.upd = await appApi.updateStatus(); } catch (e) { /* 读不到就保持原样 */ }
   renderAll();
-}
-
-/**
- * 云端同步状态（高级设置页那一块）。
- * ★ 取不到就如实说「取不到」，不许显示成一个看起来正常的 0 —— 那是假信息。
- * ★ 异步返回时页面可能已被重画过（renderAll 会整个换掉 #pane），所以填之前重新查一次元素。
- */
-function cloudStateHtml(s) {
-  if (!s) return `${badge('取不到', 'warn')} 云端状态读不出来（接口没连上）`;
-  if (!s.enabled) return `${badge('未启用', 'wait')} 关着的时候一次都不联网，台账只留在本机。`;
-  if (!s.configured) return `${badge('未配置', 'warn')} 还没填项目地址或 anon key —— 填完点「测试连接」。`;
-  const bits = [
-    `已上行 ${s.uploaded} 条`,
-    `待上行 ${s.pending} 条`,
-    s.lastSyncAt ? `上次同步 ${fmtDate(s.lastSyncAt)}` : '还没同步过',
-    `本机 ${esc(s.machineName || s.machineId || '未命名')}`
-  ];
-  if (s.reset) bits.push(`游标已重置：${esc(s.reset)}`);
-  if (s.lastError) bits.push(`上次失败：${esc(s.lastError)}`);
-  return `${badge(s.lastError ? '同步失败' : '已连接', s.lastError ? 'bad' : 'ok')} ${bits.join(' · ')}`;
-}
-
-/**
- * 云端配置弹窗（导出 / 导入）。
- * ★ 跟品牌弹窗一个套路：挂在 .app 外面（塞进 #pane 会被 overflow 裁掉，底部按钮点不到），
- *   而且 renderAll 会被进度事件频繁触发 —— 挂在 #pane 里的话，正在粘贴的内容会被重画没。
- */
-function openCloudModal(view) { state.cloudModal = view || 'export'; renderCloudModal(); }
-function closeCloudModal() { state.cloudModal = null; renderCloudModal(); }
-
-function renderCloudModal() {
-  const mask = $('#cmodal'), box = $('#cmBox');
-  if (!mask || !box) return;
-  const v = state.cloudModal;
-  if (!v) { mask.hidden = true; box.innerHTML = ''; return; }
-  mask.hidden = false;
-  if (v === 'export') {
-    const c = state.cloudCfg || {};
-    box.innerHTML = `
-      <h3>导出云端配置</h3>
-      <p class="hint">把这段发给别的机器：在那台机器的「导入配置」里粘进去就行，不用手填三个框。
-        里面是 <b>anon key</b>（公开设计，靠数据库策略收口），<b>不是</b> service_role。</p>
-      <p class="hint">★ 但如果对方那台是<b>「跟随内置」</b>（绝大多数情况），<b>不需要发这个</b>：
-        发新包、让它升级一次就会自动跟随新地址，比粘配置更干净。粘了反而会把地址写死在那台机器上
-        （日后换项目它就不跟着走了，界面上还看不出区别）。只有对方<b>升不了级</b>时才用这段。</p>
-      <textarea id="cmText" rows="7" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;border:1px solid var(--line);border-radius:7px">${esc(JSON.stringify({ url: c.url || '', anonKey: c.anonKey || '', org: c.org || '' }, null, 2))}</textarea>
-      <div class="row" style="margin-top:10px;justify-content:flex-end">
-        <button class="btn sm" data-act="cloud:close">关闭</button>
-        <button class="btn sm primary" data-act="cloud:copy">复制</button>
-      </div>`;
-  } else {
-    box.innerHTML = `
-      <h3>导入云端配置</h3>
-      <p class="hint">把别人给你的那段 JSON 粘进来。会先校验格式、再连一次确认能用，没问题才保存 ——
-        粘错地址会让所有机器一起失联，而界面上只显示「同步失败」四个字。</p>
-      <textarea id="cmText" rows="7" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;border:1px solid var(--line);border-radius:7px" placeholder='{"url":"https://xxxx.supabase.co","anonKey":"...","org":"bluev"}'></textarea>
-      <div class="row" style="margin-top:10px;justify-content:flex-end">
-        <button class="btn sm" data-act="cloud:close">取消</button>
-        <button class="btn sm primary" data-act="cloud:impGo">导入并连接</button>
-      </div>`;
-  }
-}
-
-async function refreshCloudState() {
-  if (!document.querySelector('#cloudState')) return;    // 只有高级设置页有这块
-  let s = null;
-  try { s = await appApi.cloudStatus(); } catch (e) { s = null; }
-  state.cloud = s;
-  const el = document.querySelector('#cloudState');
-  if (el) el.innerHTML = cloudStateHtml(s);
-  // ★★ 「当前实际在用哪个地址」必须**无条件**显示，且用主进程报上来的真值。
-  //    这是删掉 applyCloudDefaults 之后，替代「把值写进配置」的那条不变量：
-  //    界面显示的是真值，就不存在「框里空着、后台照推另一个地址」这种骗人。
-  const eff = document.querySelector('#cloudEff');
-  if (eff) eff.innerHTML = cloudEffHtml(s);
-}
-
-/**
- * 「实际在用」那一行。
- * ★ 无条件渲染（未启用 / 未配置也要说清楚在用什么），因为它是「留空＝跟随内置」
- *   这个语义**唯一的可见出口** —— 理由见 cloudStateHtml 上方与 src/main/store.js 的长注释。
- */
-function cloudEffHtml(s) {
-  if (!s || !s.url) return `${badge('读不到', 'warn')} 实际在用的云端地址读不出来（接口没连上）`;
-  const how = s.urlSource === 'custom'
-    ? '本机指定（只影响这一台）'
-    : '跟随内置（换项目＝发新包，各台升级后自动跟随）';
-  return `${badge(s.urlSource === 'custom' ? '本机指定' : '跟随内置', 'wait')} 当前实际在用：<code>${esc(s.url)}</code> · 来源：${esc(how)}`;
 }
 
 /**
@@ -1896,8 +1828,6 @@ function renderAll() {
   bindCfgInputs();
   // 设置页与「品牌与权限」页共用一套绑定：都按 id 找元素，找不到就跳过
   if (state.tab === 7 || state.tab === 9 || state.tab === 11) bindSettings();
-  // 云端状态是异步取的：只有高级设置页有那块，渲染完再填进去（不阻塞整页渲染）
-  if (state.tab === 11) refreshCloudState();
   // 运行日志页：行是渲染后单独铺的（而且要保住筛选框的光标，不能整页重画）
   if (state.tab === 10) bindLogPane();
   // 热词库页：绑定增删改；第一次进这一页自动读一次
@@ -2119,7 +2049,7 @@ const HELP = {
         都来自图里真实看到的（如「雨伞熊高领毛衣灰色慵懒风🧸」），<b>不是拿货号颜色套模板</b>。
         <b>只有视频、没有实拍图的素材</b>会从视频里抽 <b>1 帧</b>当图发过去（抽帧在本机做，
         送出去的还是这 1 张、跟视频多长无关；抽到的帧是黑场/纯色就一张都不送）。
-        模型连不上时会<b>直接停下来报错</b>，不会拿本地模板冒充 AI 文案；要先确认接口就点「设置 → 高级设置 → 文案模型 → 接口自检」。</p>
+        模型连不上时会<b>直接停下来报错</b>，不会拿本地模板冒充 AI 文案；要先确认接口就点「文案生成 → 模型配置 → 接口自检」。</p>
     `
   }
 };
@@ -2136,6 +2066,138 @@ function renderHelpModal() {
 }
 function openHelpModal(topic) { state.helpModal = topic || ''; renderHelpModal(); }
 function closeHelpModal() { state.helpModal = null; renderHelpModal(); }
+
+/* ---------------- 「模型配置」弹窗 ----------------
+ * ★ 2026-10-08 用户要求：模型配置搬到「文案生成」页做成**弹窗**，并且是**所有模型调用的唯一口子**
+ *   （原话：「后续模型调用都通过这个口子来，设置里的模型直接删了」）。原来在「高级设置 → 文案模型」
+ *   的那个折叠框**已删**，别再在别处放第二份能改同一个键的控件（两处能改就说不清谁生效）。
+ * ★ 「可设置默认模型，第一次填写后，后续默认选用这个」怎么落地：地址 / Key 填好 → 点「拉取模型清单」
+ *   → 从接口**真认的**模型里点一个 → 存进 copy.llm.model。以后所有调用（生成 / 接口自检）都读它。
+ * ★ 为什么非要有「拉取清单」这一步：用户容易填显示名（`deepseek v4.1 flash`），而接口只认自己的 id，
+ *   实测直接 400（`The supported API model names are deepseek-flash, ...`）。点清单里的一项存的就是 id。
+ *   ★ 清单拉不到（有些网关就没有 /models）不算死路：下面那个「默认模型」框可以直接手填 id。
+ * ★★ 表单 DOM 只在**开弹窗**时构建一次；拉清单 / 点选只重画 `#lmList` 与 `#lmCur` ——
+ *   整块重画会把用户刚粘进去、还没保存的地址 / Key 清空（他会以为没粘上）。
+ * ★ 「实际在用」那行读主进程的 llm:effective（本地解析、无网络请求）：留空＝跟随内置这个语义
+ *   必须有**唯一的可见出口**，否则用户只看到空框，不知道实际在用哪个模型 —— 那界面就是在骗人。
+ */
+function openModelModal() {
+  if (!canAdmin()) { toast('模型配置只有管理员能改', 'warn'); return; }
+  state.modelModal = { eff: null, models: [], listErr: '', busy: false };
+  renderModelModal();
+  refreshLmEff();
+}
+function closeModelModal() { state.modelModal = null; renderModelModal(); }
+
+/** 读一次「当前实际在用」（本地解析，不联网）；只更新那一行，不碰表单 */
+async function refreshLmEff() {
+  const m = state.modelModal;
+  if (!m) return;
+  try { m.eff = await appApi.llmEffective(); } catch (e) { m.eff = null; }
+  if (state.modelModal !== m) return;         // 期间被关掉/重开了，别往新弹窗里写旧值
+  const el = $('#lmCur');
+  if (el) el.innerHTML = lmEffHtml();
+}
+
+/** 「实际在用」那一行。★ 读真值：绝不把「框里空着」显示成「已配置」。 */
+function lmEffHtml() {
+  const m = state.modelModal || {};
+  const eff = m.eff;
+  if (!eff) return `<span class="chip">实际在用：读取中…</span>`;
+  const how = eff.modelSource === '本机配置' ? '本机配置' : '跟随内置';
+  const key = eff.apiKeySet ? (eff.apiKeySource === '本机配置' ? 'Key 本机配置' : 'Key 跟随内置') : 'Key 未配';
+  return `<span class="chip">实际在用</span> <span class="chip mono">${esc(eff.model || '—')}</span>`
+    + ` <span class="chip">${esc(how)}</span> <span class="chip">${esc(key)}</span>`;
+}
+
+function renderModelModal() {
+  const mask = $('#lmmodal'), box = $('#lmBox');
+  if (!mask || !box) return;
+  const m = state.modelModal;
+  if (!m) { mask.hidden = true; box.innerHTML = ''; return; }
+  mask.hidden = false;
+  box.innerHTML = lmHtml();
+  renderLmList();
+}
+
+function lmHtml() {
+  const c = ((state.config || {}).copy || {}).llm || {};
+  const b = v => !(v === false || v === 'false' || v === 0 || v === '0' || v === '');
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  return `
+    <div class="mh"><h3>模型配置</h3><span class="grow"></span>
+      <button class="btn sm" data-act="lm:close">关闭</button></div>
+    <div class="mb">
+      <p class="hint">「AI 文案」走哪个模型，就在这一份里配 —— <b>全程序只有这一个入口</b>
+        （原「设置 → 高级设置 → 文案模型」那一块已删除）。<b>接口地址 / API Key 留空 = 跟随内置</b>
+        （随包内置，换服务商发新包即可）。</p>
+      <div class="mfld"><span>启用</span>
+        <select class="inp" id="lmEnabled" style="width:100%">
+          <option value="true" ${c.enabled ? 'selected' : ''}>调用模型（看图写）</option>
+          <option value="false" ${!c.enabled ? 'selected' : ''}>本地模板（离线）</option>
+        </select></div>
+      <div class="mfld"><span>接口地址（留空 = 跟随内置）</span>
+        <input class="inp mono" id="lmEndpoint" style="width:100%" value="${esc(c.endpoint || '')}" placeholder="留空 = 跟随内置"></div>
+      <div class="mfld"><span>API Key（留空 = 跟随内置）</span>
+        <input class="inp mono" id="lmKey" type="password" style="width:100%" value="${esc(c.apiKey || '')}" placeholder="留空 = 跟随内置"></div>
+      <div class="mfld"><span>默认模型（所有调用都用它）</span>
+        <input class="inp mono" id="lmModel" style="width:100%" value="${esc(c.model || '')}" placeholder="留空 = 跟随内置；也可以点下面清单里的一个">
+        <div class="row" style="margin-top:8px;align-items:center">
+          <button class="btn sm" data-act="lm:list">拉取模型清单</button>
+          <button class="btn sm" data-act="lm:test">接口自检</button>
+          <span class="grow"></span>
+          <span id="lmCur" class="hint"></span>
+        </div>
+        <div id="lmList"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <span class="lbl">看图</span>
+        <select class="inp" id="lmVision">
+          <option value="true" ${b(c.vision === undefined ? true : c.vision) ? 'selected' : ''}>送实拍图</option>
+          <option value="false" ${!b(c.vision === undefined ? true : c.vision) ? 'selected' : ''}>不送图</option>
+        </select>
+        <span class="lbl">每条送图</span>
+        <select class="inp" id="lmCount">${[1, 2, 3, 4].map(v => `<option value="${v}" ${num(c.imageCount, 2) === v ? 'selected' : ''}>${v} 张</option>`).join('')}</select>
+        <span class="lbl">单边缩到</span>
+        <select class="inp" id="lmSide">${[512, 768, 1024, 1568].map(v => `<option value="${v}" ${num(c.imageMaxSide, 768) === v ? 'selected' : ''}>${v}px</option>`).join('')}</select>
+      </div>
+      <p class="hint" style="margin-top:12px"><b>标题是看图写的</b>：每条素材把前几张实拍图缩到上面那个尺寸发给模型，
+        标题里的品类 / 款式特征 / 颜色都来自图里真实看到的，不是拿货号颜色套模板。
+        <b>只有视频、没有实拍图的素材</b>会从视频里抽 1 帧当图（在本机抽，不往素材目录里落东西；
+        抽到的帧是黑场/纯色就一张都不送，报告里「生成来源」会写明是「视频抽帧」还是「视频没抽出帧」）。
+        ★ 模型连不上时<b>会直接停下来报错</b>，不会拿本地模板冒充 AI 文案
+        （要用模板就把「启用」改成「本地模板（离线）」，那时报告里会逐行标出「本地模板」）。</p>
+    </div>
+    <div class="mf"><span class="grow"></span>
+      <button class="btn sm" data-act="lm:close">取消</button>
+      <button class="btn sm primary" data-act="lm:save">保存</button></div>`;
+}
+
+/** 只重画清单区（+「实际在用」那行）；表单里用户填的东西一个都不碰 */
+function renderLmList() {
+  const box = $('#lmList');
+  const curEl = $('#lmCur');
+  if (curEl) curEl.innerHTML = lmEffHtml();
+  if (!box) return;
+  const m = state.modelModal || {};
+  const modelEl = $('#lmModel');
+  const cur = modelEl ? modelEl.value.trim() : '';
+  if (m.busy) { box.innerHTML = `<p class="hint">正在拉取模型清单…</p>`; return; }
+  if (m.listErr) {
+    box.innerHTML = `<p class="hint">拉不到清单：<b>${esc(m.listErr)}</b>。
+      地址 / Key 对不对？有些网关就是不提供 <code>/models</code> —— 那样直接在「默认模型」框里手填 id 也行。</p>`;
+    return;
+  }
+  if (!(m.models || []).length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<p class="hint">点一行 = 把它设为默认模型（存进「默认模型」框，点保存才落盘）：</p>
+    <div class="blist">${m.models.map(x => `
+    <div class="brow" data-act="lm:pick" data-id="${esc(x.id)}" title="设为默认模型">
+      <span class="bn mono">${esc(x.id)}</span>
+      <span class="grow snip">${esc(x.name)}</span>
+      ${x.image === true ? badge('支持看图', 'ok') : (x.image === false ? badge('不看图', 'warn') : badge('没写收不收图', 'wait'))}
+      ${x.id === cur ? badge('默认', 'ok') : ''}
+    </div>`).join('')}</div>`;
+}
 
 /* ---------------- 账号操作弹窗（配置品牌权限 / 重置密码） ---------------- */
 /*
@@ -2535,14 +2597,6 @@ const ACTS = {
     applyTheme(await appApi.themeSet(el.dataset.skin));
   },
 
-  // ---- 云端协作：推一次 / 试一下 / 下发配置。发布本身不依赖这里的任何一个 ----
-  'cloud:exp': async () => {
-    const r = await appApi.cloudExport().catch(() => null);
-    if (!r || !r.ok) { toast('取不到云端配置', 'err'); return; }
-    state.cloudCfg = r;
-    openCloudModal('export');
-  },
-  'cloud:imp': () => openCloudModal('import'),
   // ---- 热词库（左侧第 12 页）----
   // ★ 改的是**全员**的生成口径，真正拦住的是主进程那两个 guardAdmin（这里只是把话说清楚）。
   'lex:save': async () => {
@@ -2570,48 +2624,10 @@ const ACTS = {
     toast('已恢复内置词库');
     renderAll();
   },
-  'cloud:close': () => closeCloudModal(),
 
   // 「说明书」弹窗：topic 从按钮的 data-topic 上取（写错 topic ⇒ 弹窗打不开，测试点名抓）
   'help:open': (el) => openHelpModal(el.dataset.topic),
   'help:close': () => closeHelpModal(),
-  'cloud:copy': async () => {
-    const t = document.querySelector('#cmText');
-    if (!t) return;
-    try { await navigator.clipboard.writeText(t.value); toast('已复制，发给对方粘进「导入配置」就行', 'ok'); }
-    catch (e) { t.select(); toast('自动复制被拦下了：已选中，请按 Ctrl+C', 'err'); }
-  },
-  'cloud:impGo': async () => {
-    const t = document.querySelector('#cmText');
-    const raw = (t && t.value || '').trim();
-    if (!raw) { toast('先粘贴一段配置', 'err'); return; }
-    let cfg = null;
-    try { cfg = JSON.parse(raw); } catch (e) { toast('这不是合法的 JSON：粘的时候可能少了开头或结尾', 'err'); return; }
-    const r = await appApi.cloudImport(cfg).catch(e2 => ({ ok: false, error: String((e2 && e2.message) || e2) }));
-    if (r && r.ok) {
-      toast('已导入并连上：' + (r.org ? `组织「${r.org}」` : '新地址'), 'ok');
-      closeCloudModal();
-      state.config = await appApi.configGet();
-      renderAll();
-    } else {
-      toast('导入没成：' + ((r && r.error) || '取不到原因'), 'err');
-    }
-  },
-  'cloud:test': async () => {
-    const r = await appApi.cloudTest().catch(e => ({ ok: false, error: String((e && e.message) || e) }));
-    toast(r && r.ok ? '连上了：地址和 key 都能用' : `连不上：${(r && r.error) || '取不到原因'}`, r && r.ok ? 'ok' : 'err');
-    await refreshCloudState();
-  },
-  'cloud:sync': async () => {
-    const r = await appApi.cloudSync().catch(e => ({ ok: false, error: String((e && e.message) || e) }));
-    if (r && r.ok) {
-      const left = Number(r.pending) || 0;
-      toast(`已推送 ${r.uploaded} 条${left ? `，还剩 ${left} 条（下一轮接着推）` : '，全部推完了'}`, 'ok');
-    } else {
-      toast(`同步没成：${(r && (r.error || r.skipped)) || '取不到原因'}`, 'err');
-    }
-    await refreshCloudState();
-  },
   // ---- 应用更新：三个动作都要用户点，主进程不会自己下载、更不会自己重启 ----
   'upd:check': async () => {
     const r = await appApi.updateCheck();
@@ -2673,16 +2689,65 @@ const ACTS = {
     const r = await runJob('copy.generate', { sourceDir: d, batchId, label: batchId });
     if (r.ok) await afterCopy(r);
   },
-  // 「接口自检」：一次网络往返，把「地址通不通 / 模型名接口认不认 / 这个模型收不收图」说清楚。
-  // ★ 这些事以前只有跑生成时才暴露，而失败还被静默吞成「本地模板」⇒ 用户只看到模板货，
-  //   看不到「其实是接口没连上」。有了这个按钮，出事第一件事就是点它。
-  'copy:llmtest': async () => {
-    const r = await runJob('copy.llmtest');
+  // ---- 模型配置弹窗（唯一的模型入口）----
+  // ★「接口自检」一次网络往返，把「地址通不通 / 模型名接口认不认 / 这个模型收不收图」说清楚。
+  //   这些事以前只有跑生成时才暴露，而失败还被静默吞成「本地模板」⇒ 用户只看到模板货，
+  //   看不到「其实是接口没连上」。有了这个入口，出事第一件事就是点它。
+  'copy:model': () => openModelModal(),
+  'lm:close': () => closeModelModal(),
+  // 「拉取模型清单」：把表单里**当前填的**地址 / Key 带过去 ⇒ 不必先保存就能拉（填错也不会先被写进配置）
+  'lm:list': async () => {
+    const m = state.modelModal; if (!m) return;
+    const val = sel => { const e = $(sel); return e ? e.value.trim() : ''; };
+    m.busy = true; m.listErr = ''; m.models = [];
+    renderLmList();
+    const r = await runJob('copy.llmmodels', { endpoint: val('#lmEndpoint'), apiKey: val('#lmKey') });
+    if (state.modelModal !== m) return;         // 拉的过程中弹窗被关掉了，别再往旧状态里写
+    const x = (r && r.result) || {};
+    m.busy = false;
+    m.models = Array.isArray(x.models) ? x.models : [];
+    m.listErr = (!r || !r.ok) ? ((r && r.error) || '拉取失败') : (x.listErr || '');
+    renderLmList();
+  },
+  // 点清单里的一行 = 设成默认模型。★ 只写进「默认模型」框，**不落盘** —— 要点「保存」才生效
+  'lm:pick': (el) => {
+    const m = state.modelModal; if (!m) return;
+    const box = $('#lmModel');
+    if (box) box.value = el.dataset.id || '';
+    renderLmList();
+    toast(`已选「${el.dataset.id}」—— 点「保存」才生效`, 'ok');
+  },
+  // 「接口自检」：★ 测的是**表单里当前填的**地址 / Key / 启用，不是那份可能还没保存的旧配置
+  //   （否则用户改完地址点自检，检的还是旧的，结论会骗人）。所以三个值都要带上。
+  'lm:test': async () => {
+    const val = sel => { const e = $(sel); return e ? e.value.trim() : ''; };
+    const r = await runJob('copy.llmtest', {
+      endpoint: val('#lmEndpoint'), apiKey: val('#lmKey'), enabled: val('#lmEnabled')
+    });
     if (!r.ok) return;
     const x = r.result || {};
     if (x.enabled === false) { toast(x.note || '模型开关关着', 'warn'); return; }
     const img = x.image === true ? '支持看图' : (x.image === false ? '不支持看图' : '清单没写收不收图');
     toast(`接口可用：${x.modelId}（${img}）· ${x.endpointSource}`, x.image === false ? 'warn' : 'ok');
+  },
+  // 「保存」：表单 → copy.llm.*。★ 空串要**显式写下去**（＝回到「跟随内置」），
+  //   不能靠「不写这个键」来留空 —— store.set 是 mergeDeep，不写就等于保留旧值，清不掉上一次填的。
+  'lm:save': async () => {
+    if (!canAdmin()) { toast('模型配置只有管理员能改', 'err'); return; }
+    const val = sel => { const e = $(sel); return e ? e.value.trim() : ''; };
+    const llm = {
+      enabled: val('#lmEnabled') === 'true',
+      endpoint: val('#lmEndpoint'),
+      apiKey: val('#lmKey'),
+      model: val('#lmModel'),
+      vision: val('#lmVision') === 'true',
+      imageCount: Number(val('#lmCount')) || 2,
+      imageMaxSide: Number(val('#lmSide')) || 768
+    };
+    await appApi.configSet({ copy: { llm } });
+    state.config = await appApi.configGet();
+    toast(`模型配置已保存${llm.model ? `（默认模型：${llm.model}）` : '（模型留空 = 跟随内置）'}`, 'ok');
+    closeModelModal();
   },
   // 「提示词配置」= 直接开弹窗，不再跳到设置页那两个没人看得懂的输入框
   'copy:prompt': () => {
@@ -3174,6 +3239,41 @@ const ACTS = {
     renderAll();
   },
 
+  // ---- 得物安装包（模拟器自带的应用商店搜不到得物时的兜底）----
+  // 「下载到本机」= 把**内置的** apk 另存到用户选的位置（主进程弹「另存为」），
+  //   存完顺手替他打开所在文件夹 —— 下一步就是把它拖进 MuMu 窗口，不打开他还得自己找。
+  'apk:save': async () => {
+    const r = await appApi.apkSaveDewu();
+    if (r && r.canceled) return;                       // 用户自己取消的，不弹"失败"
+    if (!r || !r.ok) { toast((r && r.error) || '另存失败', 'err'); return; }
+    toast(`得物安装包已存到：${r.path} —— 现在把它拖进 MuMu 窗口就会自动装上`, 'ok');
+    await appApi.reveal(r.path);
+  },
+  // 「装进模拟器」：**先读设备再动手**。已经装了就不发任何安装命令，把版本如实报出来，
+  //   并把「覆盖重装」按钮挂出来（state.dewuAlready）—— 覆盖重装必须由用户再点一次，不替他做决定。
+  'apk:install': async () => {
+    const r = await appApi.run('publish.installDewuApk', {});
+    if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
+    const d = r.result || {};
+    if (d.already) {
+      state.dewuAlready = true;
+      toast(`模拟器里已经有得物${d.installedVersion ? ' ' + d.installedVersion : ''} —— 我没有动它。`
+        + '确实要覆盖重装，点这一行新出现的「覆盖重装」', '');
+    } else {
+      state.dewuAlready = false;
+      toast(`已装进模拟器：得物${d.installedVersion ? ' ' + d.installedVersion : ''}`
+        + `${d.replaced ? '（覆盖重装，应用数据与登录状态保留）' : ''}`, 'ok');
+    }
+    renderAll();
+  },
+  'apk:installForce': async () => {
+    const r = await appApi.run('publish.installDewuApk', { force: true });
+    if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
+    state.dewuAlready = false;
+    toast(`覆盖重装完成：得物 ${(r.result && r.result.installedVersion) || ''}（应用数据与登录状态保留）`, 'ok');
+    renderAll();
+  },
+
   'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); }
   // ★ 2026-10-04：「cfg:path」（选输出目录 / 隔离目录）随设置页那一块一起删 ——
   //   界面上已经没有任何 data-act="cfg:path" 的入口，留着处理器就是死代码。
@@ -3286,10 +3386,10 @@ function bind() {
   if (bmask) bmask.addEventListener('click', e => { if (e.target === bmask) closeBrandModal(); });
   const umask = $('#umodal');
   if (umask) umask.addEventListener('click', e => { if (e.target === umask) closeUserModal(); });
-  const cmask = $('#cmodal');
-  if (cmask) cmask.addEventListener('click', e => { if (e.target === cmask) closeCloudModal(); });
   const hmask = $('#hmodal');
   if (hmask) hmask.addEventListener('click', e => { if (e.target === hmask) closeHelpModal(); });
+  const lmmask = $('#lmmodal');
+  if (lmmask) lmmask.addEventListener('click', e => { if (e.target === lmmask) closeModelModal(); });
 
   document.querySelectorAll('.nav').forEach(b => {
     b.onclick = () => { state.tab = Number(b.dataset.tab); renderAll(); };
@@ -3305,8 +3405,8 @@ function bind() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
     if (e.key === 'Escape' && state.userModal) { closeUserModal(); e.preventDefault(); return; }
-    if (e.key === 'Escape' && state.cloudModal) { closeCloudModal(); e.preventDefault(); return; }
     if (e.key === 'Escape' && state.helpModal) { closeHelpModal(); e.preventDefault(); return; }
+    if (e.key === 'Escape' && state.modelModal) { closeModelModal(); e.preventDefault(); return; }
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
       // ★ TABS[k] 必须存在：页签 5 已删，Ctrl+5 落到空位的话原来是整页崩（读 undefined.title）

@@ -51,10 +51,11 @@
 | adb | **内置** `vendor/adb/adb.exe`（也可在 App「高级设置」页手填；手填优先，失效时退回内置并说出来） |
 | ffmpeg | **内置** `vendor/ffmpeg/ffmpeg.exe` |
 | 中文输入法 | `vendor/adbkeyboard/ADBKeyboard.apk`（App 内「一键装」三步：`install -r` → `ime enable` → `ime set`） |
+| 得物 App 安装包 | **内置** `vendor/dewu/dewu_6.0.5.apk`（127 MB，`com.shizhuang.duapp` 6.0.5）—— MuMu 自带的应用商店里**搜不到得物**时的兜底：设置页「外部依赖」表里给「下载到本机 / 装进模拟器」两个按钮。**已经装过就不动它**（见 `src/main/services/dewuapk.js`） |
 | 模拟器 | MuMu 12；设备串以 `adb devices` **真名**为准（同一设备报多个端口 ⇒ 按 `android_id` 去重） |
 | 真机 App | 得物（发布链路只能在真机上验证） |
 
-装依赖：`npm install` 后跑一次 `npm run addon:win`（强制取 Windows 版 sharp，交叉打包含 macOS 版会导致 HEIC 失效）。
+装依赖：`npm install` 后跑一次 `npm run addon:win`（强制取 Windows 版 sharp；交叉打包带上别的平台会让 `require('sharp')` 直接失败 ⇒ 整个原生引擎降级）。
 
 ---
 

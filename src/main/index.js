@@ -13,6 +13,7 @@ const imaging = require('./services/imaging');
 const pool = require('./services/pool');
 const adb = require('./services/adb');
 const video = require('./services/video');
+const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装包（模拟器商店搜不到得物时用）
 const cloudsync = require('./services/cloudsync');
 
 // Windows 通知/任务栏分组需要显式 AppUserModelID
@@ -56,6 +57,9 @@ if (!app.requestSingleInstanceLock()) {
     adb.setAdbPath(store.get('publish.adbPath'));
     adb.setBundledAdbDir(vendorDir('adb'));
     adb.setBundledApkPath(path.join(vendorDir('adbkeyboard'), 'ADBKeyboard.apk'));
+    // 得物 App 安装包也内置一份：MuMu 自带的应用商店里**搜不到得物**，
+    // 这一份是"核过 md5 的现成安装包"，设置页给「下载到本机 / 装进模拟器」两个按钮。
+    dewuapk.setBundledDir(vendorDir('dewu'));
     // ffmpeg：同一套三段解析（手填 > 内置 > 系统 PATH）。得物只收 mp4，所以非 mp4 的视频
     // 要能就地转 —— 内置那份（GPL-3.0 静态版，见 vendor/README.md）是「装上就能用」的关键。
     video.setFfmpegPath(store.get('publish.ffmpegPath'));
@@ -67,8 +71,12 @@ if (!app.requestSingleInstanceLock()) {
     winmod.attach();
 
     logbus.info(`工具就绪 · ${wp.isWin() ? 'Windows' : process.platform} · 图片引擎 ${imaging.engineName()}`);
+    // ★★ 2026-10-08：这条原来是 `warn`，前提是「缺 sharp/libheif 才是异常」——
+    //   现在 hasHeif() 恒 false（预编译 libvips 因专利不带 HEVC 解码器，实测见 imaging.js），
+    //   于是它**每次启动都会成立**。它是本工具的固定事实、不是故障，所以：
+    //   ① 级别降成 info（沉在日志里，不冒告警吓人）；② 文案改成「该怎么办」。
     if (!imaging.hasHeif()) {
-      logbus.warn('HEIC 解码不可用（缺少 sharp/libheif）：HEIC 会被标为需人工处理，不阻断其它环节');
+      logbus.info('HEIC(HEVC) 不支持：素材里的 .heic 会被标为「需先转 JPG」交人工，不阻断其它环节');
     }
     logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
 

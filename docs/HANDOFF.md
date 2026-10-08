@@ -578,6 +578,8 @@
       ② 发布页的「adb 路径」输入框 + 两段说明。③ 设置页的「ffmpeg 路径」输入框 + 三段说明。
    2. **收进新页签「高级设置」**（第 11 个，`data-admin="1"` ⇒ 仅管理员可见）：UI 定位表（抓取页面结构 / 导入）、
       失败恢复动作、文案模型、货号颜色接口（含 SKU 接口）、adb 与 ffmpeg 路径；后三块是 `<details>` **默认收起**。
+      ★ 2026-10-08 追记：「**文案模型**」这一块已从这里**搬走** —— 现在在「文案生成 → 模型配置」弹窗
+      （**唯一入口**，仅管理员可改），详见本文末尾那节。上面这一句只描述 2026-10-02 当时的形态。
       ★ 这两样**没删、也不能删**：真实通道必须先有 UI 定位表（`publisher.run` 直接 throw）、
       中文输入法不装则中文一个字都发不出去 —— 它们只是「不常点」。发布页对「定位表未配」留了「去高级设置配」的直达按钮。
    3. **修掉用户踩到的真 bug**：`listDevices()` 只遍历「配置里已添加」的设备 ⇒ 配置是空的就永远列出空表。
@@ -2574,3 +2576,58 @@ distance scaling, and reorderable elements. 如果不行再跟我说」，随后
 ★ 本节**取代**上面 2026-10-08 两节里关于「顶栏那个键 / 按钮标题 `当前：X —— 点一下切Y` / 三档循环」的描述；
   那两节的**皮肤与亚克力机制**（`SKINS` / `nativeForSkin` / `backgroundMaterial:'acrylic'` / `refreshBackdrop`）
   仍然全部有效，一个字没改。
+
+---
+
+## 2026-10-08 · 模型配置搬进「文案生成 → 模型配置」弹窗（并成为**唯一**模型入口）
+
+用户原话：「这里新增一个模型配置，**后续模型调用都通过这个口子来**，设置里的模型直接删了。
+并且这个页面做成**弹窗制**，并且**可设置默认模型，第一次填写后，后续默认选用这个**。」
+（「这里」＝「文案生成」页页头、「提示词配置」**左边**那个位置。）
+
+### 改了什么
+
+| 层 | 改动 |
+| --- | --- |
+| 入口（渲染层） | `app.js` `TABS[3].actions` 里、「提示词配置」**之前**加一个 `{ act:'copy:model', label:'模型配置' }`。★ 用 `canAdmin()` 门控：它原来住在**仅管理员可见**的「高级设置」里，搬过来不能顺手把它开放给所有操作员（改的是全公司共用的地址与 Key）。 |
+| 旧入口 | **删除**「高级设置 → 文案模型」整块（`advBox('文案模型', …)`）。★ 删的是**入口**：`copy.llm.*` 这些键、`copywriter.cfgOf()` 的读取口径**一个字节没动** ⇒ 老机器不用迁移。 |
+| 弹窗 | `index.html` 加 `#lmmodal` / `#lmBox`（与品牌 / 说明书弹窗同一个 `.modal` 套路，挂在 `.app` 外面）。`app.js` 加 `openModelModal/closeModelModal/renderModelModal/lmHtml/renderLmList/lmEffHtml` + ACTS `copy:model` `lm:close` `lm:list` `lm:pick` `lm:test` `lm:save`；遮罩点击 / `Escape` 关闭。 |
+| 主进程 | `jobs.js` 新增任务 `copy.llmmodels`（**拉取模型清单**）：用 `copywriter.listModels` + `imageCapability`，返回 `[{id,name,image}]`；拉不到返回 `listErr` 而**不抛**（有些网关就没有 `/models`）。`copy.llmtest` 允许 `args.endpoint/apiKey/enabled` **覆盖**。 |
+| IPC | `ipc.js` 新增 `llm:effective`（**本地解析、不联网**）：回 `model / modelSource / endpoint / endpointSource / apiKeySet / apiKeySource / vision / imageCount / imageMaxSide / videoFrames`。★ **不回明文 key**，只回 `apiKeySet` 布尔。`preload` 暴露 `llmEffective`。 |
+
+### 三条口径（都带理由）
+
+1. **「可设置默认模型」＝ 从接口真认的清单里点一个，存进 `copy.llm.model`。**
+   非要做「拉清单」这一步，是因为用户常填**显示名**（`deepseek v4.1 flash`），而接口只认自己的 id ——
+   实测直接 HTTP 400（`The supported API model names are deepseek-flash, deepseek-v4-pro, ...`）。
+   点清单里的一项是**接口自己的 id**，不用人去背；存下去以后所有调用（生成 / 接口自检）都读它。
+   ★ 清单拉不到时不留死路：「默认模型」那个框本来就能手填 id。
+2. **`args` 覆盖**（拉清单 / 自检都把**表单里当前填的**地址 / Key / 启用带过去）：
+   否则用户改完地址点自检，检的还是**没保存的旧配置** —— 结论会骗人。
+3. **空串要显式写下去**（`lm:save` 里 `endpoint/apiKey/model` 都按表单值写，包括空串）：
+   `store.set` 是 `mergeDeep`，**不写这个键 ≠ 清空它**；要靠「不写」来留空的话，上一次填的值永远擦不掉。
+   ⇒ 留空写 `''`＝「跟随内置」，这正是 `cfgOf()` 认的那套。
+
+### 取证（实测数字）
+
+- `node tools/run-all.js uicheck` → **248 项全绿**。新增/改写的断言：
+  ① 「模型配置」按钮在**「文案生成」页、且在「提示词配置」左边**（`#head .act` 里比位置）；
+  ② 点它**开弹窗**（`#lmmodal` 可见），弹窗里 启用 / 接口地址 / API Key / 默认模型 / 拉清单 / 自检 / 保存 **一个不缺**；
+  ③ 弹窗里「**实际在用**」显示的是**真值**（不是空框、不是停在「读取中」）；
+  ④ `llm:effective` 的返回里**没有明文 key**（只有 `apiKeySet` 布尔）；
+  ⑤ 改「默认模型」→ 点保存 → **真落进 `copy.llm.model`** 且弹窗自动关（＝「后续默认选用这个」）；
+  ⑥ 「拉取模型清单」**不静默失败**：要么列出 `.brow`，要么把「拉不到」的原因写进弹窗；
+  ⑦ **负向**：高级设置页**整块**不再有 `copy.llm.*` 控件、也没有旧的 `[data-act="copy:llmtest"]`
+     （少列一个键都会漏 ⇒ 断言覆盖整块，别只盯「启用」那一个）；
+  ⑧ 高级设置里「可选」折叠块数 **5 → 4**（搬走一块之后计数不改会**假红**）。
+- `tools/copytest.js` 里 `jobs.run('copy.llmtest', {})` **照旧通过** —— `args.enabled` 缺省时仍读配置，
+  向后兼容没破。
+
+### 两条坑（都是自检环境踩的）
+
+1. **动作按钮在 `#head .act` 里，不在 `#pane` 里**。第一版断言写成 `#pane.querySelector('[data-act="copy:model"]')`
+   ⇒ 4 条**假红**（`btn:false`）。`#pane` 是页面正文；页头那排按钮在 `#head`。
+2. **注入到 `executeJavaScript` 的模板串里别写 `\s` 这类转义**：外层模板串会把未知转义的反斜杠吃掉
+   （`\s` → `s`）⇒ 正则静默变味、还不报错。需要比对就看子串，不做空白归一。
+
+★ 本节取代上面关于「模型在高级设置里」的描述；`copy.llm.*` 的**配置键与读取口径**仍然全部有效，一个字没改。

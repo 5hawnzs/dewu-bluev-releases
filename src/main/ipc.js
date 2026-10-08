@@ -12,9 +12,11 @@ const imaging = require('./services/imaging');
 const video = require('./services/video');   // ★ 不许漏：config:set 里改 ffmpeg 路径要立刻生效（漏了＝ReferenceError，接口直接报错）
 const cloudsync = require('./services/cloudsync');   // 云端协作（可选）：只上行发布结果，发布核心不依赖它
 const pool = require('./services/pool');
+const copywriter = require('./services/copywriter');   // 「模型配置」弹窗要读**当前生效**的模型（无网络，只解析配置）
 const hotwords = require('./services/hotwords');   // 标题热词库（读写 + 红线校验都在它里面）
 const stats = require('./services/stats');
 const adb = require('./services/adb');
+const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装包（设置页「下载到本机」用它）
 const updater = require('./updater');
 const wp = require('./util/winpath');
 const winmod = require('./window');
@@ -229,10 +231,32 @@ function register() {
     pool: { size: pool.size(), source: pool.get().source, updatedAt: pool.get().updatedAt },
     // 随包内置的外部依赖（adb / 中文输入法 apk）在不在 —— 设置页照实显示
     vendor: adb.bundledStatus(),
+    // ★ 内置的得物 App 安装包（模拟器应用商店里搜不到得物时的兜底）。
+    //   这一行少了，「外部依赖」表里那一行就只能显示"状态取不到"—— 界面在骗人（同下面 ffmpeg 那条）。
+    //   ★ 只回路径/字节数这类轻量信息：md5 要读 133 MB，秒级的卡顿不能塞进界面刷新路径里。
+    dewuApk: dewuapk.status(),
     // ★ 视频转码那条依赖：ffmpeg 的三段解析结果（手填 > 内置 > PATH）。
     //   少了这一行，「外部依赖」表里那行永远是「状态取不到」—— 界面在骗人（2026-10-02 抓到）。
     ffmpeg: video.status(),
     userData: app.getPath('userData')
+  }));
+
+  // 「模型配置」弹窗开的时候读一次：**当前实际在用**的模型是哪个、是哪来的（本机配置 / 跟随内置）。
+  // ★ 纯本地解析（copywriter.cfgOf 不发网络请求）⇒ 开弹窗不会有等待感。
+  // ★★ 只回 `apiKeySet` 布尔，**不回明文 key** —— 弹窗的输入框从 config:get 取原值，这条通道没必要带密钥。
+  // ★ 它替代的正是原来「设置 → 高级设置 → 文案模型」那块：搬进弹窗后，「留空＝跟随内置」这个语义
+  //   仍然要有**唯一的可见出口**（否则用户只看到空框，不知道实际用的是什么，界面等于在骗人）。
+  ipcMain.handle('llm:effective', guard(() => {
+    const c = copywriter.cfgOf();
+    const raw = store.get('copy.llm') || {};
+    const src = k => (String(raw[k] == null ? '' : raw[k]).trim() ? '本机配置' : '跟随内置');
+    return {
+      enabled: c.enabled, vision: c.vision,
+      endpoint: c.endpoint, endpointSource: c.endpointSource,
+      model: c.model, modelSource: src('model'),
+      apiKeySet: !!c.apiKey, apiKeySource: c.apiKeySource,
+      imageCount: c.imageCount, imageMaxSide: c.imageMaxSide, videoFrames: c.videoFrames
+    };
   }));
 
   ipcMain.handle('config:get', guard((_e, key) => store.get(key)));
@@ -246,7 +270,8 @@ function register() {
     if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'ffmpegPath')) {
       video.setFfmpegPath(store.get('publish.ffmpegPath'));
     }
-    // 云端协作的开关 / 间隔改了要立刻生效（改完当场重启定时器，不用重启应用）
+    // 云端协作：界面上已无入口，但 config.json 里那个「cloud」块若被改（换项目 / 排障），
+    // 改完要立刻生效 —— 当场重启定时器，不用重启应用。
     if (patch && patch.cloud) cloudsync.configure();
     return store.get();
   }));
@@ -259,16 +284,13 @@ function register() {
   ipcMain.handle('hotwords:save', guardAdmin((_e, groups, opts) => hotwords.saveLibrary(groups, opts)));
   ipcMain.handle('hotwords:reset', guardAdmin(() => hotwords.resetLibrary()));
 
-  // ---- 云端协作（阶段 1）----
-  // ★ 一律 guardAdmin：地址与 anon key 是整台机器共用的凭据，普通成员不该看、更不该改。
-  // ★ 状态里**不含 key**（cloudsync.status() 已把它排除），渲染层拿不到。
-  ipcMain.handle('cloud:status', guardAdmin(() => cloudsync.status()));
-  ipcMain.handle('cloud:sync', guardAdmin(() => cloudsync.syncOnce({ force: true })));
-  ipcMain.handle('cloud:test', guardAdmin(() => cloudsync.test()));
-  // 导入 / 导出配置：换项目、或者给不能重打包的同事机下发凭据时用。
-  // ★ 导出的是 anon key（公开设计）；导入时会**拦下 secret/service_role**（见 cloudsync.importConfig）。
-  ipcMain.handle('cloud:export', guardAdmin(() => cloudsync.exportConfig()));
-  ipcMain.handle('cloud:import', guardAdmin((_e, cfg) => cloudsync.importConfig(cfg)));
+  // ★★ 2026-10-08 用户要求：「云端协作」整块从**界面上删掉**（不给任何人看到）
+  //   ⇒ 这里原来那 5 个 cloud:* IPC（status / sync / test / export / import）已**一并删除**，
+  //     preload 里对应的 5 个通道也删了 ⇒ 渲染层再也够不到它们（既看不见，也改不了）。
+  //   ★ 删的是**入口**，不是功能：上行链路 cloudsync.js 一个字节没动，
+  //     且出厂默认就是开的（store.js 的 cloud 块 + clouddefaults.js 的内置地址 / anon key）。
+  //   ★ cloudsync 的 exportConfig / importConfig / test 三个函数**保留** ——
+  //     tools/cloudtest.js 直接调它们做服务级断言（不走 IPC），删了会红一片。
 
   ipcMain.handle('project:get', guard(() => project.get()));
   ipcMain.handle('log:history', guard(() => logbus.history()));
@@ -358,6 +380,28 @@ function register() {
     return err === '' ? true : err;
   }));
   ipcMain.handle('shell:reveal', guard((_e, p) => { if (p) shell.showItemInFolder(p); return true; }));
+
+  /**
+   * 「下载到本机」：把**内置**的得物安装包另存到用户选的位置（不联网）。
+   * ★ 为什么不做成"从网上下"：这个包本来就随包内置了，走网络只会多一份失败面。
+   *   用户要的是"把安装包弄到手边好拖进模拟器"，另存为正好就是这件事。
+   * ★ 存完**回读大小**（dewuapk.saveAs 里做）—— 磁盘满/被杀软拦下会留半截文件，
+   *   那时回一句"存好了"就是骗人。
+   */
+  ipcMain.handle('apk:saveDewu', guard(async () => {
+    const st = dewuapk.status();
+    if (!st.exists) return { ok: false, error: `安装包里没有内置得物安装包（应该在 ${st.path || 'resources/dewu'}）` };
+    if (!st.sizeOk) {
+      return { ok: false, error: `内置的 ${st.file} 大小不对（${st.bytes} 字节，应该是 ${st.expectBytes}）—— 这份安装包不完整，重新装一次本工具再试` };
+    }
+    const r = await dialog.showSaveDialog(win(), {
+      title: '把得物安装包存到本机',
+      defaultPath: path.join(app.getPath('downloads'), st.file),
+      filters: [{ name: '安卓安装包 (apk)', extensions: ['apk'] }]
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    return dewuapk.saveAs(r.filePath);
+  }));
 
   // ---- 窗口控制（自绘标题栏） ----
   ipcMain.on('win:min', () => { const w = win(); if (w) w.minimize(); });

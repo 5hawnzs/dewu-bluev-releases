@@ -16,6 +16,7 @@ const sheet = require('./services/sheet');
 const report = require('./services/report');
 const aireport = require('./services/aireport');
 const publisher = require('./services/publisher');
+const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装包（装进模拟器那条兜底路）
 const pool = require('./services/pool');
 const runlog = require('./services/runlog');
 const wp = require('./util/winpath');
@@ -45,7 +46,7 @@ const TYPE_LABEL = {
   'flatten.plan': '素材整理 · 生成清单', 'flatten.run': '素材整理',
   'compliance.scan': '合规检查', 'compliance.scanParent': '合规检查 · 父目录',
   'compliance.fix': '合规处理', 'compliance.exportReport': '导出合规报告',
-  'copy.generate': 'AI 文案生成', 'copy.llmtest': '文案接口自检',
+  'copy.generate': 'AI 文案生成', 'copy.llmtest': '文案接口自检', 'copy.llmmodels': '拉取模型清单',
   'verify.check': '好物货号颜色预检',
   'sheet.export': '导出发布单', 'report.import': '导入 AI 内容报告',
   'publish.run': '自动发布', 'publish.rerun': '发布重跑',
@@ -241,12 +242,49 @@ async function dispatch(type, args, ctx) {
         throw new Error('文案生成必须指定素材目录：请点「选择素材目录并启动任务」（一个目录 = 一个批次）。');
       }
     }
+    // 「拉取模型清单」（2026-10-08）：给「文案生成 → 模型配置」弹窗用 —— 把这个接口**真认的**模型列出来，
+    // 用户点一个当「默认模型」，存的是接口 id（不是显示名）。
+    // ★ 为什么要有这一步：用户填的是显示名，接口只认自己的 id —— 实测填 `deepseek v4.1 flash` 直接 400
+    //   （`The supported API model names are deepseek-flash, deepseek-v4-pro, ...`）。清单拉回来点一下最省事。
+    // ★★ 允许 args.endpoint / args.apiKey 覆盖配置：弹窗里刚粘完地址就能拉清单，**不必先存一遍**
+    //   （先存再拉的话，地址填错也被写进配置，还得再擦掉）。留空才落回已保存的配置。
+    // ★ 拉不到不抛异常（返回 listErr）：有些网关就是不提供 /models，那是「清单拉不到」而不是「任务失败」。
+    case 'copy.llmmodels': {
+      const c = copywriter.cfgOf();
+      const ownEnd = String(args.endpoint || '').trim();
+      const ownKey = String(args.apiKey || '').trim();
+      const endpoint = ownEnd || c.endpoint;
+      const apiKey = ownKey || c.apiKey;
+      const endpointSource = ownEnd ? '表单里填的' : c.endpointSource;
+      if (!endpoint) return { ok: true, endpoint: '', endpointSource, models: [], listErr: '还没填接口地址' };
+      if (!apiKey) return { ok: true, endpoint, endpointSource, models: [], listErr: '还没填 API Key' };
+      let models = [];
+      try {
+        const list = await copywriter.listModels({ endpoint, apiKey });
+        models = list.map(m => ({
+          id: String(m.id),
+          name: String(m.name || m.id),
+          // 清单里写没写收图（`input_modalities` 里有 `image`）—— 直接摆给用户看，省得生成完才发现不看图
+          image: copywriter.imageCapability(m)
+        }));
+      } catch (e) {
+        logbus.warn(`模型清单拉不到（${e.message}）`);
+        return { ok: true, endpoint, endpointSource, models: [], listErr: e.message };
+      }
+      logbus.info(`模型清单：${models.length} 个可选（${endpoint}）`);
+      return { ok: true, endpoint, endpointSource, models, listErr: '', current: c.model };
+    }
     // 「接口自检」：一次网络往返把「地址通不通 / 模型名接口认不认 / 这个模型收不收图」说清楚。
     // 为什么要有这个按钮：上一版这些事**全靠生成时才暴露**，而失败还被静默吞成「本地模板」，
     // 于是用户看到的是一堆模板货，却看不到「其实是接口没连上」。
+    // ★ 2026-10-08 起按钮搬进「模型配置」弹窗 ⇒ 允许 args 覆盖，让它**测表单里当前填的**地址 / Key / 启用，
+    //   而不是测那份可能还没保存的旧配置（否则用户改完地址点自检，检的还是旧的，结论会骗人）。
     case 'copy.llmtest': {
       const c = copywriter.cfgOf();
-      if (!c.enabled) {
+      if (String(args.endpoint || '').trim()) { c.endpoint = String(args.endpoint).trim(); c.endpointSource = '表单里填的'; }
+      if (String(args.apiKey || '').trim()) { c.apiKey = String(args.apiKey).trim(); c.apiKeySource = '表单里填的'; }
+      const wantEnabled = args.enabled === undefined ? c.enabled : (args.enabled === true || args.enabled === 'true');
+      if (!wantEnabled) {
         return { ok: true, enabled: false, note: '模型开关关着（当前用本地模板出文案，不是 AI 文案）' };
       }
       const pf = await copywriter.preflight(c);
@@ -446,6 +484,26 @@ async function dispatch(type, args, ctx) {
       const r = await publisher.installIme(serial);
       if (!r.ok) throw new Error(`中文输入法没装成（卡在 ${r.step} 这步）：${r.error}`);
       logbus.ok(`已装上中文输入法并设为当前输入法（${r.component}）—— 现在再点一次「检查能不能发布」`);
+      return r;
+    }
+    /*
+     * 把**内置的得物 App 安装包**装进模拟器 —— MuMu 自带的应用商店里搜不到得物，这是兜底路。
+     * ★★ 已经装过就**一条 install 都不发**（得物里是登录状态 + 本地草稿）：
+     *    这种情况返回 `already:true`，界面据此再给一个显式的「覆盖重装」按钮（args.force）。
+     * ★ 装完必须回读 `pm list packages` 才算成功（dewuapk.install 里做）—— 不许假成功。
+     */
+    case 'publish.installDewuApk': {
+      const serial = args.device || (st().publish && st().publish.device) || store.get('publish.device');
+      if (!serial) throw new Error('还没选设备 —— 先在「模拟器发布」页点「扫描设备」，再从列出来的设备里点「加入并使用」');
+      const r = await dewuapk.install(serial, { force: !!args.force });
+      if (!r.ok) throw new Error(`得物安装包没能装进模拟器（卡在 ${r.step} 这步）：${r.error}${r.hint ? ' ' + r.hint : ''}`);
+      if (r.already) {
+        logbus.info(`模拟器里已经有得物${r.installedVersion ? ' ' + r.installedVersion : ''}（内置安装包是 ${r.apkVersion}）—— 我没有动它，登录状态和草稿都还在`);
+        logbus.warn('确实需要覆盖重装（`-r`，应用数据与登录状态保留）时，点这一行刚出现的「覆盖重装」按钮');
+      } else {
+        logbus.ok(`已装进模拟器：得物${r.installedVersion ? ' ' + r.installedVersion : ''}`
+          + `${r.replaced ? '（覆盖重装，应用数据与登录状态保留）' : ''}`);
+      }
       return r;
     }
     case 'publish.dump': {

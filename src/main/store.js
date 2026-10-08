@@ -123,8 +123,9 @@ function defaults() {
     //    留空之后「换项目」才有正经通道：发新包 → 各台升级（config.json 里仍是空）→ 自动跟随新内置值。
     //    ★ 实证：`D:\work\_e2e\_freeze-probe.js`。
     // ★ 内置的是 anon / publishable key（公开设计，靠 RLS 收口），**不是** service_role。
-    // ★ 默认**开启**（多机协作就是要各台都推）；不想上云的机器在这一页关掉开关即可 ——
-    //   enabled=false 时 cloudsync 一次都不会联网。只想改**这一台**就往这两个框里填，填了以填的为准。
+    // ★ 默认**开启**（多机协作就是要各台都推）；enabled=false 时 cloudsync 一次都不会联网。
+    //   ★ 2026-10-08 起**界面上不再有开关**（用户要求：这块不给任何人看到）⇒ 要停某台机器
+    //     只能改它自己的 config.json；组织级切换走「发新包」，别逐台手改。
     cloud: {
       enabled: true,
       url: '', anonKey: '', org: '',

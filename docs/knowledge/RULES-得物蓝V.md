@@ -4301,3 +4301,42 @@ WorkBuddy 侧活文档（本文件 / 工作区 `MEMORY.md` / `~/.workbuddy/skill
    两个账号的**品牌权限都是 0 个**（`admin` 是管理员不看这个字段）。
 
 
+
+---
+
+## §CJ 2026-10-08：得物 App 安装包**随包内置** ＋ 设置页「下载到本机 / 装进模拟器」
+
+**用户交办**：MuMu 自带的应用商店里搜不到得物 ⇒ 新增一个得物 APK 入口，点了能下到本机，
+旁边提示「把这份 apk 挪到模拟器那里就可以」。**用户拍板**：① **随 App 一起打包进安装包**；② **再加「装进模拟器」**。
+
+### 事实（从 APK 的二进制 `AndroidManifest.xml` 里读出来的，不是按文件名猜）
+`vendor/dewu/dewu_6.0.5.apk` · 133,315,131 B · md5 `50092bccb263498a16e4fbb57762ae5f`；
+包名 `com.shizhuang.duapp` · versionName **6.0.5** · versionCode 1140 · compileSdk 35；
+**只有 `arm64-v8a` / `armeabi-v7a`（没有 x86_64）** ⇒ MuMu 12 靠自带的 ARM 兼容层跑，
+`adb install` 不看 ABI ⇒ **「装上但打不开」第一嫌疑就是这条，不是包坏了**。
+★ 来源是本机已有的两份同 md5 副本，**没跟得物官方渠道对过**（md5 只证明"没被换过/没坏"，不证明出处）。
+
+### 三条行为红线（`src/main/services/dewuapk.js`）
+1. **已经装过就一条 `install` 都不发** —— 得物里是登录状态 + 本地草稿；只回报设备上的版本
+   （`dumpsys package <pkg> | grep -m1 versionName`，设备端先筛）。覆盖重装必须用户显式点
+   ⇒ 才走 `install -r -d`（`-d` 允许降级，**只在这一步**）。
+2. **装完必须回读** `pm list packages`（`adb install` 说 Success 不算数）。
+3. **读不出来 ≠ 没装**：`deviceState()` 返回 `installed=null`，不许当 `false` 一路装下去。
+
+### 改动面（漏一处就是半拉子）
+`vendor/dewu/`（新）+ `vendor/README.md` §4 台账 + `package.json` `build.extraResources`
+（`vendor/dewu → resources/dewu`，**不进 `files`**）+ `index.js` `setBundledDir` +
+`ipc.js`（`app:info.dewuApk`、`apk:saveDewu`）+ `preload` + `jobs.js`（`publish.installDewuApk`）+
+`app.js`（表那一行 / `apkDesc`·`apkBadge`·`apkBtns` / 三个 `ACTS`）+ `fakeadb` 两个现场开关。
+★ **换 apk 版本要三处同改**：`vendor/README.md` 台账、`dewuapk.js` 的 `FILE`/`BYTES`/`MD5`、`uicheck.js` 的 `prov` 列表。
+
+### 实测（可复算）
+`tools/adbtest.js` **404 PASS / 0 FAIL**（+12 条，块 ⑰，含"已装⇒0 条 install""新模拟器⇒真装并回读"
+"force⇒`-r -d`""签名冲突⇒如实报错 + 只能先卸载""`installed=null` ≠ false"）；
+`tools/uicheck.js` **254 PASS / 0 FAIL**（+9 条，含**负向对照**：内置目录指空 ⇒ 两枚按钮都灰、状态变「缺」；
+**全链路活体**：真点「装进模拟器」⇒ 没设备时主进程回「还没选设备」）。
+★ **本轮没有真机验证**（MuMu 的 Android VM 没起、`adb devices` 空）——不许声称"已在模拟器上装过"。
+
+### 代价（已跟用户讲清）
+安装包 108.7 MB → **约 236 MB**；electron-updater 整包下载 ⇒ **以后每次自动更新都要多下这 127 MB**。
+合规：得物 App 是第三方商业应用，**按"公司内部装机使用"放进来**；对外分发前先解决授权（同 §3 ffmpeg GPL 那条）。

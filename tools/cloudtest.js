@@ -15,6 +15,12 @@
  *     9. **导出 / 导入配置要先校验**：地址不合法、或粘进 service_role，都必须拦下；
  *    10. **留空 ⇒ 跟随内置，且绝不写回配置**（写回＝固化进 config.json，而它卸载都不删
  *        ⇒ 以后重打包换了内置值，老机器仍连旧地址、界面上还看不出来。实测：D:\work\_e2e\_freeze-probe.js）。
+ *    11. **失败信息必须带出底层原因**：`fetch` 在网络层失败时 message 只有 `fetch failed` 六个字，
+ *        真因在 `cause` 里（ENOTFOUND / ECONNRESET / ETIMEDOUT…）。丢掉 cause ＝ 事后无法定性
+ *        （2026-10-08 排查「时不时云端同步失败」正是卡在这里）。
+ *    12. **失败要落盘**：`logbus` 只进内存、成功后 `lastError` 又被清空 ⇒ 不落盘就零证据。
+ *    13. **「无待上行」那一轮要把上一次的失败标记清掉**（否则台账一被清理，offset 归零、slice 恒为空，
+ *        从此永远走不到成功分支 ⇒ 界面上「同步失败」永不消失，而云上其实是齐的）。
  *
  * 用法：node tools/cloudtest.js
  */
@@ -72,6 +78,13 @@ const NO_CONSTRAINT_BODY = '{"code":"42P10","details":null,"hint":null,"message"
 globalThis.fetch = async (url, opts) => {
   calls.push({ url, opts });
   if (mode === 'throw') throw new Error('ECONNREFUSED 连不上');
+  // 真实形状：Node 的 fetch 在网络层失败时抛的是 TypeError('fetch failed')，真因挂在 cause 上
+  // （照抄 2026-10-08 实测回包：DNS 失败 ⇒ cause.code = ENOTFOUND）
+  if (mode === 'throwCause') {
+    const e = new TypeError('fetch failed');
+    e.cause = Object.assign(new Error('getaddrinfo ENOTFOUND rywurhpkovyjpjyvfjdz.supabase.co'), { code: 'ENOTFOUND' });
+    throw e;
+  }
   if (mode === 'http500') return { ok: false, status: 500, text: async () => 'upstream error' };
   if (mode === 'tableMissing') return { ok: false, status: 404, text: async () => NO_TABLE_BODY };
   // 服务端**没**按 on_conflict 去重：整批与逐行都撞唯一键
@@ -246,6 +259,90 @@ let r = null;
   r = await cs.syncOnce({ force: true });
   ok('恢复后一次补齐 4 条（失败没吃掉数据）', r.ok && r.uploaded === 4, JSON.stringify(r));
 
+  console.log('\nD2. 失败要「说得清」：cause 不许丢、失败要落盘、无待上行要清旧标记\n');
+  // ---- 纯函数：describeErr 必须把 cause 串起来 ----
+  // 正向：真实的 fetch 网络错（TypeError('fetch failed') + cause）
+  const de1 = cs.describeErr(Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('getaddrinfo ENOTFOUND host'), { code: 'ENOTFOUND' })
+  }));
+  ok('★★ describeErr 把 cause 串进失败信息里（只写 message 就只剩 `fetch failed` 六个字）',
+    /fetch failed/.test(de1) && /ENOTFOUND/.test(de1), de1);
+  // 正向：多层 cause（undici 的 SocketError 会再嵌一层）
+  const de2 = cs.describeErr(Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET', cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) })
+  }));
+  ok('★ 多层 cause 也扒得出来（undici: TypeError → SocketError → Error）',
+    /UND_ERR_SOCKET/.test(de2) && /ECONNRESET/.test(de2), de2);
+  // 反向对照：没有 cause 时不许编一个出来，且原始的 HTTP 文案要原样保留
+  const de3 = cs.describeErr(Object.assign(new Error('HTTP 500 · upstream error'), { status: 500 }));
+  ok('对照：没有 cause 就不许编，HTTP 文案原样保留且状态码不写两遍',
+    de3 === 'HTTP 500 · upstream error', de3);
+  // 绝不抛：喂各种垃圾
+  ok('★ describeErr 喂垃圾也不抛（它跑在 catch 里，抛了就把真错误吞了）',
+    (() => { let t = ''; for (const v of [null, undefined, '', 0, {}, 'str', { cause: {} }]) { try { cs.describeErr(v); } catch (e) { t += String(e.message) + ';'; } } return t === ''; })());
+
+  // ---- 失败要落盘 ----
+  setCfg({});
+  fs.rmSync(cs.stateFile(), { force: true });
+  fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
+  try { fs.rmSync(cs.errorLogFile(), { force: true }); } catch (e5) { /* 本来就没有 */ }
+  seed(0, 3);
+  calls = [];
+  mode = 'throwCause';
+  r = await cs.syncOnce({ force: true });
+  ok('★★ 网络层失败的原因能带出来（不再只有 `fetch failed`）',
+    r.ok === false && /ENOTFOUND/.test(r.error || ''), r.error);
+  const errLog = (() => { try { return fs.readFileSync(cs.errorLogFile(), 'utf8'); } catch (e6) { return ''; } })();
+  ok('★★ 失败同时落盘（logbus 只进内存，不落盘就永远无法复盘）',
+    /fail=1/.test(errLog) && /ENOTFOUND/.test(errLog), errLog.split('\n')[0].slice(0, 160));
+  // ★★ 落盘里的 pending 必须是这一轮的**真值**（3 条待上行），不许取 pending() 的 3 秒缓存旧值
+  //    （缓存那一份是给界面轮询用的；把旧值写进证据文件＝写了个假数字）
+  ok('★★ 落盘里的 pending 是本次真值（3 条待上行），不许写成缓存的旧值 0',
+    /pending=3/.test(errLog), errLog.split('\n')[0].slice(0, 160));
+
+  // ★ 反向对照：**还有待上行**时，退避期内绝不许把 lastError 清掉
+  calls = [];
+  r = await cs.syncOnce();
+  ok('对照：还有待上行 + 退避中 ⇒ 上一次的失败信息必须还在（清理只许发生在「无待上行」那一刻）',
+    cs.status().lastError !== '' && /退避/.test(r.skipped || ''),
+    JSON.stringify({ lastError: cs.status().lastError, skipped: r.skipped }));
+
+  // ---- 无待上行 ⇒ 清掉旧标记 ----
+  // 复现真实场景：失败之后台账被「数据清理」清空 ⇒ offset 归零、slice 恒为空，
+  // 从此每次同步都走这条分支（既回不到 catch，也进不了成功分支）
+  fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
+  calls = [];
+  r = await cs.syncOnce({ force: true });
+  const s2 = cs.status();
+  // 直接读状态文件（status() 不含 fail，而且这里要证的正是「落盘的那份也被清了」）
+  const raw2 = (() => { try { return JSON.parse(fs.readFileSync(cs.stateFile(), 'utf8')); } catch (e8) { return {}; } })();
+  ok('★★「无待上行」那一轮必须清掉上一次的失败标记（否则界面上「同步失败」永远挂着）',
+    r.ok === true && s2.lastError === '' && raw2.fail === 0 && raw2.nextTryAt === 0 && raw2.lastError === '',
+    JSON.stringify({ ok: r.ok, lastError: s2.lastError, fail: raw2.fail, nextTryAt: raw2.nextTryAt }));
+  ok('清标记这件事不联网（本地就没有可推的，不该为它打一次云端）', calls.length === 0, `联网 ${calls.length} 次`);
+
+  // 落盘绝不抛：输出目录指到一个不存在的位置也得安静地失败
+  ok('★ 落盘写不进去也绝不抛（证据少一条，好过把发布拖下水）',
+    (() => {
+      const keep = store.get('paths.output');
+      let t = '';
+      try { store.set({ paths: { output: path.join(dir, 'no-such-dir', 'a\0b') } }); cs.appendErrorLog('探针'); }
+      catch (e7) { t = String(e7.message); }
+      store.set({ paths: { output: keep } });
+      return t === '';
+    })());
+
+  // ★ 把状态摆回 D 段结束时的样子（4 条已上行、游标 4），否则下面 E 段的「旧游标 4」前提就没了
+  mode = 'ok';
+  fs.rmSync(cs.stateFile(), { force: true });
+  fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
+  seed(0, 4);
+  calls = [];
+  r = await cs.syncOnce({ force: true });
+  ok('D2 收尾：状态摆回「4 条已上行、游标 4」供 E 段复用',
+    r.ok && r.uploaded === 4 && cs.status().offset === 4,
+    JSON.stringify({ up: r.uploaded, off: cs.status().offset }));
+
   console.log('\nE. 台账被清空后游标要能自己回来\n');
   const before = cs.status().offset;
   fs.rmSync(path.join(dir, 'publish-log.jsonl'), { force: true });
@@ -346,7 +443,97 @@ let r = null;
   ok('★★ 看板里不许有任何真凭据（sb_secret_ / JWT 字面量），注释里提 service_role 不算',
     !/sb_secret_/.test(boardSrc) && !/eyJ[A-Za-z0-9_-]{20,}/.test(boardSrc));
 
-  console.log('\nI. 收尾\n');
+  // ---- 「打开即看」：看板不许再要求使用者先点一次「保存并连接」 ----
+  // ★ 为什么焊住这条（2026-10-08 实测反馈）：原来引导尾部写的是
+  //   `if(cfg.url && cfg.key) connect(); else { 显示设置卡片 }`，
+  //   而**新访客的 localStorage 本来就是空的** ⇒ 第一次打开只看到一张空的「连接设置」卡片，
+  //   不是看板。一个零配置的只读看板不该有这么一道门槛。
+  ok('★★ 看板必须**无条件**自动连（不许再拿「本机存过配置」当前提）',
+    /(^|\n)\s*connect\(false\)\s*;/.test(boardSrc) && !/\$\(['"]#main['"]\)\.hidden\s*=\s*true;\s*conn\(/.test(boardSrc));
+  ok('★★ 首屏不许出现「连接设置」卡片与入口按钮（默认就是 hidden）',
+    /id="setupCard"\s+hidden/.test(boardSrc) && /id="btnSetup"\s+hidden/.test(boardSrc));
+  ok('★ 自动连**不写** localStorage（只有手点保存才写 persist）',
+    /if\s*\(\s*persist\s*\)\s*localStorage\.setItem/.test(boardSrc)
+      && /connect\(true\)/.test(boardSrc)
+      && !/^\s*localStorage\.setItem\(LS,\s*JSON\.stringify\(\{url,\s*key\}\)\);/m.test(boardSrc));
+  ok('★ 连不上 / 读不到时才把设置露出来（有出口，不是死路）',
+    // ★ `\s*\(` 不能省：只写 /function\s+showSetup/ 的话，把它改名成 showSetupX 照样命中
+    //   —— 上一轮反向验证实测就是这条假绿（改名破坏没被抓到）。断言必须区分「定义」与「前缀相同的别的名字」。
+    /function\s+showSetup\s*\(/.test(boardSrc)
+      && /showSetup\('看板自带的 Supabase SDK/.test(boardSrc)
+      && /\$\('#btnSetup'\)\.hidden\s*=\s*false;/.test(boardSrc));
+
+  console.log('\nI. 看板口径：折叠重复行 / 排除模拟与探针 / 机器按名归一\n');
+  // ★★ 为什么这一组必须存在（2026-10-08 真库实测的账）：
+  //   同一台电脑换过 machine_id（配置被搬运/清空）后，整本台账会以新 id **重推一遍**，
+  //   而唯一键是 (machine_id, ts, seq) ⇒ 云上留两份、去重键拦不住。
+  //   实测：189 项真实工作占了 367 行 ⇒ 旧看板把「款进度」从 19% 报成 59%，成功率从 44% 报成 33%。
+  //   下面这组**不查「源码里有没有那行字」，而是把那段纯函数抠出来真跑一遍**（行为级）。
+  const boardHelper = boardSrc.slice(boardSrc.indexOf('const REAL = new Set'), boardSrc.indexOf('function conn('));
+  const vm = require('vm');
+  const ctxB = {}; vm.createContext(ctxB);
+  new vm.Script(boardHelper + '\n__h = { REAL, isReal, isNonReal, kindOf, dedupe, mkey };').runInContext(ctxB);
+  const B = ctxB.__h || {};
+  ok('★ 抠得出看板的口径函数（抠不出＝那段被改名/删了，下面的断言会一起失效）',
+    !!(B.REAL && B.isReal && B.dedupe && B.mkey));
+
+  // 夹具：同一台机器（同名）两个 id 重复推同一批 + 一条模拟 + 一条探针
+  const mkRow = o => Object.assign({ ts: 1, seq: 1, batch_no: 'B', dir_name: '款A', result: '发布成功',
+    machine_id: 'm_1', machine_name: 'PC1', mode: 'adb' }, o);
+  const fixture = [
+    mkRow({}),                                                            // 真的
+    mkRow({ machine_id: 'm_2' }),                                         // 同一台机、另一个 id、同 ts/seq/款 ⇒ 必须折叠
+    mkRow({ ts: 2, result: '失败' }),                                     // 真的，另一条
+    mkRow({ ts: 3, result: '模拟成功', mode: 'mock' }),                    // 模拟 ⇒ 不算发布
+    mkRow({ ts: 4, result: '探针（非真实发布）', machine_id: '__probe__conn__' })  // 探针 ⇒ 不算发布
+  ];
+  const folded = B.dedupe(fixture);
+  ok('★ 同一台机器换 id 后重推的重复行被折叠（5 行 → 4 行）', folded.length === 4, '折叠后 ' + folded.length + ' 行');
+  ok('★★ 模拟 / 探针不算真实发布（isReal 只认「发布成功 / 失败」）',
+    B.isReal({ result: '发布成功' }) && B.isReal({ result: '失败' })
+      && !B.isReal({ result: '模拟成功' }) && !B.isReal({ result: '探针（非真实发布）' })
+      && !B.isReal({ result: '' }));
+  const realOnly = folded.filter(B.isReal);
+  ok('★★ 统计只剩 2 条真实结果（模拟 + 探针被排除，但仍留在明细里）',
+    realOnly.length === 2 && folded.length - realOnly.length === 2,
+    '真实 ' + realOnly.length + ' 条 · 未计入 ' + (folded.length - realOnly.length) + ' 条');
+  ok('★ 机器按「机器名」归一（两个 id 同名 ⇒ 只算一台）',
+    new Set(folded.map(B.mkey)).size === 1, [...new Set(folded.map(B.mkey))].join(' , '));
+  ok('★ 机器名缺失时退回 machine_id；不同机器名不许被误并',
+    B.mkey({ machine_id: 'm_x' }) === 'm_x'
+      && new Set([mkRow({}), mkRow({ machine_name: 'PC2' })].map(B.mkey)).size === 2);
+  ok('★ 探针行被单独归类（kindOf = 探针），模拟行归类为 模拟',
+    B.kindOf({ result: '探针（非真实发布）', machine_id: '__probe__conn__' }) === '探针'
+      && B.kindOf({ result: '模拟成功', mode: 'mock' }) === '模拟');
+  // ★★ 这条是**真实浏览器渲染验收**才逼出来的：建库的 4 条探针里有 3 条 result 写的就是「发布成功」，
+  //    只看 result 的判据会把它们当真实发布 ⇒ 真库实测「机器数」被从 1 撑成 2。
+  ok('★★ 探针行即使 result 写成「发布成功」也不算真实发布（真库里确有 3 条这样）',
+    !B.isReal({ result: '发布成功', machine_id: '__probe__conn__', machine_name: '⚠ 连通性探针（可删）' })
+      && !B.isReal({ result: '发布成功', machine_id: 'm_9', machine_name: '⚠ 连通性探针（可删）' })
+      && B.isReal({ result: '发布成功', machine_id: 'm_9', machine_name: '真实机器' }));
+
+  // 口径的正面 + 反面：只写正面会「改了公式也照样绿」
+  ok('★★ 成功率的分母是「真实完成条数 done」，**不许**再拿含模拟/探针的总行数当分母',
+    /Math\.round\(ok\s*\/\s*done\s*\*\s*100\)/.test(boardSrc)
+      && !/Math\.round\(ok\s*\/\s*list\.length\s*\*\s*100\)/.test(boardSrc));
+  ok('★ 机器数按名字算（不许再拿 machine_id 算）',
+    /new Set\(list\.map\(mkey\)\)\.size/.test(boardSrc) && !/new Set\(list\.map\(r\s*=>\s*r\.machine_id\)\)/.test(boardSrc));
+  ok('★★ 看板取数后必须先去重（rows = dedupe(raw)），否则重复行会直接进统计',
+    /rows\s*=\s*dedupe\(raw\)/.test(boardSrc));
+
+  // ---- App 侧：机器标识不许再随机漂移 ----
+  ok('★★ App：没有 machineId 时由机器指纹派生 ⇒ 同一台机永远得到同一个 id',
+    cs.idFromFingerprint('guid-aaa') === cs.idFromFingerprint('guid-aaa')
+      && cs.idFromFingerprint('guid-aaa') !== cs.idFromFingerprint('guid-bbb')
+      && /^m_[0-9a-f]{8}$/.test(cs.idFromFingerprint('guid-aaa')),
+    cs.idFromFingerprint('guid-aaa'));
+  ok('★ 指纹读不到 ⇒ 回空串（交随机兜底），绝不抛',
+    cs.idFromFingerprint('') === '' && cs.idFromFingerprint(null) === '');
+  ok('★★ 已有 machineId 的机器**不迁移**（迁移＝整本台账以新 id 重推＝看板再翻一倍）',
+    (() => { setCfg({ machineId: 'm_keepme1' }); const g = cs.status().machineId; setCfg({}); return g === 'm_keepme1'; })(),
+    '期望 m_keepme1');
+
+  console.log('\nJ. 收尾\n');
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e3) { /* 临时目录 */ }
   try { fs.rmSync(cs.stateFile(), { force: true }); } catch (e4) { /* 临时文件 */ }
   console.log('\n' + (bad ? `FAILED：${bad} 条不通过` : '全部通过'));

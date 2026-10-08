@@ -108,7 +108,17 @@ const ok = (label, cond, extra) => {
   ok('② PNG 需转 JPG', sc.rows.filter(r => r.action === '转 JPG（白底填充）').length === 2);
   const fx = await compliance.fix(fl.items, sc.rows, ctx());
   ok('② 处理不崩溃', true, `转换 ${fx.converted} · 隔离 ${fx.isolated} · 失败 ${fx.failed}`);
-  ok('② HEIC 缺解码器时降级为人工', fx.rows.some(r => r.file === 'x.heic' && r.status === 'manual'));
+  // ★★ 2026-10-08：原来只查 `status === 'manual'` —— 但**「转换试了一下、失败了」也会变 manual**，
+  //   所以 engine==='sharp' 的机器上这条照样绿 ⇒ 是个**假绿**：它区分不了
+  //   「扫到就预判人工」和「真去转、撞墙才发现不行」。现在钉两件会互相打架的事：
+  //   必须走**人工口径**（action 文案），且 result 里**不许**出现「处理失败」。
+  //   反向：哪天 hasHeif() 被改回 true，x.heic 会走 todo → 解码失败 → result='处理失败：…' ⇒ 这条红。
+  const heicRow = fx.rows.find(r => r.file === 'x.heic');
+  ok('② HEIC 预判为人工（人工口径，不是靠转换失败才变人工）',
+    !!heicRow && heicRow.status === 'manual'
+      && /需先转 JPG/.test(String(heicRow.action || ''))
+      && !/处理失败/.test(String(heicRow.result || '')),
+    heicRow ? `${heicRow.status} · ${heicRow.action} · ${heicRow.result || '（无 result）'}` : 'fx.rows 里没有 x.heic');
   const jpgOk = fs.readdirSync(path.join(fl.flatDir, names[0])).filter(f => /\.jpg$/.test(f)).length;
   ok('② PNG 已转成 JPG', jpgOk >= 1, `flat/${names[0]} → ${jpgOk} 个 jpg`);
 

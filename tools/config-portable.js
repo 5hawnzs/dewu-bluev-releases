@@ -5,7 +5,8 @@
  *   「可搬运」「必须在新机重置」「密钥」三类，一键导出 / 导入。
  *
  * 为什么需要它（2026-10-05 实测结论，别重走）：
- *   界面上那两个「导出配置 / 导入配置」按钮**只导出云端协作的三个字段**
+ *   ★ 2026-10-08 起界面上那两个「导出配置 / 导入配置」按钮**已经删了**
+ *     （用户要求：云端协作这块不给任何人看到）。它们当初也只导出云端协作的三个字段
  *   （cloud.url / cloud.anonKey / cloud.org，见 src/main/services/cloudsync.js 的导出实现）——
  *   模型密钥、品牌、话题池、**真机 UI 定位表**（publish.uiMap：38 步图文 + 41 步视频，最贵的资产）
  *   一个都不在里面。整份 config.json 只有一个办法：搬文件 —— 而它同时装着
@@ -398,7 +399,8 @@ function cmdImport() {
   console.log('  2) 若密钥被剔除：设置 → 文案，重新填模型 Key');
   console.log('  3) 核对设备：设置里重新「检测设备」（device / devices 是按原样带过来的）');
   console.log('  4) 看一眼 publish.mock —— 搬运过来的值照搬了，别以为在真发');
-  console.log('  5) cloud.machineId 已置空，App 启动后会自己生成一个新的（**别**手动填旧值）');
+  console.log('  5) cloud.machineId 已置空 —— **别**手动填旧值：App 启动时会按**这台机器自己的指纹**（Windows MachineGuid）算出来。');
+  console.log('     同一台机重算得到**同一个** id（清配置也认得回来）；换到新机得到的是新机自己的 id。');
   console.log('  6) pool.json（商品池）没在搬运范围内 —— 需要就重新导入');
   return 0;
 }

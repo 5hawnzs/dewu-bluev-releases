@@ -39,6 +39,12 @@
  *   DIR_EMPTY_STUBBORN —— 内容写数字 N：摆出 N 个**顽固空目录残骸**（rm/mv 都不生效，
  *                       但 `find -type f` = 空）。用途：验「空残骸不算失败、只记 note、
  *                       且不再累积」这条判据（真机上那批 255 字符垃圾目录的形态）。
+ *   DEWU_ABSENT      —— `pm list packages` 里**没有**得物（新模拟器的样子）。
+ *                       不建 = 默认**有**（老用例一个字都不用改）。用途：验「没装 → 装进模拟器 → 回读确认」。
+ *   DEWU_INSTALL_FAIL —— 装得物那个 apk 时 `adb install` 回 Failure（签名不一致那种）。
+ *                       用途：验「装失败时必须如实报错 + 给出"只能先卸载"的提示，不许假成功」。
+ *   ★ 配套语义：`install` **真的把包装上**（`pm list packages` 会跟着变），
+ *     否则产品代码里那条「装完回读确认」在回归里等于没测。
  *
  * 受管相册目录（清相册那一步会碰的两个）：`/sdcard/DCIM/Camera`（相册根）与
  * `/sdcard/DCIM/Camera/bluev`（专属目录）；断言侧读 `fakeExec.__dirs[<路径>]`。
@@ -117,6 +123,18 @@ function makeFakeAdb(dir) {
   // 现场开关 SCAN_FAIL：假装媒体扫描**没生效**（scan_file 回空 STREAM、scan_volume 不回填）
   //   —— 用来验「扫描失败时必须靠进库确认兜底，且最终如实失败」。
   const SCAN_FAIL = path.join(dir, 'SCAN_FAIL');
+
+  // ★★ 2026-10-08 新增（得物安装包那条路）：
+  //   DEWU_ABSENT       —— `pm list packages` 里**没有**得物（新模拟器的样子）。
+  //                        不建这个文件 = 默认**有**得物（跟以前的行为一致，老用例不受影响）。
+  //   DEWU_INSTALL_FAIL —— 装得物那个 apk 时 `adb install` 报 Failure（用来验「装失败如实报错」）。
+  const DEWU_ABSENT = path.join(dir, 'DEWU_ABSENT');
+  const DEWU_INSTALL_FAIL = path.join(dir, 'DEWU_INSTALL_FAIL');
+  // 「这台设备上装了什么」——默认那三个 + 本次会话里 install 成功装上的。
+  // ★ 关键点：`install` **真的要生效**，否则「装完回读确认」（产品代码里那条 pm list 回读）
+  //   在回归里永远是红的/永远是绿的，等于没测。
+  const installedPkgs = new Set();
+  const APK_PKG = [[/dewu/i, 'com.shizhuang.duapp'], [/adbkeyboard/i, 'com.android.adbkeyboard']];
 
   // 设备上的「文件」：只需模拟 dump 用到的那个路径。
   // 关键语义（真机实测）：uiautomator dump **成功才写文件**；失败时目标文件一字不动。
@@ -826,7 +844,22 @@ function makeFakeAdb(dir) {
       }
       return okOut(read(TOP_DUMP, Buffer.from('')).toString('utf8'));
     }
-    if (cmd === 'pm list packages') return okOut('package:com.shizhuang.duapp\npackage:com.android.adbkeyboard\npackage:com.android.shell\n');
+    if (cmd === 'pm list packages') {
+      // 默认 = 真机上那三样（得物 / 中文输入法 / shell）。DEWU_ABSENT 开关 = 新模拟器（没得物）；
+      // 但**这一轮里装上过的**（installedPkgs）必须出现 —— 否则「装完回读确认」那条链永远是假的。
+      const base = ['com.shizhuang.duapp', 'com.android.adbkeyboard', 'com.android.shell'];
+      const list = base.filter(p => !(p === 'com.shizhuang.duapp'
+        && fs.existsSync(DEWU_ABSENT) && !installedPkgs.has('com.shizhuang.duapp')));
+      for (const p of installedPkgs) if (!list.includes(p)) list.push(p);
+      return okOut(list.map(p => 'package:' + p + '\n').join(''));
+    }
+    // 「得物装没装、装的哪个版本」——产品代码走的是设备端先筛（`dumpsys package <pkg> | grep -m1 versionName`）
+    if (/^dumpsys package /.test(cmd)) {
+      const pkg = cmd.replace(/^dumpsys package\s+/, '').split('|')[0].trim();
+      const dewuHere = !fs.existsSync(DEWU_ABSENT) || installedPkgs.has('com.shizhuang.duapp');
+      if (pkg !== 'com.shizhuang.duapp' || !dewuHere) return okOut('');
+      return okOut('    versionName=6.0.5\n');   // 真机这一行的原样（前面 4 个空格）
+    }
     return okOut('');
   }
 
@@ -845,7 +878,16 @@ function makeFakeAdb(dir) {
 
     if (args[0] === 'exec-out') return okOut(read(SHOT_PNG, Buffer.alloc(0)));   // screencap -p，二进制
     if (args[0] === 'install') {
+      const apk = String(args[args.length - 1] || '');
+      // 装的是哪一份：按 apk 路径认（真机也是这么认的 —— adb 只看路径指向的那个包）
+      const pair = APK_PKG.find(([re]) => re.test(apk));
       if (fs.existsSync(path.join(dir, 'IME_INSTALL_FAIL'))) return fail('Failure [INSTALL_FAILED_INVALID_APK]');
+      // 得物那份单独一个开关：装输入法失败不该连带把得物那条用例也变成"失败"
+      if (pair && /dewu/i.test(apk) && fs.existsSync(DEWU_INSTALL_FAIL)) {
+        return fail('Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Package com.shizhuang.duapp signatures do not match previously installed version]');
+      }
+      // ★ 装了**就真的算装上了**：后面的 `pm list packages` 要反映出来（产品代码装完会回读）
+      if (pair) installedPkgs.add(pair[1]);
       return okOut('Success\n');
     }
     if (args[0] === 'push') {

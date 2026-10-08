@@ -91,6 +91,13 @@
           "LICENSE.txt",
           "README-ffmpeg-static.txt"
         ]
+      },
+      {
+        "from": "vendor/dewu",
+        "to": "dewu",
+        "filter": [
+          "dewu_6.0.5.apk"
+        ]
       }
     ],
     "win": {

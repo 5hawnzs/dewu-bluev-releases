@@ -139,8 +139,9 @@
         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="8.2" cy="12" r="4"/><path d="M12.2 12h8.4M17.6 12v3.2M14.9 12v2.4"/></svg></span>
         <span>品牌与权限</span>
       </button>
-      <!-- 高级设置：装一次就不再动的配置（UI 定位表 / 文案模型 / 货号颜色接口 /
-           adb、ffmpeg 路径）。data-admin="1" ⇒ 非管理员整个按钮都不显示（见 app.js syncAdminNav）。
+      <!-- 高级设置：装一次就不再动的配置（UI 定位表 / 货号颜色接口 /
+           adb、ffmpeg 路径）。★ 2026-10-08 起「文案模型」不在这儿了 —— 搬到「文案生成 → 模型配置」弹窗。
+           data-admin="1" ⇒ 非管理员整个按钮都不显示（见 app.js syncAdminNav）。
            编号接在最后（11）：插进中间要改一堆已有编号、快捷键与测试断言，为一个新页签不划算 -->
       <button class="nav" data-tab="11" data-admin="1">
         <span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.2M12 18.2v2.2M5.4 7.4l1.9 1.1M16.7 15.5l1.9 1.1M5.4 16.6l1.9-1.1M16.7 8.5l1.9-1.1"/></svg></span>
@@ -181,17 +182,19 @@
   <div class="mbox mbox-sm" id="umBox"></div>
 </div>
 
-<!-- 云端配置弹窗（导出 / 导入）。同上面两个，挂在 .app 外面 -->
-<div class="modal" id="cmodal" hidden>
-  <div class="mbox mbox-sm" id="cmBox"></div>
-</div>
-
 <!-- 「说明书」弹窗（2026-10-03 用户要求）：批次设置那种六百多字的长规则，别全铺在页面上 ——
      页面只留一行结论 + 一个「看说明书」，细节点开再看。
      ★ 内容长度不定 ⇒ 用标准的 .mbox，并在里面套 .mh / .mb（.mb 才有 overflow:auto，
        直接往 .mbox 里灌长内容会被 overflow:hidden 裁掉、还滚不动）。 -->
 <div class="modal" id="hmodal" hidden>
   <div class="mbox" id="hmBox"></div>
+</div>
+
+<!-- 「模型配置」弹窗（2026-10-08 用户要求）：原来在「高级设置 → 文案模型」里，搬到「文案生成」页做成弹窗，
+     并且成为**唯一**的模型配置入口（高级设置里那一整块已删）。
+     同上面几个：挂在 .app 外面才盖得住标题栏；内容是一张表单，用窄一档的 .mbox-sm。 -->
+<div class="modal" id="lmmodal" hidden>
+  <div class="mbox mbox-sm" id="lmBox"></div>
 </div>
 
 <div class="gate" id="gate">

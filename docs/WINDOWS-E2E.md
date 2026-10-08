@@ -136,8 +136,9 @@ set BLUEV_NO_LOGIN=1 && npm start
 
 ### 4.1 设置（页签 7）
 - **操作**：填「输出目录 / 隔离目录」（都用绝对路径）；看「外部依赖」表；到「账号与安全」把出厂口令 `admin / BlueV@2026` 改掉（★ 2026-10-02 起**登录页与卡片都不再提示这组口令**，得自己知道）。
-- **预期**：图片引擎显示 `sharp + libvips（含 HEIC）`；HEIC 解码「可用」。
-- **出问题**：若显示「jpeg-js + pngjs（纯 JS 降级）」→ HEIC 会转不了，检查 `npm install` 是否装上了 sharp。
+- **预期**：图片引擎显示 `sharp + libvips`；HEIC 解码显示 **「不可用 · HEIC 需先转 JPG」**。
+- **说明（★ 2026-10-08 更正）**：这条「不可用」是**固定事实**，不是装坏了 —— 预编译 libvips 因专利不带 HEVC 解码器（实测：包内 `libvips-42.dll` 里 `libde265` 符号命中 0，真 HEVC 的 `.heic` 解码必报 `No decoding plugin installed for this compression format`，详见 `src/main/services/imaging.js` 里 `hasHeif()` 的注释）。**换机器、重装都不会变**，素材里的 `.heic` 会被标成「需先转 JPG」交人工，不阻断其它环节。
+- **出问题**：若显示「jpeg-js + pngjs（纯 JS 降级）」→ 说明**整个原生引擎**没起来（连 PNG/JPG 处理都退化了），检查 `npm install` 是否装上了 sharp、安装目录 `resources/app.asar.unpacked/node_modules/@img/` 有没有被杀毒软件隔离。
 
 ### 4.2 素材整理（页签 1）
 - **准备**：`D:\你的素材目录\20260901\` 下，**每一条内容一个子文件夹**，例如

@@ -34,7 +34,29 @@ function init() {
 init();
 
 function engineName() { return engine; }
-function hasHeif() { return engine === 'sharp'; }
+/**
+ * 能不能解码 HEIC（HEVC 压缩的 .heif）—— **恒 false**。
+ *
+ * ★★ 2026-10-08 实测后改的，别改回去：
+ *   原来写的是 `return engine === 'sharp';`，只证明 sharp 原生模块加载成功，
+ *   跟「能不能解 HEIC」没有任何关系 ⇒ 设置页那枚「可用」是**假绿**。
+ *   实测（sharp 0.33.5 预编译；源码 / dist / dist-new 三处的 libvips-42.dll 哈希一致
+ *   92076cb17f3b11bb，18.1MB）：
+ *     ① 真 HEVC 的 .heic（ftyp = mif1 / heic / hevc，1280×854）→ metadata() 能读
+ *        （compression=hevc），真解码必报
+ *        「heif: No decoding plugin installed for this compression format」；
+ *     ② 同一份 dll 里 `de265` 符号命中 0，而正向对照 aom=41、vips=2387 都在，
+ *        且自带 `heic/avif load/save with libheif: true`；
+ *     ③ 正向对照：同一个 libheif 读写 AVIF(av1) 完全正常（写 302B → 解出 293B jpg）
+ *        ⇒ 通路没坏，只是**只带 AV1 解码、不带 HEVC 解码器（libde265）**。
+ *   原因：HEVC 有专利，sharp 预编译版不内置 HEVC 解码 —— 官方文档同口径，
+ *   不是配置问题、换机器也不会好。要真支持只能自带独立解码器（有分发/授权代价）。
+ *
+ * ⇒ 保留这个函数名（ipc / compliance / index 都在用），但语义已从
+ *   「引擎在不在」改成「HEIC 能不能解」；恒 false 时合规检查会**预判**为人工，
+ *   不会再去白试一次转换然后报「处理失败」。
+ */
+function hasHeif() { return false; }
 
 async function readImage(src) {
   if (sharp) {

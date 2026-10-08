@@ -974,6 +974,104 @@ const state = {
     ikNoApk.ok === false && ikNoApk.step === 'apk', JSON.stringify(ikNoApk));
   adbMod.setBundledApkPath(APK);
 
+  // ============ 14.5) ★★ 得物安装包：装进模拟器的几条分支（2026-10-08 新增） ============
+  // 起因：**MuMu 自带的应用商店里搜不到得物**，新模拟器就卡在这一步。设置页给两个按钮，
+  // 这里只验**主进程侧的行为**（先读设备 → 决定装不装 → 装完回读）；界面那几枚按钮在 uicheck 里验。
+  // ★ 夹具严格照真机语义：**默认那台设备已经装了得物** —— 这正是用户问的那种情况
+  //   （「如果模拟器本身就有这个 app，这个按钮还能用吗」），所以这一条是重点。
+  const dewuMod = require(path.join(base, 'src', 'main', 'services', 'dewuapk.js'));
+  adbMod.setAdbPath('');
+  adbMod.setBundledAdbDir(BDIR);
+  dewuMod.setBundledDir(path.join(base, 'vendor', 'dewu'));
+  const DEWU_ABSENT_F = path.join(FDB, 'DEWU_ABSENT');
+
+  const dStat = dewuMod.status();
+  ok('⑰ 内置的得物安装包在仓库里、字节数与 dewuapk.js 里写死的 BYTES 一致',
+    dStat.exists && dStat.sizeOk, `exists=${dStat.exists} bytes=${dStat.bytes} expect=${dStat.expectBytes}`);
+
+  // ---- A) 新模拟器（pm list 里没有得物）⇒ 真装 + 回读确认 ----
+  //   ★ 必须放在最前面：夹具里 `install` **是真会生效的**（装完 pm list 里就有得物），
+  //     先跑 B（force 装一次）之后再摆"没装得物"的现场就不成立了 —— 这条顺序踩过（第一版就是这么红的）。
+  //   夹具严格照真机语义：装了就是装了，后面几条（已装/覆盖重装/装失败）都建在这台"已装"的设备上。
+  fs.writeFileSync(DEWU_ABSENT_F, '1');
+  clearCalls();
+  const dewC = await dewuMod.install('127.0.0.1:5555', {});
+  const callC = calls();
+  const instC = (callC.match(/install[^\n]*/) || [''])[0];
+  ok('⑰ ★ 新模拟器（没装得物）⇒ 真的装 `install -r`（**没有 -d**），并回读确认装上了才算成功',
+    dewC.ok === true && dewC.step === 'done' && dewC.already === false && dewC.replaced === false
+    && /install -r .*dewu_6\.0\.5\.apk/.test(callC) && !/ -d /.test(instC) && dewC.installedVersion === '6.0.5',
+    JSON.stringify({ ok: dewC.ok, step: dewC.step, ver: dewC.installedVersion }) + ' · ' + instC);
+
+  // ---- B) 设备上**已经装了** ⇒ 一条 install 都不许发（得物里是登录状态 + 本地草稿） ----
+  clearCalls();
+  const dewA = await dewuMod.install('127.0.0.1:5555', {});
+  const callA = calls();
+  ok('⑰ ★★ 设备上已经有得物 ⇒ 只回报版本、**一条 install 都不发**（"已装时按钮还能用吗"的答案就在这条）',
+    dewA.ok === true && dewA.already === true && dewA.installedVersion === '6.0.5' && !/install/.test(callA),
+    `ok=${dewA.ok} already=${dewA.already} ver=${dewA.installedVersion} · install 调用 ${(callA.match(/install/g) || []).length} 次`);
+  ok('⑰ 但版本号是真从设备上读回来的（设备端先筛：dumpsys package … | grep -m1 versionName）',
+    /dumpsys package com\.shizhuang\.duapp \| grep -m1 versionName/.test(callA),
+    (callA.match(/dumpsys package[^\n]*/) || []).join(' | ') || '（没这条）');
+
+  // ---- C) 用户显式点「覆盖重装」⇒ 这时才真的装，且带 -r -d（允许降级、保留数据） ----
+  clearCalls();
+  const dewB = await dewuMod.install('127.0.0.1:5555', { force: true });
+  const callB = calls();
+  ok('⑰ ★ 只有显式 force 才真的装：`install -r -d <vendor 里那个 apk>`（-d 只在这一步允许出现）',
+    dewB.ok === true && dewB.already === false && dewB.replaced === true
+    && /install -r -d .*dewu_6\.0\.5\.apk/.test(callB),
+    (callB.match(/install[^\n]*/) || []).join(' | ') || '（没这条）');
+  ok('⑰ 装完**回读** `pm list packages` 确认（不是拿 adb 那句 Success 收工）',
+    /pm list packages/.test(callB) && dewB.installedVersion === '6.0.5',
+    `回读 ${(callB.match(/pm list packages/g) || []).length} 次 · 版本=${dewB.installedVersion}`);
+
+  // ---- D) 装失败（签名不一致那种）⇒ 如实报错 + 给出"只能先卸载"的实情 ----
+  //   ★ 必须带 force：前面那条已经把这台设备"装上得物"了，不带 force 会走 already 分支（根本不发命令）。
+  fs.writeFileSync(path.join(FDB, 'DEWU_INSTALL_FAIL'), '1');
+  const dD = await dewuMod.install('127.0.0.1:5555', { force: true });
+  try { fs.unlinkSync(path.join(FDB, 'DEWU_INSTALL_FAIL')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  ok('⑰ ★ 装失败 ⇒ ok:false + step=install + 原始报错（绝不假装装上）',
+    dD.ok === false && dD.step === 'install' && /INSTALL_FAILED_UPDATE_INCOMPATIBLE/.test(String(dD.error)),
+    JSON.stringify({ ok: dD.ok, step: dD.step, err: String(dD.error).slice(0, 80) }));
+  ok('⑰ ★ 这种失败要给出"只能先卸载"的提示，并说清**工具不自动做**（否则用户只会反复点）',
+    /签名/.test(String(dD.hint)) && /工具不自动做/.test(String(dD.hint)), String(dD.hint || '').slice(0, 130));
+
+  // ---- E) 内置那份缺失 ⇒ 拦住，不硬着头皮往下装 ----
+  dewuMod.setBundledDir(path.join(TMP, 'vendor-dewu-nope'));
+  const dE = await dewuMod.install('127.0.0.1:5555', {});
+  ok('⑰ 内置安装包缺失 ⇒ 明确说"这个安装包里没有内置得物安装包"并停下',
+    dE.ok === false && dE.step === 'apk' && /没有内置得物安装包/.test(String(dE.error)), String(dE.error || '').slice(0, 90));
+  // ★ 夹具：一份"大小对不上"的（半截下载/被杀软改过的样子）⇒ 也要拦住，不许拿它去装
+  const BROKEN_DIR = path.join(TMP, 'vendor-dewu-broken');
+  fs.mkdirSync(BROKEN_DIR, { recursive: true });
+  fs.writeFileSync(path.join(BROKEN_DIR, 'dewu_6.0.5.apk'), Buffer.alloc(64, 3));
+  dewuMod.setBundledDir(BROKEN_DIR);
+  const dE2 = await dewuMod.install('127.0.0.1:5555', {});
+  ok('⑰ ★ 内置那份**大小对不上**（半截文件）⇒ 也拦住，并说清"这份安装包不完整"',
+    dE2.ok === false && dE2.step === 'apk' && /大小不对/.test(String(dE2.error)), String(dE2.error || '').slice(0, 110));
+  dewuMod.setBundledDir(path.join(base, 'vendor', 'dewu'));
+
+  // ---- F) 没选设备 / 设备名不对 ⇒ 拦住，一条安装命令都不发 ----
+  clearCalls();
+  const dF = await dewuMod.install('', {});
+  const dG = await dewuMod.install('127.0.0.1:9999', {});
+  ok('⑰ 没选设备 / 设备名不对 ⇒ step=device 且如实说明，一条安装命令都不发',
+    dF.ok === false && dF.step === 'device' && /还没选设备/.test(String(dF.error))
+    && dG.ok === false && dG.step === 'device' && /不在线/.test(String(dG.error)) && !/install/.test(calls()),
+    `${dF.step}:${String(dF.error).slice(0, 26)} · ${dG.step}:${String(dG.error).slice(0, 40)}`);
+
+  // ---- G) **未知 ≠ 未安装**：读不出设备状态时必须是 null，不许当成 false（那会一路装下去） ----
+  const dH = await dewuMod.deviceState('');
+  ok('⑰ ★★ 读不出设备状态 ⇒ installed=null（"未知"）而不是 false（"确认没装"）',
+    dH.ok === false && dH.installed === null, JSON.stringify(dH).slice(0, 120));
+
+  // 还原：得物缺席的现场开关 + 内置目录 / adb 路径都回到本块之前的样子
+  try { fs.unlinkSync(DEWU_ABSENT_F); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  dewuMod.setBundledDir('');
+  adbMod.setBundledAdbDir(BDIR);
+  adbMod.setAdbPath('');
+
   // ============ 15) 内置 adb 真的会被拿去执行（不只是界面上显示个路径） ============
   clearFiles();
   const v15 = await adbMod.version();
