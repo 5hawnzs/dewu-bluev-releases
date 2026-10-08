@@ -477,15 +477,6 @@ async function dispatch(type, args, ctx) {
       const r = await publisher.probe(args.device || (st().publish && st().publish.device) || store.get('publish.device'));
       return r;
     }
-    // 一键把内置的中文输入法装到设备上（装 apk + ime enable + ime set 三步，缺一都打不进中文）
-    case 'publish.installIme': {
-      const serial = args.device || (st().publish && st().publish.device) || store.get('publish.device');
-      if (!serial) throw new Error('还没选设备 —— 先在「设备管理」点「扫描设备」，再从列出来的设备里点「加入并使用」');
-      const r = await publisher.installIme(serial);
-      if (!r.ok) throw new Error(`中文输入法没装成（卡在 ${r.step} 这步）：${r.error}`);
-      logbus.ok(`已装上中文输入法并设为当前输入法（${r.component}）—— 现在再点一次「检查能不能发布」`);
-      return r;
-    }
     /*
      * 把**内置的得物 App 安装包**装进模拟器 —— MuMu 自带的应用商店里搜不到得物，这是兜底路。
      * ★★ 已经装过就**一条 install 都不发**（得物里是登录状态 + 本地草稿）：

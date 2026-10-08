@@ -953,8 +953,8 @@ TABS[7] = {
         (info.vendor && info.vendor.exists) ? ['ok', '内置'] : ['warn', '需指定']],
       ['中文输入法 ADBKeyboard',
         (info.vendor && info.vendor.apkExists)
-          ? '程序内置（首次要在「模拟器发布」页点一次「一键装上中文输入法」把它装进模拟器并启用）'
-          : '没内置：要自己给设备装',
+          ? '程序内置（连接设备后自动安装并启用）'
+          : '安装包缺少内置文件：请修复或重新安装本工具',
         (info.vendor && info.vendor.apkExists) ? ['ok', '内置'] : ['warn', '缺']],
       // ★★ 2026-10-08 用户要求新增：MuMu 自带的应用商店里**搜不到得物**，新模拟器就卡在这一步。
       //   这一行比别的行多两枚按钮（第 4 项，见下面 depRow 的注释）：
@@ -2793,13 +2793,13 @@ const ACTS = {
     const val = sel => { const e = $(sel); return e ? e.value : ''; };
     const name = val('#bmName').trim();
     const promptWrite = val('#bmWrite');
-    const promptFilter = val('#bmFilter');
+
     const enEl = $('#bmEnabled'), pkEl = $('#bmPick');
 
     if (!id) {
       // 新增：按钮本来就只给管理员看，主进程还会再校验一次
       if (!name) { toast('先给品牌起个名字', 'err'); return; }
-      const r = await appApi.brandAdd({ name, promptWrite, promptFilter, enabled: enEl ? enEl.checked : true });
+      const r = await appApi.brandAdd({ name, promptWrite, enabled: enEl ? enEl.checked : true });
       if (!r.ok) { toast(r.error, 'err'); return; }
       if (pkEl && pkEl.checked) await appApi.configSet({ copy: { defaultBrandId: r.brand.id } });
       state.config = await appApi.configGet();
@@ -2965,16 +2965,6 @@ const ACTS = {
           : '一切就绪，可以真机发布',
       bad ? 'err' : warn ? '' : 'ok');
     }
-    renderAll();
-  },
-  // 一键把内置的中文输入法装到设备上（装 apk + 启用 + 设为当前输入法）。
-  // 装完自动重跑一次检查，省得用户再点一次 —— 结果面板会直接变成「已装，且是当前输入法」。
-  'pub:installIme': async () => {
-    const r = await appApi.run('publish.installIme', {});
-    if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
-    toast('中文输入法已装好、并设成了当前输入法。★ 副作用：模拟器里手动打字不会弹键盘了（ADBKeyboard 本来就是这样）', 'ok');
-    const again = await appApi.run('publish.probe', {});
-    if (again.ok) state.probe = again.result;
     renderAll();
   },
   'pub:dump': async () => {

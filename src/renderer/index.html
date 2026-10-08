@@ -222,7 +222,12 @@
     </label>
     <label class="gfld">
       <span>密码</span>
-      <input class="inp" id="lgPwd" type="password" autocomplete="off">
+      <span class="password-group">
+        <input class="inp" id="lgPwd" type="password" autocomplete="off">
+        <button class="password-toggle" id="lgPwdToggle" type="button" aria-controls="lgPwd" aria-label="显示密码" aria-pressed="false" title="显示密码">
+          <svg class="password-eye" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/></svg>
+        </button>
+      </span>
     </label>
 
     <label class="grem"><input type="checkbox" id="lgRem" checked> 记住登录（本机 7 天内免输入）</label>
@@ -233,6 +238,7 @@
   </form>
 </div>
 
+<script src="password-toggle.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

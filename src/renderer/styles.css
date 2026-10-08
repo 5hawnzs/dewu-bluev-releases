@@ -336,6 +336,16 @@ body:not(.locked) .gate{display:none}
 .gate .gfld{display:block;margin-bottom:10px}
 .gate .gfld span{display:block;font-size:11.5px;color:var(--tx3);margin-bottom:4px}
 .gate .gfld .inp{width:100%;min-width:0}
+.gate .password-group{display:flex;align-items:stretch;width:100%;position:relative;margin:0;color:inherit}
+.gate .password-group .inp{width:100%;min-width:0;padding-right:42px}
+.gate .password-toggle{z-index:2;
+  position:absolute;right:4px;top:50%;transform:translateY(-50%);
+  width:30px;height:30px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--tx3);
+  display:flex;align-items:center;justify-content:center;cursor:pointer
+}
+.gate .password-toggle:hover{background:var(--panel2);color:var(--tx2)}
+.gate .password-toggle:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.gate .password-eye{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .gate .grem{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx3);margin:2px 0 12px;cursor:pointer}
 .gate .gerr{min-height:0;font-size:11.5px;color:var(--red);margin-bottom:6px}
 .gate .ggo{width:100%;padding:9px 10px;font-size:13px;letter-spacing:.08em}

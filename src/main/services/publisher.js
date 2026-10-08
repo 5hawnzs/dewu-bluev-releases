@@ -30,11 +30,19 @@ function cfg() { return store.get('publish') || {}; }
 function sleep(ms, cancelled, onTick) {
   return new Promise(resolve => {
     const end = Date.now() + ms;
-    const t = setInterval(() => {
-      if (cancelled && cancelled()) { clearInterval(t); resolve(false); return; }
+    let interval = null, timeout = null, settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      if (interval) clearInterval(interval);
+      if (timeout) clearTimeout(timeout);
+      resolve(value);
+    };
+    interval = setInterval(() => {
+      if (cancelled && cancelled()) { finish(false); return; }
       if (onTick) onTick(Math.max(0, Math.ceil((end - Date.now()) / 1000)));
     }, 1000);
-    setTimeout(() => { clearInterval(t); resolve(true); }, ms);
+    timeout = setTimeout(() => finish(true), ms);
   });
 }
 
@@ -703,7 +711,7 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
   return { ok: !!left, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: last, left, seen };
 }
 
-async function runReal(row, item, copyRow, serial, map, ctx) {
+async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = false) {
   const log = ctx.log || (() => {});
   const cancelled = ctx.cancelled || (() => false);
   // 大结论通道（见 logbus.tierOf / jobs.js）：工具里直接干跑没有 conclude 时退回 log，旧行为不变
@@ -1067,7 +1075,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   在主页停留 10 秒左右，你就需要开始准备发布第二条素材」）。这里给一个**可配的**主页停留，
   //   默认 10s —— 目的是让得物把这条内容在服务端落定（上传/审核排队），再把相册清空去发下一条。
   //   ★ 配 0 = 不停留（连续发布档）；读取点只在这里，方便回归里把它调 0 跑快。
-  const dwell = secOr(c.homeDwellSec, c.postPublishDwellSec, 10);
+  // 最后一条后面没有下一次清相册，跳过这段停留；中间条仍保留服务端落定缓冲。
+  const configuredDwell = secOr(c.homeDwellSec, c.postPublishDwellSec, 10);
+  const dwell = isLastRunnable ? 0 : configuredDwell;
+  if (isLastRunnable && configuredDwell > 0) {
+    log(`${row.dir}：本批最后一条，跳过额外主页停留`, 'info');
+  }
   if (dwell > 0) {
     log(`${row.dir}：发布完成，按设置在主页停留 ${dwell}s 再准备下一条`, 'info');
     await sleep(dwell * 1000, cancelled);
@@ -1131,6 +1144,12 @@ async function run(state, ctx = {}) {
     throw new Error('真实通道需要先配 UI 定位表：把模拟器停在得物发布页 —— 推荐走底部「我」→ 右上角「主页」→「发布新动态」（3 跳，入口都带文字，稳）；也可以点动态流右上角那个没文字的相机图标（1 跳），'
       + '在「设置 → 高级设置」点「抓取页面结构」，改好后导入 uiMap.json');
   }
+  if (mode === 'adb') {
+    const ime = await adb.ensureKeyboard(serial);
+    if (!ime.ok) {
+      throw new Error(`设备缺少可用的内置中文输入法，已阻止发布：${ime.error}（${ime.step}）。重新连接设备后程序会自动重试。`);
+    }
+  }
 
   const rows = (state.publish && state.publish.rows && state.publish.rows.length)
     ? state.publish.rows
@@ -1168,6 +1187,11 @@ async function run(state, ctx = {}) {
   let done = 0;
   const results = [];
 
+  // 校验拦截行不进入 runReal；只跳过最后一个实际执行行后的主页停留。
+  const lastRunnableRow = [...todo].reverse().find(candidate => {
+    const v = (state.verify && state.verify.rows || []).find(x => x.id === candidate.id);
+    return !(v && verifySvc.isBlocked(v));
+  });
   for (const row of todo) {
     if (cancelled()) break;
     const item = state.items.find(it => it.id === row.id) || {};
@@ -1213,7 +1237,7 @@ async function run(state, ctx = {}) {
     row.startAt = new Date().toTimeString().slice(0, 8);
     try {
       if (mode === 'adb') {
-        success = await runReal(row, item, copyById.get(row.id), serial, map, ctx);
+        success = await runReal(row, item, copyById.get(row.id), serial, map, ctx, row === lastRunnableRow);
       } else {
         const r = await runMock(row, ctx);
         if (r === 'cancelled') break;   // 取消：不标失败，直接跳出整批
@@ -1269,14 +1293,13 @@ async function run(state, ctx = {}) {
 }
 
 module.exports = {
+  sleep,
   connect, run, estimate, saveShot, dumpForCapture,
   // ★★ 2026-10-03：把**步骤引擎**也导出来。理由：真机上要逐屏验证某一步（选图 N 张、点颜色格）
   //    时，只有拿这套真代码跑才算数 —— 自己另写一份「差不多的」点在真机上，验的就不是发布器了。
   runStep,
   probes: adb.probe, probe: adb.probe, dump: adb.dump, dumpEx: adb.dumpEx,
   currentFocus: adb.currentFocus,
-  // 一键装上内置的中文输入法（装 + 启用 + 设为当前输入法）—— 实现与「为什么必须三步」见 adb.js
-  installIme: adb.installKeyboard,
   imeComponent: adb.adbKeyboardIme,
   devices, listDevices, scanDevices, addDevice, removeDevice,
   // ★ 间隔取值（0 = 连续发布）。导出是为了让测试能直接断言「配 0 就是 0 秒」，

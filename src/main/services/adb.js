@@ -5,7 +5,7 @@
  *   - 推图 + 触发媒体扫描：真实命令
  *   - 界面结构抓取（uiautomator dump）+ 点击 / 输入：真实命令
  *   - 中文输入依赖 ADBKeyboard（com.android.adbkeyboard）—— apk 随包内置，
- *     探测里会说清「装没装 / 启用没启用」，并给一个「一键装上」的按钮
+ *     设备检查与发布前会自动补齐安装、启用和当前输入法配置
  *
  * ★ adb 本身也随包内置（`vendor/adb/` → 打包后 `resources/adb/`），
  *   解析顺序见下面 setAdbPath 那段注释：手填 > 内置 > 系统 PATH。
@@ -1554,7 +1554,7 @@ async function inputText(serial, text) {
       stderr: `要输入的内容「${short}」里有中文（或其它非 ASCII 字符），这类字符只有 ADBKeyboard 能打进去，`
         + `而设备上它现在不是当前输入法（当前是 ${kbd.current || '未知'}）—— 广播没有人接收，一个字也进不去。`
         + '（不要去改「用 input text 硬打」：实测它对中文无效，却照样返回成功，会把没标题没正文的帖子发出去。）'
-        + '处理：到「模拟器发布」页点一次「一键装上中文输入法」，再重新发布。'
+        + '程序会在设备连接/检查时自动重试内置输入法配置；配置完成前发布会被拦住。'
     };
   }
   // ★★★ 2026-10-04 真机实测修掉的一个**静默改写用户文案**的 bug：
@@ -1571,14 +1571,13 @@ async function inputText(serial, text) {
 }
 
 /**
- * 一键装上内置的中文输入法。★ **三步缺一不可**：
+ * 自动配置随包内置的中文输入法。★ **三步缺一不可**：
  *   ① `adb install -r ADBKeyboard.apk`
  *   ② `ime enable <组件>` —— 只装了不启用，`ADB_INPUT_TEXT` 广播没人接
  *   ③ `ime set <组件>`    —— 不设成当前输入法，中文仍然打不进输入框
  *
- * ★ 副作用必须说清：设成默认输入法后，**在模拟器里手动点输入框不会弹出键盘**
- *   （ADBKeyboard 就是个"给脚本用的"输入法，这是它的正常表现）。
- *   所以这一步**只由用户点按钮触发，绝不自动做**。
+ * ★ 设备连接或发布前由程序自动补齐这三步，不要求用户单独操作。
+ *   设成默认输入法后，模拟器里的手动输入不会弹出系统键盘；发布器用 ADBKeyboard 广播写入文本。
  */
 async function installKeyboard(serial) {
   const apk = bundledApk;
@@ -1591,17 +1590,42 @@ async function installKeyboard(serial) {
     return { ok: false, step: 'install', error: instText.trim() || `adb install 退出码 ${inst.code}`, raw: instText.trim() };
   }
 
+  const installed = await packages(serial);
+  if (!installed.some(p => p === 'com.android.adbkeyboard')) {
+    return { ok: false, step: 'verify-install', error: 'adb install 返回成功，但设备回读不到 com.android.adbkeyboard' };
+  }
   const comp = (await adbKeyboardIme(serial)) || IME_COMPONENT_DEFAULT;
   const en = await shell(serial, `ime enable ${comp}`);
   const st = await shell(serial, `ime set ${comp}`);
   const after = await defaultIme(serial);
+  const enabled = await adbKeyboardIme(serial);
   const nowDefault = /adbkeyboard/i.test(after);
+  const ready = !!(en.ok && st.ok && /adbkeyboard/i.test(enabled) && nowDefault);
   return {
-    ok: nowDefault, step: nowDefault ? 'done' : 'ime', apk, component: comp, defaultIme: after,
-    error: nowDefault ? '' : `输入法装好了，但没能设成默认（现在默认的是 ${after || '未知'}）—— 原始输出：`
+    ok: ready, step: ready ? 'done' : 'ime', apk, component: comp, defaultIme: after,
+    error: ready ? '' : `输入法已安装但未通过启用状态校验（启用命令=${en.ok ? '成功' : '失败'}，设置默认=${st.ok ? '成功' : '失败'}，当前=${after || '未知'}，已启用=${enabled || '无'}）—— 原始输出：`
       + (String(en.stdout || '') + String(st.stdout || '') + String(st.stderr || '')).trim(),
     raw: (instText + '\n' + en.stdout + '\n' + st.stdout).trim()
   };
+}
+
+const keyboardSetupByDevice = new Map();
+/** 确保设备可用中文输入；检查当前状态，缺失时自动装入并启用随包内置版本。 */
+async function ensureKeyboard(serial) {
+  if (keyboardSetupByDevice.has(serial)) return keyboardSetupByDevice.get(serial);
+  const task = (async () => {
+    const installed = await packages(serial);
+    if (!installed.some(p => /shizhuang|duapp|poizon|dewu/i.test(p))) {
+      return { ok: false, step: 'device', error: '设备里没有检测到得物；为避免修改其它设备，未安装或切换输入法' };
+    }
+    const before = await keyboardReady(serial);
+    if (before.active) return { ok: true, alreadyReady: true, defaultIme: before.current };
+    const result = await installKeyboard(serial);
+    return Object.assign({ alreadyReady: false }, result);
+  })();
+  keyboardSetupByDevice.set(serial, task);
+  try { return await task; }
+  finally { keyboardSetupByDevice.delete(serial); }
 }
 
 async function packages(serial, filter) {
@@ -1932,7 +1956,7 @@ async function probe(serial) {
   out.tools.input = (await shell(serial, 'input')).ok;
   out.tools.screencap = (await screencap(serial)).length > 0;
   // ★★ 包名要先拿到：备用通道（dumpsys）得靠它才能从整份层级里挑出得物那一段。
-  const pkgs = await packages(serial);
+  let pkgs = await packages(serial);
   out.appPackage = pkgs.find(p => /shizhuang|duapp|poizon|dewu/i.test(p)) || null;
 
   out.tools.uiautomator = !!(await dump(serial));
@@ -1959,6 +1983,25 @@ async function probe(serial) {
     const kbd = await keyboardReady(serial);
     out.adbKeyboardActive = kbd.active;
     out.adbKeyboardCurrent = kbd.current;
+  }
+  // 发布所需输入法随安装包提供；设备在线后由程序自动安装、启用并设为当前输入法。
+  // 设备上没有中文输入法时，依赖失败必须明确阻断发布，不能要求用户另行下载。
+  if (!out.adbKeyboardActive && out.imeApkExists) {
+    out.imeSetup = await ensureKeyboard(serial);
+    if (out.imeSetup.ok) {
+      pkgs = await packages(serial);
+      out.adbKeyboard = pkgs.some(p => p.includes('com.android.adbkeyboard'));
+      out.adbKeyboardIme = await adbKeyboardIme(serial);
+      const kbd = await keyboardReady(serial);
+      out.adbKeyboardActive = kbd.active;
+      out.adbKeyboardCurrent = kbd.current;
+      out.notes.push(out.imeSetup.alreadyReady
+        ? '内置中文输入法已就绪'
+        : '已自动安装并启用内置中文输入法');
+    } else {
+      out.imeSetupError = `自动配置内置中文输入法失败（${out.imeSetup.step}）：${out.imeSetup.error}`;
+      out.notes.push(out.imeSetupError);
+    }
   }
 
   // ★ 只有**两条通道都不行**才算「抓不到界面」；备用通道能用时它只加了一条 note（上面那条）。
@@ -1987,7 +2030,7 @@ async function probe(serial) {
       '一般是模拟器权限问题：重启模拟器，再点一次「检查能不能发布」。');
   }
   if (!out.adbKeyboard || !out.adbKeyboardActive) {
-    const canInstall = out.imeApkExists;
+    const setupError = out.imeSetupError || '';
     out.notes.push(!out.adbKeyboard
       ? '未装 ADBKeyboard：中文标题/正文输入会失败（ASCII 不受影响）'
       : `ADBKeyboard 已装但没设成当前输入法（ime list 里是「${out.adbKeyboardIme || '没找到'}」，`
@@ -1999,11 +2042,9 @@ async function probe(serial) {
       out.adbKeyboard ? '中文发不出去（输入法装了，但不是当前输入法）' : '中文标题和正文发不出去（没装中文输入法）',
       (!out.adbKeyboard ? '得物的标题、正文、话题都是中文，中文只有 ADBKeyboard 这一条输入通道，'
         + '`input text` 是打不进的（实测）。只发英文和数字不受影响。' : '')
-      + (canInstall
-        ? '点下面的按钮一键搞定（装进模拟器 + 启用 + 设成当前输入法），完事再点一次「检查能不能发布」。'
-          + '★ 注意：「程序内置了输入法」= 安装包自带这个 apk，不等于已经装进模拟器并启用 —— 这一步必须做一次。'
-        : '这台机器的安装包里没有内置输入法，需要自己装一个 ADBKeyboard（包名 com.android.adbkeyboard）。'),
-      canInstall ? { act: 'pub:installIme', label: '一键装上中文输入法' } : null);
+      + (out.imeApkExists
+        ? (setupError ? `${setupError}。重新连接设备后程序会自动重试。` : '程序已自动尝试配置内置输入法；连接设备后会自动重试。')
+        : '程序安装包缺少内置 ADBKeyboard.apk，请修复或重新安装本工具；不需要用户另行下载。'));
   }
   if (!out.appPackage) {
     out.notes.push('设备里没找到得物 App 包名，请确认已安装登录');
@@ -2021,7 +2062,7 @@ module.exports = {
   dumpAnimOff, animRestoreCmd, shellQuoteForInputText, offlineHint,
   setAdbPath, getAdbPath, setBundledAdbDir, getBundledAdbDir, bundledAdbPath,
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
-  installKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus,
+  installKeyboard, ensureKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus,
   uiSize,
   ensureApp, isFocusOf, frontActivity, topActivityMatching
 };

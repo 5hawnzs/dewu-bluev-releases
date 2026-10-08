@@ -251,7 +251,8 @@ function makeFakeAdb(dir) {
   const MULTI_FLAG = path.join(dir, 'MULTI_PORT');
   const NOID_FLAG = path.join(dir, 'NO_ANDROID_ID');
   const DEV_ANDROID_ID = '927145746ae845d6';
-  const imeReady = () => fs.existsSync(path.join(dir, 'IME_ACTIVE'));
+  const IME_ACTIVE_F = path.join(dir, 'IME_ACTIVE');
+  const imeReady = () => fs.existsSync(IME_ACTIVE_F);
   const imeList = () => (imeReady() && !ime.enabled.includes(IME_AUTO) ? [IME_AUTO] : []).concat(ime.enabled);
 
   const okOut = out => ({ out: out == null ? '' : out, code: 0 });
@@ -574,6 +575,7 @@ function makeFakeAdb(dir) {
       const c = cmd.split(/\s+/).pop();
       if (!ime.enabled.includes(c)) ime.enabled.push(c);
       ime.default = c;
+      if (/adbkeyboard/i.test(c)) fs.writeFileSync(IME_ACTIVE_F, '1');
       return okOut(`Input method ${c} selected\n`);
     }
     if (/^settings (get|put|delete) secure /.test(cmd)) {
@@ -585,7 +587,7 @@ function makeFakeAdb(dir) {
         return okOut(fs.existsSync(NOID_FLAG) ? 'null\n' : DEV_ANDROID_ID + '\n');
       }
       if (key === 'default_input_method') {
-        if (verb === 'get') return okOut((imeReady() ? IME_AUTO : ime.default) + '\n');
+        if (verb === 'get') return okOut((imeReady() ? IME_AUTO : 'com.android.internal/.Default') + '\n');
         ime.default = verb === 'put' ? val : '';
         return okOut('');
       }
@@ -880,7 +882,8 @@ function makeFakeAdb(dir) {
     if (args[0] === 'install') {
       const apk = String(args[args.length - 1] || '');
       // 装的是哪一份：按 apk 路径认（真机也是这么认的 —— adb 只看路径指向的那个包）
-      const pair = APK_PKG.find(([re]) => re.test(apk));
+      // Match the actual APK filename, not its absolute path (the repo path itself contains "dewu").
+      const pair = APK_PKG.find(([re]) => re.test(path.basename(apk)));
       if (fs.existsSync(path.join(dir, 'IME_INSTALL_FAIL'))) return fail('Failure [INSTALL_FAILED_INVALID_APK]');
       // 得物那份单独一个开关：装输入法失败不该连带把得物那条用例也变成"失败"
       if (pair && /dewu/i.test(apk) && fs.existsSync(DEWU_INSTALL_FAIL)) {

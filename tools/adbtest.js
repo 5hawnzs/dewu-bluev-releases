@@ -46,6 +46,8 @@ require('child_process').execFile = require(path.join(__dirname, 'fakeadb', 'adb
 
 const store = require(path.join(base, 'src/main/store.js'));
 const publisher = require(path.join(base, 'src/main/services/pubublisher.js'.replace('pubublisher', 'publisher')));
+const adbForSetup = require(path.join(base, 'src/main/services/adb.js'));
+adbForSetup.setBundledApkPath(path.join(base, 'vendor', 'adbkeyboard', 'ADBKeyboard.apk'));
 const uimap = require(path.join(base, 'src/main/services/uimap.js'));
 const { PNG } = require(path.join(base, 'node_modules/pngjs'));
 const jpeg = require(path.join(base, 'node_modules/jpeg-js'));
@@ -776,12 +778,13 @@ const state = {
   // 但退出码 0、无任何输出；而 `am broadcast -a ADB_INPUT_TEXT --es msg "中文标题"` 能进去。
   // ⇒ 所以这里的断言是：**没启用输入法时中文必须明确失败，绝不许静默退化**。
   fs.unlinkSync(IME_ACTIVE);                       // 设备回到「装了 apk 但没启用」的状态
+  await adbMod.shell('127.0.0.1:5555', 'settings put secure default_input_method com.android.internal/.Default');
   const it1 = await adbMod.inputText('127.0.0.1:5555', '中文标题');
   ok('⑯ 设备没启用 ADBKeyboard ⇒ 中文输入明确失败（不假装成功）',
     it1.ok === false && it1.code === 'ime-not-active',
     JSON.stringify({ ok: it1.ok, code: it1.code, err: String(it1.stderr || '').slice(0, 60) }));
   ok('⑯ 失败原因说清「下一步点哪里」，不是一句「输入失败」',
-    /一键装上中文输入法/.test(it1.stderr) && /ADBKeyboard/.test(it1.stderr),
+    /自动重试内置输入法配置/.test(it1.stderr) && /ADBKeyboard/.test(it1.stderr),
     String(it1.stderr || '').slice(0, 90));
 
   clearCalls();
@@ -791,18 +794,33 @@ const state = {
     && !/ADB_INPUT_TEXT/.test(calls()) && !/ADB_INPUT_B64/.test(calls()),
     calls().trim().split(/\r?\n/).join(' | '));
 
-  // 真跑一遍发布：设备没启用输入法时，整条必须**失败**（而不是发一条空帖子还报成功）
+  // 真跑一遍发布：设备没启用输入法时，发布前自动安装并启用内置输入法。
   clearCalls();
   Object.assign(state.publish.rows[0], { status: '排队', result: '', reason: '', retries: 0 });
   const rNoIme = await publisher.run(state, ctx);
   const logNoIme = calls();
-  ok('⑯ 中文打不进去时，这一条如实标「失败」',
-    rNoIme.rows[0].result === '失败', rNoIme.rows[0].result + ' / ' + rNoIme.rows[0].reason);
-  ok('⑯ 失败原因点明是中文输入的问题（不是含糊的「未知」）',
-    /中文|输入失败/.test(rNoIme.rows[0].reason), rNoIme.rows[0].reason);
-  ok('⑯ ★ 绝不把中文塞给 `input text`（实测无效却返回成功，会发出没标题的帖子）',
+  ok('⑯ 发布前自动安装并启用输入法，中文内容成功发布',
+    rNoIme.rows[0].result === '发布成功'
+      && /install -r .*ADBKeyboard\.apk/.test(logNoIme)
+      && /ime enable com\.android\.adbkeyboard\/.AdbIME/.test(logNoIme)
+      && /ime set com\.android\.adbkeyboard\/.AdbIME/.test(logNoIme),
+    rNoIme.rows[0].result + ' / ' + (logNoIme.match(/install -r .*|ime enable .*|ime set .*/g) || []).join(' | '));
+  ok('⑯ ★ 自动配置前绝不把中文塞给 `input text`',
     !/input text "白色的鞋谁懂"/.test(logNoIme) && !/input text "这双冠军白/.test(logNoIme),
     (logNoIme.match(/input text "[^"]*"/g) || []).join(' | ') || '（没有 input text 调用）');
+
+  // 负向回归：内置 apk 安装失败时，发布必须停在前置检查，不能推图或点击界面。
+  try { fs.unlinkSync(IME_ACTIVE); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  await adbMod.shell('127.0.0.1:5555', 'settings put secure default_input_method com.android.internal/.Default');
+  fs.writeFileSync(path.join(FDB, 'IME_INSTALL_FAIL'), '1');
+  clearCalls();
+  let imeGateError = '';
+  try { await publisher.run(state, ctx); } catch (e) { imeGateError = e.message; }
+  const imeGateCalls = calls();
+  ok('⑯ 安装失败 ⇒ 明确阻断发布，且没有推素材或点击界面',
+    /自动安装|INSTALL_FAILED/.test(imeGateError) && !/\bpush /.test(imeGateCalls) && !/input tap/.test(imeGateCalls),
+    `${imeGateError} / 操作=${imeGateCalls.match(/push |input tap/g) || '无'}`);
+  fs.unlinkSync(path.join(FDB, 'IME_INSTALL_FAIL'));
 
   // 反向自证：把设备切成「已启用」，同一条发布必须走广播、并且真的成功
   fs.writeFileSync(IME_ACTIVE, '1');
@@ -933,16 +951,21 @@ const state = {
   fs.mkdirSync(BDIR, { recursive: true });
   fs.writeFileSync(path.join(BDIR, 'adb.exe'), 'fake-adb-placeholder');
   adbMod.setBundledAdbDir(BDIR);            // 有内置
+  await adbMod.shell('127.0.0.1:5555', 'settings put secure default_input_method com.android.internal/.Default');
+  clearCalls();
   const pb2 = await adbMod.probe('127.0.0.1:5555');
   ok('⑬ 手填的不存在但有内置 ⇒ 退回内置，并且**在界面上说出来**（不静默替你换）',
     pb2.adbSource === 'bundled' && pb2.fix.some(f => /你填的 adb 路径不存在/.test(f.title)),
     JSON.stringify({ src: pb2.adbSource, titles: pb2.fix.map(f => f.title) }));
-  ok('⑬ ★ 装了 ADBKeyboard 但没设成当前输入法 ⇒ 判「中文发不出去」(bad，不是「能发但影响体验」)，并挂「一键装上」按钮',
-    pb2.fix.some(f => f.act && f.act.act === 'pub:installIme' && f.level === 'bad' && /中文发不出去/.test(f.title)),
-    JSON.stringify(pb2.fix.filter(f => f.act)));
-  ok('⑬ 这条还要说清「内置 ≠ 已装进模拟器」（否则用户会以为已经好了）',
-    pb2.fix.some(f => f.act && /不等于/.test(f.how) && /装进模拟器/.test(f.how)),
-    (pb2.fix.find(f => f.act) || {}).how || '');
+  ok('⑬ ★ 设备检查自动安装并启用内置 ADBKeyboard，不要求用户点按钮或下载',
+    pb2.imeSetup && pb2.imeSetup.ok && pb2.adbKeyboardActive
+      && pb2.notes.some(n => /已自动安装并启用/.test(n))
+      && !pb2.fix.some(f => f.act && f.act.act === 'pub:installIme'),
+    JSON.stringify({ setup: pb2.imeSetup, active: pb2.adbKeyboardActive, actions: pb2.fix.filter(f => f.act) }));
+  const autoImeCalls = calls();
+  ok('⑬ ★ 自动配置顺序正确：install -r → ime enable → ime set',
+    (() => { const a = autoImeCalls.indexOf('install -r'), b = autoImeCalls.indexOf('ime enable'), c = autoImeCalls.indexOf('ime set'); return a >= 0 && a < b && b < c; })(),
+    (autoImeCalls.match(/install -r .*|ime enable .*|ime set .*/g) || []).join(' | '));
   adbMod.setAdbPath('');
 
   // ============ 14) 一键装中文输入法：三条命令缺一不可 ============

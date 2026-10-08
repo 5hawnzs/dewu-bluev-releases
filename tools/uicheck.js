@@ -1525,7 +1525,7 @@ app.whenReady().then(async () => {
     /你填的那个不存在/.test(probeUi.body || ''),
     /你填的那个不存在/.test(probeUi.body || '') ? '结果里写出了 adb 的来源' : '结果面板里没有出现来源字样');
 
-  // 「一键装上中文输入法」这条链路：界面有按钮 → 主进程有动作 → 真正干活的三步在 adbtest 里验
+  // 中文输入法由程序自动配置；真实 install / enable / set 三步在 adbtest 中验
   const appSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8');
   // ★ 自检引导里承诺的按钮名，界面上必须真有 —— 2026-10-02 用户就是被一句
   //   「在下面的设备列表里点它的『选用』」指到了一个**空的**列表上（配置里 0 台设备，
@@ -1537,10 +1537,15 @@ app.whenReady().then(async () => {
       && /加入并使用/.test(fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8'))
       && !/「检测在线」/.test(fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8')));
   const jobsSrc = fs.readFileSync(path.join(ROOT, 'src/main/jobs.js'), 'utf8');
-  ok('★ 检查结果的引导块支持挂「一键处理」按钮，并且中文输入法真的接上了',
-    /f\.act \?/.test(appSrc) && appSrc.includes("'pub:installIme'")
-      && jobsSrc.includes("'publish.installIme'") && /publisher\.installIme\(/.test(jobsSrc),
-    `界面按钮=${appSrc.includes("'pub:installIme'") ? '有' : '缺'} · 主进程动作=${jobsSrc.includes("'publish.installIme'") ? '有' : '缺'}`);
+  const adbSrc = fs.readFileSync(path.join(ROOT, 'src/main/services/adb.js'), 'utf8');
+  ok('★ 输入法由检查流程自动配置，发布入口也有依赖保障，界面不要求用户另行下载',
+    /await ensureKeyboard\(serial\)/.test(adbSrc)
+      && /await adb\.ensureKeyboard\(serial\)/.test(fs.readFileSync(path.join(ROOT, 'src/main/services/publisher.js'), 'utf8'))
+      && !appSrc.includes('pub:installIme')
+      && !jobsSrc.includes('publish.installIme')
+      && /连接设备后自动安装并启用/.test(appSrc)
+      && /安装包缺少内置文件/.test(appSrc),
+    '设备检查、发布前置保障与设置页文案均接入自动配置');
 
   // 设置页「外部依赖」：内置的不许还写着「待接入」
   const depUi = await win.webContents.executeJavaScript(`(async () => {

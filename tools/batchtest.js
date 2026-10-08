@@ -61,6 +61,23 @@ const ok = (label, cond, extra) => {
     publish: { intervalSec: 5, videoIntervalSec: 5 }   // 「演示节奏」开关已删：直接给 5 秒间隔；★ retry 也已删（失败不重试）
   });
 
+  // ---- 发布间隔的取消必须清除等待定时器 ----
+  const realSetTimeout = global.setTimeout, realClearTimeout = global.clearTimeout;
+  let watchedTimer = null, timeoutCleared = false;
+  global.setTimeout = (fn, ms, ...args) => {
+    const timer = realSetTimeout(fn, ms, ...args);
+    if (ms === 5000) watchedTimer = timer;
+    return timer;
+  };
+  global.clearTimeout = timer => {
+    if (timer === watchedTimer) timeoutCleared = true;
+    return realClearTimeout(timer);
+  };
+  let sleepCancelled = false;
+  try { sleepCancelled = await require(path.join(base, 'src/main/services/publisher.js')).sleep(5000, () => true) === false; }
+  finally { global.setTimeout = realSetTimeout; global.clearTimeout = realClearTimeout; }
+  ok('发布间隔取消后立即结束并清除结束定时器', sleepCancelled && watchedTimer !== null && timeoutCleared,
+    JSON.stringify({ sleepCancelled, timeoutCreated: watchedTimer !== null, timeoutCleared }));
   // ---- ⓪ ★ 2026-10-02：「设置 → 素材根目录」已删 ⇒ 出厂不再预设素材目录 ----
   //   没显式给、工程里也没存过，必须**明确报错**；不许拿一个默认目录静默凑合，
   //   更不许把 undefined 一路传下去（那会冒出一句没人看得懂的 path 类型错）。

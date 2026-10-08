@@ -53,7 +53,7 @@ if (!app.requestSingleInstanceLock()) {
     auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
     // adb：手填路径 > 程序内置（vendor/adb → 打包后 resources/adb）> 系统 PATH。
     // 内置那份是为了「新同事装上就能用，不用自己去模拟器安装目录里翻 adb.exe」。
-    // 中文输入法 apk 也内置，探测页给「一键装上」按钮。
+    // 中文输入法 apk 也内置；设备连接并在线后由设备检查自动安装、启用。
     adb.setAdbPath(store.get('publish.adbPath'));
     adb.setBundledAdbDir(vendorDir('adb'));
     adb.setBundledApkPath(path.join(vendorDir('adbkeyboard'), 'ADBKeyboard.apk'));
@@ -64,6 +64,45 @@ if (!app.requestSingleInstanceLock()) {
     // 要能就地转 —— 内置那份（GPL-3.0 静态版，见 vendor/README.md）是「装上就能用」的关键。
     video.setFfmpegPath(store.get('publish.ffmpegPath'));
     video.setBundledFfmpegDir(vendorDir('ffmpeg'));
+    // 启动时预检本机视频工具，并为已选设备（或唯一在线设备）自动准备中文输入法。
+    // 多台设备且未选择时不猜目标；设备连接/检查时还会再自动准备。
+    video.version().then(v => {
+      if (v) logbus.info(`视频依赖就绪：${v}`);
+      else logbus.error(`视频依赖不可用：${video.status().path || '未找到 ffmpeg'}，非 MP4 视频将无法自动转换`);
+    }).catch(e => logbus.error(`视频依赖检查失败：${e.message}`));
+    (async () => {
+      try {
+        if (!(await adb.version())) {
+          logbus.error(`模拟器连接依赖不可用：adb 找不到或无法启动（${adb.getActiveAdb().path}）`);
+          return;
+        }
+        const list = await adb.devices();
+        const selected = store.get('publish.device') || '';
+        let target = selected ? list.find(d => d.serial === selected && d.state === 'device') : null;
+        if (!selected) {
+          const candidates = new Map();
+          for (const device of list.filter(d => d.state === 'device')) {
+            const installed = await adb.packages(device.serial);
+            if (!installed.some(p => /shizhuang|duapp|poizon|dewu/i.test(p))) continue;
+            const id = await adb.shell(device.serial, 'settings get secure android_id');
+            const identity = id.ok && String(id.stdout || '').trim() && String(id.stdout).trim() !== 'null'
+              ? String(id.stdout).trim() : device.serial;
+            if (!candidates.has(identity)) candidates.set(identity, device);
+          }
+          if (candidates.size === 1) target = candidates.values().next().value;
+        }
+        if (!target) {
+          logbus.info(selected ? `设备依赖待准备：已选设备 ${selected} 当前不在线`
+            : '设备依赖待准备：请连接并选择一台模拟器');
+          return;
+        }
+        const r = await adb.ensureKeyboard(target.serial);
+        if (r.ok) logbus.ok(`设备依赖就绪：${target.serial} 的内置中文输入法${r.alreadyReady ? '已启用' : '已自动安装并启用'}`);
+        else logbus.error(`设备依赖配置失败：${target.serial} 的中文输入法（${r.step}）：${r.error}`);
+      } catch (e) {
+        logbus.error(`设备依赖检查失败：${e.message}`);
+      }
+    })();
     ipc.register();
 
     const st = auth.status();
