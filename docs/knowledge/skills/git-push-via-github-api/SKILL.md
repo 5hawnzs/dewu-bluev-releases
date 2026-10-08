@@ -1,6 +1,6 @@
 ---
 name: git-push-via-github-api
-description: 在国内网络 / Windows 沙箱里把代码推到 GitHub，并实证「真的推上去了」。覆盖两类场景：(1) `git push` 被网络阻断（github.com:443 连不上、SSH 22/443 被 reset）但 `api.github.com` 仍可达时，改用 GitHub Git Data API 完成等效推送；(2) 首次把本地仓库接入私有仓库的 6 个必踩坑——系统级 credential.helper 与 store **叠加**导致 GCM 把推送挂死、沙箱代理对 github.com 返回 502、`refs/remotes/origin/*` 三级引用**静默写不进**（假成功）、系统级 `core.autocrlf=true` 悄悄改写行尾、单文件超 100MB 让整次推送被拒、以及用 API 反向自检密钥有没有泄露。
+description: 在国内网络 / Windows 沙箱里把代码推到 GitHub，并实证「真的推上去了」。覆盖三类场景：(1) `git push` 被网络阻断（github.com:443 连不上、SSH 22/443 被 reset）但 `api.github.com` 仍可达时，改用 GitHub Git Data API 完成等效推送；(2) 首次把本地仓库接入私有仓库的 6 个必踩坑——系统级 credential.helper 与 store **叠加**导致 GCM 把推送挂死、沙箱代理对 github.com 返回 502、`refs/remotes/origin/*` 三级引用**静默写不进**（假成功）、系统级 `core.autocrlf=true` 悄悄改写行尾、单文件超 100MB 让整次推送被拒、以及用 API 反向自检密钥有没有泄露；(3) ★ **单文件超 100 MB（Gitee 与 GitHub 同一个硬墙）时怎么把文件留下来** —— 分卷进仓 + 拼接脚本的完整验收标准，以及「Gitee 报的是 gzip 后大小」「Git LFS 在 Gitee 免费版不可用」「换站点救不了」这三条实测结论。
 agent_created: true
 ---
 
@@ -411,13 +411,51 @@ printf '%s\n' "$("$GIT" rev-parse HEAD)" > .git/refs/remotes/origin/main
 ```
 检查顺序很重要：`git init` → `config core.autocrlf false` → `git add -A`。
 
-### 5. 大文件：GitHub 单文件硬限 100MB
-127MB 的 APK 会让**整次推送被拒**（不是只跳过那个文件）。**`git add` 之前**先扫：
+### 5. 大文件：GitHub 与 Gitee 都是**单文件 100 MB 硬限**，换站点救不了
+
+**先分清「警告」和「拒收」**（2026-10-08 实测，一次推送里同时出现）：
+
+| 体积 | GitHub 行为 |
+|---|---|
+| > 50 MiB | 只打 `remote: warning: File X is 78.96 MB; this is larger than ... 50.00 MB` —— **照推不误** |
+| > 100 MiB | 直接拒收**整次推送**（不是只跳过那个文件） |
+
+同一次推送实测：`ffmpeg.exe` 78.96 MB、`part01` 64.00 MB、`part02` 63.14 MB 三个文件
+**全部推送成功**，只有 3 行 warning ⇒ **别把 warning 当失败**。
+
+**Gitee 的两个坑**（`size: 120.666MB, exceeds quota 100MB`）：
+- ★ 它报的是**服务端 gzip 后**的大小，不是你文件的原始体积（实测原始 133,315,131 B = 127.1 MiB，
+  gzip -9 后 126,471,554 B = 120.6 MiB）。**拿原始体积去猜会不会被拒会误判。**
+- 同样是 pre-receive 钩子拒**整次**推送，且**换到 GitHub 也过不去**（两边同一个数）。
+- **Git LFS 不是通用解**：Gitee 的 LFS 只对付费企业开放（免费版 0 GB）。
+
+**✔ 真要那个文件进仓 ⇒ 分卷（实测可行）**：
+
+```bash
+split -b 67108864 -d --numeric-suffixes=1 -a 2 big.apk big.apk.part   # 每片 64 MiB
+```
+- **片段进仓，拼出来的单文件写进 `.gitignore`**。★ 这一条是硬要求：误 add 一次 = 整次推送被拒，
+  而且报错要等到 pre-receive 才出现，白等一轮网络。
+- 拼接脚本的验收标准（缺一条就会在生产里咬人）：
+  1. `--check` 只验不写；
+  2. **幂等** —— 已是完整文件则报「未改动」并 exit 0；
+  3. 任一条件不满足 ⇒ **exit ≠ 0 且不留半成品残骸**（别留个半截 `.apk` 让人以为拼好了）；
+  4. 拼完必须**逐字节验还原**（`cmp` + md5 双端相等），**只比字节数不算验**。
+- ★ 把拼接挂在**打包/构建命令的开头**（`dist:win` 那种），并让回归套件也有一道前置 ——
+  否则新机器 `git clone` 下来**根本打不出包**，而错误信息是「文件找不到」，看不出是分卷的锅。
+
+不确定哪些文件踩线时先扫一遍（`-size +40M` 是因为 50 MiB 就开始出 warning）：
 ```bash
 find . -type f -size +40M -not -path "./.git/*" -printf "%s\t%p\n" | sort -rn
 ```
-超限文件写进 `.gitignore`（或改用 Git LFS）。⚠️ `.gitignore` 对**已跟踪**文件无效，
+超限文件若**本来就不该进仓**：写进 `.gitignore`。⚠️ `.gitignore` 对**已跟踪**文件无效，
 已误加的要 `git rm --cached -f <file>`（文件在暂存后被外部改动过时必须 `-f`）。
+
+★ 已经误提交进**历史**的（推送被拒但本地已 commit）：`git reset --mixed HEAD~1` 把那条提交摘掉，
+工作区内容不动。但这样会在 `.git` 里留一个**不可达的大对象**（实测 127 MB 让 `.git` 涨到 280 MB）；
+确认「零条未推提交」后再 `git reflog expire --expire=now --expire-unreachable=now --all && git gc --prune=now`
+回收（实测 280 MB → 157 MB）。⚠️ `--prune=now` **立即**清除不可达对象、不等默认 2 周宽限期
+⇒ 动手前必须先证明 `git log origin/main..HEAD` 是 0 条。
 
 ### 6. 密钥泄露自检：别只信 .gitignore，要问远端
 提交后**用 API 反向验证**，这比看 `git status` 强得多：

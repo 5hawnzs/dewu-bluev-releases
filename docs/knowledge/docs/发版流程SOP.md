@@ -189,7 +189,17 @@ npm run release:prune:apply
 |---|---|---|---|---|---|
 | 2026-10-01 | 正式 | `1.0.0` | `latest.yml` | 89,151,294 | 首版 |
 | 2026-10-01 | 测试 | `1.0.1-beta.2` | `beta.yml` | 89,163,860 | 新 logo 那一版 |
-| **2026-10-02** | **正式** | **`1.0.1`** | **`latest.yml`** | **92,229,456** | **adb 与中文输入法随包内置**（+2.94 MB） |
+| 2026-10-02 | 正式 | `1.0.1` | `latest.yml` | 92,229,456 | adb 与中文输入法随包内置（+2.94 MB） |
+| 2026-10-05 | 正式 | `1.0.15` | `latest.yml` | 107,095,416 | 1.0.2～1.0.15 这段**本文件当时漏记**，此行数据是 2026-10-08 发 1.0.16 前从公网 `latest.yml` 现拉的 |
+| **2026-10-08** | **正式** | **`1.0.16`** | **`latest.yml`** | **232,660,361** | **得物 App 安装包随包内置（+125.6 MB）**；同时把远端从 Gitee 换到 GitHub |
+
+**1.0.16 发布后的核对结果**（2026-10-08，全部从公网拉取）：
+- `latest.yml = 1.0.16`，`sha512` 与本地 `dist/latest.yml` **逐字符相同**；
+- 安装包 `HTTP 200`、`Content-Type: application/x-msdownload`、`Content-Length 232660361` = 本地字节数；
+- `beta.yml` **一个字节没动**（仍 `1.0.1-beta.2` / 89,163,860）；
+- 发布前全量回归 **18 套 1724 项全绿**（工作树一次、**干净打包快照上一次**，两次同结果）；
+- `resources/dewu/dewu_6.0.5.apk` 的 md5 = `50092bccb263498a16e4fbb57762ae5f`（与内置断言里的常量一致）；
+- 包内 `resources/app-update.yml` 与 1.0.15 那份**逐字节相同** ⇒ 更新源地址没被动过。
 
 **发布后的核对结果**（2026-10-02，全部从公网拉取）：
 - `latest.yml = 1.0.1`（`sha512` 与本地 `dist/latest.yml` 同）；
@@ -201,4 +211,37 @@ npm run release:prune:apply
 
 ---
 
-*本文对应代码版本：`1.0.1`（2026-10-02 发布正式版；此前为 `1.0.1-beta.2`）*
+## 七、代码远端（2026-10-08 起：GitHub）
+
+```
+远端      https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git   （GitHub · 私有）
+分支      main（已 set upstream）
+```
+
+**为什么从 Gitee 换过来**：Gitee 免费版**单文件硬上限 100MB**，得物安装包 gzip 后 120.6 MB
+被 pre-receive 直接拒收（`exceeds quota 100MB`）。GitHub **单文件同样是 100 MiB 的硬墙**，
+所以换站点本身救不了这个包 —— 真正的解法是**分卷**：
+
+- 安装包切成 `vendor/dewu/dewu_6.0.5.apk.part01/02`（各 ≤64 MiB）进仓，
+  **拼出来的单文件被 `.gitignore` 挡在外面**（误 add 一次 = 整次推送被拒）；
+- 打包前由 `node tools/dewuapk-assemble.js` 自动拼回（`dist:win` / `dist:win-only` 开头就挂它，
+  `run-all.js` 也有一道前置）。**新机器 clone 下来直接就能打带内置包的安装包**，不必手工拼。
+
+★ 两条通道的差别只在**总量**：Gitee 单仓 500MB 后会锁推拉，GitHub 无硬限（>1GB 才提醒）。
+★ Gitee 的 Git LFS 只对付费企业开放（免费版 0GB）⇒ **LFS 这条路走不通**，别再试。
+★ 仓库里还留着 **82.8 MB 的 `vendor/ffmpeg/ffmpeg.exe`**，它在 GitHub 侧只触发
+「>50MB 建议用 LFS」的**警告**，不影响推送成功。
+
+**推送取证（三重，缺一不可）**：
+```bash
+git ls-remote origin refs/heads/main      # ① 真跑一次协议
+# ② GitHub API /repos/<owner>/<repo>/git/ref/heads/main 的 sha
+git rev-parse HEAD                        # ③ 本地
+```
+本轮三条 sha 全等：`31f988a768755b94c6d1ebbbdba897b3a9961c87`；并逐个核对了
+`package.json` / 两个 `.part` / `ffmpeg.exe` / `store.js` / `index.js` / `uicheck.js` / `.gitignore`
+的 blob sha —— **GitHub 侧与本地 `git rev-parse HEAD:<path>` 全部相同**。
+
+---
+
+*本文对应代码版本：`1.0.16`（2026-10-08 发布正式版）*

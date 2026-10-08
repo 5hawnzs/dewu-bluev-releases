@@ -226,6 +226,12 @@ $o += (& "C:\path\node.exe" script.js 2>&1)
 ⇒ 凡是「没输出 = 没这回事」的查询，**一律先落文件再 Read**；能换成「天然有输出」的工具
 （`tasklist` / `reg query`）就别用「靠有没有输出来判断」的形式。
 
+★★ **同一个坑的 Bash 版（2026-10-08 实测）：`strings` 在这个沙箱里对任何文件都输出 0 行。**
+我用它扫 `libvips-42.dll` 里的 `de265` 符号 → 空的，差点写成「这个库里没有 HEVC 解码器」。
+其实 `strings` 根本读不出东西。⇒ **负向断言（「扫不到 X」）必须配正向对照**：
+同时扫一个必然存在的串（`vips` / `libjpeg`），对照项也是 0 就说明是**工具没生效**，不是「库里没有」。
+扫二进制字符串改用 Python：`re.findall(rb'[ -~]{4,}', open(p,'rb').read())`，**同样要把对照项一起打印**。
+
 ## 3. 删除文件走「回收站」机制：小文件「报错但其实删掉了」，**大目录是真删不掉**
 
 现象：`Remove-Item` 报 `[safe-delete][SAFE_DELETE_FAIL_CLOSED] ... trash-failed "Some operations were aborted"`，

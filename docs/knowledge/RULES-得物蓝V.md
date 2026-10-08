@@ -4300,43 +4300,663 @@ WorkBuddy 侧活文档（本文件 / 工作区 `MEMORY.md` / `~/.workbuddy/skill
    同时这是一条**该修的风险**（出厂口令公开，建议在「品牌与权限 → 账号与安全」改掉）。
    两个账号的**品牌权限都是 0 个**（`admin` 是管理员不看这个字段）。
 
+## §CD 2026-10-08：主题第三档「玻璃」= **真·系统亚克力**（不是自画渐变）
+
+用户原话：「**为啥玻璃档显示紫色，不是透明磨砂玻璃质感吗**」⇒ 我第一版把「磨砂」做成了假的
+（`html.glass body` 上自画 3 团彩色 `radial-gradient` + 面板半透明 + `backdrop-filter`）——
+**后面是我挑的颜色、根本透不出桌面**。第一版已废弃。
+
+**三配置探针实测**（Win11 23H2 22631 / Electron 31.7.7，`_probe-acrylic.js` 跑完即删）：
+
+| 配置 | 结果 |
+|---|---|
+| `transparent:true` | ★真透（垫的品红底窗直接可见），但**不糊** |
+| `backgroundMaterial:'acrylic'`（**建窗时**） | 能糊，**且能透出后面别的窗口**（见下方勘误） |
+| `win.setBackgroundMaterial('acrylic')`（**运行时**） | ✗ 窗口变**纯黑**，不可用 |
+| `backgroundMaterial:'mica'` | 能糊，但**只采样壁纸、不透窗口** |
+
+⇒ 定论：**只能用建窗时的 `backgroundMaterial`**，且与 `transparent` **互斥**。
+⇒ Win10 忽略该选项 ⇒ 玻璃档退化成「清晰透出桌面」（要写进文档）。
+
+### ★★★ 勘误 2026-10-08（用户指出）：acrylic **能**透「后面的其它窗口」
+
+用户观察：「如果下面有应用，也可以**隐隐约约看到**这个应用」——**对的**。
+旧表格那句「**不透其它窗口**」是**错的**（那其实是 **mica** 的行为，被张冠李戴到 acrylic）。
+
+复测（`_probe-backdrop2.js` 跑完即删；左半屏垫**不透明纯品红**窗当「别的应用」，
+测试窗各拍两次：压品红 / 压右侧深色真实应用，壁纸不变）：
+
+| 材料 | 压品红窗 | 压深色应用 | 两位置差 |
+|---|---|---|---|
+| `acrylic` | `rgb(223,0,223)` | `rgb(61,61,61)` | **385** |
+| `mica` | `rgb(28,33,37)` | `rgb(32,31,37)` | **6** |
+| 无材料（对照） | `rgb(0,0,0)` | `rgb(0,0,0)` | 0 |
+
+官方一致：Acrylic = "reveals the desktop wallpaper **and other windows that are behind**"；
+Mica = "**only samples the desktop wallpaper**"（对应 DWM `DWMSBT_TRANSIENTWINDOW` / `DWMSBT_MAINWINDOW`）。
+
+**旧结论成因**：旧探针只测过「两块窗放在**壁纸**不同位置」（`rgb(83,83,83)` vs `rgb(64,64,64)`，
+恰是「采样背景」那一档）⇒「不透窗口」是从「只测了壁纸」**推**出来的，不是测出来的。
+⇒ 教训：判「透不透 XX」必须有一组**把 XX 放进去**的对照；测试窗要是**活动窗**且**在底窗之上**
+（`base.focus()` 会把底窗抬到测试窗前面 —— 据此得到过一条**看似结论的废数据**：窗心读纯品红 = 拍到底窗本身）；
+还要配「去掉材料」的对照组（应读 `rgb(0,0,0)`）。
+⇒ **产品含义**：玻璃档用 acrylic ⇒ **本来就会透出后面的应用**（隐隐约约，因外面还压 `rgba(17,18,24,.58)` 面板）＝ **Windows 行为，不是 bug**。
+  要「只透壁纸」只能换 `mica`（代价：近乎不透明、玻璃感大减）。
+⇒ 证据留档：`_玻璃透应用-实测与结论-20261008.md` + `_玻璃透应用实测-20261008/`（`result.json`、5 张整屏取证 PNG）。
+
+**落地**：建窗**永远**挂 `backgroundMaterial:'acrylic'`；`bgColor()` 按皮肤算（玻璃返 `'#00000000'`）；
+`styles.css` 把 `html.glass body` 挖成 `transparent`（原极光删除）。浅/深色档页面底色本就不透明 ⇒ 盖住亚克力。
+
+**★★★ 最隐蔽的坑**：切 **深色→玻璃** 时 `nativeTheme.themeSource` **没变**（两者原生层都是 dark）
+⇒ `nativeTheme.on('updated')` **不触发** ⇒ 底色停在上一次实心值、亚克力透不出来
+⇒ 必须在 `theme:set/toggle` 里**显式**调 `refreshBackdrop()`；且回归要钉「谁调它」（≥2 处）。
+
+**取证**：临时 userData + `BLUEV_NO_LOGIN=1` 起真 app，点真按钮三下 —— 日间 `rgb(255,255,255)` /
+夜间 `rgb(27,27,30)` / 玻璃 `.app=rgba(0,0,0,0)` 且窗心 `rgb(66,66,66)`（同样的 `.side` 压纯黑只 ≈`rgb(14,14,18)`）。
+回归：`uicheck 229` / `logintest 104` / `gatetest 19` 全绿；**全量 18 套 1649 项全绿**
+（含**另一路会话**正在同仓库改的「内置默认值」的 `defaultstest 17`）。**未提交**。
+技能：`electron-glass-acrylic-theme`。
+
+## §CE 2026-10-08：**「装上即用」——UI 定位表与模型 key 出厂内置**（`uimapdefaults.js` / `llmdefaults.js`）
+
+**用户口径（原话）**：「你为什么老是给我其他建议？我不是直接让你内置吗」「模型密钥先内置，品牌那些待定」
+「直接固化，要更新我会同步」。背景：同事拿到包后，原来必须自己抓/导入定位表、自己填 key（不填则**静默降级成本地模板**）。
+
+**结论：做成「留空＝跟随内置」（读时兜底、绝不写回），不是把值写进 `store.defaults()`。**
+两者效果对"新装机"一样，差别只在**以后能不能跟随新包**：
+写进 defaults ⇒ 随每次保存落进 `config.json`（卸载都不删）⇒ **固化**，换新表/新 key 重发包也顶不动老机器，界面还看不出来（§T9）。
+⇒ 这正是项目已有的 `clouddefaults.js` / `llmdefaults.js` 那条老规矩，本次只是把它扩到定位表与 key。
+
+### 1) 定位表（`src/main/uimapdefaults.js`，新增，37.8 KB）
+- **表是从本机 `%APPDATA%/dewu-bluev-publisher/config.json` 的 `publish.uiMap` 逐字节原样搬的**（38 步图文 + 41 步视频），
+  已断言 `steps` / `videoSteps` 两份 JSON **完全一致**（`defaultstest ②`）—— 不是编的、没手抄。
+- 兜底点**只有一个**：`store.withBuiltinMap()`（`store.js`），判据是 **`=== undefined`**（键根本不存在）。
+  三个读取方（`jobs` / `publisher.cfg()` / 渲染层 `configGet()`）因此看到同一张表 —— 不会出现
+  「发布能跑、界面却显示『定位表未配』」这种自相矛盾。
+- ★ **显式 `null` 不被顶掉**（＝「我就是要没有表」，`adbtest` 靠它验「未配必须报错」）；本机自己抓/导入的表**优先**。
+- ★★ **补了坐标系戳 `screen {w:1080,h:1920,landscape:false}`**（原表**没有**这个键）。依据三条实测：
+  ① 8 个 `tapXY` 点的原 hint 直接写着 `bounds=[891,1794][1080,1892]` ⇒ 宽 1080；
+  ② 得物在前台 `dumpsys window displays` = `cur=1080x1920`；
+  ③ 8 个点全在 1080x1920 内、且**装不进 900x1600** ⇒ 戳唯一（`build-uimapdefaults.js` 会强制这条自检，不满足就拒绝生成）。
+  ⇒ 同事的模拟器若不是 1080x1920，运行时 `uimap.screenMismatch` **当场拦下报错**（而不是写死坐标静默点偏）。
+  ★ 表里的 `note` 是抓表时原始记录、里面写过「900x1600」—— 那是更早一版口径（`0x` `cur=` 已变 1080x1920），**以 screen 戳为准**。
+
+### 2) 模型 key（`src/main/llmdefaults.js` 加 `apiKey`）
+- `copywriter.cfgOf()` 改成 `apiKey: ownKey || llmdefaults.apiKey || ''`，并新增 `apiKeySource`（本机配置 / 跟随内置）。
+- ⚠️ **代价（已跟用户讲清并接受）**：key 属**半公开凭据** —— 拿到包的人都能刷组织额度。别推公网仓库、额度设上限、出事直接换。
+- ⚠️ **`copytest ⑥` 必须跟着改**：出厂有内置 key 后，「框里空着」不再等于「没配 key」⇒
+  该用例改为**临时清掉 `llmdefaults.apiKey`**（try/finally 还原）才验得到「没 key ⇒ 不许静默出模板文案」这条老防线。
+  （不改 = 假绿：实际拿着内置 key 发了请求。）
+
+### 3) 新增工具 `tools/build-uimapdefaults.js`（得物改版后重抓要用）
+`node tools/build-uimapdefaults.js [--in <uiMap.json|config.json>] [--screen 1080x1920] [--dry]`
+- 守卫（不过就退出码 1，**绝不生成一张会点偏的表**）：`steps` 非空；所有 `tapXY` 落在该坐标系内；
+  坐标系戳优先取源表自带的 `screen`，没有才按 `--screen` 推断，且必须过「唯一性」（不许更小的常见档也装得下）。
+- **幂等实测**：连跑两次 sha 相同（`8496ba44`）；与首版生成的表 `steps/videoSteps/screen` 语义一致。
+- ★ 顺手修了它自己的两个小毛病：日志把「字符数」当「字节数」（改 `Buffer.byteLength`）；`--in` 指向不存在的文件时抛裸栈（改 try/catch）。
+
+### 4) 自证（数字都是实测）
+- 新增 `tools/defaultstest.js`（**18 条断言**，已登记进 `run-all.js`）：
+  ① 出厂 `defaults().publish.uiMap === undefined`；② 新机读出来=内置表 38/41 步 ＋ **publisher 的 `hasMap` 判据为 true**
+  （同事不会被「定位表未配」拦下）；③ **不写回**（并带**反向对照**：
+  显式导入的表**确实会**落进 `config.json`，证明这条判据不是恒真）；④ 显式 `null` 不被顶掉；⑤ 本机的表优先；
+  ⑥ 坐标系戳 + 8 点全在屏内 + **反向对照**（放 1920x1080 上必须认出越界）+ 戳真能拦 900x1600 + 同坐标系不误报。
+- **定点破坏（双边验证）**：① 把 `withBuiltinMap` 摘掉 ⇒ `defaultstest` 红 **4** 条（②那组）；
+  ② 把 `cfgOf` 的 key 兜底摘掉 ⇒ `copytest` 红 **1** 条（⑩ 那条）。还原后 sha 与破坏前**完全相同**、两套复跑全绿。
+- **全量回归**：`env -u NODE_OPTIONS node tools/run-all.js` ⇒ **18 套 1650 项，0 FAIL**。
+  ★ 交叉核对：原基线「17 套 1622 项」＋新套 **18** 条 ＋ `copytest` 新增 10 条（⑥改为 try/finally 不增减，⑩ +3、其余为本次新增的说明性断言）= **1650**，对得上。
+  ⚠️ 首轮跑出 1649 是因为当时 `defaultstest` 还是 17 条（少一条 `hasMap` 断言），后补为 18。
+- ⚠️ **三个 Electron 套件在本沙箱要清 `NODE_OPTIONS`**：本机 `NODE_OPTIONS` 含 `--use-system-ca`
+  ⇒ Electron 报 `--use-system-ca is not allowed in NODE_OPTIONS` 直接退 9（**不是代码问题**）。
+  另外直接跑 `electron.exe` 要先 `unset ELECTRON_RUN_AS_NODE`（否则被当 node 跑，报 `bad option`）。
+
+### 5) 没做 / 待办（诚实清单）
+- **未打包、未提交**。树里有**另一路会话**未提交的「玻璃主题」改动 ⇒ 按并发处理，不提交、也不从脏树打包。
+- `README.md` 的套件表、`docs/knowledge` 的工具索引**未加** `defaultstest` / `build-uimapdefaults.js`（那两个文件正被另一路会话改，避免撞车）。
+- `src/renderer/app.js` **未改**（同因）：① 高级设置「UI 定位表」那段 hint 还写着「没配这张表…抓取→导入」，
+  建议补一句「出厂已内置一张（38 步），这两颗按钮是重新抓/换一张时才用」；② 「API Key」输入框可加 `placeholder="留空 = 跟随内置"`。
+- 品牌（`TW男装` + 必带话题）**按用户要求暂不动**（待定）。
+
+### 6) 2026-10-08 13:0x —— **已提交**（`97373fc` + `b03926c`）＋ 抓到并修掉一条**假绿断言**
+（⇒ §5 里那句「未打包、未提交」已被本段取代。）
+- 另一路会话 12:57 先提交了 `a226773`（主题 Dock），并把本路文件原样留在工作区 ⇒ 12:59 起工作树**只剩本路 9 个文件**。
+  本路按路径显式暂存、分两个提交打出去（**没有 `git add -A`**）：
+  - `97373fc feat(出厂)`：`uimapdefaults.js`(新) / `store.js` / `llmdefaults.js` / `copywriter.js` /
+    `build-uimapdefaults.js`(新) / `defaultstest.js`(新) / `copytest.js` / `run-all.js`（8 文件，+982/−17）
+  - `b03926c docs(交接)`：`HANDOFF-NEW-MACHINE.md`（新增 §3.0；§1 通道表把「源码=公开级」改成**仓库必须私有**；
+    §3.1/§3.4 把 uiMap / key 从「必须手搬」划掉；套件数 17→18、断言数改实测口径）
+- ★★★ **抓到一条假绿断言（本次最有价值的发现）**：`copytest ⑩`「内置 key 没被写回 `config.json`」原判据读的是
+  **更早一次落盘** —— 那时 `apiKey` 还是测试自己几步前设的 `'sk-test'` ⇒ **把内置 key 真的写回文件，这条也照样绿**。
+  ⇒ 三处修：① 快照改成「写成空 → 等 250ms 防抖 → **重新读**」；② 补一条正向断言「落盘的那份**必须是空**」
+  （比「不含某个串」这种负向断言强）；③ 判据从 `llmdefaults` 读 key，**不写死字面量**（否则换 key 那天拿旧 key 比对 ⇒ 假红）。
+- **定点破坏（第二轮，这次才真成立）**：① 第一版把 key 放进 `store.defaults()` ⇒ **红 0 条**
+  —— 落盘只写 `cache`，`defaults()` 是读时基座、不参与写盘（**破坏没打到输出面**）；
+  ② 改成在 `store.set()` 里复刻已删的 `applyCloudDefaults`（空值补成内置值再落盘）⇒ **⑩ 红 3 条**；
+  `cp` 还原后 sha 一致（`3f9882fa1566f29d72d5c3a69b1cdd93a90f0e7b`）、复跑 226/0。
+  （脚本：工作区 `_bilateral-key.sh` ＋ `_bk-inject.js`；**restore 用 `cp`，禁 `git checkout`**。）
+- **全量回归**：`env -u NODE_OPTIONS -u ELECTRON_RUN_AS_NODE node tools/run-all.js` ⇒ **18 套 1660 项 0 FAIL**
+  （`42+392+19+46+96+34+226+57+83+238+104+19+50+65+45+69+57+18`）。
+  ★ 1650 → 1660 里有 **9 条来自另一路会话**（`uicheck` 229→238），本路只 +1（`copytest ⑩` 那条新断言）
+  ⇒ **别把总数增量都算到自己头上**。
+- ★★ **安全项（必须记住）**：内置 key 现在**进了 git 历史** ⇒ 仓库与 `gitee` 远端**必须私有**。
+  公开推送＝泄露，只能去服务商**轮换 key**（删文件、改文件都救不回来，历史里还在）。
+- **远端**：`git ls-remote origin` 在本沙箱 **SSH 不通**（读不到真实远端状态）；本地 `origin/main` 停在 `ceb465a`
+  ⇒ 本地领先 **3** 个提交（含另一路 `a226773`）。**未推送**（用户只让「提交」）。
+- 技能：给 `bilateral-fix-verification` 补两节 —— **§3.4b⑤**「破坏点选在『不影响被查输出』的那一层 ⇒ 红 0 条」、
+  **§4.4c**「判据读的是**上一次动作的旧快照** ⇒ 永远查空」。
+
+## §CF 2026-10-08：删页签3「按当前素材生成」（与「选择素材目录并启动任务」重复）
+
+用户原话：「一般没点目录的时候，不会有当前素材，所以这两个功能重复了，删掉按当前素材生成这个按钮」。
+⇒ **真删功能**（不是藏按钮），五处一起动：
+
+1. `src/renderer/app.js` `TABS[3].actions`：删掉 `{ act:'copy:run', label:'按当前素材生成' }`。
+2. `src/renderer/app.js` `ACTS`：删掉 `'copy:run'` 处理器（它原来就是**不带 sourceDir** 直接调 `copy.generate`）。
+3. `src/main/jobs.js` `copy.generate`：**「拿当前工程 items 生成 + 回写 `project.copyRows`」那条分支已不可达 ⇒ 删除**，
+   原位改为 `throw new Error('文案生成必须指定素材目录：请点「选择素材目录并启动任务」…')`
+   （**不让 case 落空返回 `undefined`** —— 万一还有调用方，要立刻报错而不是静默什么都不发生）。
+   ★★ 判据只能选「**被删分支独享**」的写法（`copywriter.generate(st().items` / `copyRows: r.rows` / `s0.flatDir`）——
+   `请先做素材整理` 还留在 `compliance.scan` / `verify.check` 里（**共用文案**），拿它判会**恒为真 ⇒ 假红**。
+   口诀：先 grep，出现次数 > 1 就不配当判据。
+4. `docs/visual/build.js` `PAGES[3].act` 去掉该按钮（**`docs/visual/index.html` 待工作树干净后重新生成** ——
+   现在重生成会把另一路未完成的「模型配置搬家」一起烤进去）。
+5. `tools/uicheck.js` 新增 **4 条**断言：① **读真 DOM** 证明按钮没了；② 处理器源码里没了；
+   ③ 后端三条独享写法没了；④ 那条**显式报错**在。
+   （负向源码判据先剥 `/* */` 与行首 `//` 注释，否则「为什么删」注释里的 `'copy:run'` 会误报红。）
+
+- **回归**：全量 18 套、**通过 1661 项**；`uicheck` 有 **3 条红**，经取证**不属本改动**：
+  ① 那 3 条断言**在 HEAD 就有**；② HEAD 的 `app.js` 里「高级设置→文案模型」块在（命中 5）；
+  ③ 当前 `app.js` 里该块命中 **0** ⇒ 是**另一路会话**在做「模型配置搬家」造成的。
+  **全文未提交**（工作树两路混改，`git status` 一直有别人的 10+ 个文件）。
+- **反向验证（沙箱副本）**：仓库里另一路会话正**分钟级**改 `app.js/index.html/uicheck.js` ⇒ **不在共享工作树原地破坏**；
+  改为 `cp src+tools` ＋ junction `node_modules`/`vendor` 的沙箱里注入。好版 `246 PASS/2 FAIL`（那 2 条是他路的）
+  → 注入（按钮＋处理器＋后端分支都加回）⇒ **我指的那 4 条全红**、`242 PASS/6 FAIL`；**仓库 `git status` 全程不变**。
+  ★ 坑：`ELECTRON_RUN_AS_NODE: ''`（设**空串**）**≠ 删掉** ⇒ Electron 按纯 Node 跑 ⇒ 套件 **0 PASS/0 FAIL/零输出**
+  （最像「全绿」的假象）；必须 `delete e.ELECTRON_RUN_AS_NODE`（命令行 `env -u` 就是删 ⇒ 出现「手工通、脚本不通」）。
+  ★ 坑：`cmd /c mklink` 经 `spawnSync` 参数组会**丢引号** ⇒ 用 `fs.symlinkSync(..., 'junction')`；
+  清沙箱**先摘 junction（`rmdirSync`）再删目录**，否则有删掉真仓库 `node_modules` 的风险。
+- 技能：`bilateral-fix-verification` 新增 **§3.5b**（沙箱副本破坏法）与 **§4.6b**（真删功能：入口＋处理器＋读取链三处分开钉）。
+
 
 
 ---
 
-## §CJ 2026-10-08：得物 App 安装包**随包内置** ＋ 设置页「下载到本机 / 装进模拟器」
+## §看板20261008 · 发布进度看板：口径修正 + 机器标识归一（2026-10-08）
 
-**用户交办**：MuMu 自带的应用商店里搜不到得物 ⇒ 新增一个得物 APK 入口，点了能下到本机，
-旁边提示「把这份 apk 挪到模拟器那里就可以」。**用户拍板**：① **随 App 一起打包进安装包**；② **再加「装进模拟器」**。
+### 地址与部署（2026-10-08 更正）
+- ★★ **能用的是平台静态托管（云沙箱）**：`https://dcf9a696225c47818c3b56816ae8b19e.app.workbuddy.host`
+  —— HTTP 200 + `text/html; charset=utf-8` + **无 `Content-Disposition`** ⇒ 浏览器打开**就是网页**。
+  实测页面 **22519B**、`vendor/supabase.js` **217945B**，与本地 `board-site/` **逐字节一致** ⇒ **已是最新那版**（含「打开即看」）。
+  真浏览器端到端验成：`_board-autoconnect-check.mjs`（无头 Chrome + CDP，**全新 profile、一次都不点**）
+  → 「已连接 · 199 条」、KPI **139 / 44% / 机器 1**、页脚写明折叠 17 条 + 60 条未计入；截图 `_公网看板-打开即看.png`。
+  ★ 部署工具返回的 `sandboxId` **就是**这个地址本身 ⇒ 确认该地址确实是这套部署产物。
+- ✗ **COS 那份不能当网站**：`.../board/index.html` 在浏览器里**强制下载**（响应头 `x-cos-force-download: true`）。
+  10 次实验全失败：对象头 `Content-Disposition: inline` / 改后缀 / 去后缀 / 大写后缀 / 改 `Content-Type`（含 `application/xhtml+xml`）/ 开静态网站域名。
+  ⇒ COS 默认域名对 HTML 一律拦，**只有绑自有域名 + CDN（要备案）**才能预览。**那份只当备份，禁发人。**
+  （为测试开的静态网站设置已**撤回**，桶里没留无用配置。）
+- ★ 更正上一版记录：`workbuddy_cloudstudio_deploy` 会偶发报 `fetch failed`，**但内容确实传上去了**
+  ⇒ **别据报错判定「没部署」**；判据永远是**公网拉回逐字节比对**。
+- 重新部署：改 `web/board.html` → 逐字节复制到 `E:/WORKBUDDY/2026-09-30-17-35-35/board-site/index.html`
+  （+ `vendor/supabase.js`）→ 用部署通道再传一次。产物是纯静态两文件，丢任何静态托管都能跑（兜底）。
 
-### 事实（从 APK 的二进制 `AndroidManifest.xml` 里读出来的，不是按文件名猜）
-`vendor/dewu/dewu_6.0.5.apk` · 133,315,131 B · md5 `50092bccb263498a16e4fbb57762ae5f`；
-包名 `com.shizhuang.duapp` · versionName **6.0.5** · versionCode 1140 · compileSdk 35；
-**只有 `arm64-v8a` / `armeabi-v7a`（没有 x86_64）** ⇒ MuMu 12 靠自带的 ARM 兼容层跑，
-`adb install` 不看 ABI ⇒ **「装上但打不开」第一嫌疑就是这条，不是包坏了**。
-★ 来源是本机已有的两份同 md5 副本，**没跟得物官方渠道对过**（md5 只证明"没被换过/没坏"，不证明出处）。
+### ★★ 打开即看（2026-10-08 第二轮 · 用户截图反馈「为什么还要设置」）
+- **根因**：引导段原为 `if(cfg.url && cfg.key) connect(); else { 显示设置卡片 }`，而 `cfg` 来自
+  **localStorage（新访客必然为空）** ⇒ 第一次打开**只看到空的「连接设置」卡片、不取数**。
+  一个零配置的只读看板被加了道「先点一下」的门槛；上一轮交付把「点一次就行」说成正常步骤，是错的。
+- **改法（只动 `web/board.html` 一个文件）**：
+  ① 引导一律 `connect(false)`（本机存过的 → 内置的）；② `#setupCard` / `#btnSetup` 默认 `hidden`；
+  ③ **自动连不写 localStorage**（只有手点保存才 `connect(true)` 落盘）——否则换项目时**本机旧值会盖住新内置值**，
+     表现是「显示已连接、数字却是旧库的」，不报任何错；
+  ④ 连不上 / 读不到 ⇒ `showSetup(msg)` 自动露出并写明原因；⑤ 网址加 **`#setup`** 手动打开，
+     且 `setupPinned` 保证**连上成功后不把它收走**（第一版漏了这条，连上就无条件收起会顶掉手动打开的面板）。
+- **判据（断言）写进 `tools/cloudtest.js` H 组**（+4 条）：无条件自动连 / 首屏无设置卡片与按钮 /
+  自动连不写 localStorage / 有 `showSetup` 出口。
+- ★★★ **本轮反向验证抓到的假绿（通用教训）**：判据写成 `/function\s+showSetup/` **缺词边界** ⇒
+  把函数**改名成 `showSetupX`** 照样命中、破坏抓不到。**凡「断言某函数存在」必须写 `/function\s+name\s*\(/`**。
+  改成 `\s*\(` 后该条才红（`_bv-autoconnect.mjs` 4/4 抓到）。⇒ 已同步进技能 `bilateral-fix-verification`。
+- **自证**：真浏览器 15 项 0 失败（含**正向对照**：把地址改坏 ⇒ 设置自己露出来，证明首屏藏起来不是代码没跑）；
+  cloudtest **87 项** 全绿；全量回归 **18 套 / 1720 项 / 0 FAIL**；线上 22519B 与本地逐字节一致。
+
+### 根因：同一台电脑在云上变成两台
+- `cloud.machineId` 原为**随机** UUID，存 `config.json`；
+- `tools/config-portable.js` 的 `RESET` 表**按设计**把 `cloud.machineId` 置空（防两台机共用 id）；
+- **同一台机**重新导入 ⇒ 生成**新**随机 id ⇒ 唯一键 `(machine_id, ts, seq)` 拦不住旧数据 ⇒ **整本台账以新 id 重推一遍**。
+- 真库实测（2026-10-08）：369 行 / 189 项唯一工作 / **178 项**被 `m_ce61ca24` 与 `m_fb6e1a86`（同名 WIN-6H81015PUR6）重复上报。
+- 修：`cloudsync.js` 加 `machineFingerprint()`（读 `HKLM\SOFTWARE\Microsoft\Cryptography` 的 MachineGuid，`reg query`，超时 4s，读不到回空串）+
+  `idFromFingerprint(fp)` = `m_` + `sha1('bluev|'+fp).slice(0,8)`。**machineOf 的顺序：配置有 id 就照用（绝不迁移）→ 没有则按指纹派生 → 指纹读不到才随机**。
+- ★ 迁移已有 id = 再产生一批重复 ⇒ 明确禁止。（`m_ce61ca24`/`m_fb6e1a86` 已落云，靠看板按机器名合并展示。）
+
+### 看板口径（web/board.html）
+- `isReal`：**只认「发布成功 / 失败」，且 `!isProbe(r)`**。
+  ★ 判据**不能只看 result**：建库 4 条探针里**有 3 条 result 就是「发布成功」** ⇒ 只看 result 会把「机器数」从 1 撑成 2（渲染验收发现的）。
+  `isProbe` = `machine_id === '__probe__conn__'` 或机器名含「探针」。
+- `dedupe`：按「机器名 + ts + 篇号 + 批次 + 款 + 结果」折叠（防换 id 后重推的重复行）。
+- `mkey` = 机器名（退 machine_id）；机器数与筛选都按它算，表格标注「含 N 个机器标识，已合并」。
+- 成功率分母 = **真实完成条数**（不许用含模拟/探针的总行数）。
+- 模拟 / 探针行**仍留在「最近明细」**（灰色 `chip wait` 标「模拟 / 探针」），页脚明示「另有 N 条未计入」⇒ 不藏数据、也不冒充发布。
+- 前后对比（真库同一时刻）：已发布 367 → **137**；成功率 33% → **43%**；机器 3 → **1**；款进度 59% → **19%**（虚高 3 倍是最危险的）。
+
+### 自证（可复算）
+- `tools/cloudtest.js`：57 → **71 项**（新增 I 组：口径函数抠出来**真跑**的行为级断言 + 正面/反面口径断言 + 机器标识断言）。
+- 全量回归 `node tools/run-all.js`：**18 套 / 1684 项 / 0 FAIL**（加完「界面删除」的负向断言后为 **1692 项**；
+  再本轮加完「打开即看」4 条后为 **18 套 / 1720 项 / 0 FAIL**，cloudtest 单套 **87 项**）。
+- 逐条破坏反向验证：`_bv-board.mjs` **9/9 能红**（B1 去去重调用 · B2 去重函数失效 · B3 模拟算真实 · B4 机器数按 id · B5 成功率旧公式 · B6 mkey 改 id ·
+  B7 id 改随机 · B8 已有 id 也重派生 · **B9 去掉「探针不算真实」半句**）；还原逐字节一致、还原后全绿。
+- **真实浏览器渲染验收**：`_render-check.mjs` —— 无头 Chrome 打开页面 + 真库 369 行**本地桩回放**，渲染出「137 / 43% / 机器 1」，页脚写明折叠 178 条、54 条未计入；截图 `_看板渲染-修正后.png`。
+
+### App 界面「云端协作」整块删除（2026-10-08 下午 · 用户要求）
+- 用户原话：「默认开，这个部分直接删了，不用给任何人看到」⇒ **删界面，不删功能**。
+- 删：`app.js` 高级设置里整块（控件 / 状态行 / 导出导入弹窗逻辑，**8585 字符**）+ `index.html` 的 `#cmodal` 容器（**整段移除，不是藏**）
+  + `preload/index.js` 5 个 `cloud:*` 通道 + `ipc.js` 5 个 handler。
+- **不动**：`cloudsync.js` 上行链路、`cloud.enabled: true` 出厂默认、`clouddefaults.js` 内置地址 / anon key ⇒ **各机器照样上行**。
+- 残留校验：`云端协作` / `cloud:test` / `cloud:sync` / `cloud:exp` / `cloud:imp` / `id="cmodal"` / `#cloudState` / `#cloudEff`
+  在 `src/renderer` + `src/preload` **命中全 0**。
+- ★★ **踩到的坑**：`uicheck` 里原有一条**正向**断言「云端配置弹窗必须挂在 `.app` 外面」——弹窗删了它必然红。
+  ⇒ 删掉这条**已不适用**的断言，并**保留**它后面「说明书弹窗」断言仍在用的 `idxHtml`/`iLines`/`appOpen`/`appClose` 四个变量
+  （写成 `_fix-uicheck-stale.mjs`：先全校验锚点唯一 + 行距 + 必需内容仍在，全过才落盘，兼容 CRLF）。**这是换判据，不是把红的改绿。**
+- 自证（实测）：全量回归 **18 套 / 1692 项 / 0 FAIL**（`uicheck` PASS 244、`cloudtest` PASS 83）；改动文件 `--check` 通过、**仍是纯 CRLF**。
+- ★ `tools/uicheck.js` **不能用 plain node 跑**（它 `require('electron').app.setPath`，报 `Cannot read properties of undefined`）⇒ 必须走 `tools/run-all.js`。
+
+### 沙箱里跑无头 Chrome 的两个坑
+- **必须加 `--no-sandbox`**：否则 `Page.navigate` 报 `net::ERR_ABORTED`、页面停在 `about:blank`（localStorage 还会 Access denied）。
+- **Chrome 连不上外网/COS**（TLS 代理被拦；curl 走同一代理却通）⇒ 渲染验收改用「本地 HTTP 桩 + 真数据回放」，并在结论里如实标注这一边界。
+- 走 CDP 的方式：`--remote-debugging-port` + Node 内建 `WebSocket`（Node 22 有全局 WebSocket），无需 puppeteer。
+
+---
+
+## §CG 2026-10-08：模型配置搬进「文案生成 → 模型配置」弹窗（**唯一**模型入口）
+
+用户原话：「这里新增一个模型配置，**后续模型调用都通过这个口子来**，设置里的模型直接删了。
+这个页面做成**弹窗制**，并且**可设置默认模型，第一次填写后，后续默认选用这个**。」
+
+### 落点与口径（会被反复引用的四条）
+
+1. **唯一入口**＝「文案生成」页页头、「提示词配置」**左边**那个 `模型配置` 按钮（`data-act="copy:model"`）。
+   原来在「设置 → 高级设置 → 文案模型」的整块 **已删**。★ **不许在别处再放第二份能改 `copy.llm.*` 的控件** ——
+   两处能改同一个键，改完谁生效就说不清了。
+2. **`canAdmin()` 门控**（只给管理员渲染 + `lm:save` 里再拦一道）：它原来住在**仅管理员可见**的「高级设置」里，
+   搬过来不顺手开放给所有操作员（改的是全公司共用的接口地址与 Key）。uicheck 跑在 `BLUEV_NO_LOGIN=1`
+   ⇒ `canAdmin()` 恒 true，所以自检里它照常渲染。
+3. **空串要显式写下去**（`lm:save` 里 `endpoint/apiKey/model` 都按表单值写，含空串）：
+   `store.set` 是 **mergeDeep**，「不写这个键」≠「清空它」⇒ 靠「不写」留空会永远擦不掉上一次填的值。
+   留空写 `''`＝「跟随内置」，正是 `copywriter.cfgOf()` 认的那套。
+4. **`args` 覆盖**：`copy.llmmodels`（拉清单）与 `copy.llmtest`（自检）都允许 `args.endpoint/apiKey(/enabled)` 覆盖，
+   因为它们要测/拉的是**表单里刚填、可能还没保存**的那套；读旧配置会得出骗人的结论。
+   ⇒ `copytest.js` 里 `jobs.run('copy.llmtest', {})` 不传 args 时行为不变（向后兼容）。
+
+### 主进程 / IPC 新增
+
+- `jobs.js`：任务 `copy.llmmodels`（拉模型清单）。用 `copywriter.listModels()` + `imageCapability()`，
+  返回 `[{id,name,image}]`；**拉不到返回 `listErr` 而不抛**（有些网关就没有 `/models`）。清单拉不到不是死路：
+  弹窗里的「默认模型」框本来就能手填 id。
+- `ipc.js`：通道 `llm:effective`（**本地解析、不联网**）= `copywriter.cfgOf()` 的安全子集，
+  ★ **只回 `apiKeySet` 布尔，不回明文 key**。它是「留空＝跟随内置」在弹窗里的**唯一可见出口**
+  （与云端那行 `#cloudEff` 同一条理由：界面显示的必须是真值，不许空框骗人）。
+
+### 为什么要「拉取清单」这一步
+
+用户常填**显示名**（`deepseek v4.1 flash`），接口只认自己的 id —— 实测直接 HTTP 400
+（`The supported API model names are deepseek-flash, deepseek-v4-pro, ...`）。
+点清单里的一项是**接口自己的 id**，不用人背；存进 `copy.llm.model` 后所有调用都读它
+（＝用户说的「第一次填写后，后续默认选用这个」）。实测真拉到 2 个：`deepseek-flash`（支持看图）/ `deepseek-v4-pro`（不看图）。
+
+### 自证
+
+- `tools/uicheck.js`：**248 项全绿**。新增 7 条 —— 按钮位置（`#head .act` 里、在「提示词配置」左边）/
+  点它开弹窗且字段齐 / 「实际在用」是真值 / `llm:effective` 无明文 key / 改默认模型→保存真落盘且弹窗自关 /
+  拉清单不静默失败 / **负向**：高级设置整块不再有 `copy.llm.*` 与旧 `copy:llmtest`。
+  ★ 折叠块计数 **5 → 4**（搬走一块后计数不改会**假红**）。
+- 全量回归 `node tools/run-all.js`：**18 套 / 1683 项 / 0 FAIL**。
+- 真窗口截图 4 张：`_交付/model-config/shots/`。
+
+### 两条坑（自检环境踩的）
+
+1. **页头动作按钮在 `#head .act` 里，不在 `#pane` 里**。断言写成 `#pane.querySelector('[data-act="copy:model"]')`
+   ⇒ 4 条**假红**（`btn:false`）。`#pane` 只是页面正文。
+2. **注入 `executeJavaScript` 的模板串里别写 `\s` 这类转义**：外层模板串会把未知转义的反斜杠吃掉
+   （`\s` → `s`）⇒ 正则静默变味、还不报错。要比对就看子串，别做空白归一。
+
+---
+
+## §CH 2026-10-08：设置页 HEIC「可用」是**假绿** ⇒ 改成写死的「不可用」（`imaging.hasHeif()` 恒 false）
+
+**起因**：用户圈出「外部依赖」里 `HEIC 解码 · libheif（sharp 预编译）` 的徽章「可用」，
+问「为啥是可用不是内置？新设备打开是不可用要怎么办？」
+
+**根因**：判据原来是 `function hasHeif() { return engine === 'sharp'; }` ——
+只证明 sharp 原生模块**加载成功**，**从没探测过能不能解 HEIC** ⇒ 面板那枚「可用」是假绿。
+（另外「可用 / 内置」不是同一套词：那一列每行各自写死徽章，`内置` 是「随包带了」，`可用/不可用` 是运行时探测。）
+
+**实测（sharp 0.33.5 预编译，全部可复算）**：
+- **包内那份 dll = 源码那份**：`@img/sharp-win32-x64/lib/libvips-42.dll`
+  与 `@img/sharp-libvips-win32-x64/lib/libvips-42.dll`、以及 `dist` / `dist-new` 的副本，
+  三处 **sha256 前 16 位完全一致 `92076cb17f3b11bb`**（18.1 MB）⇒ 用户机器上跑的就是被测那份。
+- **真样本**（`ftyp = mif1 / heic / hevc`，1280×854）：`metadata()` 能读、`compression=hevc`；
+  **真解码必报** `heif: No decoding plugin installed for this compression format`。
+- **符号扫描**：该 dll 里 `de265` 命中 **0**；正向对照 `aom=41`、`vips=2387`、
+  `libjpeg/libpng/libtiff/libwebp` 全在，且自带 `heic/avif load/save with libheif: true`。
+- **正向对照**：同一个 libheif 读写 AVIF(av1) 完全正常（写 302 B → 解出 293 B jpg）
+  ⇒ 通路没坏，**只带 AV1 解码、不带 HEVC 解码器（libde265）**。
+- `sharp.format.heif.input.fileSuffix === ['.avif']`；`heif({compression:'hevc'})` 连**编码**都报
+  `heifsave: Unsupported compression`。
+- 官方文档同口径：HEIC 需「globally-installed libvips compiled with support for libheif, libde265 and x265」
+  —— 预编译版**因专利不内置**。
+⇒ **与机器无关**：换新设备照样解不开。（新设备真出现「不可用」只有一种额外情况：
+`require('sharp')` 整体失败 ⇒ **面板第 1 行会同时变「纯 JS 降级」**，用这条区分。）
+
+**改动（未提交）**：
+1. `imaging.js` `hasHeif()` → **恒 false**（函数名保留，语义从「引擎在不在」改成「HEIC 能不能解」）。
+2. `renderer/app.js` 该行**写死**：`['HEIC 解码', '不可用 · HEIC 需先转 JPG', ['warn','不可用']]`；
+   同处第 907 行的「（含 HEIC）」删掉（它与下一行直接打架）。
+3. `compliance.js` action 文案 →「需先转 JPG（本工具不含 HEVC 解码器）」
+   （不再提 sharp/libheif，免得让人以为「装个 sharp 就行」）。
+4. `main/index.js` 启动那条 `warn` → `info`（恒 false 后每次启动都成立，它是**固定事实不是故障**）。
+5. 文档同步：`README.md`（删掉「Windows 上 HEIC 转 JPG 可用」）、`AGENTS.md`、
+   `docs/WINDOWS-E2E.md`、`docs/HANDOFF-NEW-MACHINE.md`。
+6. `tools/smoke.js` **加强断言**（原来那条是假绿，见下）。
+
+**★ 断言加强（可复用教训）**：原断言
+`fx.rows.some(r => r.file === 'x.heic' && r.status === 'manual')` ——
+「**试了一下、失败了**」同样会变 `manual` ⇒ 在 `engine==='sharp'` 的机器上照样绿，
+**区分不了「预判人工」与「撞墙失败」**。新断言同时钉三件事：
+`status==='manual'` **且** action 含「需先转 JPG」**且** result **不含**「处理失败」。
+
+**★ 反向验证（双向）**：把 `hasHeif()` 临时改回 `engine === 'sharp'` ⇒
+`FAIL · manual · 转 JPG · 处理失败：Input file contains unsupported image format`，
+且 `处理完成：… 失败 1`（多跑一次无谓转换）；还原后
+`PASS · manual · 需先转 JPG（本工具不含 HEVC 解码器） · （无 result）`，`失败 0`。
+备份用 `cp` 到 `/tmp`、跑完 `cp` 回（**禁 `git checkout`**）。
+
+**回归**：全量 18 套 **1684 项全绿**（含 smoke 42）。
+⚠ 工作树里有**另一路会话**的在制品（`cloudsync.js`/`jobs.js`/`ipc.js`/`uicheck.js`/`app.js` 等 12 个文件），
+`app.js` 里我的只有 2 行、另有他路 200+ 行 ⇒ **本次全量回归的基线不干净**，归因只看我这条线。
+
+**★★ 通用坑**：本沙箱里 `strings` 输出 **0 行**（读不出来）⇒ 用它证明「dll 里没有 libde265」会**假通过**（空==空）。
+负向断言必须配**正向对照**，并改用 Python 直接扫字节：`re.findall(rb'[ -~]{4,}', d)`。
+
+## §CI 2026-10-08：云端同步「失败可诊断」三处修复（`cloudsync.js` + `cloudtest.js`）
+
+**背景（先查出来的根因，不是猜的）**：失败**不在云端**，在本机代理。`FlClashCore.exe`（TUN + fake-IP）一断
+⇒ 所有域名都解析成假的 `28.0.0.x`（supabase → `28.0.0.116`）⇒ App 的 `fetch` **不读代理环境变量**（`HTTPS_PROXY` 指到死端口照样 200），
+是直连假 IP ⇒ 必然 `fetch failed`。代理回来同步自愈。
+「时不时冒一条」= **一次中断的回响**：`syncOnce()` 只在**有待上行**时才联网（故总在发布后），失败按
+`intervalSec × 2^fail` 退避 **60→120→240→300s**，**每重试一次多一条日志**。
+当时数据没丢：本地台账 184 行 / 游标 184 / 云端本机 184 条，三条对齐；GET 24/24、真 POST 12/12 全绿、重发已存在行条数不变。
+
+**三处修复（已落地，未提交）**：
+1. `describeErr(e)`（**纯函数，导出给断言直接打**）：把 `e.cause.code`（`ENOTFOUND`/`ECONNRESET`/超时）/ HTTP 状态拼进消息
+   ⇒ 不再只留六个字 `fetch failed`。
+2. 失败**落盘**：`errorLogFile()` = `store.get('paths.output')/cloud-sync-errors.log`；`appendErrorLog()` 包 `try/catch`（**best-effort，绝不因日志抛错影响同步**）。
+   原因：`logbus` 只进内存，而下一次成功会把 `lastError` 清掉 ⇒ 不落盘就**永远无法复盘**。
+3. 「无待上行」那一轮也清 `lastError`（`fail=0 / nextTryAt=0`）⇒ 旧的红色标记不再永远挂着。
+
+**顺手修掉的两个真缺陷（都是「假绿」类）**：
+- 失败日志里的 `pending` 取到了 `pending()` 的 **3 秒缓存** ⇒ 会写出**假数字**；改用本轮已读的 `ledgerRows` 现算（`?` 表示读不到，不编）。
+- `status()` **根本没有 `fail` 字段**，而断言引用了它 ⇒ **`undefined === 0` 为假**这种「空==空」风险；改成按真实字段断言。
+
+**数字（可复算）**：`node tools/cloudtest.js` = **83 PASS / 0 FAIL**；
+**5 条定点破坏条条精准打红**（`_定点破坏-云端失败可诊断-5条.txt`），还原后回 83/0；
+真实网络错误（`*.invalid`、连死端口）上 `describeErr` 输出确实多出原因。
+全量 `tools/run-all.js` 17 套 **1692 通过**，唯一红是 `uicheck` 里一条**别路会话自己**的死断言
+（同一文件既断言「`#cmodal` 必须在 index.html」又断言「必须已删」⇒ **不可能同真**），对方 15:24 自删；复跑 **uicheck 244/0**。
+
+**★★ 两条新坑**：
+- **CRLF**：`tools/uicheck.js` 是 CRLF 文件（2270 CRLF / 0 LF）。用 LF 锚点做定点替换会把**整文件**行尾改写
+  ⇒ 脚本必须 `split('\r\n')`、拼回后**断言「纯 LF 数 = 0」**。
+- **先把校验做完再落盘**：定点替换脚本（`_patch-uicheck.js`）先验锚点唯一 + 行距 + 内容指纹，全部通过才写；
+  这次正因此，在**别路会话刚改完该文件**时脚本**命中 0 次直接退出**，没写出半个字
+  —— 否则会把对方刚做的修复整片覆盖。
+- 判「只复跑一套够不够」的依据：`git status` 里 **14:48（上次全量）之后只有 `tools/uicheck.js` 被改过**。
+
+### §CI-1 ★★★ 「本机没有云端隔离开关」—— 探针会打到线上库（2026-10-08 实测事故）
+
+**规则**：任何拿**真代码路径**跑 `syncOnce()` 的测试/探针，在**本机**都会打到**线上生产库**。
+因为 `cfgOf()` / `explicitOf()` 读的是 **`store.get('cloud')` 整个对象**，
+而「配置留空 ⇒ 回退到内置地址」（为「装上就能连」而设）。
+
+**正确隔绝做法**（唯一可靠）：
+```js
+const store = require(ROOT + '/src/main/store.js');
+const realGet = store.get.bind(store);
+store.get = (k) => (k === 'cloud' ? { enabled: false } : realGet(k));
+// enabled:false ⇒ syncOnce() 第一段就 return { ok:false, skipped:'未启用' }，一个网络包都不发
+```
+★ **只 patch `cloud.url` 不够** —— 实测这么写之后 `url` 回退内置真地址，同步**真成功**（`uploaded:2`），把演示数据写进了线上。
+
+**事故实况（就是踩了上面这条）**：线上 `publish_log` 多出 **id 418 / 419**（`item_id` DEMO1/DEMO2，
+`ts` 1760000000001/2 ⇒ 落在 **2025-10-09**）。**删不掉**：anon 发 DELETE **HTTP 200 但影响 0 行**
+（RLS 静默拦截 ⇒ **报 200 的假成功**，判「删没删」必须**复查行数**，不能只看状态码）；
+本机全盘扫 JWT 的 `role` ⇒ **只有 anon，没有 service_role**。清理语句：`_待清理-云端误插2条-418-419.sql`。
+⇒ **建议在 `cfgOf()` 加测试开关**（如 `BLUEV_CLOUD_OFF=1` ⇒ 当作未启用），别靠「记得拦对键」。
+
+**另两条隔离事实（易记反）**：
+- 纯 Node 下 `require('electron')` 返回**字符串** ⇒ `dataDir()` 落到 `%TEMP%/dewu-bluev-publisher-test`
+  ⇒ **游标/状态文件是隔离的**（安全）。
+- 但 **`store` 在纯 Node 下读的是真实 `userData/config.json`** ⇒ `store.set` 会写真实配置
+  （`cloudtest` 靠跑完还原），且 **`errorLogFile()` 默认指向真实素材输出目录**
+  ⇒ 演示/探针必须把 `paths.output` 也重定向到临时目录。
+
+---
+
+## §CJ 2026-10-08：**得物 App 安装包随包内置** ＋ 设置页「下载到本机 / 装进模拟器」
+
+**起因（用户原话）**：「因为 MUMU 模拟器应用无法搜到得物 app，在这里新增一个得物 APK 的下载文件，
+用户点击下载即可下载到本地，然后你在旁边提示，把这份 apk 挪到模拟器那里就可以」。
+**用户当场拍的两个板**：① 得物 APK **随 App 一起打包进安装包**（不是远程下载）；
+② 除「下载到本机」外**再加一个「装进模拟器」**，并追问「如果用户模拟器本身就有这个 app，这个按钮还能用吗」。
+
+### 事实（从包本身读出来的，不是按文件名猜）
+| 项 | 值 |
+|---|---|
+| 文件 | `vendor/dewu/dewu_6.0.5.apk` · **133,315,131 B** · md5 `50092bccb263498a16e4fbb57762ae5f` |
+| 包名 / 版本 | `com.shizhuang.duapp` · versionName **6.0.5** · versionCode 1140 · compileSdk 35 |
+| ABI | 只有 `arm64-v8a` / `armeabi-v7a`（**没有 x86_64**）⇒ MuMu 12（x86_64）靠 **ARM 兼容层**跑；`adb install` 不看 ABI ⇒ **"装上但打不开"第一嫌疑就是这条** |
+| 来源 | 本机上已有的两份同 md5 副本（`C:\Users\Administrator\WorkBuddy\2026-09-18-19-34-22\dewu-kol\dewu_6.0.5.apk`、`E:\WORKBUDDY\2026-09-22-18-26-20\dewu_pcap\dewu.apk`）★ **没跟得物官方渠道对过**（md5 只能证明"没被换过/没坏"，证明不了出处） |
+
+读法（`.apk` 里的 `AndroidManifest.xml` 是**二进制 XML**）：按 AXML 解析 —— 文件头 8 字节 →
+字符串池 chunk（`0x0001`，UTF-16LE）→ start-element chunk（`0x0102`）：`ResXMLTree_node` 头 16 字节，
+`attrExt` 从 `p+16` 起（`ns(4) name(4) attributeStart(2) attributeSize(2) attributeCount(2)`），
+**属性起点 = `p+16+attributeStart`**（第一版写错成 `p+32` ⇒ 读出来一堆 `?`）；每条属性 20 字节
+（`ns(4) name(4) rawValue(4) typedValue{size(2) res0(1) dataType(1) data(4)}`）。
 
 ### 三条行为红线（`src/main/services/dewuapk.js`）
-1. **已经装过就一条 `install` 都不发** —— 得物里是登录状态 + 本地草稿；只回报设备上的版本
-   （`dumpsys package <pkg> | grep -m1 versionName`，设备端先筛）。覆盖重装必须用户显式点
-   ⇒ 才走 `install -r -d`（`-d` 允许降级，**只在这一步**）。
+1. **已经装过就一条 `install` 都不发** —— 得物里是登录状态 + 本地草稿；
+   只回报设备上的版本（`dumpsys package <pkg> | grep -m1 versionName`，**设备端先筛**）。
+   真要覆盖必须用户显式点「覆盖重装」⇒ `install -r -d`（带 `-d` 允许降级，**只在这一步**）。
 2. **装完必须回读** `pm list packages`（`adb install` 说 Success 不算数）。
-3. **读不出来 ≠ 没装**：`deviceState()` 返回 `installed=null`，不许当 `false` 一路装下去。
+3. **读不出来 ≠ 没装**：`deviceState()` 返回 `installed=null`（未知），不许当 `false` 一路装下去。
 
-### 改动面（漏一处就是半拉子）
-`vendor/dewu/`（新）+ `vendor/README.md` §4 台账 + `package.json` `build.extraResources`
-（`vendor/dewu → resources/dewu`，**不进 `files`**）+ `index.js` `setBundledDir` +
-`ipc.js`（`app:info.dewuApk`、`apk:saveDewu`）+ `preload` + `jobs.js`（`publish.installDewuApk`）+
-`app.js`（表那一行 / `apkDesc`·`apkBadge`·`apkBtns` / 三个 `ACTS`）+ `fakeadb` 两个现场开关。
-★ **换 apk 版本要三处同改**：`vendor/README.md` 台账、`dewuapk.js` 的 `FILE`/`BYTES`/`MD5`、`uicheck.js` 的 `prov` 列表。
+### 改动面（漏一处就半拉子）
+- `vendor/dewu/`（新）+ `vendor/README.md` §4（字节数/md5/来源/ABI/许可）；**注意改文件名要三处同改**：
+  `vendor/README.md` 台账、`dewuapk.js` 里的 `FILE`/`BYTES`/`MD5`、`uicheck.js` 的 `prov` 列表。
+- `package.json` `build.extraResources` 加 `vendor/dewu → resources/dewu`（**不进 `files`**：asar 里的东西不能直接用）。
+- `src/main/index.js` `dewuapk.setBundledDir(vendorDir('dewu'))`（漏接＝白内置，同 §CE 的 `setBundled*` 教训）。
+- `src/main/ipc.js`：`app:info` 加 `dewuApk`（只回路径/字节数 —— **md5 要读 133 MB，不许进界面刷新路径**）；
+  新通道 `apk:saveDewu`（`dialog.showSaveDialog` → `dewuapk.saveAs` → **存完回读大小**）。
+- `src/preload/index.js` → `apkSaveDewu`；`src/main/jobs.js` → `case 'publish.installDewuApk'`；
+  `src/renderer/app.js` → 设置页「外部依赖」表那一行（`apkDesc`/`apkBadge`/`apkBtns`，**第 4 项才带按钮**）
+  + 表下提示 + `ACTS` 三条（`apk:save` / `apk:install` / `apk:installForce`）。
+- `tools/fakeadb/adb.js`：`DEWU_ABSENT` / `DEWU_INSTALL_FAIL` 两个现场开关 + `install` **真生效**
+  （装完 `pm list packages` 跟着变）+ `dumpsys package … | grep -m1 versionName` 分支。
 
-### 实测（可复算）
-`tools/adbtest.js` **404 PASS / 0 FAIL**（+12 条，块 ⑰，含"已装⇒0 条 install""新模拟器⇒真装并回读"
-"force⇒`-r -d`""签名冲突⇒如实报错 + 只能先卸载""`installed=null` ≠ false"）；
-`tools/uicheck.js` **254 PASS / 0 FAIL**（+9 条，含**负向对照**：内置目录指空 ⇒ 两枚按钮都灰、状态变「缺」；
-**全链路活体**：真点「装进模拟器」⇒ 没设备时主进程回「还没选设备」）。
-★ **本轮没有真机验证**（MuMu 的 Android VM 没起、`adb devices` 空）——不许声称"已在模拟器上装过"。
+### 实测证据（可复算）
+- `tools/adbtest.js`：**404 PASS / 0 FAIL**（本轮 +12 条，块号 ⑰）。★ 踩坑：夹具里 `install` 会**真生效**，
+  「新模拟器（没装）」那条**必须排在 force 装之前** —— 第一版顺序反了，报 `already` 红了一条。
+- `tools/uicheck.js`：**254 PASS / 0 FAIL**（本轮 +9 条；含**负向对照**：内置目录指到空目录 ⇒ 两枚按钮都灰、
+  状态变「缺」；**复原自证**；**全链路活体**：真点「装进模拟器」⇒ 没设备时主进程回「还没选设备」）。
+- 本轮**没有真机验证**：跑的时候 MuMu 的 Android VM 没起（`adb connect 127.0.0.1:16384` 被拒），
+  `adb devices` 空 ⇒ 「真的装进模拟器」只有假 adb 的行为级证据，**没在真模拟器上装过一次**。
 
 ### 代价（已跟用户讲清）
-安装包 108.7 MB → **约 236 MB**；electron-updater 整包下载 ⇒ **以后每次自动更新都要多下这 127 MB**。
-合规：得物 App 是第三方商业应用，**按"公司内部装机使用"放进来**；对外分发前先解决授权（同 §3 ffmpeg GPL 那条）。
+- 安装包 **108.7 MB → 约 236 MB**（+127 MB；NSIS 压不动 apk，它本来就是 zip）。
+  electron-updater 是**整包下载** ⇒ **以后每次自动更新都要多下这 127 MB**。
+- 仓库里 `vendor/` 从 88 MB → 约 216 MB（`.gitignore` 的注释明确说"大二进制别进 git 历史"，但
+  `vendor/` 是既有例外：adb/ffmpeg 都在 git 里，为的是"新机器 clone 完就能打包"）。
+- 合规：得物 App 是第三方商业应用，**按"公司内部装机使用"放进来**；对外分发前先解决授权（同 §3 ffmpeg GPL 那条）。
+
+## §CK 2026-10-08：「记住最后一次选的皮肤」——本来就实现了；补掉**退出丢盘**这个真洞
+
+用户要求：「记住用户最后一次选择的皮肤，后续打开均默认为最后一次选择皮肤项」。
+
+### ① 这条**本来就在生效**（先查证、别急着改）
+
+| 位置 | 干的事 |
+|---|---|
+| `src/main/ipc.js` `theme:set` / `theme:toggle` | 切完 `store.set({ ui: { theme: s } })` |
+| `src/main/index.js` `whenReady` | **建窗口之前**先 `winmod.applyStoredTheme()` |
+| `src/main/window.js` `theme()` | 真值走 `theme` 字段（`light/dark/glass`） |
+
+真机实测（临时 userData + 点顶栏**真图标**）：light → 点玻璃 → `theme()={theme:glass}`、
+`config.json="glass"`、`html class=glass`；**关掉再开 = 仍 glass**。
+★ 另读**用户本机真实配置**（只读）：`%APPDATA%\dewu-bluev-publisher\config.json` 里
+`ui.theme="dark"` ⇒ 持久化在他机器上本来就在跑。**别把「已实现」当成「没做」重做一遍。**
+
+### ② 真会丢的场景：**切完皮肤马上关窗口**（已修）
+
+根因：`store.set` 不直接写盘，只排一个 **250ms 防抖定时器**（`store.scheduleSave`），
+而**进程退出不会等它**。原来 `before-quit` 里的兜底 `store.set({})` 是**假兜底** ——
+它只是把同一个定时器再排一次。实测（真机、同一步操作）：
+
+| | 点「玻璃」→ **60ms** 后退出 | 磁盘 `ui.theme` |
+|---|---|---|
+| 改前 | 复现 | **`"light"`（丢）** ❌ |
+| 改后 | 同一步 | **`"glass"`** ✅ |
+
+**修法（3 个文件，全局部替换）**：
+- `src/main/store.js`：抽出 `writeNow()`，新增 **`flush()`**（`clearTimeout` + 当场 `writeFileSync`）并导出。
+- `src/main/index.js`：`before-quit` → **`store.flush()`**。
+- `tools/uicheck.js`：**+2 条**断言 —— ①**行为级**：`set` 后（防抖窗口内仍是旧值）→ `flush()` → 磁盘必须已是新值；
+  ②**源码级**：`before-quit` 必须是 `store.flush()` 且**不许**再出现 `store.set(`。**两条都要有**：
+  只钉函数不钉调用点 = 白写（本项目踩过）。
+
+### ③ 反向对照（证明断言不空）
+
+逐条破坏前先还原干净源码；还原一律 **临时目录 `cp`，禁 `git checkout`**。
+
+| 破坏 | 结果 |
+|---|---|
+| A：`before-quit` 还原成旧 `store.set({})` | **1 条 FAIL**（正是源码断言），其余 **255 PASS** |
+| B：`store.flush()` 改空函数 | **1 条 FAIL**（正是行为断言：`防抖窗口内=light → flush 后=light`），其余 **255 PASS** |
+
+### ④ 回归与遗留
+
+- `uicheck` **256 PASS / 0 FAIL**（改前 254）；全量 **18 套 1720 项全绿**，exit 0。
+- ★ 跑法：清 `NODE_OPTIONS` / `ELECTRON_RUN_AS_NODE`，**不设** `BLUEV_NO_LOGIN`。
+- **未提交**（树里另有**其它会话**未提交的改动，边界未分）。
+- **同类未修**：窗口尺寸/位置走 `window.js` 自己的 **300ms** 防抖 ⇒「拖完 300ms 内关窗口」仍丢这次尺寸。
+- `app.exit()` / 强杀不经过 `before-quit`，救不回来。
+- 产物：`_皮肤记忆-修复与实测-20261008.md`；备份 `D:\work\_bk-themefix-1791446568`（改前）与 `_bk-themefix-fixed`（改后）；
+  自检输出 `D:\work\_uicheck-{after,breakA,breakB}.txt`、`_runall-after.txt`。
+
+---
+
+## §CN 2026-10-08：**远端从 Gitee 换到 GitHub** ＋ 得物安装包**分卷进仓** ⇒ v1.0.16 已发
+
+### C1 远端（唯一权威值）
+```
+origin = https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git   （GitHub · 私有 · appId 见 package.json）
+推送提交 = 31f988a768755b94c6d1ebbbdba897b3a9961c87（110 条提交，全程历史都在）
+分支 main（已 set upstream）；Gitee 远端已从本地配置移除（远端那份仓库没动）
+```
+- ★ 账号 `wfjdyhmtr2-glitch` = **他本人的号**（本机全局 `user.email` 就是它的 GitHub noreply；
+  同账号下还有他自己的 `poizon` / `cbg-ledger`）。他浏览器里登的可能是**另一个**账号 ⇒
+  「我账号里看不到」的答案就是「你登错号了」。
+- ★ **提交身份 ≠ 推送账号**：提交作者仍是 `张硕 <shawnz2000@outlook.com>`。
+- ★ 建完远端**必须立刻回读 + 把完整 URL 发给他**。私有仓库**不出现在 GitHub 搜索**，
+  而且**空仓库（没推过）看着就像"没建"** —— 只说「建好了」会让他以为没成。
+- 凭据：`~/.git-credentials`（`credential.helper store`）。本机**system 级有 GCM**，
+  仓库级要先 `git config credential.helper ""` 把栈清掉再 `--add credential.helper store`，
+  否则非交互环境会悬停。附设 `http.version HTTP/1.1`、`http.postBuffer 524288000`。
+
+### C2 为什么必须分卷：两边都是「单文件 100 MB 硬墙」
+- Gitee 拒绝原话：`size: 120.666MB, exceeds quota 100MB` —— ★ 它报的是**服务端 gzip 后**的大小。
+  得物包原始 133,315,131 B（127.1 MiB），`gzip -9` 后仍 126,471,554 B（120.6 MiB）⇒ 两条路都越线。
+- **GitHub 是同一个数（100 MiB/文件）⇒ 换站点本身救不了这个包。**
+- 两边差别只在**总量**：Gitee 单仓 500MB 后锁推拉；GitHub 无硬限（>1GB 才提醒）。
+- **Git LFS 走不通**：Gitee 的 LFS 只对付费企业开放（免费版 0GB）。
+- GitHub 侧 >50 MiB 只是 `remote: warning:` **照推不误**（实测 78.96/64.00/63.14 MB 三个文件全成功）。
+- 仓库里另有 **82.8 MB 的 `vendor/ffmpeg/ffmpeg.exe`**，同样只触警告。
+
+### C3 分卷方案（已经落地，别改回去）
+- `vendor/dewu/dewu_6.0.5.apk` → `part01`(67,108,864 B) + `part02`(66,206,267 B) **片段进仓**；
+- ★ **拼出来的单文件在 `.gitignore` 里**（误 add 一次 = 整次推送被拒，且要等到 pre-receive 才报错）；
+- `tools/dewuapk-assemble.js`：`--check` 只验不写 / **幂等**（已完整则报「未改动」）/ 任一片坏 ⇒ `exit=1`
+  且**不留半成品残骸**；拼完 `cmp` + md5 双端核对（**只比字节数不算验**）；
+- ★ 挂在 `dist:win` 与 `dist:win-only` 的**开头**（`assemble:dewuapk`），`tools/run-all.js` 另加一道前置。
+  ⇒ 新机器 `git clone` 下来**直接就能打出带内置包的安装包**。
+- 仓库 `.git`：误提交进历史的那次 reset 会留 127MB 不可达对象（`.git` 涨到 280MB）⇒
+  确认 `git log origin/main..HEAD` = 0 条后 `reflog expire --expire=now --expire-unreachable=now --all && git gc --prune=now`
+  （实测 280MB → 157MB；剩下的是合法的 ffmpeg + 两个 part）。
+
+### C4 v1.0.16 发版事实（2026-10-08）
+| | 值 |
+|---|---|
+| 版本 | `1.0.16`（1.0.15 → 232,660,361 B；1.0.15 是 107,095,416 B） |
+| 正式通道 | `latest.yml` 已 = 1.0.16；sha512 `6qQnBE9K…` 与本地逐字符相同 |
+| 安装包 | HTTP 200 / `application/x-msdownload` / `Content-Length 232660361` = 本地字节数 |
+| beta.yml | **一个字节没动**（仍 `1.0.1-beta.2` / 89,163,860） |
+| 源地址 | `resources/app-update.yml` 与 1.0.15 那份**逐字节相同** ⇒ 没换源 |
+| 回归 | **18 套 1724 项全绿**（工作树一次 + 干净打包快照一次，同结果） |
+| 包内 | `resources/dewu/dewu_6.0.5.apk` md5 `50092bcc…`；asar 2520 条、无 exe/apk/vendor |
+| 老包 | 1.0.15 的 exe/blockmap/latest.yml 归档在 `D:\work\_dist-archive\1.0.15\`（没删，可回滚） |
+
+### C5 ★ 本轮踩到的两个「假警报」坑（都要记进方法）
+1. **负向断言被注释带偏**：判「某功能是否已删干净」时，`/\bcloud:/`、`/按当前素材生成/`
+   把**注释里那句"已删除"的说明文字**也命中了 ⇒ 差点报「没删干净」。
+   ⇒ 必须**先剥注释再判**。★ 而且剥注释本身有坑：`//.*$` 里的 `.` **不匹配 `\r`**，
+   源码是 CRLF ⇒ 注释根本没剥掉。正确写法：先 `.replace(/\r\n?/g,'\n')` 再逐行剥。
+   ⇒ 配**正向对照**（该在的必须在，如 `copy:pickRun`/`copy:model`），否则「全删了」也能全绿。
+2. **`git apply --path` 用 `/d/...` 会被当相对路径**（报 `does not exist in index`）⇒ 传 `D:/...`。
+
+### C6 产物
+- 报告 `_发版报告-v1.0.16-20261008.md`；证据 `_发版证据-v1.0.16-20261008/`（回归×2 / 推送取证 / 包内核对 / 公网核对 / 上传日志 / 打包日志）。
+- `发版流程SOP.md` 已补：1.0.15/1.0.16 两行发布记录 + 1.0.16 核对结果 + 新增 §七「代码远端（GitHub）」。
+
+### C7 ★ 未做 / 要说清的
+- **未验收**：包在这台机器上**没有真跑起来**（只做了静态核对：asar 清单 + 资源 md5 + 源地址比对 +
+  两条回归套件）。「装上去点一遍」仍是你那两步。
+- **本机已装副本的 asar 一个字节没换** ← ★ **这句当天 17:45 被证伪**，见 §CO：实测已装副本
+  **就是 1.0.16**（注册表 `DisplayVersion` / asar `version` / `resources/dewu` md5 三证）。
+  写这句时是照抄了 `HANDOFF-CODEX.md` 里「仍是 1.0.13」的旧断言、**没实测** —— 教训：状态类字段必须现查。
+- SOP 的发布记录 **1.0.2～1.0.15 那段仍缺**（本文件当时没记；1.0.15 那行是今天从公网现拉的）。
+
+---
+
+## §CO 2026-10-08：交接给本机 Codex —— **二次交付必须先复核**（当天旧单 11 项已过期）
+
+**结论**：同机交接 ⇒ **接手方不需要任何材料**；Codex 桌面版**已装且已登录**，代码已在 GitHub，`node_modules` 已在。
+
+### C1 ★★ 二次交付复核清单（照做，每条留实测值）
+1. 远端与 HEAD：`git rev-parse HEAD` **与** `git ls-remote origin refs/heads/main` 两值相等 ＋ `status` 干净。
+   ★ GitHub 不通时（实测 `github.com:443` 会间歇性 `Connection was reset`）改走 API：
+   `GET /repos/<owner>/<repo>` + `/git/ref/heads/main` + `/commits/main`（用 `~/.git-credentials` 里的 PAT）。
+2. **快照 vs 活文档**逐份 `md5sum` —— 一致才叫没过期。本案 4 份根规则**全不一致**。
+3. **每个可核数字逐条实测**：提交数 / 版本号 / 回归项数 / 公网 latest.yml / dist 产物体积 / 归档目录数。
+4. **「本机已装副本版本」别信文档** ⇒ 取**三重独立证据**：注册表 `Uninstall` 的 `DisplayVersion`
+   ＋ `app.asar` 内 `package.json.version`（`asar` 不压缩，可直接 `extractFile`）
+   ＋ `resources/dewu/*.apk` 的 md5。
+5. **维护工具当场自测**（`node tools/config-portable.js selftest`）——「文档说它能用」≠ 现在还能用。
+
+### C2 ★★ 本机事实（2026-10-08 17:45 实测）
+- **已装副本 = 1.0.16**，路径 **`D:\bluevbeta\dewu-bluev-publisher\`**
+  ★ **不是** `%LOCALAPPDATA%\Programs\`（那里只有 Common / WorkBuddy）—— 找它要按「全盘找 `app.asar` / `得物蓝V*.exe`」。
+- **Codex 桌面版已装**：版本 `26.1002.52244`，`~/.codex/`（`auth.json` `config.toml` `skills` `plugins`
+  `.sandbox` `installation_id`），CLI 在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`，
+  `config.toml` 里 `[windows] sandbox = "unelevated"`。**PATH 里没有 `codex` 命令**（桌面版不挂 PATH）。
+- **独立 Node**：`C:\Program Files\nodejs\node.exe` **v24.21.0** 已存在（旧单说"没有"）。
+- **Codex 自动读的入口 = 仓库根 `AGENTS.md`**（不是 README）。
+- ★ **云端版 Codex 能力上干不了这个活**：只认 GitHub 仓库、看不到本机 adb / 模拟器 / `%APPDATA%` 配置。
+  换到 GitHub 只是让"通道"通了，**不代表云端能跑发布链路**。
+
+### C3 交接包要刷新的地方（**未动手，等拍板**）
+`docs/HANDOFF-CODEX.md` §0/§1/§2/§3#7/§4/§6（版本、提交数、回归、公网、产物、归档、本机副本＋安装路径、
+内置依赖加得物分卷）＋ `AGENTS.md` 第 54 行（得物安装包改分卷说明）＋ §六（快照日期）
+＋ **重导出** `docs/knowledge/`（幂等脚本 `bash E:\WORKBUDDY\2026-09-30-17-35-35\_build-knowledge-pack.sh`）。
+⇒ 改文档 ⇒ 必须**连带重导出快照 + 提交 + 推送**，不能只改一处。
+
+### C4 现场两条要转告接手方
+- `config.json` 里 **`publish.mock = true`**（原机是**干跑**）——不说的话接手方以为在真发。
+- `updater/pending/` 里躺着 **1.0.6 的僵尸 pending**（`update-info.json` 还是 1.0.6）——那次更新没装上。
+
+### C5 产物
+`_交接给Codex-同机-复核清单-v2-20261008-1745.md`；旧单已加「⛔ 已被取代」横幅。

@@ -1,6 +1,6 @@
 ---
 name: headless-ui-selftest
-description: 用本机已装的 Chrome/Edge 无头模式，对纯前端页面（单文件 SPA、静态部署的 index.html）做「真实浏览器交互验证 + 视觉验收 + 线上冒烟」；也含「目标是 Electron 应用时改用隐藏窗口 + capturePage」的做法，以及强度再上一档的「真窗口 show:true + 真鼠标（过 elementFromPoint 命中测试）+ 真键盘」验收（含三处模拟不了的明说做法：IME→insertText / 原生 select→focus+方向键 / 原生 confirm→渲染层接管，以及 `debugger.attach` 挂死实测、`show:true` 下 `capturePage` 抛 `Current display surface not available for capture` 要置顶重试、以及"查界面"断言的三种假通过形态与"运行时覆盖"做反向验证）。当用户要求"验证前端交互/点击是否正常""做个预览给我看""点开弹窗/放大/拖拽有没有 bug""不要装 Playwright 也要能自动化测试页面""把界面截图给我看""人在真窗口里手点一遍"时使用。含可复用的三件套脚本模板（预览页生成器 / 浏览器内自检注入 / dump-dom 取结果）、抽真实代码的三种切法（标记切 / 括号配对 / 纯函数抠出来直接 eval，后者快两个数量级且不依赖 Chrome），以及用「断网闸门」（`webRequest` 把非白名单请求全 `cancel`）证明页面**零第三方依赖**——三条断言缺一不可（A 本地资源真加载 / B 全程没往 CDN 发请求 / C 后端数据真渲染），并附「首包比后续慢一个数量级 ⇒ 等待窗口太小会假红」这个实测坑；以及 16 个实测踩坑（含「自检页表格少格子 → 假 FAIL」「结束标记命中起点之前 → 抽空」「数据桩比真实数据宽松 → 假绿」「锚点距离写成字符数 → 假红」「harness 桩跟不上被测函数的新依赖 → 一次假红十几条」五个最误导的坑，以及「怎么测复制才不误判」）；另含「整页长图两遍法」——`--screenshot` 只截视口，要整页必须先量 `scrollHeight` 再按该高度截图（含量高/截图同宽度、单页 ≤3200px 分页、免 Pillow 读 PNG 尺寸）；另含「云沙箱托管（`*.app.workbuddy.host`）的实测边界」——同目录重部署=同地址、109 MB 单文件可托管、**不支持 Range/没有 content-length ⇒ 不能当 electron-updater 更新源**，以及「下载按钮返回 200 但正文其实是回落首页 ⇒ 判据必须落到文件头（PK/MZ）」这个只有**点开每个 tab 真发一次请求**才抓得到的坑，还有「给 Electron 脚本传参要用环境变量、别用位置参数」，以及四处 2026-10-03 实测的坑（新增：**脚本放在子目录里跑 ⇒ `app.getAppPath()` 指向该子目录 ⇒ `app.getVersion()` 变成 Electron 版本、按 appPath 算的内置依赖探测全报「缺」，极易误判成"打包漏带文件"**）：**隐藏窗口 `capturePage` 可能返回"上一帧"（判据是 md5，实测第一次截到的是切页前那一屏）**、**断言失败不影响进程退出码（`app.exit(0)` 会把 `process.exitCode` 覆盖掉 ⇒ 只能数 `^FAIL` 行，别拿 `$?` 判）**、**`executeJavaScript` 与页面同 realm、能直接读写经典脚本顶层的 `const state` / `function renderAll` ⇒ 换掉 `state.auth` 再 `renderAll()` 就能在同一窗口里演"非管理员"，是验权限门控最省事的做法（先存后改、改完必还原、必配正向对照）**。
+description: 用本机已装的 Chrome/Edge 无头模式，对纯前端页面（单文件 SPA、静态部署的 index.html）做「真实浏览器交互验证 + 视觉验收 + 线上冒烟」；也含「目标是 Electron 应用时改用隐藏窗口 + capturePage」的做法，以及强度再上一档的「真窗口 show:true + 真鼠标（过 elementFromPoint 命中测试）+ 真键盘」验收（含三处模拟不了的明说做法：IME→insertText / 原生 select→focus+方向键 / 原生 confirm→渲染层接管，以及 `debugger.attach` 挂死实测、`show:true` 下 `capturePage` 抛 `Current display surface not available for capture` 要置顶重试、以及"查界面"断言的三种假通过形态与"运行时覆盖"做反向验证）。当用户要求"验证前端交互/点击是否正常""做个预览给我看""点开弹窗/放大/拖拽有没有 bug""不要装 Playwright 也要能自动化测试页面""把界面截图给我看""人在真窗口里手点一遍"时使用。含可复用的三件套脚本模板（预览页生成器 / 浏览器内自检注入 / dump-dom 取结果）、抽真实代码的三种切法（标记切 / 括号配对 / 纯函数抠出来直接 eval，后者快两个数量级且不依赖 Chrome），以及用「断网闸门」（`webRequest` 把非白名单请求全 `cancel`）证明页面**零第三方依赖**——三条断言缺一不可（A 本地资源真加载 / B 全程没往 CDN 发请求 / C 后端数据真渲染），并附「首包比后续慢一个数量级 ⇒ 等待窗口太小会假红」这个实测坑；以及 16 个实测踩坑（含「自检页表格少格子 → 假 FAIL」「结束标记命中起点之前 → 抽空」「数据桩比真实数据宽松 → 假绿」「锚点距离写成字符数 → 假红」「harness 桩跟不上被测函数的新依赖 → 一次假红十几条」五个最误导的坑，以及「怎么测复制才不误判」）；另含「整页长图两遍法」——`--screenshot` 只截视口，要整页必须先量 `scrollHeight` 再按该高度截图（含量高/截图同宽度、单页 ≤3200px 分页、免 Pillow 读 PNG 尺寸）；另含「云沙箱托管（`*.app.workbuddy.host`）的实测边界」——同目录重部署=同地址、109 MB 单文件可托管、**不支持 Range/没有 content-length ⇒ 不能当 electron-updater 更新源**，以及「下载按钮返回 200 但正文其实是回落首页 ⇒ 判据必须落到文件头（PK/MZ）」这个只有**点开每个 tab 真发一次请求**才抓得到的坑，还有「给 Electron 脚本传参要用环境变量、别用位置参数」，以及四处 2026-10-03 实测的坑（新增：**脚本放在子目录里跑 ⇒ `app.getAppPath()` 指向该子目录 ⇒ `app.getVersion()` 变成 Electron 版本、按 appPath 算的内置依赖探测全报「缺」，极易误判成"打包漏带文件"**）：**隐藏窗口 `capturePage` 可能返回"上一帧"（判据是 md5，实测第一次截到的是切页前那一屏）**、**断言失败不影响进程退出码（`app.exit(0)` 会把 `process.exitCode` 覆盖掉 ⇒ 只能数 `^FAIL` 行，别拿 `$?` 判）**、**`executeJavaScript` 与页面同 realm、能直接读写经典脚本顶层的 `const state` / `function renderAll` ⇒ 换掉 `state.auth` 再 `renderAll()` 就能在同一窗口里演"非管理员"，是验权限门控最省事的做法（先存后改、改完必还原、必配正向对照）**；另含「外部 Chrome 走 CDP 做渲染验收」（Node 22 全局 `WebSocket`，免 puppeteer）的两条硬坑：**漏 `--no-sandbox` ⇒ `Page.navigate` 报 `net::ERR_ABORTED`、页面停在 `about:blank`（连 localStorage 都 SecurityError）**、**Chrome 走不通系统代理（curl 能通它不通）⇒ 改用本地 HTTP 桩回放真库取回的真数据，并如实标注该边界**。
 agent_created: true
 ---
 
@@ -232,6 +232,46 @@ Electron 项目（主进程 / preload / renderer 三层）没法用 Chrome CLI �
      就是这么绕开的），**不要用 `app.getAppPath()`**；② 想验「用户真实看到什么」就
      **对打包后的 exe 跑**（`app.isPackaged=true` ⇒ 走 `process.resourcesPath`，这才是用户环境）；
      ③ **别把这次的结果当产品缺陷去改代码**。
+
+8. ★★ **隐藏窗口会「冻住」CSS transition —— `backgroundThrottling:false` 也救不回来**（2026-10-08 得物蓝V 实测）。
+   切了一个 class（如换皮肤），**变量已经生效、计算值却还是切换前的** ——
+   因为带 `transition` 的属性停在过渡的**起始帧**不动，看着就像「换了 class 没换皮」，极易误判成业务 bug。
+   同一份预览件、同一时刻、只差「禁不禁过渡」三组对照（`.titlebar{background:var(--panel2)}`，切 `html.glass` 后等 600ms）：
+
+   | 条件 | 计算出的 `titlebarBg` | 结论 |
+   |---|---|---|
+   | 不禁过渡 + `backgroundThrottling:true` | `rgba(246,245,242,0.992)` | 停在**浅色**（起始值）❌ |
+   | 不禁过渡 + `backgroundThrottling:false` | `rgb(247,246,243)` | **照样停在浅色** ❌ |
+   | 注入 `*{transition:none!important}` | `rgba(31,32,40,0.5)` | 玻璃真值 ✅ |
+
+   - **判据**：`getComputedStyle(root).getPropertyValue('--x')` 已是**新值**，但某元素的
+     `backgroundColor` 仍是**旧值** ⇒ 先怀疑「过渡被冻住」，别去查选择器/优先级。
+   - **修法**：截图/取计算值前，向 `<head>` 注入
+     `*{transition:none!important;animation:none!important}`，再等一小会儿 —— 值立刻变真。
+   - **注意**：`requestAnimationFrame` 驱动的动画（自己写的弹簧/惯性）**不受影响**，照样能跑到目标值；
+     只有 CSS 过渡/动画这条时间线会冻。所以「rAF 动画正常、CSS 过渡不同步」是这套环境的**正常现象**，不是矛盾。
+   - 顺带：**隐藏窗口里 `capturePage()` 拿到的仍可能是"上一帧"**（见上面第 5 条）⇒ 两条叠加时，
+     先禁过渡、再多截一次取第二张。
+
+9. ★★ **隐藏窗口的 rAF 被节流且不稳定 —— 别用「等固定时长再看值」断言 rAF 驱动的动画**（2026-10-08 得物蓝V 实测）。
+   测一个「指针靠近 → 弹簧放大」的 Dock 时，第一版写成「合成 pointermove 后等 500ms 再读 `--s`」⇒
+   读到 `[0,0,0]`（**假红**，看着像功能根本没做）。真相是这一等只跑到了 **1 个积分步**：
+   `1.0007` 恰好等于「k=420 / c=30 / H=1/480 单步」的结果，据此一步定位。
+   - **实测数**：同一个隐藏窗口、同一个页面，rAF 在 700ms 内有时跑 **117 帧**、有时只跑 **2～5 帧**（不稳定）。
+   - ★ **`backgroundThrottling: false` 实测救不回来**（关/不关都是 1 个积分步）—— 别指望这个选项，
+     它只会让你误以为已经解决了。（它跟第 8 条那个「CSS 过渡被冻」是**两个不同**的机制，别混为一谈：
+     过渡是「完全不走」，rAF 是「走得极慢且不定」。）
+   - **正确做法（两条一起上）**：
+     ① **轮询到收敛或超时**，不要等固定时长：
+        `let v = read(); while (Date.now() - t0 < 8000 && !满足条件) { await sleep(120); v = read(); }`
+        （换个机器/负载也只是"慢"，不会失真；最后把耗时一起打出来，便于看出跑了多久。）
+     ② 把**与环境无关的那部分**抽成**纯函数**做确定性断言。例：把「距离→增益」抽成
+        `dockGain(d, R)` 后，直接断言 `dockGain(0,R)===1`、`dockGain(R/2,R)===0.5`、`dockGain(R,R)===0`
+        —— 这层根本不该被 rAF 时序拖累。
+     ③ 再加一条源码断言钉「只走这一个纯函数」（`st[i].ts = 1 + (TDOCK.max-1) * g;` 且 `g` 来自 `dockGain`），
+        防止自检测的是 A、产品跑的是 B。
+   - **反过来也成立**：若你的断言里出现「等 N 毫秒后应该变化 M」这种形状，先怀疑这条，
+     而不是怀疑被测代码。
 
 **要看「管理员专属」界面时**：不要设 `BLUEV_NO_LOGIN`（那样 `auth.current()` 为 null，渲染层按非管理员画，字段全是只读）。
 正确做法是**在同一个进程里调应用自己的登录函数**：`auth.load(); auth.login('admin', '口令', true);` 再 `ipc.register()`。
@@ -508,6 +548,28 @@ win.webContents.session.webRequest.onBeforeRequest((d, cb) => {
 
 ⇒ 结论：当「给人点着下载」的静态站没问题；**当 electron-updater 的更新源不行**（差量下载靠 Range）。
 
+### ★★ 反过来：「公网地址一打开就下载」—— COS 默认域名对 HTML **强制下载**（2026-10-08 实测）
+
+用户原话：「我在 Chrome 输入这个链接需要下载，我要一个公网部署的网站」—— 就是踩了这个。
+判据只看响应头：
+
+```bash
+curl -sI "https://<bucket>.cos.<region>.myqcloud.com/x.html" \
+  | grep -i 'content-disposition\|content-type\|x-cos-'
+# 出现 content-disposition: attachment 或 x-cos-force-download: true ⇒ 浏览器只会下载，不会渲染
+```
+
+腾讯云 COS 的**默认域名**（`*.cos.<region>.myqcloud.com`）对 HTML 一律强制下载，**10 次实验全被拦**：
+对象头写 `Content-Disposition: inline` · 换 `.txt` / 去掉后缀 / 大写后缀 · 改 `Content-Type`（含 `application/xhtml+xml`）·
+开**静态网站域名**（`*.cos-website.<region>.myqcloud.com`，同样被拦，且默认没开）。
+（`.js` / `.yml` 这类静态资源是**放行**的 ⇒ 同一个桶里 `latest.yml` 取得回来、`index.html` 不行。）
+
+⇒ 要「打开就是网页」只能靠：① 平台沙箱类静态托管（`*.app.workbuddy.host`，见上一节）；
+② 自有域名 + CDN（要备案）。**COS 默认域名做不到。**
+⇒ 走错路时要**把测试期开过的桶配置撤回**，别在桶里留无用设置；并把结论写进交付说明。
+⇒ 顺带一条：`workbuddy_cloudstudio_deploy` 报 `fetch failed` **不代表没传上去** ——
+判据永远是「公网拉回来 + 与本地逐字节比对」，别据报错下结论（实测报错但内容是新的）。
+
 ### ★★ 验「下载按钮」必须真发一次请求 —— **200 不等于拿到了那个文件**
 
 这类站一般都配了「路径不存在 ⇒ 回落 index.html」。于是一个**拼错的下载地址会返回 200 + 首页 HTML**，
@@ -568,6 +630,32 @@ Electron 自己的开关（`--in-process-gpu`、`--disable-gpu`…）会混进 `
 ```
 
 ⇒ 通用心法：**先让它自己启动一遍，再只补它没做的那一步**；能走真流程就别自己造状态。
+
+### ★ 纯 Chrome（不是 Electron）走 CDP 是可行的 —— 别被上面「CDP 挂死」那条劝退（2026-10-08 实测）
+
+上面挂死的是 **Electron 的 `webContents.debugger.attach()`**。**外部 Chrome + `--remote-debugging-port` 完全正常**，
+而且**不需要 puppeteer**：Node 22 有全局 `WebSocket`，直接连
+`http://127.0.0.1:<port>/json/list` 拿到的 `webSocketDebuggerUrl` 即可；
+`Runtime.evaluate` / `Page.navigate` / `Page.captureScreenshot` 都好用
+（本轮用它做了「线上看板在真浏览器里渲染出正确数字 + 整页截图 `captureBeyondViewport`」的验收）。
+要点：给每条 CDP 请求配 id-回调表；`Page.enable`/`Runtime.enable` 先开；
+`Runtime.evaluate` 加 `awaitPromise:true` 以便 `await` 页面里的 promise。
+
+**两个必踩的坑：**
+
+1. ★★ **漏了 `--no-sandbox` ⇒ 导航直接失败，症状极误导**：
+   `Page.navigate` 之后只收到 `loadingFailed: net::ERR_ABORTED`，页面**停在 `about:blank`**
+   （`location.href` 仍是 `about:blank`、`document.title` 为空），
+   连 `localStorage` 都抛 `SecurityError: Access is denied for this document`（源是不透明源）。
+   —— 看着像"网址写错/网络不通"，其实是没加这个开关。加了立刻正常（本轮实测 `example.com` 与目标页都能打开）。
+   **CLI 那套模板里本来就带 `--no-sandbox`，改写成 CDP 版时极易漏掉它。**
+2. ★★ **Chrome 不一定能像 curl 那样走通系统代理**：同一沙箱里 curl 经 `https_proxy` 能到外网（含 COS 桶），
+   而 Chrome 走同一代理访问同一 URL 得到 `ERR_ABORTED`（中间代理的 TLS 被拦）⇒
+   **别把「渲染验收」绑死在「能连外网」上。** 可行做法：起一个**本地 HTTP 桩**，
+   把**真数据原样回放**（`/rest/v1/xxx` 直接返回从真库取回的那份 JSON，一个字段都不改），
+   页面用 `--no-proxy-server` 打开 ⇒ 验的是**页面代码 + 真数据**的行为，可离线复现。
+   **但要如实标注这条边界**：它证明不了"线上地址在真浏览器里打得开"，那一半要靠
+   `curl` 把线上文件拉回来**逐字节比对**来补（见「线上部署校验」一节）。
 
 ## 抽真实代码的两种切法（选错会静默抽错）
 

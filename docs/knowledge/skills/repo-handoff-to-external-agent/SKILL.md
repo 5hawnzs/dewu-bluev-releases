@@ -1,6 +1,6 @@
 ---
 name: repo-handoff-to-external-agent
-description: 把一个在本地 AI 会话里长期演进的项目，完整交接给「另一个编码代理 / 另一台机器 / 另一个人」（Codex、Claude CLI、新同事……）——核心是**先分类「git 里有的」与「git 里没有的」**，再把仓库之外的知识资产（规则全文、技能、历史文档、工作日志）安全收进仓库，使接手方 **clone 一次就够**。当出现「我要让 XX 接班，得给他什么」「换工具继续做这个项目」「把项目交给另一个 AI」「他 clone 下来发现文档不全 / 规则都没了」「怎么把记忆和技能一起交接」这类需求时使用。含：①分类法（git 内 / git 外但本机已就位 / 二进制原件）②★★ 内部文档入库前的三道检查（`build.files` 确认不进安装包 + 扫凭据字面量 + 剔 `__pycache__`）③入口文件写法（Codex 自动读 `AGENTS.md`）与「粘给接手方的第一条消息」④幂等导出脚本模式 ⑤★★ 知识库是快照会过期，必须能重新导出 ⑥推送取证 `git ls-remote`。
+description: 把一个在本地 AI 会话里长期演进的项目，完整交接给「另一个编码代理 / 另一台机器 / 另一个人」（Codex、Claude CLI、新同事……）——核心是**先分类「git 里有的」与「git 里没有的」**，再把仓库之外的知识资产（规则全文、技能、历史文档、工作日志）安全收进仓库，使接手方 **clone 一次就够**。当出现「我要让 XX 接班，得给他什么」「换工具继续做这个项目」「把项目交给另一个 AI」「他 clone 下来发现文档不全 / 规则都没了」「怎么把记忆和技能一起交接」这类需求时使用。含：①分类法（git 内 / git 外但本机已就位 / 二进制原件）②★★ 内部文档入库前的三道检查（`build.files` 确认不进安装包 + 扫凭据字面量 + 剔 `__pycache__`）③入口文件写法（Codex 自动读 `AGENTS.md`）与「粘给接手方的第一条消息」④幂等导出脚本模式 ⑤★★ 知识库是快照会过期，必须能重新导出 ⑥推送取证 `git ls-remote`。★ 另含两条实测硬经验：**二次交付前必须复核**（交接文档会腐烂——实测 3 天后「已装副本版本 / 文件数 / 技能数」三处已过期，且 `HEAD` vs `ls-remote`、快照 md5 是唯一硬证据）；**接手方工具本身可能没装/装不了**（五处查法 + 「查不到≠不存在」的盲区声明；云端版只认 GitHub ⇒ gitee 仓库只能用本地版；本机可能只有 AI 客户端的受管 Node ⇒ `npm i -g` 会装进沙箱目录，要先装独立 Node 或用官方二进制）。
 agent_created: true
 ---
 
@@ -285,3 +285,100 @@ npx electron .                                             # 起界面、版本�
 + 设备类：`adb devices` 能列设备、输入法/驱动装好。
 + 收尾：**旧机上撤销不再需要的访问授权**（部署公钥/账号），清理传输用的中转文件（压缩包别留在下载目录/网盘）。
 + ★ 提醒对方：知识库是**快照**，里面的数字每次实测重取。
+
+---
+
+## 9. ★★ 二次交付：交接包已经做过一遍时，**先复核，别直接转交**
+
+用户过几天又来说「我要交接了」——**你手里已经有一个交接包，但它可能已经错了**。
+实测（同一项目，3 天后二次交付）：文档里 3 条事实已过期，且**没人会主动发现**：
+
+| 类型 | 文档写的 | 实测 | 为什么危险 |
+| --- | --- | --- | --- |
+| **状态类** | 「本机已装副本仍是 1.0.13」 | 实际已升到 **1.0.15** | 交接文档本身就是权威 ⇒ 接手方照它判断「用户还在旧版、要不要催升级」 |
+| **数字类** | 「150 文件 / 28 技能」 | **151 / 29** | 数字最容易腐烂（导出脚本改过、技能新增过） |
+| **目录描述** | 「dist 里恰好 1 个 exe」 | 1 个 exe ＋ `win-unpacked/` ＋ yml | 读起来像「目录是干净的」 |
+
+**复核清单（照做，每条留实测值）**：
+1. `git rev-parse HEAD` **与** `git ls-remote origin refs/heads/main` 两值相等 ＋ `status --short` 干净。
+2. **快照 vs 活文档**逐份 `md5sum`（或 `wc -c`）——**一致才叫没过期**；不一致 ⇒ 重跑导出脚本。
+3. `find <工作区根> -maxdepth 1 -newermt "<导出时刻>"` —— 导出之后有没有新的交付文档/规则。
+4. 文档里**每个可核数字**逐条实测。★ 「已装副本版本」别信文档，取**三重独立证据**：
+   注册表 `Uninstall` 的 `DisplayVersion` ＋ `resources/app.asar` 内的 `package.json.version`
+   ＋ `resources/<随包资源>/*` 的 md5。
+   ★★ **两条实测被推翻的老做法**（2026-10-08 踩到）：
+   - `grep -a -o '"version":"1\.0\.[0-9]*"' app.asar` **返回空**（asar 的头部/索引布局让这条匹配不上）
+     ⇒ 用 `@electron/asar` 的 `extractFile(asar,'package.json')` 读，稳。同理**文件清单**要用
+     `listPackage()`，别靠 grep。
+   - **安装目录文件 `mtime` 不能当证据**：NSIS 会保留**源文件**时间戳 —— 本案 `app.asar` 的 mtime
+     是**打包那一刻**，比真正安装的时刻早 13 分钟。只看 mtime 会推出「这是构建残骸」的错误结论。
+   - ★ **安装路径可能根本不在 `%LOCALAPPDATA%\Programs`**（本案在 `D:\bluevbeta\<产品名>\`）。
+     定位靠全盘找 `-name app.asar` / `-iname "*<产品名>*.exe"`，**别只查默认目录然后报「没装」**。
+5. ★ **`git ls-remote` 会间歇性失败**（实测 `github.com:443` 报 `Connection was reset` /
+   `Could not connect`，同一仓库几分钟前刚推成功过）⇒ 改走 **GitHub API 作为等价硬证据**：
+   `GET /repos/<o>/<r>`（看 `private` / `default_branch`）+ `/git/ref/heads/main`（sha）
+   ＋ `/commits/main`。凭据取 `~/.git-credentials` 里那条 PAT。
+   ★ 但要在报告里**写清用的是哪条通道**，别把 API 的成功说成 ls-remote 的成功。
+6. 对外通道 `curl` 一下发布的 `latest.yml` / `beta.yml`，版本与体积对不对得上。
+7. **维护工具当场自测一次**（如 `selftest`）——「文档说它能用」≠ 它现在还能用。
+
+⇒ 复核结果写成一页纸：**对得上的也列**（用户才知道你真核过），对不上的标 `❌` 给处置建议。
+**不擅自改仓库文档后直接推送**——改文档要连带重新导出快照 + 提交，先问。
+★ 一句话：**「交接包存在」≠「交接包是对的」。** 交接是一次性动作，交付物却是会腐烂的资产。
+
+---
+
+## 10. ★★ 接手方的工具本身没装 / 装不了（实测踩到）
+
+§1 的三类分类只管**项目资产**，还漏一类：**接手方要用的那个工具（Codex / Claude CLI / IDE 插件）
+在这台机器上到底存不存在、装不装得上。**
+
+### 10.1 先查「装没装」（五处都查，缺一处就会误报）
+
+```bash
+command -v codex                                     # PATH
+ls -d ~/.codex                                       # 官方配置目录
+ls "$(npm root -g)" | grep -i codex                  # npm 全局
+ls ~/.vscode/extensions ~/.cursor/extensions 2>/dev/null | grep -iE "codex|openai"   # IDE 扩展
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall" /s /f "codex"   # 已装程序
+```
+
+★★ **查不到 ≠ 不存在**：装在 **WSL**、**别的 Windows 用户**、**便携解压目录**时上面全查不到。
+⇒ 汇报必须带这句「我的查法有盲区」，否则就是在拿一个不成立的结论骗人。
+
+★★ **桌面版 Codex 的指纹（2026-10-08 实测）**：`~/.codex/` 里有
+`.desktop-created`、`.codex-global-state.json`、`auth.json`、`config.toml`、`skills/`、`plugins/`、
+`installation_id`、`memories_1.sqlite`…；程序在 `%LOCALAPPDATA%\Codex\`，
+CLI 在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`。
+⇒ ★ **PATH 里没有 `codex` 命令是正常的**（桌面版不挂 PATH）——**别据 `command -v codex` 空就报「没装」**。
+进程名：`codex.exe` / `codex-windows-sandbox-service.exe` / `codex-computer-use-swift.exe`。
+`config.toml` 里 `[windows] sandbox = "unelevated"` 等是它自己的沙箱设置，与项目无关。
+★ **它在 `~/.codex/skills/` 也有一套技能**，但**它自动读的仓库入口是根目录的 `AGENTS.md`** —— 交接重点放那里。
+★ 判断「装没装」时**先看 `~/.codex` 的 mtime**：本案 11:2x 那次复核报「没装」是对的（目录 11:23 才被创建），
+   **16:xx 之后再报「没装」就错了** ⇒ 这类结论**有时效性**，二次交付必须重查。
+
+### 10.2 再定「走哪条路」——**云端版与本地版的前提完全不同**
+
+| | 本地（CLI / 桌面 App / IDE 扩展） | 云端（Codex Cloud，网页派活） |
+| --- | --- | --- |
+| 要 GitHub 吗 | **不要** | **必须要**（云端容器只拉 GitHub 仓库） |
+| 看得见本机吗 | ✅ 全部 | ❌ 只有仓库里的 |
+| 本机设备 / 模拟器 / 私密文件 | ✅ | ❌ |
+
+★★ **远端在 gitee / 自建 Git / 内网的仓库，云端那条路直接走不通** ⇒
+交接单开头就要写明「只能用装在这台机器上的本地版」。对这类项目反倒是好事：
+发布链路依赖本机 adb + 模拟器 + 真机，云端本来就干不了。
+
+### 10.3 ★ 装得上吗：本机可能**没有独立 Node**
+
+AI 客户端（WorkBuddy 之类）把 Node 放在**自己的沙箱运行时目录**并挂进 PATH。
+于是 `node`/`npm` 看着能用，但：**系统里没有** `C:\Program Files\nodejs`（用户自己的终端未必有 node）；
+且在这套运行时里 `npm i -g <tool>` 会**装进客户端沙箱目录**，可能被清理 / 升级覆盖。
+
+⇒ 给三条路（按稳妥排序），**别自己动手装**（改全局环境属外部动作，先问）：
+1. `winget` / 官网装**独立 Node LTS**（注意工具的最低版本要求）→ 新终端 → `npm i -g <tool>`；
+2. **官方独立二进制**（GitHub Releases 解压即用，不依赖 Node）；
+3. 塞进客户端沙箱运行时 —— **不推荐**，写明理由。
+
+★ 交接单里带「装完怎么验证」：`<tool> --version`（＋登录命令，如 `codex auth login`），
+再 `cd <仓库>` 把第一条消息贴进去。

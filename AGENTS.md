@@ -51,7 +51,7 @@
 | adb | **内置** `vendor/adb/adb.exe`（也可在 App「高级设置」页手填；手填优先，失效时退回内置并说出来） |
 | ffmpeg | **内置** `vendor/ffmpeg/ffmpeg.exe` |
 | 中文输入法 | `vendor/adbkeyboard/ADBKeyboard.apk`（App 内「一键装」三步：`install -r` → `ime enable` → `ime set`） |
-| 得物 App 安装包 | **内置** `vendor/dewu/dewu_6.0.5.apk`（127 MB，`com.shizhuang.duapp` 6.0.5）—— MuMu 自带的应用商店里**搜不到得物**时的兜底：设置页「外部依赖」表里给「下载到本机 / 装进模拟器」两个按钮。**已经装过就不动它**（见 `src/main/services/dewuapk.js`） |
+| 得物 App 安装包 | **内置** `vendor/dewu/dewu_6.0.5.apk`（**133,315,131 B ≈ 127 MiB**，md5 `50092bcc…`，`com.shizhuang.duapp` 6.0.5）—— MuMu 自带的应用商店里**搜不到得物**时的兜底：设置页「外部依赖」表里给「下载到本机 / 装进模拟器」两个按钮。**已经装过就不动它**（见 `src/main/services/dewuapk.js`）。★ 它在 git 里是**分两片**存的（`.part01` / `.part02`，各 64 MiB —— GitHub 单文件 100 MiB 硬限），打包前由 `node tools/dewuapk-assemble.js` 拼回；`npm run dist:win` 已自动带上 |
 | 模拟器 | MuMu 12；设备串以 `adb devices` **真名**为准（同一设备报多个端口 ⇒ 按 `android_id` 去重） |
 | 真机 App | 得物（发布链路只能在真机上验证） |
 
@@ -85,18 +85,19 @@
 
 ---
 
-## 六、知识库与交接单（2026-10-05 新增）
+## 六、知识库与交接单（2026-10-05 新增 · 2026-10-08 刷新快照）
 
 | 文件 | 内容 |
 | --- | --- |
 | `docs/HANDOFF-CODEX.md` | **一页纸交接单**：git 里已有什么、git 外还缺什么（环境 / 凭据 / 设备）、当前状态快照、验收标准、已知遗留。**接手前先看这一份** |
 | `docs/HANDOFF-NEW-MACHINE.md` | **换机方案**：目标机系统前提、通道总表（什么走 git、什么只能单独搬）、三份敏感文件（`config.json` / `auth.json` / `.env`）、新机必做的两处重置（`cloud.machineId` 与绝对路径）、设备侧、验收清单。**换机器跑就照这份走** |
-| `docs/knowledge/` | **知识库**。原本全在仓库之外（WorkBuddy 私有目录），clone 拿不到 ⇒ 已收进仓库：`RULES-得物蓝V.md` 项目规则全文（`§A`~`§CC`，4300+ 行 + 实测数字）、`MEMORY-INDEX.md` 索引、`RULES-通用.md` 跨项目规范、`skills/` 29 个技能、`docs/` 90 份历史文档、`archive/worklog/` 6 份工作日志、`deployed-sites/` 站点源码。**索引见 `docs/knowledge/README.md`，按需查、别整读** |
+| `docs/knowledge/` | **知识库（172 份）**。原本全在仓库之外（WorkBuddy 私有目录），clone 拿不到 ⇒ 已收进仓库：`RULES-得物蓝V.md` 项目规则全文（`§A`~`§CO`，**4962 行** + 实测数字）、`MEMORY-INDEX.md` 索引、`RULES-通用.md` 跨项目规范、`skills/` **34 个**技能、`docs/` **105 份**历史文档、`archive/worklog/` **7 份**工作日志、`deployed-sites/` 站点源码。**索引见 `docs/knowledge/README.md`，按需查、别整读** |
 
 > ★ 换机搬配置**不要整份拷 `config.json`**：用 `node tools/config-portable.js`
 > （`inspect` / `export` / `import` / `selftest`）—— 它会把绝对路径与 `cloud.machineId` **显式置空**、
 > 默认抹掉密钥、导入前先备份、默认只预演。用法与理由见 `docs/HANDOFF-NEW-MACHINE.md` §3.1~§3.3。
 > ★ `docs/` **不在** `build.files` 白名单里（只有 `src/**` + `package.json` 进包）⇒ 知识库不会被打进安装包、终端用户看不到。
-> ★ 知识库是**快照**（截至 2026-10-05），里面的断言数 / 体积 / 耗时**每次都要实测重取**。
+> ★ 知识库是**快照**（截至 **2026-10-08 19:5x** 刷新），里面的断言数 / 体积 / 耗时**每次都要实测重取**。
+> ★ 快照由工作区脚本 `_build-knowledge-pack.sh` 导出（幂等、可重跑）；跑完必须确认末尾「垃圾残留 = **0**」。
 > ★ 规则全文里唯一算是"凭据"的，是一个 Supabase **`anon`** key（已确认 `role: anon`，随公开看板发布过）；
 > 红线是 **`service_role` / secret key 绝不许进任何前端文件**——这条没被破。
