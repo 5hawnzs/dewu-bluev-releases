@@ -23,7 +23,7 @@
 
 | 东西 | 走什么通道 | 敏感度 |
 | --- | --- | --- |
-| 源码 / 17 套回归 / `docs/` / `docs/knowledge/` / `AGENTS.md` | **`git clone`** | 公开级 |
+| 源码 / 18 套回归 / `docs/` / `docs/knowledge/` / `AGENTS.md` | **`git clone`** | ⚠️ **2026-10-08 起不再是「公开级」**：源码里现在含**内置模型 key**（`src/main/llmdefaults.js`）⇒ **这个仓库不许公开、不许推公网**（见 §3.0 第 3 条） |
 | `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` | **`git clone`**（★ 这些二进制**已经在 git 里**，不用另外拷） | 公开级 |
 | **`config.json`** | ★ **别整份拷** —— 用 `node tools/config-portable.js` 导出/导入（见 §3.1），再走加密包 / U 盘 / 内网共享。**绝不许走 git、不许贴聊天** | ★★（默认导出已抹密钥；加了 `--with-secrets` 就是 ★★） |
 | **`auth.json`** | 同上（或改用种子文件，见 §3.3） | ★★ 含账号口令哈希 |
@@ -59,27 +59,55 @@ npm run addon:win
 
 | # | 文件 | 原机位置 | 里面有什么 |
 | --- | --- | --- | --- |
-| 1 | `config.json` | `%APPDATA%\dewu-bluev-publisher\` | `copy.llm.apiKey`（**真实模型密钥，35 字符**）、`publish.uiMap.*`（**真机实测的 UI 定位表**）、`paths.*`、`publish.device`、主题与各页配置 |
+| 1 | `config.json` | `%APPDATA%\dewu-bluev-publisher\` | `copy.llm.apiKey`（**真实模型密钥，35 字符**）、`publish.uiMap.*`（**真机实测的 UI 定位表**）、`paths.*`、`publish.device`、主题与各页配置 —— ★ 前两项 2026-10-08 起**已随包内置**（见 §3.0），换机通常不必再搬 |
 | 2 | `auth.json` | 同上 | 账号 + 口令哈希（`admin` / `testbeta`）。哈希解不出明文，**但可直接登录** ⇒ 同样按密钥对待 |
 | 3 | `.env` | **仓库根**（`D:\work\dewu-bluev-publisher\.env`，已 gitignore） | `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET` / `COS_REGION` —— 只有**发版**时才读 |
 
 **再说一遍口径**：这三份加起来 ≈ 这个项目的全部「钥匙」。**一旦提交进 git，即使之后删掉也留在历史里，只能去轮换密钥。**
+
+### 3.0 ★★ 2026-10-08 起：**定位表与模型 key 已经内置进包**（给同事发包 / 换机都受益）
+
+用户口径：「**装上即用** —— 同事拿到包就该能直接发，不该再装这装那，也不该自己导表」。
+于是这两样最贵的资产从「每台机器各配一份」改成**随包内置**，规矩和 `cloud.url` / `llm.endpoint` 完全一样：
+**留空＝跟随内置**（读时兜底、**绝不写回 config.json**）。
+
+| 资产 | 内置在哪 | 新机器上的效果 |
+| --- | --- | --- |
+| **UI 定位表**（38 步图文 + 41 步视频） | `src/main/uimapdefaults.js`（★ 从原机 `config.json` **逐字节原样搬**，只补了一个 `screen` 坐标系戳） | 装完界面直接显示「定位表 38 步」，**不用抓、不用导** |
+| **模型地址 / 模型 id / API Key** | `src/main/llmdefaults.js` | 「文案生成」开箱就是 AI 文案（**不再静默降级成本地模板**） |
+
+⇒ **§3.1 的搬运工具仍然要留着**，但它现在只需要搬**这几样**：`brands[]`（品牌与权限）、
+`copy.pool` / `copy.hotwords`（话术池与热词库）、`verify.*`、主题与各页阈值，以及 §3.3 的 `auth.json`。
+`publish.uiMap.*` 与 `copy.llm.apiKey` **不用再搬** —— 搬了反而把它们焊死在那一台上，以后换包顶不动。
+
+★ 三条口径（都带理由，别凭感觉改）：
+1. **不要**把内置表写进 `store.defaults()` / `config.json`：那会随每次保存**固化**，
+   以后换新表、换 key 再发包也顶不动老机器，而界面看不出来（§T9 实测踩过）。
+   内置表的唯一读点是 `store.withBuiltinMap()` —— 只在**本机没有这个键**（`undefined`）时兜底。
+2. 本机**显式 `null`**＝「我就是要没有表」，**不被内置值顶掉**（`tools/adbtest.js` 靠它验「未配必须报错」）；
+   本机自己抓 / 导入的表**优先于**内置表。
+3. 内置 key 属**半公开凭据**（谁拿到包谁就能刷额度）⇒ 别推公网仓库、额度设上限、出事直接换。
+   ★★ **2026-10-08 起这条连仓库一起管**：key 已经**提交进 git**（`src/main/llmdefaults.js`），
+   所以这个仓库（含 gitee 那个远端）**必须是私有的** —— 一旦公开推送，等于把 key 公开，
+   只能去服务商把这对 key **轮换掉**（删文件、改文件都救不回来，历史里还在）。
+   换 key 后**重发包即生效**；同事若自己填过 key，让他把那个框清空就回到跟随内置。
+   ★ 另：`tools/copytest.js` 里那条判据是**从模块读 key**（不写死），换 key 只需改 `llmdefaults.js` 一处。
 
 ### 3.1 ★ `config.json` 怎么搬：用 `tools/config-portable.js`（2026-10-05 新增）
 
 **先讲清问题**：`config.json` 是**三类东西混在一个文件里**，整份照拷必踩两个坑
 （`paths.*` **静默失效**、两台机器共用一个 `machineId`）。而界面上那个
 「导出配置 / 导入配置」按钮**只管云端协作的三个字段**（`cloud.url` / `cloud.anonKey` / `cloud.org`，
-见 `src/main/services/cloudsync.js`）——**不含**模型密钥、品牌、话题池，**更不含**
-`publish.uiMap`（真机实测的 UI 定位表：**38 步图文 + 41 步视频**，这个项目最贵的资产）。
+见 `src/main/services/cloudsync.js`）——**不含**品牌、话题池、热词库。
+（★ 2026-10-08 更正：模型密钥与 `publish.uiMap` 现在都**随包内置**了，不再需要靠搬配置拿到，见 §3.0。）
 
 ⇒ 本项目自带搬运工具，把三类东西分开处理：
 
 | 类别 | 字段 | 工具怎么处理 |
 | --- | --- | --- |
-| **可搬运** | `publish.uiMap.*`、`brands[]`、`copy.pool`、`copy.hotwords`、`compliance.*`、`verify.*`、`publish.devices[]`、主题 / 更新通道 / 各类阈值 | 原样带走 |
+| **可搬运** | `publish.uiMap.*`、`brands[]`、`copy.pool`、`copy.hotwords`、`compliance.*`、`verify.*`、`publish.devices[]`、主题 / 更新通道 / 各类阈值 | 原样带走（★ `publish.uiMap` 自 2026-10-08 起已内置，通常不必再搬） |
 | **必须重置**（机器专属） | `paths.output/rejected/source`、`publish.adbPath`、`publish.ffmpegPath`、`cloud.machineId`、`cloud.machineName`、`window.bounds`、`window.maximized` | **显式置空**（理由见 §4.1 / §4.2） |
-| **密钥** | `copy.llm.apiKey`、`verify.api.apiKey`（按**叶子键名**认；`cloud.anonKey` **不算** —— 那是公开设计） | **默认剔除**（新机重填）；要一起搬就加 `--with-secrets` |
+| **密钥** | `copy.llm.apiKey`、`verify.api.apiKey`（按**叶子键名**认；`cloud.anonKey` **不算** —— 那是公开设计） | **默认剔除**（新机重填）；要一起搬就加 `--with-secrets`（★ `copy.llm.apiKey` 自 2026-10-08 起已内置，通常不必搬） |
 
 用法（**旧机导出 → 新机导入**）：
 
@@ -132,13 +160,15 @@ node tools/config-portable.js import D:\config-portable.json --yes
    也可改用环境变量 `BLUEV_ADMIN_USER` / `BLUEV_ADMIN_PASS`（优先级更高）。
    ★ 既不设种子、也不搬 `auth.json` ⇒ 新机建的是**出厂账号 `admin` / `BlueV@2026`**，并会提示改口令。
 
-### 3.4 不搬 `config.json` 也可以，代价是三个
+### 3.4 不搬 `config.json` 也可以（★ 2026-10-08 后只剩「路径」一项真代价）
 
-1. **模型密钥要重填**：不填 ⇒ 文案只走本地模板（**工具不报错，是静默降级**）。
-2. **UI 定位表要重抓**：要连设备，在「模拟器发布」页「抓取页面结构 → 导入」。**最贵的一步**（得物改版后本来也要重抓）。
-3. **路径要重选**。
+1. ~~**模型密钥要重填**~~ → **已随包内置**（`src/main/llmdefaults.js`）。不填也能出 AI 文案。
+   只有「这台机器要换用别的 key」时才需要填（填了以填的为准）。
+2. ~~**UI 定位表要重抓**~~ → **已随包内置**（`src/main/uimapdefaults.js`，38 步图文 + 41 步视频）。
+   不用抓、不用导。**但**得物改版后内置表一样会失效 ⇒ 那时才需要重抓 **并重发包**（这是内置的必然代价）。
+3. **路径要重选**（`paths.output` / `rejected`）—— 这一条没变。
 
-⇒ **要跑发布链路就用 §3.1 的工具搬过去；单纯改代码就重填（更省事也更安全）。**
+⇒ **要跑发布链路就搬 §3.1 里剩下的那几样（品牌 / 话术池 / 热词库 / 账号）；单纯改代码就什么都不搬。**
 
 ---
 
@@ -214,24 +244,32 @@ git ls-remote origin refs/heads/main    REM ★ 两条必须一致，才算「�
 npm install
 npm run addon:win
 node tools/config-portable.js selftest  REM ★ 33 PASS / 0 FAIL
-node tools/run-all.js                   REM ★ 17 套应全绿
+node tools/run-all.js                   REM ★ 18 套应全绿
 ```
 
 ★ **跑回归时绝不要设 `BLUEV_NO_LOGIN`** —— `logintest` 断言的正是「这个变量没设」；
 设了会 3 条 FAIL 并**挂住不退出**。（那个变量只用于手动起 App 免登录进主界面。）
-★ 断言数**以实测为准**：`README.md` 里那张套件表停在 **1005 项（2026-10-03）**，实际已经是 **17 套 1622 项**。
+★ 断言数**以实测为准**：`README.md` 里那张套件表早就停了，实际已经是 **18 套 1660 项**
+（2026-10-08 实测：`42+392+19+46+96+34+226+57+83+238+104+19+50+65+45+69+57+18 = 1660`）。
+★ 跑之前清掉 `NODE_OPTIONS` / `ELECTRON_RUN_AS_NODE`（沙箱里可能被设上）：
+`env -u NODE_OPTIONS -u ELECTRON_RUN_AS_NODE node tools/run-all.js` ——
+不清的话 `uicheck` / `logintest` / `gatetest` 这三个 Electron 套件会起不来。
 
 逐项确认：
 
 - [ ] `npx electron .` 能起界面、能进主界面、版本号显示 **1.0.15**
-- [ ] `node tools/config-portable.js inspect` 里 `uiMap` 显示 **38 步图文 / 41 步视频**（说明定位表搬到了）
+- [ ] `node tools/config-portable.js inspect` 里 `uiMap` 显示 **38 步图文 / 41 步视频**（说明定位表搬到了；
+      ★ 2026-10-08 起即使没搬也该有 —— 内置表会兜底，见 §3.0）
 - [ ] 「运行日志」页有内容（说明 `paths.output` 设对了）
-- [ ] 「文案生成」页能看到密钥；看不到就重填（导出时用了默认的「抹密钥」就会是空的）
+- [ ] 「文案生成」页**密钥框空着也正常**（2026-10-08 起跟随内置 key，见 §3.0）；真要换 key 才填
 - [ ] `cloud.machineId` 已是**新生成的** `m_xxxxxxxx`（不是 `m_fb6e1a86`）
 - [ ] `adb devices` 能列出设备，App 里「扫描设备 → 加入并使用」成功
 - [ ] 中文输入法「一键装」跑通（真机输入用得上）
 - [ ] 要发版的话：`仓库根\.env` 在、`node tools/upload-release.js --channel stable` 能读到凭据（**别真发**，看它打印目标域名即可）
-- [ ] ★ 检查 `publish.mock` —— 原机当前是 **`true`**（干跑）。搬运会把原值带过来，不注意会以为在真发。发布前务必确认这个开关
+- [ ] ★ 判「真发还是演练」**不看配置里的 `publish.mock`** —— 那是个**死键**（全仓已无人读它，`tools/uicheck.js` 有断言守着；
+      原机 `config.json` 里那个 `true` 是 2026-10-02 之前的残留，搬过来也无害）。
+      真正的判据是**发布状态里的 `mode`**：只有在设备页点过「连接模拟器 / 检查能不能发布」并通过，它才会是 `adb`；
+      否则是 `mock`（演练、不碰设备）。发布前看一眼「模拟器发布」页顶部的模式提示即可
 
 ---
 
