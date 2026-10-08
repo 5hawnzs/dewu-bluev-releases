@@ -16,15 +16,17 @@
 我要在这台 Windows 上把「得物蓝V 素材发布工具」的整条流程测一遍。
 
 仓库（私有，main 分支）：
-git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git
 请克隆到 D:\work\dewu-bluev-publisher（路径不要有中文和空格，也别放 OneDrive/网盘同步目录）：
 
   cd /d D:\work
-  git clone git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+  git clone https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git
 
 动手前先确认环境：` node -v `、` git --version `、` adb devices `。
-如果缺 git / node，或者克隆失败（Permission denied / 要求输账号密码），
-**停下来把原文告诉我**，别自己改 git 配置、别换镜像源、别改用 https 猜密码。
+如果缺 git / node，或者克隆失败（`Repository not found` / 认证被拒 / 一直挂着不动），
+**停下来把原文告诉我**，别自己改 git 配置、别换镜像源、别去猜密码。
+★ 2026-10-08 起远端是 **GitHub、走 HTTPS**：第一次 clone **会正常地问你账号 + Personal Access Token**
+（密码那栏填 **token**，不是账号登录密码），那不是失败；输一次后存进 `~/.git-credentials`。
 克隆成功后：
 
 1. 完整读 docs/HANDOFF.md 与 docs/WINDOWS-E2E.md，再读 README.md；
@@ -54,7 +56,7 @@ git@gitee.com:abulaitifans/dewu-bluev-publisher.git
 > 备选（克隆实在过不去时）：把 `docs/HANDOFF.md` 与 `docs/WINDOWS-E2E.md` 两个文件直接拖进对话当附件，
 > 并让 WorkBuddy 先只做第 3 节的自动化回归（那部分不需要仓库之外的任何东西）。
 >
-> ⚠️ 不要发出去的：Gitee 密码、私人令牌、`id_ed25519` 私钥（只有 `.pub` 公钥可以贴到网站上）。
+> ⚠️ 不要发出去的：GitHub 账号密码、**Personal Access Token**、`id_ed25519` 私钥（只有 `.pub` 公钥可以贴到网站上）。
 
 ---
 
@@ -66,20 +68,26 @@ git@gitee.com:abulaitifans/dewu-bluev-publisher.git
    git config --global user.name "张硕"
    git config --global user.email "shawnz2000@outlook.com"
    ```
-3. 配 SSH 公钥（和 macOS 同一套路）：
+3. **推荐直接走 HTTPS + Personal Access Token**（★ 2026-10-08 换到 GitHub 后，本机就是这套；
+   原机那把 SSH 钥匙**没有**登记到 GitHub，`ssh -T git@github.com` 会回 `Permission denied (publickey)`）：
+   - 去 GitHub 生成 token：`Settings → Developer settings → Personal access tokens`
+     （fine-grained 只勾 **Contents: Read and write** 就够；classic 勾 `repo`）；
+   - 第一次 `git clone` / `git push` 时，用户名填账号、**密码那栏填 token**，之后自动存进 `~/.git-credentials`。
+4. （可选）配 SSH 公钥：
    ```
    ssh-keygen -t ed25519 -C "shawnz2000@outlook.com"        :: 一路回车
    type $env:USERPROFILE\.ssh\id_ed25519.pub | clip         :: PowerShell 复制公钥
-   ssh -T git@gitee.com                                     :: 出现 Hi ... You've successfully authenticated 即通
+   ssh -T git@github.com                                    :: 出现 Hi ... You've successfully authenticated 即通
    ```
-   公钥粘贴到 https://gitee.com/profile/sshkeys →「添加公钥」→ 输 Gitee 密码。
-   > 不想配 SSH 就用 HTTPS：`https://gitee.com/abulaitifans/dewu-bluev-publisher.git`，
-   > 第一次会让你输账号 + **私人令牌**（Gitee → 设置 → 私人令牌）。
+   公钥粘贴到 https://github.com/settings/keys →「New SSH key」。
+   > ⚠️ 脚本 / 非交互环境里推 GitHub 有个坑：system 级 `credential.helper=helper-selector`（GCM）
+   > 会去弹 GUI ⇒ **挂死到超时**（看起来像网络不通）。用
+   > `-c credential.helper= -c credential.helper=store` 清掉助手栈再推。
 
 4. 克隆到**没有中文、没有空格**的短路径（长路径是这工具的老坑）：
    ```
    cd /d D:\work
-   git clone git@gitee.com:abulaitifans/dewu-bluev-publisher.git
+   git clone https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git
    ```
    > ⚠️ 别放在 OneDrive / 网盘同步目录里 —— 会占用文件句柄，改名/删除会 `EBUSY`。
 

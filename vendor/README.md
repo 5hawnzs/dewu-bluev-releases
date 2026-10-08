@@ -90,9 +90,37 @@ ffmpeg 是为了**把达人给的 `.mov` / `.m4v` / `.avi` / `.webm` / `.mkv` �
 
 ## 4. `vendor/dewu/` —— 得物 App 的安卓安装包（模拟器商店里搜不到得物时的兜底）
 
-| 文件 | 字节 | md5 |
+### 4.1 ★ 这个目录在仓库里是「**分卷**」存的，和其它 vendor 目录不一样
+
+| 仓库里实际存的文件 | 字节 | md5 |
 |---|---|---|
-| `dewu_6.0.5.apk` | 133,315,131 | `50092bccb263498a16e4fbb57762ae5f` |
+| `dewu_6.0.5.apk.part01` | 67,108,864 | `6a386377ffa3565f8d60b86a880f54e4` |
+| `dewu_6.0.5.apk.part02` | 66,206,267 | `3ed15d2cfaf4144986c65d2d6a866ecf` |
+| **（拼回来）**`dewu_6.0.5.apk` | **133,315,131** | **`50092bccb263498a16e4fbb57762ae5f`** |
+
+- **为什么要分卷**（2026-10-08 实测，不是预防性设计）：Gitee 与 GitHub 都是
+  **「单文件超过 100 MiB 就拒绝整次 push」** —— 是整次，不是只跳过那个文件。
+  实测报错：`remote: Find the desired index: …, size: 120.666MB, exceeds quota 100MB`。
+  - 顺带否掉了「压一下就行」这条路：`gzip -9` 后 **126,471,554 字节（120.6 MiB）**，**仍然越线**
+    （APK 本身就是 zip，再压几乎没收益）。
+- **怎么拼回来**：`node tools/dewuapk-assemble.js`
+  - 缺了/对不上才拼（幂等：已经是对的就说「未改动」）；`--force` 强制重拼；`--check` 只校验不写盘。
+  - 拼完**逐字节自检**（字节数 + md5 都要对上），对不上就把半成品删掉并 `exit 1`，不留个"看起来像成品"的东西。
+  - `npm run dist:win` / `dist:win-only` **开头已经自动带上这一步**，正常打包不用手跑。
+  - 换新机器 `git clone` 后第一次打包也不需要额外操作 —— 片段在仓库里，拼装是自动的。
+- **拼回来的单文件不进 git**（`.gitignore` 里有一条 `/vendor/dewu/dewu_6.0.5.apk` 挡着）：
+  一旦误 `git add` 进去，远端会**连整次推送一起拒**。
+- ★ 片段之间**没有**额外的校验文件：判据是「片段字节数之和 == `dewuapk.js` 里的 `BYTES`」
+  ＋「拼回来之后的 md5 == `MD5`」，两处对不上就拒绝。所以片段数从 2 变成 3 也不需要改代码
+  （按文件名排序顺序拼接）。
+
+### 4.2 这个包到底是什么 / 来源 / 合规
+
+| 项 | 值 |
+|---|---|
+| 拼回来的文件名 | `dewu_6.0.5.apk` |
+| 字节 | 133,315,131 |
+| md5 | `50092bccb263498a16e4fbb57762ae5f` |
 
 - **包里到底是什么**（★ 这几项是**从包的 `AndroidManifest.xml` 里读出来的**，不是按文件名猜的 ——
   解析脚本见本轮工作记录；读法：APK 里那份 manifest 是二进制 XML，按 AXML 字符串池 + start-element 属性逐条解）：
@@ -121,8 +149,18 @@ ffmpeg 是为了**把达人给的 `.mov` / `.m4v` / `.avi` / `.webm` / `.mkv` �
     已经装了得物就**一条安装命令都不发**（得物里是登录状态和本地草稿），只回报版本；
     覆盖重装必须由用户再点一次「覆盖重装」（那时才加 `-d` 允许降级）。
     装完**回读** `pm list packages` 确认，`adb install` 说 Success 不算数。
-- ★ 换新版本（例如 6.1.0）：把新 apk 放进本目录 → 改 `dewuapk.js` 里的 `FILE`/`BYTES`/`MD5`/`VERSION`/`VERSION_CODE`
-  → 改本表这几行 → 跑 `node tools/run-all.js`（`uicheck` 会核对内置文件的 md5 能不能在本表里对上）。
+- ★ 换新版本（例如 6.1.0）：把新 apk 放进本目录 → **重新分卷**（见下）→ 改 `dewuapk.js` 里的
+  `FILE`/`BYTES`/`MD5`/`VERSION`/`VERSION_CODE` → 改 §4.1 与本小节这两张表 → 跑 `node tools/run-all.js`
+  （`uicheck` 会核对内置文件的 md5 能不能在本表里对上）。
+  ```bash
+  # 重新分卷（每片 64 MiB，可放 2 片；只要每片 <100 MiB 都行）
+  cd vendor/dewu
+  rm -f dewu_<新版本>.apk.part*                     # 先清掉旧片段
+  split -b 67108864 -d --numeric-suffixes=1 -a 2 dewu_<新版本>.apk dewu_<新版本>.apk.part
+  md5sum dewu_<新版本>.apk.part*                    # 抄进 §4.1 的表
+  node ../../tools/dewuapk-assemble.js --force      # 拼回来核 md5，必须等于原件
+  ```
+  ★ 分卷后**务必**用 `cmp` 或 md5 确认「拼回来的 == 原件」，别只信字节数。
 
 ## 5. 怎么更新到新版本
 

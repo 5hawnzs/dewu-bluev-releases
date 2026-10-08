@@ -7,6 +7,15 @@ dist-new/
 out/
 *.log
 
+# ---------- 得物安装包：只存分卷片段，不存拼回来的单文件 ----------
+# ★ 单文件 133,315,131 字节（127.1 MiB）超过 Gitee / GitHub 的「单文件 100 MiB 上限」——
+#   直接提交会把**整次 push** 打回来（2026-10-08 实测：remote: ... size: 120.666MB, exceeds quota 100MB），
+#   而且 gzip -9 压到 120.6 MiB 也过不去。所以切成 vendor/dewu/dewu_6.0.5.apk.part01/.part02 进 git，
+#   拼回来的单文件按需生成（`node tools/dewuapk-assemble.js`，npm run dist:win 里已自动带上）。
+# ⚠️ 别把这条删了 —— 一旦手动 git add 了这个单文件，远端会连整次推送一起拒。
+/vendor/dewu/dewu_6.0.5.apk
+/vendor/dewu/dewu_6.0.5.apk.assembling
+
 # ---------- 应用运行时数据 ----------
 # 正常情况下它们在 %APPDATA%\dewu-bluev-publisher（userData），不在仓库里；
 # 这里再兜一层，避免有人把输出目录指到工程内之后误提交。

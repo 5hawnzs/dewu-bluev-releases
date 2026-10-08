@@ -2191,11 +2191,22 @@ npm i tesseract.js
 
 ## 现状：已推上私有远端 ✅
 
+> ★★ **2026-10-08：远端从 Gitee 换成 GitHub** ——
+> `https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git`（**私有**）。
+> 换的原因：Gitee 免费版把「单文件 / 单仓库容量」卡死了（内置的得物安装包 127.1 MiB 实测被拒：
+> `size: 120.666MB, exceeds quota 100MB`；仓库总量也逼近 500 MB 上限）。**GitHub 单文件同样是 100 MiB 硬限**，
+> 但仓库总量与私有仓库协作人数没有硬锁。得物安装包因此在仓库里**分卷**存放（`vendor/dewu/*.apk.part01/.part02`），
+> 打包前 `node tools/dewuapk-assemble.js` 拼回（`npm run dist:win` 已自动带上）。详见 `vendor/README.md` §4.1。
+> 推送凭据：**HTTPS + Personal Access Token**（本机在 `~/.git-credentials`）。下面几段里写「Gitee」的
+> 是当时的历史记录，地址照本文这条走。
+
 ```
-远端      git@gitee.com:abulaitifans/dewu-bluev-publisher.git     （Gitee · 私有）
+远端      https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git   （GitHub · ★ 私有）
+          （原 git@gitee.com:abulaitifans/dewu-bluev-publisher.git 已弃用）
 首次提交  4622e1a「首次提交：得物蓝V素材发布工具」 44 个文件 / 12,962 行
 分支      main（已 set upstream 到 origin/main）
-忽略规则  .gitignore：node_modules/（522MB）、dist/（169MB 安装包）、运行时数据、快照 tar
+忽略规则  .gitignore：node_modules/（522MB）、dist/（169MB 安装包）、运行时数据、快照 tar、
+          以及 vendor/dewu 下**拼回来的那个 127 MiB 单文件**（只存分卷片段）
 ```
 
 `.git` 只有 428KB。**安装包不要进 git**（二进制进了历史就删不干净）→ 发给同事走 Releases / 网盘。
@@ -2208,7 +2219,7 @@ npm i tesseract.js
 
 ```bash
 git config user.name  "张硕"
-git config user.email "shawnz2000@outlook.com"   # 换成 Gitee 账号绑定的邮箱，提交才会关联到你的账号
+git config user.email "shawnz2000@outlook.com"   # 换成你 GitHub 账号绑定的邮箱，提交才会关联到你的账号
 ```
 
 （换机器 `git clone` 之后也要先配一次。）
@@ -2240,7 +2251,9 @@ git push -u origin HEAD       # 合并走 PR，冲突在合并时暴露，而不
   **同一把公钥可以同时登记到 Gitee / GitHub / 公司 GitLab，互不冲突**。
 - 私钥文件约 460+ 字节（比 411 字节的"无密码"版更大）说明设了口令，push 时会问一次；想免输入：
   `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`。
-- 测连接：`ssh -T git@gitee.com` → 成功回 `Hi 用户名! You've successfully authenticated...`（第一次会问 `yes/no`，输 yes）。
+- 测连接：`ssh -T git@github.com` → 成功回 `Hi 用户名! You've successfully authenticated...`（第一次会问 `yes/no`，输 yes）。
+  ★ 换了 GitHub 之后**先测再推**：本机那把钥匙实测没登记到 GitHub，会回 `Permission denied (publickey)`；
+  不想折腾 SSH 就直接用 HTTPS + PAT（见本文 §10 开头那条注）。
 - ⚠️ 永远不要把**没有 `.pub` 结尾**的那个文件（`~/.ssh/id_ed25519`，私钥）发给任何人。
 
 ## 以后换平台 / 同时推两个平台（不用动工程目录）
@@ -2252,8 +2265,8 @@ git 的「远端」只是一个地址，随时可换；代码、历史、`.gitig
 git remote set-url origin git@新平台:用户名/仓库.git
 git push -u origin main
 
-# ② 两个平台同时保留（origin 保持 Gitee，再加一个 backup）
-git remote add backup git@github.com:用户名/仓库.git
+# ② 两个平台同时保留（origin 现在就是 GitHub，再挂一个 Gitee 当 backup）
+git remote add backup git@gitee.com:abulaitifans/dewu-bluev-publisher.git
 git push -u backup main
 # 之后：git push origin main && git push backup main
 # 也可以给 origin 追加第二个 push 地址，一条命令推两边：

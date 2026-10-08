@@ -94,6 +94,24 @@ if (!fs.existsSync(ELECTRON) && !ELECTRON.endsWith('.cmd')) {
 fixElectronOnMac();
 console.log('回归开始（每改一处都要跑完这一套）\n');
 
+// ---- 0) 前置：得物安装包在仓库里是**分卷**存的（单文件 100 MiB 上限，见 vendor/README.md §4.1）----
+// 不先拼回单文件，uicheck / adbtest 里那几条「内置的得物安装包在仓库里」会红 ——
+// 而那是**夹具没准备好**、不是产品坏了，很容易把人带偏。所以这一步失败就直接中止并说清原因，
+// 不把它混进下面 18 套的 PASS/FAIL 里（它不是断言，是前置）。
+{
+  const r = spawnSync(NODE, [path.join(ROOT, 'tools', 'dewuapk-assemble.js')], {
+    cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, maxBuffer: 8 * 1024 * 1024
+  });
+  const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  if (r.status !== 0) {
+    console.log('❌ 前置失败：得物安装包拼不回来（vendor/dewu 下的分卷片段缺了或坏了）');
+    console.log(out.split(/\r?\n/).map(l => '   ' + l).join('\n'));
+    console.log('   这一步没过就别往下看了 —— 后面 uicheck / adbtest 的失败是它引起的。\n');
+    process.exit(1);
+  }
+  console.log('前置（得物安装包分卷拼接）：' + out.split(/\r?\n/).pop().trim() + '\n');
+}
+
 let failed = 0;
 let totalPass = 0;
 for (const [name, kind, args] of SUITES) {

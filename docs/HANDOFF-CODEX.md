@@ -66,7 +66,14 @@
 | `web/` `build/` | 发布看板 + 图标源 | 4 |
 | `README.md` `package.json` `.gitignore` | 模块说明与测试套件表 / 构建与发布配置 / **忽略规则（含"凭据绝不入库"）** | 3 |
 
-**远端**：`git@gitee.com:abulaitifans/dewu-bluev-publisher.git`（私有），分支 `main`。
+**远端**：`https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git`（★ **私有**），分支 `main`。
+> ★★ 2026-10-08 **换过远端**：原 `git@gitee.com:abulaitifans/dewu-bluev-publisher.git` 已弃用。
+> 原因：Gitee 免费版把「单文件 / 单仓库容量」卡死了 —— 内置的得物安装包 127.1 MiB 进不去（实测
+> `size: 120.666MB, exceeds quota 100MB`），且总仓库容量已逼近 500 MB 上限。
+> **GitHub 单文件同样是 100 MiB 硬限**（这点没变好），但**仓库总量与私有仓库协作人数没有硬锁**。
+> 因此得物安装包在仓库里是**分卷**存的（`vendor/dewu/dewu_6.0.5.apk.part01/.part02`，
+> 打包前用 `node tools/dewuapk-assemble.js` 拼回，`npm run dist:win` 已自动带上）—— 见 `vendor/README.md` §4.1。
+> 推送凭据 = **HTTPS + Personal Access Token**（在 `~/.git-credentials`；原机**没有**把 SSH 公钥登记到 GitHub）。
 **提交身份**：`张硕 <shawnz2000@outlook.com>`（若换机 clone，先把它设成你自己的 —— 见 `docs/HANDOFF.md` §10）。
 
 ---
@@ -79,7 +86,7 @@
 | --- | --- | --- | --- |
 | 1 | **依赖** | `D:\work\dewu-bluev-publisher` 下跑 `npm install`，再跑一次 `npm run addon:win`（强制取 Windows 版 sharp；交叉打包带上 macOS 版会让 HEIC 失效） | ★ 挡 |
 | 2 | **发版凭据** | 仓库根 `.env`（已存在，518 B，已 gitignore）：`COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET` / `COS_REGION`。**只在打包机上，绝不许进 git、绝不许贴出来** | 只在发版时挡 |
-| 3 | **推代码的 SSH key** | `~/.ssh` 下 gitee 的钥匙（本机已配好，能用 `git ls-remote origin` 验证） | 只在推送时挡 |
+| 3 | **推代码的凭据** | ★ 2026-10-08 起走 **HTTPS + Personal Access Token**：`~/.git-credentials` 里一条 `https://<用户名>:<token>@github.com`（token 要 `repo` 权限）。原机那把 `~/.ssh/id_ed25519` **没有登记到 GitHub**，别指望 `git@github.com:` 能推（实测 `Permission denied (publickey)`）。取证：`git ls-remote origin` 返回即通 | 只在推送时挡 |
 | 4 | **模拟器** | MuMu 12，装机路径 `D:\MUMU\MuMuPlayer\nx_main`（**本机没有雷电**）。设备串以 `adb devices` **真名**为准 —— 同一台机可能同时报 `127.0.0.1:16384` 与 `emulator-5554`，按 `android_id` 去重 | 跑发布链路时挡 |
 | 5 | **真机得物 App** | 发布链路**只能在真机上验证**；没有设备就只能改代码、跑不依赖设备的回归 | 跑发布链路时挡 |
 | 6 | **素材** | 图片/视频/Excel 发布单（`报告*.xlsx`）；有些用例还要「Excel 被 WPS 占用」这种现场条件 | 跑发布链路时挡 |
@@ -95,7 +102,7 @@
 
 | 项 | 实测值 |
 | --- | --- |
-| 远端 / 分支 | `git@gitee.com:abulaitifans/dewu-bluev-publisher.git` / `main` |
+| 远端 / 分支 | `https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git` / `main`（★ 2026-10-08 从 Gitee 迁来） |
 | HEAD | **现查** `git log -1 --format=%H`（本文件不钉哈希，钉了就必然过期） |
 | 提交总数 | 编制时 `git rev-list --count HEAD` = **102** |
 | 工作树 | 干净（`git status --short` 无输出） |

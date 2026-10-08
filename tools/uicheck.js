@@ -105,6 +105,54 @@ app.whenReady().then(async () => {
   ok('★ 打包配置会把 vendor/dewu 搬进 resources/dewu（否则"内置了"也进不了安装包）',
     erTxt.includes('vendor/dewu'), erTxt);
 
+  // ★★ 2026-10-08 新增：这个包在仓库里是**分卷**存的 —— 单文件 133,315,131 字节（127.1 MiB）
+  //   超过 Gitee / GitHub 的「单文件 100 MiB 上限」，实测会把**整次 push** 打回来
+  //   （remote: ... size: 120.666MB, exceeds quota 100MB），gzip -9 压到 120.6 MiB 也过不去。
+  //   所以切成 .part01/.part02 进 git，拼回来的单文件按需生成。这一段验三件事：
+  //   ① 片段齐、字节数之和 == dewuapk.js 写死的 BYTES；② 每一片都 <100 MiB；
+  //   ③ 拼接脚本在、且**接到了打包命令上**（少一处，「clone 下来就能打出带内置包的安装包」就不成立）。
+  const DEWU_DIR = path.join(ROOT, 'vendor', 'dewu');
+  const dewuParts = fs.readdirSync(DEWU_DIR).filter(f => f.startsWith(dewuMod.FILE + '.part')).sort();
+  const partSize = f => fs.statSync(path.join(DEWU_DIR, f)).size;
+  const partsSum = dewuParts.reduce((n, f) => n + partSize(f), 0);
+  ok('★ 得物安装包是「分卷」存的，片段字节数之和 == dewuapk.js 里写死的 BYTES',
+    dewuParts.length >= 2 && partsSum === dewuMod.BYTES,
+    `parts=${dewuParts.length} sum=${partsSum} expect=${dewuMod.BYTES}`);
+  ok('★ 分卷的每一片都小于 100 MiB（有一片越线，整次推送照样被远端拒）',
+    dewuParts.length >= 2 && dewuParts.every(f => partSize(f) < 100 * 1024 * 1024),
+    dewuParts.map(f => `${f}=${partSize(f)}`).join(' '));
+  const asmPath = path.join(ROOT, 'tools', 'dewuapk-assemble.js');
+  const scripts = pkgJson.scripts || {};
+  // 顺着「打包命令 → npm run 的那个脚本 → 真正的文件」这条链查，不是只 grep 一个词。
+  // ★ 第一版这里直接拿 /dewuapk-assemble/ 去匹配 dist:win，而 dist:win 里写的是 `npm run assemble:dewuapk`
+  //   ⇒ 断言自己写错、造出一条**假红**（2026-10-08 实测踩到：产品接线是对的，红的却是测试）。
+  //   同时钉住**顺序** —— 先拼后打；顺序反了 electron-builder 搬的还是不存在的那份，等于白接。
+  const distWires = n => {
+    const v = scripts[n] || '';
+    const iAsm = v.search(/dewuapk-assemble|assemble:dewuapk/);
+    const iBuild = v.indexOf('electron-builder');
+    if (!(iAsm >= 0 && iBuild > iAsm)) return false;
+    if (/dewuapk-assemble\.js/.test(v)) return true;
+    return [...v.matchAll(/npm run\s+([^\s&|]+)/g)].some(m => /dewuapk-assemble\.js/.test(scripts[m[1].trim()] || ''));
+  };
+  ok('★ 拼接脚本在、打包命令**先拼后打**、且这一步真能落到脚本文件上（缺席 ⇒ 新机器 clone 后打不出带内置包的安装包）',
+    fs.existsSync(asmPath) && distWires('dist:win') && distWires('dist:win-only'),
+    `脚本=${fs.existsSync(asmPath) ? '在' : '缺'} · dist:win=${distWires('dist:win') ? '接上' : '没接'} · dist:win-only=${distWires('dist:win-only') ? '接上' : '没接'}`);
+  // 两层一起看：① .gitignore 里有那条**精确规则**（内容级）② 真问一次 git 会不会把它收进去（行为级）。
+  //   ★ 只留 ② 的话，机器上没 git 时 `check-ignore` 抛 ENOENT ⇒ 这一步会「空过」= 静默假绿，所以两层都要。
+  const giTxt = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+  const giLine = /^\/vendor\/dewu\/dewu_6\.0\.5\.apk\s*$/m.test(giTxt);
+  let ignoredReally = 'no-git';
+  try {
+    require('child_process').execFileSync('git', ['check-ignore', '-q', path.join('vendor', 'dewu', dewuMod.FILE)], { cwd: ROOT, stdio: 'ignore' });
+    ignoredReally = true;
+  } catch (e) {
+    ignoredReally = e && e.code === 'ENOENT' ? 'no-git' : false;
+  }
+  ok('★ 拼回来的单文件真被 git 忽略（内容级 .gitignore 那条 + 行为级 git check-ignore；误 add 进去 = 远端拒收整次推送）',
+    giLine && ignoredReally !== false,
+    `.gitignore 那条=${giLine ? '在' : '缺'} · git check-ignore=${ignoredReally}`);
+
   // 播两个品牌：「提示词配置」里那组「选择 / 默认选择」的断言要有行可点。
   // 自检跑在临时 userData 上，碰不到本机的 config.json / auth.json
   const brands = require(path.join(ROOT, 'src/main/brands.js'));

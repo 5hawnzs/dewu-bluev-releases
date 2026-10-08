@@ -24,7 +24,7 @@
 | 东西 | 走什么通道 | 敏感度 |
 | --- | --- | --- |
 | 源码 / 18 套回归 / `docs/` / `docs/knowledge/` / `AGENTS.md` | **`git clone`** | ⚠️ **2026-10-08 起不再是「公开级」**：源码里现在含**内置模型 key**（`src/main/llmdefaults.js`）⇒ **这个仓库不许公开、不许推公网**（见 §3.0 第 3 条） |
-| `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` `vendor/dewu/dewu_6.0.5.apk` | **`git clone`**（★ 这些二进制**已经在 git 里**，不用另外拷；得物安装包 127 MB，是这里面最大的一份） | 公开级 |
+| `vendor/adb/*` `vendor/ffmpeg/*` `vendor/adbkeyboard/ADBKeyboard.apk` `vendor/dewu/*.apk.part0*` | **`git clone`**（★ 这些二进制**已经在 git 里**，不用另外拷）。★ 得物安装包 127 MB，因为超过远端「单文件 100 MiB」上限，在仓库里是**分卷**存的（`.part01` + `.part02`）⇒ 用 `node tools/dewuapk-assemble.js` 拼回单文件（`npm run dist:win` 开头已自动带上，正常打包不用手跑）。详见 `vendor/README.md` §4.1 | 公开级 |
 | **`config.json`** | ★ **别整份拷** —— 用 `node tools/config-portable.js` 导出/导入（见 §3.1），再走加密包 / U 盘 / 内网共享。**绝不许走 git、不许贴聊天** | ★★（默认导出已抹密钥；加了 `--with-secrets` 就是 ★★） |
 | **`auth.json`** | 同上（或改用种子文件，见 §3.3） | ★★ 含账号口令哈希 |
 | **`.env`** | 同上（只有要发版的机器才需要） | ★★★ COS 对象存储 SecretKey |
@@ -41,11 +41,15 @@
 ## 2. 第一步：clone 与装依赖
 
 ```bat
-git clone git@gitee.com:abulaitifans/dewu-bluev-publisher.git D:\work\dewu-bluev-publisher
+git clone https://github.com/wfjdyhmtr2-glitch/dewu-bluev-publisher.git D:\work\dewu-bluev-publisher
 cd /d D:\work\dewu-bluev-publisher
 npm install
 npm run addon:win
 ```
+
+> ★★ 2026-10-08 **远端已从 Gitee 换成 GitHub**（原因见 `docs/HANDOFF-CODEX.md` §2 那条注）。
+> 用 HTTPS：第一次 `git clone` / `git push` 会问用户名与密码 —— 密码那栏填 **Personal Access Token**
+> （不是账号登录密码；token 需要 `repo` 权限），输一次后由 `credential.helper=store` 存进 `~/.git-credentials`。
 
 - `npm run addon:win` = `npm install --no-save --force --os=win32 --cpu=x64 @img/sharp-win32-x64@0.33.5 @img/sharp-libvips-win32-x64@1.0.4`
   ★ **必须跑**：交叉打包时若带上别的平台的 sharp，Windows 上 `require('sharp')` 会直接失败
@@ -91,7 +95,7 @@ npm run addon:win
    本机自己抓 / 导入的表**优先于**内置表。
 3. 内置 key 属**半公开凭据**（谁拿到包谁就能刷额度）⇒ 别推公网仓库、额度设上限、出事直接换。
    ★★ **2026-10-08 起这条连仓库一起管**：key 已经**提交进 git**（`src/main/llmdefaults.js`），
-   所以这个仓库（含 gitee 那个远端）**必须是私有的** —— 一旦公开推送，等于把 key 公开，
+   所以这个仓库（**2026-10-08 起远端在 GitHub；原 Gitee 远端已弃用，见 `docs/HANDOFF-CODEX.md` §2**）**必须是私有的** —— 一旦公开推送，等于把 key 公开，
    只能去服务商把这对 key **轮换掉**（删文件、改文件都救不回来，历史里还在）。
    换 key 后**重发包即生效**；同事若自己填过 key，让他把那个框清空就回到跟随内置。
    ★ 另：`tools/copytest.js` 里那条判据是**从模块读 key**（不写死），换 key 只需改 `llmdefaults.js` 一处。
@@ -278,9 +282,19 @@ node tools/run-all.js                   REM ★ 18 套应全绿
 
 ## 7. 第六步：推送能力（要提交代码才需要）
 
-- 原机用 gitee 的 SSH key（`~/.ssh`）。新机二选一：
-  1. 拷原机私钥过去（**也是敏感文件**，同样不许走 git）；或
-  2. **推荐**：在新机 `ssh-keygen -t ed25519` 生成新钥匙，把公钥加到 gitee 仓库的部署公钥（或账号公钥）。
+- ★★ **2026-10-08 起远端是 GitHub，且原机走的是 HTTPS + Personal Access Token（不是 SSH）** —— 新机照这条最省事：
+  1. 去 GitHub 生成一个 **Personal Access Token**（fine-grained 只勾 **Contents: Read and write** 就够；
+     classic 勾 `repo`）。★ **不要把 token 写进任何会被提交的文件**。
+  2. 第一次 `git clone` / `git push` 时用户名填账号、**密码那栏填 token**，之后 `credential.helper=store`
+     自动把它存进 `~/.git-credentials`（本机现在就是这个状态）。
+- 也可以改用 SSH（**可选**）：`ssh-keygen -t ed25519` 生成新钥匙 → 把**公钥**加到 GitHub 的
+  `Settings → SSH and GPG keys`。
+  - ★ 实测本机那把 `~/.ssh/id_ed25519` **没有登记到 GitHub**：`ssh -T git@github.com` 回
+    `Permission denied (publickey)`。注意 **端口 22 本身是通的**（回的是认证错误，不是连不上），
+    所以「以前能推 Gitee」**不能**推出「现在能推 GitHub」。
+- ⚠️ 脚本 / 非交互环境里推 GitHub 有个坑：system 级 `credential.helper=helper-selector`（GCM）会去弹 GUI
+  ⇒ **挂死到超时**。用 `-c credential.helper= -c credential.helper=store` 把助手栈清掉再推
+  （本仓库 `.git/config` 里已经写死了这条，正常 `git push` 不会踩）。
 - 设好提交身份（原机是 `张硕 <shawnz2000@outlook.com>`）：
   ```bat
   git config user.name "你的名字"
@@ -308,7 +322,9 @@ node tools/run-all.js                   REM ★ 18 套应全绿
 
 ## 9. 收尾：交接后必做
 
-- [ ] 旧机上**撤销不再需要的访问**：gitee 里把不再用的部署公钥/账号撤掉。
+- [ ] 旧机上**撤销不再需要的访问**：GitHub 里把不再用的 PAT / SSH key 撤掉；
+      如果 Gitee 那边的旧仓库还留着，也把不再用的部署公钥 / 账号撤掉
+      （★ **旧 Gitee 仓库只是「不再推」，并没有被删**，上面还有一份完整历史）。
 - [ ] 如果这次是通过聊天/U 盘传过密钥：传完**清理中转文件**（压缩包别留在下载目录/网盘）。
 - [ ] ★ 若两台机器**同时**开着云端上报且 `machineId` 撞了 ⇒ 看板上机器数不对，按 §4.1 修正。
 - [ ] 提醒接手方：`docs/knowledge/` 是**快照（2026-10-05）**，里面的断言数/体积/耗时**每次实测重取**。
