@@ -4,9 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const wp = require('./util/winpath');
+const uimapdefaults = require('./uimapdefaults');   // ★★ 出厂内置的 UI 定位表，见文件头与 withBuiltinMap()
 // ★ 这里原来 require 了 './clouddefaults'（为了把内置值补进配置）—— 已删。
 //   store **不需要也不许**知道内置的云地址：知道了就会有人再把它写回 config.json（＝固化）。
-//   内置值的唯一读点在 src/main/services/cloudsync.js 的 cfgOf()（读时兜底，不写回）。
+//   云内置值的唯一读点在 src/main/services/cloudsync.js 的 cfgOf()（读时兜底，不写回）。
+// ★★ 2026-10-08 例外一处：**UI 定位表**（./uimapdefaults）确实要 store 知道 —— 但**同样只读不写回**。
+//   为什么这次必须由 store 兜底：读它的地方有三个（jobs / publisher / 渲染层），
+//   各改各的会出现「发布能跑、界面却显示『定位表未配』」这种自相矛盾。放一个出口才只有一份真相。
+//   不写回的做法见 withBuiltinMap()：只在**内存里**返回一张补过的视图，cache 一个字节都不动。
 
 let cache = null;
 let saveTimer = null;
@@ -95,6 +100,10 @@ function defaults() {
       // ffmpeg 可执行文件。空 = 自动（优先内置、再退系统 PATH）。与 adbPath 同一套三段解析，
       // 实现在 src/main/services/video.js。同样只在「高级设置」里手填。
       ffmpegPath: ''
+      // ★★ 2026-10-08：**定位表（uiMap）千万不要写进这里**！
+      //   写进来 = 随每次 scheduleSave 落进 config.json = 固化（config.json 卸载都不删）⇒
+      //   以后换新表、重发包也顶不动老机器，而界面上看不出来（§T9 踩过，有实测）。
+      //   出厂内置表的唯一读点是 withBuiltinMap()：读时兜底、不写回。
     },
     window: { bounds: null, maximized: false },
     // ★ 2026-10-03 用户拍板：「app 颜色默认为浅色」。
@@ -209,8 +218,24 @@ function load() {
   return cache;
 }
 
+/**
+ * ★★ 2026-10-08：出厂内置的 UI 定位表 —— **只在「本机根本没有这个键」（undefined）时兜底，绝不写回**。
+ *
+ * 三个必须守住的点：
+ *  ① **只兜 undefined，不兜 null / ''**：显式 null 是「我就是要没有表」——tools/adbtest.js 正是用
+ *     `store.set({ publish: { uiMap: null } })` 验「未配定位表 ⇒ 必须报错」。兜了它，那条断言就假绿。
+ *  ② **本机有就用本机**（哪怕是自己抓的表、或导入了别人的表）⇒ 完全不兜底。
+ *  ③ **不写回 config.json**：这里返回的是一张**内存视图**（浅拷贝两级），cache 不动 ⇒
+ *     以后换新表重发包，各台机器升级后自动跟随（写回就是固化，config.json 卸载都不删）。
+ *  返回 c 本身（不拷贝）是常态路径，只在需要补表时多分配两个小对象 —— 不值得优化。
+ */
+function withBuiltinMap(c) {
+  if (!c || !c.publish || c.publish.uiMap !== undefined) return c;
+  return Object.assign({}, c, { publish: Object.assign({}, c.publish, { uiMap: uimapdefaults }) });
+}
+
 function get(key) {
-  const c = load();
+  const c = withBuiltinMap(load());
   if (!key) return c;
   return key.split('.').reduce((o, k) => (o == null ? o : o[k]), c);
 }

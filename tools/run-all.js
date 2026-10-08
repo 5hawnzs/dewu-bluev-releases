@@ -73,7 +73,8 @@ const SUITES = [
   ['releasetest', 'node', ['tools/releasetest.js']],
   ['prunetest', 'node', ['tools/prunetest.js']],
   ['logtest', 'node', ['tools/logtest.js']],
-  ['cloudtest', 'node', ['tools/cloudtest.js']]
+  ['cloudtest', 'node', ['tools/cloudtest.js']],
+  ['defaultstest', 'node', ['tools/defaultstest.js']]
 ];
 
 /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */

@@ -759,15 +759,26 @@ function startServer() {
     !/第 1 条|与第 1 条/.test(dCells[2]));
 
   /* ---- ⑥ 模型连不上 ⇒ 停下来报错，**不许**拿本地模板冒充 ---- */
-  store.set({ copy: { llm: { enabled: true, endpoint: ENDPOINT, apiKey: '', model: 'deepseek-flash' } } });
-  seen.length = 0;
-  const bad = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '没key批', label: '没key批' });
-  ok('⑥ 开了模型但没配 key ⇒ 任务失败（不是悄悄出一堆模板文案）',
-    bad.ok === false && /模型没连上/.test(bad.error || ''), bad.error);
-  ok('⑥ 失败时一次模型请求都没发（不存在「试一下再说」）', seen.filter(s => /chat/.test(s.url)).length === 0,
-    `发了 ${seen.filter(s => /chat/.test(s.url)).length} 次`);
-  const noCopy = path.join(TMP, '输出', 'batches', '没key批', 'copy.json');
-  ok('⑥ 失败时连 copy.json 都不落（不留下半批假产物）', !fs.existsSync(noCopy), wp.toDisplay(noCopy));
+  // ★★ 2026-10-08：出厂现在**内置了组织的模型 key**（llmdefaults.apiKey，用户拍板「装上即用」）⇒
+  //   「框里空着」不再等于「没配 key」。要验这条老防线，必须把**内置 key 也临时清掉**，
+  //   否则这个用例会变成假绿（其实拿着内置 key 发了请求）。跑完立刻还原，别污染后面的用例。
+  const llmD = require(path.join(base, 'src/main/llmdefaults.js'));
+  const savedBuiltinKey = llmD.apiKey;
+  llmD.apiKey = '';
+  let bad, noCopy;
+  try {
+    store.set({ copy: { llm: { enabled: true, endpoint: ENDPOINT, apiKey: '', model: 'deepseek-flash' } } });
+    seen.length = 0;
+    bad = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '没key批', label: '没key批' });
+    ok('⑥ 开了模型但没配 key ⇒ 任务失败（不是悄悄出一堆模板文案）',
+      bad.ok === false && /模型没连上/.test(bad.error || ''), bad.error);
+    ok('⑥ 失败时一次模型请求都没发（不存在「试一下再说」）', seen.filter(s => /chat/.test(s.url)).length === 0,
+      `发了 ${seen.filter(s => /chat/.test(s.url)).length} 次`);
+    noCopy = path.join(TMP, '输出', 'batches', '没key批', 'copy.json');
+    ok('⑥ 失败时连 copy.json 都不落（不留下半批假产物）', !fs.existsSync(noCopy), wp.toDisplay(noCopy));
+  } finally {
+    llmD.apiKey = savedBuiltinKey;
+  }
 
   // 前端也开着的地址打不通 → 同样要停下来
   store.set({ copy: { llm: { enabled: true, endpoint: 'http://127.0.0.1:1/v1', apiKey: 'sk-x', model: 'deepseek-flash' } } });
@@ -920,6 +931,30 @@ function startServer() {
   const cfgNo = copywriter.cfgOf();
   ok('⑩ 但读的时候要兜底成内置值，并说清来源是「跟随内置」',
     /^https:\/\//.test(cfgNo.endpoint) && cfgNo.endpointSource === '跟随内置' && !!cfgNo.model, cfgNo.endpoint + ' · ' + cfgNo.endpointSource);
+  // ★★ 2026-10-08：key 也内置了（用户拍板「装上即用」）—— 两条一起钉：兜得住 + 不写回。
+  // ★ 这里必须**重新读一次落盘**：上面那个 savedRaw 是 924 那次保存的内容，那时 apiKey 还是 902/906
+  //   设的 'sk-test' —— 拿它查「内置 key 有没有被写回」永远查不到（2026-10-08 定点破坏实测：假绿）。
+  store.set({ copy: { llm: { apiKey: '' } } });            // 写成空 = 「跟随内置」
+  await new Promise(r => setTimeout(r, 400));              // scheduleSave 是 250ms 防抖
+  const savedAfterEmpty = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile, 'utf8') : '{}';
+  let savedKey = '(读不到)';
+  try { savedKey = ((JSON.parse(savedAfterEmpty).copy || {}).llm || {}).apiKey; } catch (e) { /* 忽略 */ }
+  const cfgKey = copywriter.cfgOf();
+  ok('⑩ ★★ 出厂 apiKey 留空，但读的时候兜底成**内置的组织 key**（同事装上不用填就能出 AI 文案）',
+    !!cfgKey.apiKey && cfgKey.apiKey === llmD.apiKey && cfgKey.apiKeySource === '跟随内置',
+    JSON.stringify({ src: cfgKey.apiKeySource, len: (cfgKey.apiKey || '').length }));
+  ok('⑩ ★★ 落盘的那份必须是**空**（界面上留空＝跟随内置，不是把内置值抄进配置文件）',
+    savedKey === '', `config.json 里 copy.llm.apiKey = ${JSON.stringify(savedKey)}`);
+  // ★ 判据取「内置模块里那个 key」（`savedBuiltinKey` 是 ⑥ 里抓的原始值），**不许把 key 写死在断言里**：
+  //   否则换 key 那天这条会拿着旧 key 去比对 —— 明明没写回却报红（假红）。key 字面量只该有一个出处 = llmdefaults.js。
+  const builtinKeyHit = !!savedBuiltinKey && savedAfterEmpty.includes(savedBuiltinKey);
+  ok('⑩ ★★ 内置 key 也**没有**被写进 config.json（写回＝固化：换 key 后重发包就顶不动了）',
+    !builtinKeyHit,
+    '内置 key 出现在文件里 = ' + builtinKeyHit
+      + '（文件里另有它自己设的 ' + ((savedAfterEmpty.match(/sk-[A-Za-z0-9]+/) || ['无'])[0]) + '）');
+  store.set({ copy: { llm: { apiKey: 'sk-mine' } } });
+  ok('⑩ ★★ 同事自己填了 key ⇒ 用他的（内置 key 不许顶掉本机配置）',
+    copywriter.cfgOf().apiKey === 'sk-mine' && copywriter.cfgOf().apiKeySource === '本机配置');
   store.set({ copy: { llm: { endpoint: 'https://my.gateway/v1', model: 'my-model' } } });
   const cfgOwn = copywriter.cfgOf();
   ok('⑩ 本机填了就以填的为准（来源写成「本机配置」）',

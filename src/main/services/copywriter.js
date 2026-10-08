@@ -82,12 +82,16 @@ function cfgOf() {
   //   而 `'false' !== false` 是 true ⇒ 「不送图」会被读成「送图」。老配置里也留有字符串。
   const bool = v => !(v === false || v === 'false' || v === 0 || v === '0' || v === '');
   const own = String(c.endpoint || '').trim();
+  // ★★ 2026-10-08：key 也走「留空＝跟随内置」（llmdefaults.apiKey，组织统一 key，用户拍板内置）。
+  //   与 endpoint 同一套口径：本机填了以本机为准，留空才落回内置，且**绝不写回 config.json**。
+  const ownKey = String(c.apiKey || '').trim();
   return {
     // 开关：显式开了才叫「要 AI 文案」。关着 = 用户主动选本地模板（报告里会逐行标出来）
     enabled: bool(c.enabled),
     endpoint: own || llmdefaults.endpoint,
     endpointSource: own ? '本机配置' : '跟随内置',
-    apiKey: String(c.apiKey || '').trim(),
+    apiKey: ownKey || llmdefaults.apiKey || '',
+    apiKeySource: ownKey ? '本机配置' : '跟随内置',
     model: String(c.model || '').trim() || llmdefaults.model,
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.9,
     // 看图：默认开（只有明确写成 false / 'false' / 0 才是真的不看图）
