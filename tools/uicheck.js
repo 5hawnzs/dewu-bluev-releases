@@ -355,6 +355,28 @@ app.whenReady().then(async () => {
   };
   ok('页签 2 有「导出报告」', await onTab(2, 'comp:export'));
   ok('页签 3 有「选择素材目录并启动任务」', await onTab(3, 'copy:pickRun'));
+  // ★ 2026-10-08 用户要求删除页签 3 的「按当前素材生成」（原话：一般没点目录的时候不会有当前素材，
+  //   两个功能重复了）。按老规矩**读真 DOM** 证明它真没了 —— 光删源码行不算。
+  ok('★ 页签 3「按当前素材生成」已删除（DOM 里连按钮都不剩，不是藏起来）',
+    !(await onTab(3, 'copy:run')));
+  // 一并钉住**读取链**也真删了。★ 负向断言只认**代码行**：注释里会提到这串名字（解释为什么删），
+  //   不剥注释就会把注释当命中去误报（老坑）。
+  {
+    const codeNoCmt = t => t.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+    const appCode = codeNoCmt(fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8'));
+    ok('★ 页签 3 的动作处理器 copy:run 已从渲染层源码删除（不是只藏按钮）',
+      !/'copy:run'/.test(appCode) && !/"copy:run"/.test(appCode));
+    const jobsCode = codeNoCmt(fs.readFileSync(path.join(ROOT, 'src', 'main', 'jobs.js'), 'utf8'));
+    // ★ 判据要选**只属于被删分支**的写法。别拿「请先做素材整理」当判据 —— 那句还留在
+    //   compliance.scan / verify.check 里（是共用文案），拿它判会**恒为真 ⇒ 假 FAIL**。
+    ok('★ 主进程「拿当前工程 items 生成」那条分支已删（它独享的回写 copyRows 与 generate(st().items) 都没了）',
+      !/copywriter\.generate\(st\(\)\.items/.test(jobsCode)
+      && !/copyRows:\s*r\.rows/.test(jobsCode)
+      && !/s0\.flatDir/.test(jobsCode));
+    ok('★ 缺 sourceDir 时改为**显式报错**（不许 case 落空、静默返回 undefined）',
+      /文案生成必须指定素材目录/.test(jobsCode));
+  }
   // ★「发布单」页签 2026-10-03 已删（用户要求）。删了就必须**读真 DOM**证明它真没了 ——
   //   光删源码行不算，以后有人把按钮加回来、或 index.html 里留了个隐藏按钮，都发现不了。
   ok('★ 页签 5「发布单」已删除（导航里连按钮都不剩，不是藏起来）',

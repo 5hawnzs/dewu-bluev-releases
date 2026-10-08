@@ -631,8 +631,10 @@ TABS[3] = {
   desc: '看图写标题正文 · 话题组合去重 · 跑完落一份带时间戳的 AI 内容报告',
   actions: () => [
     { act: 'copy:prompt', label: '提示词配置' },
-    { act: 'copy:pickRun', label: '选择素材目录并启动任务', primary: true },
-    { act: 'copy:run', label: '按当前素材生成' }
+    // ★ 2026-10-08 用户要求删掉「按当前素材生成」：用户原话「一般没点目录的时候不会有当前素材，
+    //   所以这两个功能重复了」。文案生成只剩按批次这一条路（下面 ACTS 里的 'copy:run' 与
+    //   主进程 jobs.js 里那条「拿当前工程 items 生成」的分支一并删除，不留死代码）。
+    { act: 'copy:pickRun', label: '选择素材目录并启动任务', primary: true }
   ],
   render() {
     const p = state.project;
@@ -2660,10 +2662,9 @@ const ACTS = {
     }
   },
 
-  'copy:run': async () => {
-    const r = await runJob('copy.generate');
-    if (r.ok) await afterCopy(r);
-  },
+  // ★ 2026-10-08 用户要求删除「按当前素材生成」⇒ 它唯一的处理器 'copy:run' 也随之删除。
+  //   注意：'copy:run' 原来就是不带 sourceDir 直接调 copy.generate —— 删掉它是**真的删功能**，
+  //   主进程那条对应分支（jobs.js）也一并删了，不是只把按钮藏起来。
   'copy:pickRun': async () => {
     const d = await appApi.pickDir({ title: '选择素材目录（一个目录 = 一个批次，可同时跑多个）', defaultPath: state.project.sourceDir || '' });
     if (!d) return;

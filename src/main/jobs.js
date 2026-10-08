@@ -232,29 +232,14 @@ async function dispatch(type, args, ctx) {
           reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged,
           reportByLevel: rep.byLevel, reportVerify: rep.verify, reportFallback: rep.fellBack
         };
+      } else {
+        // ★ 2026-10-08 用户要求删除页签 3 的「按当前素材生成」按钮（原话：「一般没点目录的时候
+        //   不会有当前素材，所以这两个功能重复了」）⇒ 这里随之删除它独享的那条分支：
+        //   「拿当前工程 items 生成 + 回写 project.copyRows」。
+        //   留一条**显式报错**而不是让 case 落空返回 undefined —— 万一还有调用方不带 sourceDir，
+        //   要立刻看到「必须指定素材目录」，不许静默地什么都没发生。
+        throw new Error('文案生成必须指定素材目录：请点「选择素材目录并启动任务」（一个目录 = 一个批次）。');
       }
-      if (!st().items.length) throw new Error('请先做素材整理');
-      const r = await copywriter.generate(st().items, ctx);
-      project.patch({ copyRows: r.rows });
-      // 一样出一份带时间戳的报告：落点优先用「这一批的素材目录」（工程里存着），没有就落到输出目录
-      const s0 = st();
-      const rep = await aireport.write({
-        dir: itemsDir(s0.items) || s0.flatDir || s0.sourceDir || '', fallbackDir: store.get('paths.output'),
-        batch: s0.batch || (path.basename(s0.sheet.file || '', '.xlsx')) || '单批',
-        brandName: ctx.brand.brandName, sourceDir: s0.sourceDir || '',
-        items: s0.items, rows: r.rows,
-        gen: { modelId: r.modelId, genSource: r.genSource, endpoint: r.endpoint, endpointSource: r.endpointSource, vision: r.vision }
-      });
-      logbus.ok(`AI 内容报告（${rep.rows} 行）→ ${wp.toDisplay(rep.file)}`);
-      if (rep.flagged) logbus.warn(`报告里 ${rep.flagged} 行的「文案核对」不是「一致」—— 打开报告按那一列筛一下`);
-      // 大结论（2026-10-05）：与「按素材目录起批次」那条**同一个口径**
-      const okN = r.rows.filter(x => x.status === '已生成').length;
-      ctx.conclude(`文案生成成功【目标 ${s0.items.length} 条，成功 ${okN} 条，失败 ${r.failed || 0} 条】（${r.genSource || (r.llm ? 'AI' : '本地模板')}）`,
-        r.failed ? 'warn' : 'ok');
-      return {
-        count: r.rows.length, warning: r.warning, llm: r.llm, genSource: r.genSource || '',
-        reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged, reportByLevel: rep.byLevel
-      };
     }
     // 「接口自检」：一次网络往返把「地址通不通 / 模型名接口认不认 / 这个模型收不收图」说清楚。
     // 为什么要有这个按钮：上一版这些事**全靠生成时才暴露**，而失败还被静默吞成「本地模板」，
