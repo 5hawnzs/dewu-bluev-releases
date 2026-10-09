@@ -2359,6 +2359,33 @@ app.whenReady().then(async () => {
       };
     })()`);
 
+    const statsInteraction = await win.webContents.executeJavaScript(`(() => {
+      const oldTab = state.tab;
+      state.tab = 8;
+      const b = state.stats.brands[0], oldUsers = b.users;
+      b.users = [1,2,3].map(i => ({ userId:'u'+i, username:'账号'+i, displayName:i === 3 ? '<img src=x onerror=alert(1)>' : '执行人'+i, rows:i, ok:i, fail:0 }));
+      state.stats.account = { available:true, rows:9, ok:7, fail:2 };
+      renderAll();
+      const btn = document.querySelector('[data-act="stats:users"]');
+      const folded = !!btn && btn.textContent.includes('3');
+      if(btn) btn.click();
+      const popup = !document.querySelector('#umodal').hidden && document.querySelectorAll('#umBox tbody tr').length === 3;
+      const escaped = !document.querySelector('#umBox img');
+      closeUserModal();
+      const centered = [...document.querySelectorAll('.stats-page th,.stats-page td')].every(e => getComputedStyle(e).textAlign === 'center');
+      const account = document.querySelector('#pane').textContent.includes('本账号汇总') && document.querySelector('#pane').textContent.includes('已发布篇数');
+      b.users = b.users.slice(0,2); renderAll();
+      const inline = !document.querySelector('[data-act="stats:users"]') && document.querySelector('#pane').textContent.includes('执行人1');
+      b.users = oldUsers; delete state.stats.account; state.tab = oldTab; renderAll();
+      return { folded,popup,escaped,centered,account,inline };
+    })()`);
+    ok('品牌执行人超过两位折叠为可点击按钮', statsInteraction.folded);
+    ok('实际点击执行人按钮弹出完整名单', statsInteraction.popup);
+    ok('执行人弹窗转义名称，阻止 HTML 注入', statsInteraction.escaped);
+    ok('品牌统计表头和数据全部居中', statsInteraction.centered);
+    ok('统计页显示本账号累计成功篇数', statsInteraction.account);
+    ok('两位执行人保持行内显示', statsInteraction.inline);
+
     try {
       // 把窗口缩到应用允许的最小尺寸 —— 这就是「用户把窗口拖到底」
       win.setSize(MIN.w, MIN.h);

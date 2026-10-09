@@ -176,10 +176,13 @@ function register() {
   }));
 
   // ---- 品牌统计（频次 / 数量 / 执行日志）----
-  handle('stats:query', guard((_e, opts) => {
+  handle('stats:query', guard(async (_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;                       // 范围只认主进程算出来的，不认前端传的
-    return Object.assign({ ok: true }, stats.query(statsOptions(o)));
+    const history = require('./services/publishhistory');
+    if (auth.cloudMode()) await history.refresh(require('./services/sheet').logFile());
+    const account = auth.cloudMode() ? await history.account(auth.current() && auth.current().id) : null;
+    return Object.assign({ ok: true, account }, stats.query(statsOptions(o)));
   }));
   handle('stats:export', guard(async (_e, opts) => {
     const o = Object.assign({}, opts || {});

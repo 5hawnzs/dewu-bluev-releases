@@ -118,7 +118,14 @@
     </div>
 
     <div class="card">
-      <h2>最近明细（最新 200 条 · 含模拟/探针，灰色）</h2>
+      <h2>账号汇总</h2><div class="tw"><table id="tAccounts"></table></div>
+    </div>
+    <div class="card">
+      <h2>品牌汇总</h2><div class="tw"><table id="tBrands"></table></div>
+    </div>
+    <div class="card">
+      <h2>发布明细</h2>
+      <div><button id="prevRows">上一页</button> <span id="rowsPage"></span> <button id="nextRows">下一页</button></div>
       <div class="tw"><table id="tRows"></table></div>
     </div>
 
@@ -133,6 +140,7 @@
   <p class="hint" id="foot"></p>
 </main>
 
+<script src="metrics.js"></script>
 <script type="module">
 /** 只读看板：只做 select，没有任何写操作。数字取不到就显示「—」，绝不拿 0 冒充。 */
 const $ = s => document.querySelector(s);
@@ -193,7 +201,7 @@ const kindOf = r => (/模拟/.test(String(r.result || '')) || String(r.mode || '
 function dedupe(list){
   const seen = new Set(), out = [];
   for(const r of list){
-    const k = [r.machine_name || r.machine_id || '', r.ts, r.seq, r.batch_no || '', r.dir_name || '', r.result || ''].join('\u0001');
+    const k = [r.machine_name || r.machine_id || '', r.ts, r.seq, r.batch_no || '', r.dir_name || '', r.result || '', r.user_id || r.username || '', r.brand_id || r.brand_name || ''].join('\u0001');
     if(seen.has(k)) continue;
     seen.add(k); out.push(r);
   }
@@ -201,6 +209,7 @@ function dedupe(list){
 }
 /** 机器归一的键：**用机器名**（同一台电脑换过 id 但名字没变 ⇒ 合并成一行） */
 const mkey = r => (r.machine_name || r.machine_id || '?');
+const ukey = r => String(r.user_id || r.username || r.display_name || '');
 
 function conn(kind, text){ const el = $('#conn'); el.className = 'chip ' + (kind||''); el.textContent = text; }
 
@@ -245,21 +254,18 @@ async function connect(persist){
   await load();
 }
 
+let loading = false, detailPage = 0;
 async function load(){
   if(!sb) return;
+  if(loading) return;
+  loading = true;
   conn('wait','读取中…');
   $('#btnRefresh').disabled = true;
-  const limit = 5000;   // 只读最近 5000 条来聚合；要全量对账就去本机导 Excel（本机 jsonl 才是完整账）
   const [{ data, error }, { data: tasks, error: taskError }] = await Promise.all([
-    sb.from('publish_log')
-      .select('ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_name,username,display_name')
-      .eq('org', ORG)
-      .order('ts', { ascending: false }).limit(limit),
-    sb.from('run_log')
-      .select('event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_name,username,display_name,ok,cancelled,elapsed_sec,error_summary')
-      .eq('org', ORG)
-      .order('ts', { ascending: false }).limit(2000)
+    BoardMetrics.readAll(sb, ORG, 'publish_log', 'ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_id,brand_name,user_id,username,display_name'),
+    BoardMetrics.readAll(sb, ORG, 'run_log', 'event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary')
   ]);
+  loading = false;
   $('#btnRefresh').disabled = false;
   if(error){
     conn('bad','读取失败');
@@ -272,7 +278,7 @@ async function load(){
   dupFold = raw.length - rows.length;
   taskRows = tasks || [];
   taskLoadError = taskError ? String(taskError.message || taskError) : '';
-  conn('ok', `已连接 · 发布 ${rows.length} 条 · 任务最近 ${taskRows.length} 条`);
+  conn('ok', `已连接 · 发布 ${rows.length} 条 · 任务 ${taskRows.length} 条`);
   $('#main').hidden = false;
   render();
 }
@@ -282,7 +288,7 @@ function filtered(){
   const cut = days ? Date.now() - days*86400000 : 0;
   const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
   return rows.filter(r => (!cut || Number(r.ts) >= cut)
-    && (!m || mkey(r) === m) && (!u || (r.display_name || r.username || '') === u)
+    && (!m || mkey(r) === m) && (!u || ukey(r) === u)
     && (!b || (r.brand_name || '') === b));
 }
 
@@ -293,9 +299,11 @@ function fillFilters(){
       arr.map(v => `<option value="${esc(v)}" ${v===cur?'selected':''}>${esc(v)}</option>`).join('');
   };
   const combined = rows.concat(taskRows);
-  const u = [...new Set(combined.map(r => (r.display_name || r.username || '').trim()).filter(Boolean))].sort();
+  const accounts = new Map(combined.filter(r => ukey(r)).map(r => [ukey(r), [r.username, r.display_name].filter(Boolean).join(' / ') || ukey(r)]));
   const b = [...new Set(combined.map(r => (r.brand_name || '').trim()).filter(Boolean))].sort();
-  sel($('#fUser'), u); sel($('#fBrand'), b);
+  const userSel = $('#fUser'), currentUser = userSel.value;
+  userSel.innerHTML = '<option value="">全部</option>' + [...accounts].map(([id, label]) => `<option value="${esc(id)}" ${id === currentUser ? 'selected' : ''}>${esc(label)}</option>`).join('');
+  sel($('#fBrand'), b);
   // ★ 机器按**名字**列（不是 machine_id）：同一台电脑换过 id 时只出现一次
   const names = [...new Set(combined.map(mkey))].sort();
   const el = $('#fMachine');
@@ -310,7 +318,7 @@ function filteredTasks(){
   const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
   return taskRows.filter(r => (!cut || Number(r.ts) >= cut)
     && (!m || mkey(r) === m)
-    && (!u || (r.display_name || r.username || '') === u)
+    && (!u || ukey(r) === u)
     && (!b || (r.brand_name || '') === b));
 }
 
@@ -356,7 +364,7 @@ function render(){
   // ---- 按机器 / 执行人 ----
   const byWho = new Map();
   for(const r of list){
-    const k = mkey(r) + ' / ' + ((r.display_name || r.username || '').trim() || '未标执行人');
+    const k = mkey(r) + ' / ' + ([r.username,r.display_name].filter(Boolean).join(' / ') || '未标执行人');
     const o = byWho.get(k) || { n:0, ok:0, bad:0, last:0, ids:new Set() };
     o.n++; if(r.result === '发布成功') o.ok++; else if(r.result === '失败') o.bad++;
     o.last = Math.max(o.last, Number(r.ts)||0);
@@ -368,10 +376,19 @@ function render(){
       <td class="num">${o.ok}</td><td class="num">${o.bad||''}</td>
       <td class="num">${o.n?Math.round(o.ok/o.n*100)+'%':'—'}</td><td class="hint">${fmt(o.last)}</td></tr>`).join('') || `<tr><td colspan="6" class="hint">—</td></tr>`) + '</tbody>';
 
+  for (const [dimension, target] of [['account', '#tAccounts'], ['brand', '#tBrands']]) {
+    $(target).innerHTML = `<thead><tr><th>${dimension === 'account' ? '账号 / 姓名' : '品牌'}</th><th>尝试发布</th><th>已发布篇数</th><th>失败</th></tr></thead><tbody>`
+      + (BoardMetrics.summarize(list, dimension).map(v => `<tr><td>${esc(dimension === 'account' ? (v.username + ' / ' + v.label) : v.label)}</td><td>${v.rows}</td><td>${v.ok}</td><td>${v.fail}</td></tr>`).join('') || '<tr><td colspan="4">暂无发布记录</td></tr>') + '</tbody>';
+  }
   // ---- 明细 ----
+  const pages = Math.max(1, Math.ceil(all.length / 200));
+  detailPage = Math.min(detailPage, pages - 1);
+  $('#rowsPage').textContent = `${detailPage + 1} / ${pages} 页 · 共 ${all.length} 条`;
+  $('#prevRows').disabled = detailPage === 0;
+  $('#nextRows').disabled = detailPage >= pages - 1;
   // ★ 明细列**全部**行（all，不是 list）：模拟/探针不参与统计，但**不许藏起来**，只是标成灰橙色的「模拟 / 探针」。
   $('#tRows').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>款</th><th class="num">篇号</th><th>类型</th><th>结果</th><th>原因</th><th class="num">耗时</th></tr></thead><tbody>` +
-    (all.slice(0,200).map(r => `<tr>
+    (all.slice(detailPage * 200, (detailPage + 1) * 200).map(r => `<tr>
       <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
       <td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.brand_name||'')}</td>
       <td>${esc(r.dir_name||'')}</td><td class="num">${esc(r.seq==null?'':r.seq)}</td>
@@ -394,18 +411,20 @@ function render(){
       : '运行日志暂时读取失败：' + taskLoadError)
     : '';
 
-  $('#foot').innerHTML = `数据来自各台机器上行的<b>发布结果</b>（取回 ${rows.length + dupFold} 行，最多 5000 条）。
+  $('#foot').innerHTML = `数据来自各台机器上行的<b>发布结果</b>（本轮全量取回 ${rows.length + dupFold} 行）。
     <br>· <b>统计口径：只算真实发布结果</b>（发布成功 / 失败）；另有 <b>${others.length}</b> 条「模拟 / 探针」<b>未计入</b>，
       它们仍列在「最近明细」里（灰色标签），不会凭空消失。
     <br>· 已折叠 <b>${dupFold}</b> 条重复行 —— 同一台电脑换过机器标识后会把整本台账重推一遍（唯一键含机器标识，去不掉），
       按「机器名＋时间＋篇号＋款」折叠。
     <br>· 机器按<b>机器名</b>合并：同一台电脑即使换过标识也只算一台。
-    <br>· <b>这一页是只读的，改不动任何东西</b> —— 完整对账请用本机导出的 Excel（本机 jsonl 才是完整账）。`;
+    <br>· 汇总按全量已同步数据计算，明细每页 200 条，可翻页查看。`;
 }
 
 $('#btnSave').onclick = () => connect(true);
 $('#btnSetup').onclick = () => { $('#setupCard').hidden = !$('#setupCard').hidden; };
 $('#btnRefresh').onclick = load;
+$('#prevRows').onclick = () => { detailPage = Math.max(0, detailPage - 1); render(); };
+$('#nextRows').onclick = () => { detailPage++; render(); };
 ['#fMachine','#fUser','#fBrand','#fDays','#goal'].forEach(s => { $(s).onchange = render; $('#goal').oninput = render; });
 $('#auto').onchange = () => {
   clearInterval(timer); timer = null;

@@ -76,6 +76,8 @@ const DUP_BODY = '{"code":"23505","details":null,"hint":null,"message":"duplicat
 // on_conflict 指名的列上没有对应唯一约束时的真实回包（用来验「非唯一冲突不许被当成已存在吞掉」）
 const NO_CONSTRAINT_BODY = '{"code":"42P10","details":null,"hint":null,"message":"there is no unique or exclusion constraint matching the ON CONFLICT specification"}';
 globalThis.fetch = async (url, opts) => {
+  // 本套件统计上传请求；清零策略查询由 historytest 专项覆盖。
+  if (String(url).includes('/publish_history_control?')) return { ok: true, json: async () => [] };
   calls.push({ url, opts });
   if (mode === 'tableMissingRun' && String(url).includes('/run_log?')) return {
     ok: false, status: 404, text: async () => '{"code":"PGRST205","message":"Could not find the table public.run_log in the schema cache"}'
@@ -496,8 +498,10 @@ let r = null;
     bUrl === CD.url && bKey === CD.anonKey && bOrg === CD.org,
     JSON.stringify({ board: { url: bUrl, keyHead: bKey.slice(0, 14), org: bOrg }, app: { url: CD.url, keyHead: CD.anonKey.slice(0, 14), org: CD.org } }));
   ok('★ 看板是只读的：只 select、按 org 过滤（它不该有任何写操作）',
-    /\.select\('ts,/.test(boardSrc) && /\.eq\('org', ORG\)/.test(boardSrc)
-      && !/\.insert\(|\.update\(|\.delete\(/.test(boardSrc));
+    (() => { const reader = fs.readFileSync(path.join(ROOT, 'web/metrics.js'), 'utf8');
+      return /BoardMetrics\.readAll\(sb, ORG/.test(boardSrc) && /\.eq\('org', org\)/.test(reader)
+        && /\.select\(/.test(reader) && !/\.insert\(|\.update\(|\.delete\(/.test(boardSrc + reader);
+    })());
   ok('★★ 看板里不许有任何真凭据（sb_secret_ / JWT 字面量），注释里提 service_role 不算',
     !/sb_secret_/.test(boardSrc) && !/eyJ[A-Za-z0-9_-]{20,}/.test(boardSrc));
 

@@ -59,6 +59,8 @@ delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
 const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
 
 const SUITES = [
+  ['historytest', 'node', ['tools/historytest.js']],
+  ['boardtest', 'electron', ['tools/boardtest.js']],
   ['securitytest', 'node', ['tools/securitytest.js']],
   ['sqlauth-securitytest', 'node', ['tools/sqlauth-securitytest.js']],
   ['topicinputtest', 'node', ['tools/topicinputtest.js']],

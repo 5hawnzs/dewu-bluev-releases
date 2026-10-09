@@ -103,7 +103,8 @@ function appendLog(entry) {
 
 function readLog() {
   try {
-    return fs.readFileSync(wp.toLong(logFile()), 'utf8').split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
+    const before = require('./publishhistory').cutoff();
+    return fs.readFileSync(wp.toLong(logFile()), 'utf8').split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(e => e && (!before || Number(e.ts) >= before));
   } catch (e) { return []; }
 }
 

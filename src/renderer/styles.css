@@ -524,3 +524,6 @@ button.btn.lx-transfer:active:not(:disabled){transform:scale(.96)}
      ① 侧栏要不要横排（用户明确说过不要）；
      ② .two（「素材整理」页的「整理前 / 整理后」两列）在窄屏要不要变单列。
      另：品牌统计页那张表需要 660px 宽，窗口窄于 934 它就会横向滚动。 */
+.stats-page th,.stats-page td,.stats-users th,.stats-users td{text-align:center!important;vertical-align:middle}
+.stats-page .stat,.stats-page h3,.stats-page .hint,.stats-page .empty{text-align:center}
+.stats-page .spark,.stats-page .tagline{justify-content:center}

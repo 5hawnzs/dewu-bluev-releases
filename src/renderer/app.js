@@ -542,7 +542,7 @@ TABS[1] = {
           <input class="inp mono" value="${esc(dir)}" readonly>
           <span class="chip">${plan ? plan.total + ' 个叶子目录 · ' + plan.fileTotal + ' 个文件' : '未生成清单'}</span>
         </div>
-        <p class="hint">命名规范：<b>货号+颜色</b>（如 <code>26FW-YB160+冠军白</code>）。加号是零歧义分隔符，任何品牌都不会把 <code>+</code> 写进货号，所以颜色段不查词典也能准确取到。</p>
+        <p class="hint">目录命名：<b>货号+颜色</b>（如 <code>26FW-YB160+象牙白</code>）。用加号分隔货号和颜色。</p>
       </div>
       ${running('flatten.run') ? progHtml(progFor('flatten.run')) : ''}
       <div class="two">
@@ -553,7 +553,7 @@ TABS[1] = {
         <div class="row"><input class="inp mono" value="${esc(p.flatDir)}" readonly>
         <button class="btn sm" data-act="flatten:openFlat">打开目录</button></div>
         <p class="hint">共 ${p.items.length} 个叶子目录${p.items[0] && p.items[0].absDir ? ' · ' + esc(p.items[0].absDir.split(/[\\/]/).slice(0, -1).join('/')) : ''}</p></div>` : ''}
-      <p class="hint">扁平名用 <code>${esc((state.config.flatten || {}).connector || '_')}</code> 连接原来的层级路径（真机：<code>8124MT_UWG450159+灰色+达人昵称_1</code>）；<b>原素材完全不动</b> —— 只建扁平副本，原目录不改名不移动。同卷建硬链接（只改元数据，1692 个链接 &lt; 2 秒），跨卷才实体复制；长路径自动加 <code>\\\\?\\</code> 前缀。</p>`;
+      <p class="hint">整理后保留原目录，只生成扁平副本。</p>`;
   }
 };
 
@@ -1166,7 +1166,7 @@ TABS[8] = {
       <td class="num">${b.batches}</td>
       <td class="mono">${esc(b.lastDay || '—')}</td>
       <td>${sparkHtml(b.byDay, maxRows)}</td>
-      <td class="cut">${b.users.length ? esc(b.users.map(u => `${u.displayName || u.username || '（未记录执行人）'} ${u.rows}`).join(' / ')) : '<span style="opacity:.6">（无记录）</span>'}</td>
+      <td>${b.users.length > 2 ? `<button class="btn sm" data-act="stats:users" data-id="${esc(b.id)}">查看 ${b.users.length} 位执行人 →</button>` : (b.users.length ? esc(b.users.map(u => `${u.displayName || u.username || '（未记录执行人）'} ${u.rows}`).join(' / ')) : '<span style="opacity:.6">—</span>')}</td>
     </tr>`;
 
     const summary = `<div class="tw"><table>
@@ -1230,7 +1230,11 @@ TABS[8] = {
       ? `共 ${totalLogs} 条，页面显示最近 ${shownLogs} 条；导出包含全部记录。`
       : `共 ${totalLogs} 条；导出包含全部记录。`;
 
-    return head + `
+    const own = s.account;
+    const accountBox = `<div class="box"><h3>本账号汇总 · 全部时间（跨设备）</h3>${own && own.available
+      ? `<div class="stats"><div class="stat good"><b>${own.ok}</b><span>已发布篇数</span></div><div class="stat"><b>${own.rows}</b><span>尝试发布</span></div><div class="stat bad"><b>${own.fail}</b><span>失败</span></div></div>`
+      : `<p class="hint">${esc(own && own.error || '云端账号汇总暂不可用')}，请稍后查询。</p>`}</div>`;
+    return '<div class="stats-page">' + head + `
       <div class="stats">
         <div class="stat good"><b>${t.rows}</b><span>发布条数</span></div>
         <div class="stat good"><b>${t.ok}</b><span>成功</span></div>
@@ -1247,10 +1251,11 @@ TABS[8] = {
         </div>
         ${state.statsPath ? `<p class="hint" style="margin:6px 0 0;color:${state.statsPath.ok ? 'var(--tx3)' : 'var(--red)'}">输出目录：${state.statsPath.ok ? '可写' : esc(state.statsPath.error || '不可写')}</p>` : ''}
       </div>
+      ${accountBox}
       ${notes}
       <div class="box"><h3>品牌汇总（${esc(s.range.label)}）</h3>${summary}</div>
       ${dailyBox}
-      ${m.isAdmin ? `<div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>` : ''}`;
+      ${m.isAdmin ? `<div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>` : ''}</div>`;
   }
 };
 
@@ -2231,6 +2236,13 @@ function renderUserModal() {
   const m = state.userModal;
   if (!m) { mask.hidden = true; box.innerHTML = ''; return; }
   mask.hidden = false;
+  if (m.view === 'statsUsers') {
+    const s = state.stats;
+    const b = s && [...s.brands, s.untagged, ...s.orphans].find(x => x.id === m.id);
+    box.innerHTML = `<div class="mh"><h3>${esc(b ? b.name : '品牌')} · 执行人</h3><span class="grow"></span><button class="btn sm" data-act="up:close">关闭</button></div>
+      <div class="mb"><div class="tw"><table class="stats-users"><thead><tr><th>账号</th><th>执行人</th><th>条数</th><th>成功</th><th>失败</th></tr></thead><tbody>${(b ? b.users : []).map(u => `<tr><td>${esc(u.username || '—')}</td><td>${esc(u.displayName || u.username || '—')}</td><td>${u.rows}</td><td>${u.ok}</td><td>${u.fail}</td></tr>`).join('')}</tbody></table></div></div>`;
+    return;
+  }
   box.innerHTML = m.view === 'pwd' ? upPwdHtml(m.id || '') : upPermHtml(m.id || '');
   // 重置密码那个输入框：开了就聚焦，回车直接提交。
   // ★ 回车只能在这儿绑 —— CSP 不许内联 onkeydown，而 bind() 只跑一次（那时弹窗还没建出来）
@@ -3204,6 +3216,10 @@ const ACTS = {
   },
 
   // ---- 品牌统计 ----
+  'stats:users': el => {
+    state.userModal = { view: 'statsUsers', id: el.dataset.id };
+    renderUserModal();
+  },
   'stats:refresh': async () => {
     if (state.statsOpts.rangeMode === 'custom') {
       const from = new Date(state.statsOpts.fromAt || '').getTime();

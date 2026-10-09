@@ -428,6 +428,9 @@ async function syncOnce(opts = {}) {
   let publishSent = 0;
   let taskSent = 0;
   try {
+    if (await require('./publishhistory').refresh(wp.toLong(logFile()))) st.offset = 0;
+    const historyBefore = require('./publishhistory').cutoff();
+    if (historyBefore > (Number(st.historyBefore) || 0)) { st.offset = 0; st.historyBefore = historyBefore; }
     const all = readEntries();
     ledgerRows = all;
     const allTasks = readRunEntries();
