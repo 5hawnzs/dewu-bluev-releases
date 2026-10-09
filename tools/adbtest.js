@@ -182,12 +182,12 @@ const state = {
   ok('中文标题走 ADBKeyboard 广播（B64 通道，且解回来一字不差）',
     log.indexOf('am broadcast -a ADB_INPUT_B64 --es msg '
       + Buffer.from('白色的鞋谁懂', 'utf8').toString('base64')) >= 0);
-  // ★★ 2026-10-04 修正：话题自带行首 `#`，**原样发**即可。
-  //   上一轮「必须转义成 \#」的结论来自我自己编的夹具判据，真机逐条实测行首 # 根本不炸；
-  //   而那个转义会**把反斜杠写进正文**（真机 dump 出来是 `\#品牌甲`）。⇒ 现在断言的是「原样、不加反斜杠」。
-  ok('话题也真实输入（话题串原样编码送出，不许加任何反斜杠转义）',
-    log.indexOf('am broadcast -a ADB_INPUT_B64 --es msg '
-      + Buffer.from('#品牌甲', 'utf8').toString('base64')) >= 0 && !/\\#品牌甲/.test(log),
+  // 2026-10-09 实测：# 与话题名整段提交会变普通文字，须分两次提交，再补结束空格。
+  const topicCalls = ['\n#', '品牌甲', ' '].map(t => 'am broadcast -a ADB_INPUT_B64 --es msg ' + Buffer.from(t, 'utf8').toString('base64'));
+  ok('真实发布链路：话题分两次输入，结束空格先于关联好物点击',
+    topicCalls.every(c => log.includes(c)) && log.indexOf(topicCalls[0]) < log.indexOf(topicCalls[1])
+      && log.indexOf(topicCalls[1]) < log.indexOf(topicCalls[2])
+      && /input tap/.test(log.slice(log.indexOf(topicCalls[2]) + topicCalls[2].length)) && !/\\#品牌甲/.test(log),
     (log.match(/ADB_INPUT_B64 --es msg \S+/g) || []).join(' | '));
   ok('结果标为发布成功', r.rows[0].result === '发布成功', r.rows[0].result);
 

@@ -17,6 +17,7 @@ const fs = require('fs');
 const adb = require('./adb');
 const emulators = require('./emulators');
 const uimap = require('./uimap');
+const topicinput = require('./topicinput');
 const verifySvc = require('./verify');
 const mainimg = require('./mainimg');
 const store = require('../store');
@@ -334,6 +335,8 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
 }
 
 async function runStep(serial, step, data, ctx) {
+  // 离开话题输入段前先结束最后一个话题，必须早于点击关联好物或提交发布。
+  if (!step.topicInput) await topicinput.finish(serial, ctx);
   // ★ 屏幕守卫先判：不成立就**一个像素都不碰**，如实返回 skipped（交给调用方写日志）。
   //   reusedXml = 守卫刚抓到的那份结构；同一步的点击可以在**第 1 次尝试**直接用它，
   //   省掉第二次抓屏（实测一次 dump ~1-2s）。中间没有任何动作 ⇒ 结构一定新鲜。
@@ -555,6 +558,10 @@ async function runStep(serial, step, data, ctx) {
       return;
     }
     case 'input': {
+      if (step.topicInput) {
+        await topicinput.write(serial, step.value, ctx);
+        return;
+      }
       // ★ 输入通道（中文必须走 ADBKeyboard 广播）由 adb.inputText 自己按**设备真实输入法状态**
       //   判定 —— 以前这里传的是配置项 `publish.adbKeyboard`，而那个键全仓没有任何地方会写它
       //   （界面没有开关、默认配置里也没有）⇒ 恒为假 ⇒ 中文永远走 `input text`（实测打不进中文、
@@ -722,6 +729,8 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
 }
 
 async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = false) {
+  // 每条素材独立，上一条中断时遗留的输入状态不能带到新页面。
+  ctx.topicNeedsEnd = false;
   const log = ctx.log || (() => {});
   const cancelled = ctx.cancelled || (() => false);
   // 大结论通道（见 logbus.tierOf / jobs.js）：工具里直接干跑没有 conclude 时退回 log，旧行为不变
@@ -1001,7 +1010,7 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
   let lastTapId = '';
   for (const raw of steps) {
     if (cancelled()) throw new Error('已取消');
-    const step = uimap.fill(raw, data);
+    const step = topicinput.mark(raw, uimap.fill(raw, data));
     // ★ 条件步骤（when / whenNot）：发布单里「好物2 / 好物3」常常是空的，而「点关联好物 → 搜货号 → 选商品」
     //   是一整段 ⇒ 空着不跳过会把搜索页打开却不选商品，后面每一步全崩。
     //   跳过必须**说出来**：静默少点一步，真机上表现为「下一条莫名失败」，最难查。
@@ -1042,6 +1051,9 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
       log(`${row.dir}：跳过「${step.name || step.value}」（屏幕守卫：${rs.why}）`, 'info');
     }
   }
+
+  // 自定义定位表以话题收尾时，也必须补齐结束空格。
+  await topicinput.finish(serial, ctx);
 
   // ★★★ 2026-10-04 用户口径：「**发出去了才算成功**」—— 点完「提交发布」必须**真的离开**发布流程。
   //   不判的话，下面几种情况都会记成「发布成功」，而账号里根本没有这条内容：

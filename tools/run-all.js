@@ -57,6 +57,7 @@ delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
 const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
 
 const SUITES = [
+  ['topicinputtest', 'node', ['tools/topicinputtest.js']],
   ['emulatortest', 'node', ['tools/emulatortest.js']],
   ['smoke', 'node', ['tools/smoke.js']],
   ['adbtest', 'node', ['tools/adbtest.js']],
