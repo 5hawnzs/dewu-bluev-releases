@@ -1170,14 +1170,13 @@ app.whenReady().then(async () => {
       !!ver && !!ver.info && ver.text === 'v' + ver.info,
       JSON.stringify(ver && { text: ver.text, info: ver.info }));
 
-    // 源码级门控（先剥注释：负向只看代码行，注释里正当地写着「原来是裸的 updateHtml()」会误报）
+    // 源码级守卫：更新界面与渲染函数必须彻底移除。
     const srcA = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
-    const codeOnly = s => s.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+    const codeOnly = t => t.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
     const codeA = codeOnly(srcA);
-    const gated = codeA.includes("${canAdmin() ? updateHtml() : ''}");
-    const bare = /\$\{updateHtml\(\)\}/.test(codeA);
-    ok('★ 源码级：设置页那一行是**门控**渲染（canAdmin() ? updateHtml() : \'\'），没有裸的 updateHtml() 调用',
-      gated && !bare, 'gated=' + gated + ' bare=' + bare);
+    ok('★ 源码不再包含自动更新面板或按钮处理器',
+      !/function updateHtml\(/.test(codeA) && !/data-act=\"upd:/.test(codeA) && !/'upd:check'/.test(codeA));
+
   }
 
   // 货号颜色校验对所有账号隐藏，包括管理员；旧 tab=4 与 Ctrl+4 都不能进入。
