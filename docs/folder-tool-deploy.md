@@ -8,10 +8,10 @@
 
 ## 一次性授权
 
-仓库 Settings → Secrets and variables → Actions 中需要两个 Repository secrets：
+仓库 Settings → Secrets and variables → Actions 中需要以下配置：
 
-- `CLOUDFLARE_ACCOUNT_ID`：现有 Pages 项目的 Cloudflare 账号 ID。
-- `CLOUDFLARE_API_TOKEN`：专用 API 令牌，权限为 Account → Cloudflare Pages → Edit，账号范围限定到网站所属账号。
+- Repository variable `CLOUDFLARE_ACCOUNT_ID`：现有 Pages 项目的 Cloudflare 账号 ID（非密钥）。
+- Repository secret `CLOUDFLARE_API_TOKEN`：专用 API 令牌，权限为 Account → Cloudflare Pages → Edit，账号范围限定到网站所属账号。
 
 在 Cloudflare 的 API Tokens 页面创建令牌。令牌只能保存在 GitHub Secrets 中，不写入仓库，不使用短期 Wrangler OAuth 登录令牌代替。
 
