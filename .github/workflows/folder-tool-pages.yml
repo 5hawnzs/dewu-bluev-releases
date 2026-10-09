@@ -1,0 +1,43 @@
+name: 部署素材文件夹工具
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/folder-tool/**
+      - .github/workflows/folder-tool-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: folder-tool-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 更新 Cloudflare 正式网站
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 获取已提交的网页
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: 检查部署授权
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::请在仓库 Actions Secrets 中配置 CLOUDFLARE_API_TOKEN 和 CLOUDFLARE_ACCOUNT_ID。"
+            exit 1
+          fi
+      - name: 发布文件夹工具
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.148.0'
+          command: pages deploy web/folder-tool --project-name=material-folder-generator --branch=main
