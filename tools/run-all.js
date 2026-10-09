@@ -21,6 +21,7 @@
  *   releasetest    发版工具纯逻辑（latest.yml 读错就是 404 / 便携版永不上传 / 同版本号默认拦下）
  *   prunetest      老包清理策略（唯一会删东西的工具：读错版本号就删错包 / 源上状态不明时一个字节都不删）
  *   logtest        运行日志导出格式（条数不许谎报 / 完整日期时间 / 行尾固定 \n / 真落盘）
+ *   cloudauth-test 云端统一账号（只用 anon key / 不公开账号表 / 安全函数固定 search_path / 无回退本机登录）
  *   cloudtest      云端同步（关着不联网 / 只推增量 / 幂等头 / 不留绝对路径 / 失败不推进游标 /
  *                  内置的只能是 anon key / 导入配置先校验并拦下 service_role）
  *
@@ -75,6 +76,7 @@ const SUITES = [
   ['releasetest', 'node', ['tools/releasetest.js']],
   ['prunetest', 'node', ['tools/prunetest.js']],
   ['logtest', 'node', ['tools/logtest.js']],
+  ['cloudauth-test', 'node', ['tools/cloudauth-test.js']],
   ['cloudtest', 'node', ['tools/cloudtest.js']],
   ['defaultstest', 'node', ['tools/defaultstest.js']]
 ];

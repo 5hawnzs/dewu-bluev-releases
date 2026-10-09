@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 本机账号与登录（纯离线，不联网、无服务端）
+ * 账号与登录。开发/回归仍可走本机 auth.json；正式安装版默认走 Supabase 统一账号。
  *
  * - 账号库：userData/auth.json，和 config.json 分开存，避免被「设置 → 保存」整体覆盖
  * - 口令：crypto.scrypt + 每账号随机盐，只存哈希，不存明文
@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const { app } = require('electron');
 const wp = require('./util/winpath');
 const brands = require('./brands');
+const cloudauth = require('./services/cloudauth');
 
 const DEFAULT_USER = 'admin';
 const DEFAULT_PASS = 'BlueV@2026';
@@ -27,10 +28,15 @@ const MIN_PASS = 6;
 
 let db = null;
 let session = null;
+let cloudSession = null;           // { token, user, remembered }
 const fails = new Map();            // 小写用户名 -> { n, until }
 
 /* ---------------- 存储 ---------------- */
 function file() { return path.join(app.getPath('userData'), 'auth.json'); }
+
+// 正式包统一走云端。开发者可以显式设 BLUEV_LOCAL_AUTH=1 隔离回归数据；
+// 不把本地账号自动回退成云端登录失败的后门。
+function cloudMode() { return enabled() && process.env.BLUEV_LOCAL_AUTH !== '1' && (!!(app && app.isPackaged) || process.env.BLUEV_CLOUD_AUTH === '1'); }
 
 function hashPassword(pw, salt) {
   return crypto.scryptSync(String(pw), salt, 64).toString('hex');
@@ -165,6 +171,10 @@ function restoreSession() {
 function enabled() { return process.env.BLUEV_NO_LOGIN !== '1'; }
 
 function current() {
+  if (cloudMode()) {
+    if (cloudSession && cloudSession.expiresAt && cloudSession.expiresAt <= Date.now()) cloudSession = null;
+    return cloudSession && cloudSession.user ? cloudSession.user : null;
+  }
   if (!session) return null;
   const u = findUserById(session.userId);
   if (!u || u.disabled) { session = null; return null; }
@@ -172,6 +182,7 @@ function current() {
 }
 
 function status() {
+  if (cloudMode()) return cloudStatus();
   load();
   const u = current();
   return {
@@ -185,7 +196,88 @@ function status() {
   };
 }
 
+async function cloudStatus() {
+  load();
+  const token = (cloudSession && cloudSession.token) || (db.cloudRemember && db.cloudRemember.token) || '';
+  let loginNotice = '';
+  if (token) {
+    const r = await cloudauth.status(token);
+    if (r.ok && r.user) {
+      cloudSession = { token, user: normalizeCloudUser(r.user), remembered: !!(db.cloudRemember && db.cloudRemember.token === token), expiresAt: Number(r.expiresAt) || 0 };
+      // Also hydrate the canonical brand directory on startup and every status refresh.
+      // A remembered session on a new device must not depend on a local config.json copy.
+      const remoteBrands = await cloudauth.brands(token);
+      if (remoteBrands.ok && Array.isArray(remoteBrands.brands)) brands.replaceAll(remoteBrands.brands);
+      if (cloudSession.remembered) { db.cloudRemember.user = cloudSession.user; save(); }
+      return { requireLogin: true, user: cloudSession.user, isAdmin: cloudSession.user.role === 'admin', userCount: null, rememberDays: REMEMBER_DAYS, cloud: true };
+    }
+    cloudSession = null;
+    if (r.offline) return { requireLogin: true, user: null, isAdmin: false, rememberDays: REMEMBER_DAYS, cloud: true, error: r.error };
+    loginNotice = r.error || '';
+    if (db.cloudRemember) { delete db.cloudRemember; save(); }
+    if (r.setupRequired) return { requireLogin: true, user: null, isAdmin: false, rememberDays: REMEMBER_DAYS, cloud: true, setupRequired: true, error: r.error };
+  }
+  const s = await cloudauth.setupState();
+  if (!s.ok) return { requireLogin: true, user: null, isAdmin: false, rememberDays: REMEMBER_DAYS, cloud: true, setupRequired: !!s.setupRequired, error: s.error };
+  return { requireLogin: true, user: null, isAdmin: false, rememberDays: REMEMBER_DAYS, cloud: true, bootstrapRequired: !s.initialized, bootstrapAvailable: !!s.bootstrapAvailable, error: loginNotice };
+}
+
+function normalizeCloudUser(u) {
+  return { id: String(u.id || ''), username: String(u.username || ''), displayName: String(u.displayName || u.username || ''),
+    role: u.role === 'admin' ? 'admin' : 'user', brands: Array.isArray(u.brands) ? u.brands.map(String) : [],
+    mustChange: !!u.mustChange, disabled: !!u.disabled, createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null };
+}
+
+async function cloudLogin(username, password, remember) {
+  const r = await cloudauth.login(username, password);
+  if (!r.ok || !r.token || !r.user) return r;
+  const user = normalizeCloudUser(r.user);
+  cloudSession = { token: r.token, user, remembered: !!remember, expiresAt: Number(r.expiresAt) || Date.now() + REMEMBER_DAYS * 86400000 };
+  load();
+  if (remember) db.cloudRemember = { token: r.token, user, until: cloudSession.expiresAt };
+  else delete db.cloudRemember;
+  save();
+
+  // Brand IDs and assignments are global too; pull the canonical list on every device.
+  let cloudBrands = await cloudauth.brands(r.token);
+  if (!cloudBrands.ok) {
+    await cloudauth.logout(r.token);
+    cloudSession = null; if (remember) delete db.cloudRemember; save();
+    return cloudBrands;
+  }
+  const localBrands = brands.list();
+  if (user.role === 'admin' && (!Array.isArray(cloudBrands.brands) || cloudBrands.brands.length === 0) && localBrands.length) {
+    const seeded = await cloudauth.admin(r.token, 'save_brands', { brands: localBrands });
+    if (!seeded.ok) {
+      await cloudauth.logout(r.token);
+      cloudSession = null; if (remember) delete db.cloudRemember; save();
+      return { ok: false, error: `云端品牌初始化失败：${seeded.error || '未知错误'}` };
+    }
+    cloudBrands = { ok: true, brands: localBrands };
+  }
+  brands.replaceAll(Array.isArray(cloudBrands.brands) ? cloudBrands.brands : []);
+  return { ok: true, user };
+}
+
+async function cloudBootstrap(setupCode, username, password, displayName, remember) {
+  const r = await cloudauth.bootstrap(setupCode, username, password, displayName);
+  if (!r.ok || !r.token || !r.user) return r;
+  const user = normalizeCloudUser(r.user);
+  cloudSession = { token: r.token, user, remembered: !!remember, expiresAt: Number(r.expiresAt) || Date.now() + REMEMBER_DAYS * 86400000 };
+  load();
+  if (remember) db.cloudRemember = { token: r.token, user, until: cloudSession.expiresAt };
+  save();
+  const localBrands = brands.list();
+  let warning = '';
+  if (localBrands.length) {
+    const b = await cloudauth.admin(r.token, 'save_brands', { brands: localBrands });
+    if (!b.ok) warning = `管理员已创建，但本机品牌目录未能上云：${b.error || '未知错误'}`;
+  }
+  return { ok: true, user, warning };
+}
+
 function login(username, password, remember) {
+  if (cloudMode()) return cloudLogin(username, password, remember);
   load();
   const key = String(username || '').trim().toLowerCase();
   const lock = fails.get(key);
@@ -223,6 +315,12 @@ function check(pw, u) {
 }
 
 function logout() {
+  if (cloudMode()) {
+    const old = cloudSession && cloudSession.token;
+    cloudSession = null;
+    load(); delete db.cloudRemember; save();
+    return old ? cloudauth.logout(old) : { ok: true };
+  }
   if (db) { db.remember = null; save(); }
   session = null;
   return { ok: true };
@@ -237,6 +335,14 @@ function guardAdmin() {
 }
 
 function changePassword(oldPw, newPw) {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    if (!token) return Promise.resolve({ ok: false, error: '未登录' });
+    return cloudauth.changePassword(token, oldPw, newPw).then(r => {
+      if (r.ok && cloudSession) { cloudSession.user.mustChange = false; if (db.cloudRemember) db.cloudRemember.user = cloudSession.user; save(); }
+      return r;
+    });
+  }
   load();
   const u = current();
   if (!u) return { ok: false, error: '未登录' };
@@ -265,6 +371,10 @@ function nameError(name) {
 }
 
 function listUsers() {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    return token ? cloudauth.admin(token, 'list_users', {}) : Promise.resolve({ ok: false, error: '未登录' });
+  }
   const g = guardAdmin();
   if (g.error) return { ok: false, error: g.error };
   load();
@@ -272,6 +382,10 @@ function listUsers() {
 }
 
 function createUser(input) {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    return token ? cloudauth.admin(token, 'create_user', input || {}) : Promise.resolve({ ok: false, error: '未登录' });
+  }
   const g = guardAdmin();
   if (g.error) return { ok: false, error: g.error };
   load();
@@ -290,6 +404,10 @@ function createUser(input) {
 }
 
 function updateUser(id, patch) {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    return token ? cloudauth.admin(token, 'update_user', Object.assign({ id }, patch || {})) : Promise.resolve({ ok: false, error: '未登录' });
+  }
   const g = guardAdmin();
   if (g.error) return { ok: false, error: g.error };
   load();
@@ -320,6 +438,10 @@ function updateUser(id, patch) {
 }
 
 function resetPassword(id, newPw) {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    return token ? cloudauth.admin(token, 'reset_password', { id, password: newPw }) : Promise.resolve({ ok: false, error: '未登录' });
+  }
   const g = guardAdmin();
   if (g.error) return { ok: false, error: g.error };
   load();
@@ -335,6 +457,10 @@ function resetPassword(id, newPw) {
 }
 
 function removeUser(id) {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    return token ? cloudauth.admin(token, 'remove_user', { id }) : Promise.resolve({ ok: false, error: '未登录' });
+  }
   const g = guardAdmin();
   if (g.error) return { ok: false, error: g.error };
   load();
@@ -357,6 +483,17 @@ function removeUser(id) {
  * 返回清理了几个账号，好让界面说清影响面。
  */
 function purgeBrand(brandId) {
+  if (cloudMode()) {
+    const token = cloudSession && cloudSession.token;
+    return token ? cloudauth.admin(token, 'list_users', {}).then(async r => {
+      if (!r.ok) return r;
+      for (const u of (r.users || [])) if ((u.brands || []).includes(String(brandId))) {
+        const x = await cloudauth.admin(token, 'update_user', { id: u.id, brands: u.brands.filter(b => b !== String(brandId)) });
+        if (!x.ok) return x;
+      }
+      return { ok: true, users: (r.users || []).filter(u => (u.brands || []).includes(String(brandId))).length };
+    }) : Promise.resolve({ ok: false, error: '未登录' });
+  }
   const g = guardAdmin();
   if (g.error) return { ok: false, error: g.error };
   load();
@@ -374,8 +511,11 @@ function purgeBrand(brandId) {
 }
 
 module.exports = {
-  load, status, login, logout, enabled, current,
+  load, status, login, logout, enabled, current, cloudMode, cloudBootstrap,
   changePassword, listUsers, createUser, updateUser, resetPassword, removeUser,
   purgeBrand,
+  syncBrands: (list) => cloudMode() && cloudSession ? cloudauth.admin(cloudSession.token, 'save_brands', { brands: list }) : Promise.resolve({ ok: true }),
+  cloudBrands: () => cloudMode() && cloudSession ? cloudauth.brands(cloudSession.token) : Promise.resolve({ ok: true, brands: brands.list() }),
+  syncBrandPrompt: (id, prompt) => cloudMode() && cloudSession ? cloudauth.prompt(cloudSession.token, id, prompt) : Promise.resolve({ ok: true }),
   DEFAULT_USER, DEFAULT_PASS
 };

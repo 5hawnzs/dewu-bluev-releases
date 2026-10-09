@@ -68,15 +68,15 @@ function register() {
   // ---- 账号与登录：登录页本身要用，不设门禁 ----
   ipcMain.handle('auth:status', () => auth.status());
   // 登录成功 → 窗口从「登录小窗」还原成正常尺寸；退出登录 → 重新收回小窗
-  ipcMain.handle('auth:login', (_e, u, p, remember) => {
-    const r = auth.login(u, p, remember);
+  ipcMain.handle('auth:login', async (_e, u, p, remember) => {
+    const r = await auth.login(u, p, remember);
     if (r && r.ok) {
       winmod.setLoginMode(false);
     }
     return r;
   });
-  ipcMain.handle('auth:logout', () => {
-    const r = auth.logout();
+  ipcMain.handle('auth:logout', async () => {
+    const r = await auth.logout();
     winmod.setLoginMode(true);
     return r;
   });
@@ -86,6 +86,7 @@ function register() {
   ipcMain.handle('auth:update-user', (_e, id, patch) => auth.updateUser(id, patch));
   ipcMain.handle('auth:reset-password', (_e, id, newP) => auth.resetPassword(id, newP));
   ipcMain.handle('auth:remove-user', (_e, id) => auth.removeUser(id));
+  ipcMain.handle('auth:bootstrap', (_e, setupCode, username, password, displayName, remember) => auth.cloudBootstrap(setupCode, username, password, displayName, remember));
 
   // ---- 品牌注册表 ----
   // 读取对所有登录用户开放（发布侧要拉品牌下拉），但只回「这个人能用的」那部分 id；
@@ -109,20 +110,30 @@ function register() {
       defaultBrandId: store.get('copy.defaultBrandId') || ''
     };
   }));
-  ipcMain.handle('brand:add', guardAdmin((_e, input) => {
+  ipcMain.handle('brand:add', guardAdmin(async (_e, input) => {
+    const before = brands.list();
     const r = brands.add(input);
+    if (r.ok) {
+      const synced = await auth.syncBrands(brands.list());
+      if (!synced.ok) { brands.replaceAll(before); return { ok: false, error: `云端品牌同步失败，已撤销本机修改：${synced.error || '未知错误'}` }; }
+    }
     if (r.ok) logbus.ok(`已新增品牌「${r.brand.name}」`);
     return r;
   }));
-  ipcMain.handle('brand:update', guardAdmin((_e, id, patch) => {
+  ipcMain.handle('brand:update', guardAdmin(async (_e, id, patch) => {
+    const before = brands.list();
     const r = brands.update(id, patch);
+    if (r.ok) {
+      const synced = await auth.syncBrands(brands.list());
+      if (!synced.ok) { brands.replaceAll(before); return { ok: false, error: `云端品牌同步失败，已撤销本机修改：${synced.error || '未知错误'}` }; }
+    }
     if (r.ok) logbus.ok(`品牌已更新：${r.brand.name}${r.brand.enabled ? '' : '（已停用）'}`);
     return r;
   }));
   // 提示词**不是**管理员专属：写文案的是运营，让每个人都去找管理员改模板不现实。
   // 但只能改自己名下有权限的品牌，而且**只开放提示词这两个字段** ——
   // 改名 / 启停 / 删除仍然走 brand:update / brand:remove（guardAdmin）
-  ipcMain.handle('brand:prompts', guard((_e, id, patch) => {
+  ipcMain.handle('brand:prompts', guard(async (_e, id, patch) => {
     const u = auth.current();
     const a = brands.allowed(u);
     const b = brands.byId(id);
@@ -130,19 +141,31 @@ function register() {
     if (!a.all && !a.ids.includes(b.id)) return { ok: false, error: `没有「${b.name}」的操作权限` };
     const p = patch || {};
     const r = brands.update(id, { promptWrite: p.promptWrite });
+    if (r.ok) {
+      const synced = await auth.syncBrandPrompt(id, r.brand.promptWrite);
+      if (!synced.ok) {
+        brands.update(id, { promptWrite: b.promptWrite });
+        return { ok: false, error: `云端提示词同步失败，已撤销本机修改：${synced.error || '未知错误'}` };
+      }
+    }
     // 日志里只记品牌名：整段模板上千字，抄进 runlog 每条都占一大截
     if (r.ok) logbus.ok(`已更新品牌「${r.brand.name}」的提示词`);
     return r;
   }));
-  ipcMain.handle('brand:remove', guardAdmin((_e, id) => {
+  ipcMain.handle('brand:remove', guardAdmin(async (_e, id) => {
+    const before = brands.list();
     const b = brands.byId(id);
     const r = brands.remove(id);
     if (!r.ok) return r;
     // 顺手清掉账号上的悬空授权，并把默认品牌指回空
     const p = auth.purgeBrand(id);
+    const pr = await p;
+    if (!pr.ok) { brands.replaceAll(before); return { ok: false, error: pr.error || '无法删除该品牌：请先给相关成员分配其他品牌' }; }
+    const synced = await auth.syncBrands(brands.list());
+    if (!synced.ok) { brands.replaceAll(before); return { ok: false, error: `云端品牌同步失败，已恢复本机品牌：${synced.error || '未知错误'}` }; }
     if (store.get('copy.defaultBrandId') === String(id)) store.set({ copy: { defaultBrandId: '' } });
-    logbus.warn(`已删除品牌「${b ? b.name : id}」${p.ok && p.users ? `，同时清掉了 ${p.users} 个账号上的该品牌授权` : ''}`);
-    return { ok: true, brand: r.brand, usersCleaned: (p.ok && p.users) || 0 };
+    logbus.warn(`已删除品牌「${b ? b.name : id}」${pr.ok && pr.users ? `，同时清掉了 ${pr.users} 个账号上的该品牌授权` : ''}`);
+    return { ok: true, brand: r.brand, usersCleaned: (pr.ok && pr.users) || 0 };
   }));
 
   // ---- 品牌统计（频次 / 数量 / 执行日志）----

@@ -1820,7 +1820,7 @@ function fmtDate(ts) {
 function fitGateWindow() {
   if (!appApi.fitGate) return;
   requestAnimationFrame(() => {
-    const card = document.querySelector('.gate .gcard');
+    const card = document.querySelector('.gate .gcard:not([hidden])');
     if (!card) return;
     appApi.fitGate(Math.ceil(card.getBoundingClientRect().height));
   });
@@ -1828,7 +1828,13 @@ function fitGateWindow() {
 
 function showGate(msg) {
   document.body.classList.add('locked');
-  $('#lgErr').textContent = msg || '';
+  const bootstrapMode = !!(state.auth && state.auth.bootstrapRequired);
+  const loginForm = $('#loginForm'), bootstrapForm = $('#bootstrapForm');
+  if (loginForm) loginForm.hidden = bootstrapMode;
+  if (bootstrapForm) bootstrapForm.hidden = !bootstrapMode;
+  const loginErr = $('#lgErr'), setupErr = $('#lgSetupErr');
+  if (loginErr) loginErr.textContent = bootstrapMode ? '' : (msg || '');
+  if (setupErr) setupErr.textContent = bootstrapMode ? (msg || '') : '';
   const f = $('#loginForm');
   if (!f.dataset.bound) {
     f.dataset.bound = '1';
@@ -1838,6 +1844,16 @@ function showGate(msg) {
     };
     const gx = $('#gateClose');
     if (gx) gx.onclick = () => appApi.close();    // 无边框小窗必须自带一个关闭口
+  }
+  const bf = $('#bootstrapForm');
+  if (bf && !bf.dataset.bound) {
+    bf.dataset.bound = '1';
+    bf.onsubmit = e => { e.preventDefault(); doBootstrap(); };
+    const close = $('#bootstrapClose');
+    if (close) close.onclick = () => appApi.close();
+    ['#lgSetupCode','#lgSetupUser','#lgSetupPwd','#lgSetupName'].forEach(sel => {
+      const el = $(sel); if (el) el.oninput = () => { if ($('#lgSetupErr').textContent) $('#lgSetupErr').textContent = ''; fitGateWindow(); };
+    });
   }
   // ★ 出厂账号提示已删（2026-10-02 用户要求）：登录页不再回显 admin / 口令，
   //   连带 auth.status() 的 defaultHint 字段一起删掉（不留悬空字段）。
@@ -1866,6 +1882,23 @@ async function doLogin() {
   $('#lgPwd').value = '';
   state.auth = await appApi.authStatus();
   await enterApp();
+}
+
+async function doBootstrap() {
+  const code = $('#lgSetupCode').value.trim();
+  const user = $('#lgSetupUser').value.trim();
+  const pass = $('#lgSetupPwd').value;
+  const name = $('#lgSetupName').value.trim();
+  if (!code || !user || !pass) { $('#lgSetupErr').textContent = '请填写初始化码、管理员账号和密码'; return; }
+  const btn = $('#lgSetupGo');
+  btn.disabled = true; btn.textContent = '创建中…';
+  const r = await appApi.authBootstrap(code, user, pass, name, $('#lgSetupRem').checked);
+  btn.disabled = false; btn.textContent = '创建云端管理员';
+  if (!r.ok) { $('#lgSetupErr').textContent = r.error || '初始化失败'; fitGateWindow(); return; }
+  $('#lgSetupCode').value = ''; $('#lgSetupPwd').value = '';
+  state.auth = await appApi.authStatus();
+  await enterApp();
+  if (r.warning) toast(r.warning, 'err');
 }
 
 async function enterApp() {
@@ -2482,10 +2515,9 @@ function adminUsersHtml() {
       </div>
       <p class="hint">行里的「<b>配置权限</b>」勾上的品牌，这个人才能在标题栏选到、才能起文案生成 / 发布单 / 发布这类产出任务；
         一个都没勾，他起任务会被直接拦下（不会悄悄发出去）。管理员那一行显示「全部品牌」—— 管理员本来就是全部，不必逐个分配。</p>
-      <p class="hint">账号存在本机 <code>auth.json</code>（与 config.json 分开），口令只存 scrypt 哈希，不存明文。
+      <p class="hint">正式版账号和品牌授权存在 Supabase 私有 schema，密码只保存加盐哈希；本机 <code>auth.json</code> 只在勾选「记住登录」时保存会话令牌。
         停用/删除账号<b>不影响</b>已产出的素材、发布单与商品池。连续输错 6 次会锁定 5 分钟。</p>
-      <p class="hint"><b>关于这个权限的边界</b>：它是<b>本机离线</b>的，用来防误操作、让产出可归属，<b>不是安全隔离</b> ——
-        能碰到这台机器的人可以直接改 <code>auth.json</code> / <code>config.json</code>。别把它当权限系统用。</p>
+      <p class="hint"><b>登录需要网络</b>：账号、状态和品牌授权由云端统一校验；素材、发布执行与运行日志仍保存在本机并按现有规则同步。</p>
     </div>`;
 }
 
@@ -3410,11 +3442,48 @@ async function boot() {
   state.info = await appApi.info();
   applyTheme(await appApi.themeGet());
   state.auth = await appApi.authStatus();
-  if (state.auth.requireLogin && !state.auth.user) { showGate(); return; }
+  if (state.auth.requireLogin && !state.auth.user) { showGate(state.auth.error || ''); return; }
   await enterApp();
 }
 
 setInterval(() => {
   if (state.tab === 6 && !document.hidden && Date.now() - deviceScanAt >= 10000) refreshDevices();
 }, 1000);
+
+let cloudAuthCheckBusy = false;
+setInterval(async () => {
+  if (cloudAuthCheckBusy || document.hidden || !state.auth || !state.auth.cloud || state.auth.bootstrapRequired
+      || (!state.auth.user && !state.auth.error)) return;
+  cloudAuthCheckBusy = true;
+  try {
+    const before = state.auth;
+    const next = await appApi.authStatus();
+    if (!before.user && next.user) {
+      state.auth = next;
+      await enterApp();
+      return;
+    }
+    if (!next.user) {
+      state.auth = next;
+      if (before.user) {
+        state.users = null;
+        state.brandsMeta = null;
+        showGate(next.error || '云端登录状态已失效，请重新登录');
+      }
+      return;
+    }
+    const changed = before.user.role !== next.user.role
+      || JSON.stringify(before.user.brands || []) !== JSON.stringify(next.user.brands || []);
+    state.auth = next;
+    if (changed) {
+      await refreshBrands();
+      await refreshUsers();
+      renderAll();
+    }
+  } catch (_) {
+    // Keep the current profile for this transient renderer error; the next 60-second check retries.
+  } finally {
+    cloudAuthCheckBusy = false;
+  }
+}, 60000);
 boot();

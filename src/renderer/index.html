@@ -229,6 +229,22 @@
 
     <button class="btn primary ggo" id="lgGo" type="submit">登 录</button>
   </form>
+  <form class="gcard" id="bootstrapForm" autocomplete="off" hidden>
+    <button class="gx" id="bootstrapClose" type="button" title="关闭" aria-label="关闭">
+      <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg>
+    </button>
+    <div class="gbrand">
+      <span class="glogo" aria-hidden="true"><svg viewBox="0 0 32 32" width="26" height="26"><rect width="32" height="32" rx="7" fill="#0f6e56"/><path d="M9.5 10l6.5 13 6.5-13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <div><div class="gname">初始化云端管理员</div><div class="gsub">仅首次设置一次，之后成员可在其他电脑登录</div></div>
+    </div>
+    <label class="gfld"><span>一次性初始化码（从 Supabase SQL Editor 运行结果复制）</span><input class="inp" id="lgSetupCode" autocomplete="off" spellcheck="false"></label>
+    <label class="gfld"><span>管理员账号</span><input class="inp" id="lgSetupUser" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+    <label class="gfld"><span>管理员密码（至少 6 位）</span><input class="inp" id="lgSetupPwd" type="password" autocomplete="new-password"></label>
+    <label class="gfld"><span>显示名称</span><input class="inp" id="lgSetupName" autocomplete="off"></label>
+    <label class="grem"><input type="checkbox" id="lgSetupRem" checked> 记住登录（本机 7 天内免输入）</label>
+    <div class="gerr" id="lgSetupErr"></div>
+    <button class="btn primary ggo" id="lgSetupGo" type="submit">创建云端管理员</button>
+  </form>
 </div>
 
 <script src="password-toggle.js"></script>

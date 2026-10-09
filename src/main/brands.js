@@ -259,7 +259,7 @@ function resolveFor(user, wantedId, opts = {}) {
 }
 
 module.exports = {
-  ensure, list, enabledList, byId, byName, labelOf,
+  ensure, list, enabledList, byId, byName, labelOf, replaceAll: save,
   add, update, remove, nameError, hasWritePrompt,
   isAdmin, allowed, resolveFor,
   UNKNOWN_ID, UNKNOWN_NAME, RESERVED, MAX_NAME, MAX_PROMPT

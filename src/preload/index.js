@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
 
   authStatus: () => ipcRenderer.invoke('auth:status'),
   authLogin: (u, p, remember) => ipcRenderer.invoke('auth:login', u, p, remember),
+  authBootstrap: (code, u, p, displayName, remember) => ipcRenderer.invoke('auth:bootstrap', code, u, p, displayName, remember),
   authLogout: () => ipcRenderer.invoke('auth:logout'),
   authChangePwd: (oldP, newP) => ipcRenderer.invoke('auth:change-password', oldP, newP),
   authUsers: () => ipcRenderer.invoke('auth:users'),

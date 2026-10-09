@@ -41,7 +41,7 @@ if (!app.requestSingleInstanceLock()) {
     w.flashFrame(true);
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     store.load();
     // ★★ 配置迁移必须**说出来**（不许静默改用户配置）：旧版把 90/180 写进 config.json，
     //    1.0.9 的默认值虽已改成 0，但 mergeDeep 顶不动老值 ⇒ 这里做一次性归零并如实告知。
@@ -49,7 +49,7 @@ if (!app.requestSingleInstanceLock()) {
     // ★ 主题必须先定下来再建窗口：窗口底色 bgColor() 按它算，晚了会先闪一下别的色（见 window.normTheme）
     winmod.applyStoredTheme();
     project.load();
-    auth.load();          // 首次启动会建好管理员账号（userData/auth.json）
+    auth.load();          // 正式包云端登录；开发模式仍可用临时本地 auth.json
     // adb：手填路径 > 程序内置（vendor/adb → 打包后 resources/adb）> 系统 PATH。
     // 内置那份是为了「新同事装上就能用，不用自己去模拟器安装目录里翻 adb.exe」。
     // 中文输入法 apk 也内置；设备连接并在线后由设备检查自动安装、启用。
@@ -104,7 +104,7 @@ if (!app.requestSingleInstanceLock()) {
     })();
     ipc.register();
 
-    const st = auth.status();
+    const st = await auth.status();
     const w = winmod.createWindow(st.requireLogin && !st.user);   // 未登录：直接以「登录小窗」开场
     winmod.attach();
 
@@ -133,9 +133,9 @@ if (!app.requestSingleInstanceLock()) {
 
     w.once('ready-to-show', () => { if (DEV) w.webContents.openDevTools({ mode: 'detach' }); });
 
-    app.on('activate', () => {
+    app.on('activate', async () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        const s = auth.status();
+        const s = await auth.status();
         const nw = winmod.createWindow(s.requireLogin && !s.user);
         winmod.attach(nw);
       }
