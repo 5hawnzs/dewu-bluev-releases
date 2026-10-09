@@ -18,7 +18,6 @@ const hotwords = require('./services/hotwords');   // 标题热词库（读写 +
 const stats = require('./services/stats');
 const adb = require('./services/adb');
 const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装包（设置页「下载到本机」用它）
-const updater = require('./updater');
 const wp = require('./util/winpath');
 const winmod = require('./window');
 
@@ -65,25 +64,6 @@ function statsOptions(opts) {
     includeRunLogs: !auth.enabled() || !!(auth.current() && auth.current().role === 'admin') });
 }
 
-/**
- * 通道权限复核：非管理员不许留在测试版通道（登录后 / 应用启动时各跑一次）。
- * 渲染层「看不见按钮」只是不给人添乱，真正拦住的是这里 + update:set-channel 的 guardAdmin。
- * 为什么还要这次复核：通道是落盘的，管理员切过去之后换个人登录，那个人会一直收测试版更新，
- * 而他连那个按钮都看不到，没法自己切回来。
- * @returns {{changed:boolean, from?:string}}
- */
-function syncChannelPermission() {
-  const u = auth.current();
-  // 与 guardAdmin 同一口径：登录校验关着（免登录 / 开发模式）时视为有权限，否则开发时自己就点不动了
-  const isAdmin = !auth.enabled() || !!(u && u.role === 'admin');
-  const r = updater.enforceChannelPermission(isAdmin) || { changed: false };
-  if (r.changed) {
-    store.set({ update: { channel: updater.DEFAULT_CHANNEL } });
-    logbus.warn(`更新通道已按权限收回：${r.from || 'beta'} → ${updater.DEFAULT_CHANNEL}（${(u && (u.displayName || u.username)) || '当前账号'}不是管理员）`);
-  }
-  return r;
-}
-
 function register() {
   // ---- 账号与登录：登录页本身要用，不设门禁 ----
   ipcMain.handle('auth:status', () => auth.status());
@@ -92,7 +72,6 @@ function register() {
     const r = auth.login(u, p, remember);
     if (r && r.ok) {
       winmod.setLoginMode(false);
-      syncChannelPermission();   // 普通成员登录时，把管理员留下的测试版通道收回来
     }
     return r;
   });
@@ -193,38 +172,10 @@ function register() {
   // ★ 只查配置里那个输出目录，不收前端传的路径；只读性质（建一个临时文件再删掉 + 追加方式打开）
   ipcMain.handle('stats:checkPath', guard(() => stats.checkOutput()));
 
-  // ---- 应用更新（阶段 1）----
-  // 检查 / 下载 / 安装**都只由用户点**：没有定时轮询、没有自动下载、没有自动重启。
-  // 原因见 src/main/updater.js 文件头 —— 静默重启会拦腰截断正在跑的批量发布。
-  ipcMain.handle('update:status', guard(() => Object.assign({ ok: true }, updater.status())));
-  ipcMain.handle('update:check', guard(() => updater.check({ manual: true })));
-  ipcMain.handle('update:download', guard(() => updater.download()));
-  // 切通道（正式版 ↔ 测试版）。★ 这**不是**改源地址：源地址编译在包里，这里只换
-  // 「读哪个 yml」（latest.yml / beta.yml）。换完立刻落盘，重启后还是这条通道。
-  // ★★ 只给管理员：测试版是「没经过正式验收的包」，不该让所有人都能把自己切过去。
-  //    界面上那个按钮已经藏起来了，这里再拦一道 —— 前端改一行不算数（本机权限不是安全边界，
-  //    但「界面不给的东西，后台也不会偷偷生效」这条要守住）。
-  ipcMain.handle('update:set-channel', guardAdmin((_e, next) => {
-    const r = updater.setChannel(next);
-    if (r && r.ok && !r.unchanged) {
-      store.set({ update: { channel: r.channel } });
-      logbus.info(`更新通道已保存：${r.label}（源地址不变，只是下次检查读 ${r.channel === 'beta' ? 'beta.yml' : 'latest.yml'}）`);
-    }
-    return r;
-  }));
-  ipcMain.handle('update:install', guard(() => {
-    // 唯一会重启应用的入口。哪怕用户点了，也要在「真有任务在跑」时拦住 ——
-    // 重启把发布跑一半掐掉，那批素材的下场没人说得清
-    const running = jobs.busy();
-    if (running && running.length) {
-      const first = running[0];
-      return {
-        ok: false,
-        error: `还有 ${running.length} 个任务在跑（${first.label}${first.batch ? ' · ' + first.batch : ''}），装完会重启、把任务掐断。等跑完再装。`
-      };
-    }
-    return updater.install();
-  }));
+  // 兼容旧界面接口，但所有账号都不能从客户端访问分发服务器。
+  for (const channel of ['update:status', 'update:check', 'update:download', 'update:install', 'update:set-channel']) {
+    ipcMain.handle(channel, guard(() => ({ ok: false, disabled: true, error: '此功能已关闭' })));
+  }
 
   ipcMain.handle('app:info', () => ({
     platform: process.platform,
@@ -467,4 +418,4 @@ function register() {
   ipcMain.on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
 }
 
-module.exports = { register, syncChannelPermission };
+module.exports = { register };

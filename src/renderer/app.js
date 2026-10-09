@@ -33,7 +33,6 @@ const state = {
   //   { eff, models, listErr, picked, busy } —— eff=当前生效值（llm:effective），
   //   models=拉回来的清单，picked=刚点中的那个模型 id（保存才落盘）。
   modelModal: null,
-  upd: null,          // 应用更新状态（来自主进程）null=还没读到
   logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
   logFilter: { level: '', q: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
   logExport: null,    // 上一次导出结果 { file, jsonFile, count }，用来给「打开 / 定位」按钮指路
@@ -912,7 +911,7 @@ TABS[7] = {
   //   副标题就不该提它 —— 界面文字得跟界面上真有的东西对得上。
   // ★ 2026-10-04：副标题里原来的「路径、」也一并去掉 —— 那一块已经从页面上撤掉，
   //   副标题再提它就是「界面文字跟界面上真有的东西对不上」（见下面那条注释的同一条原则）。
-  desc: () => (canAdmin() ? '应用更新、外部依赖' : '外部依赖'),
+  desc: '外部依赖',
   actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
   render() {
     const info = state.info || {};
@@ -961,10 +960,6 @@ TABS[7] = {
       <!-- ★ 原先这里有一整块「外观」（主题说明 + 运行环境）—— 2026-10-03 按用户要求撤掉：
            主题入口只留顶栏那一个，设置里再复述一遍纯属重复（两处状态迟早各说各话）；
            「运行环境」那行没丢，挪到下面「外部依赖」里了。 -->
-      <!-- ★ 2026-10-03 用户要求：**非管理员**在设置页看不到「应用更新 / 版本信息」整块。
-           这里只是不给人添乱；真正拦住的是主进程那道 guardAdmin（前端改一行不算数）。
-           版本号没丢 —— 挪到标题栏 app 名字后面（#appVer），见 index.html / renderAll。 -->
-      ${canAdmin() ? updateHtml() : ''}
       <div class="box">
         <h3>外部依赖</h3>
         <div class="tw"><table>
@@ -1077,102 +1072,6 @@ TABS[11] = {
     `;
   }
 };
-
-/* ---------------- 应用更新（阶段 2：正式版 / 测试版两条通道，同一个包） ---------------- */
-/** 状态 → [徽章样式, 文案]。键要和 src/main/updater.js 里的 status 一一对应 */
-const UPD_KIND = {
-  idle: ['wait', '未检查'], checking: ['run', '检查中'], available: ['warn', '有新版本'],
-  downloading: ['run', '下载中'], ready: ['ok', '可以安装'], uptodate: ['ok', '已是最新'],
-  error: ['bad', '出错']
-};
-
-function updateHtml() {
-  const u = state.upd;
-  if (!u) return `<div class="box" id="updBox"><h3>应用更新</h3><p class="hint">正在读取更新状态…</p></div>`;
-
-  // 开发模式 / 便携版：不摆一堆点了没用的按钮，只把原因写清楚
-  if (!u.supported) {
-    return `<div class="box" id="updBox">
-      <h3>应用更新</h3>
-      <div class="row"><span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>${badge('不可用', 'wait')}</div>
-      <!-- 主进程没给出原因时别编一个：说「原因没取到」比说「这个版本就是不支持」诚实 -->
-      <p class="hint">${esc(u.message || '取不到不可用的原因（更新模块可能没初始化）')}</p>
-    </div>`;
-  }
-
-  const [kind, label] = UPD_KIND[u.status] || ['wait', u.status || '—'];
-  const pct = Math.max(0, Math.min(100, Math.round(u.percent || 0)));
-  const dl = u.status === 'downloading';
-  const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
-  const newer = u.latest && u.latest !== u.current;
-  // 「谁能切测试版」跟主进程 guardAdmin 一个口径：登录校验关着（免登录 / 开发模式）也算有权限。
-  // ★ 没权限的人不只是禁用按钮 —— 连「测试版」这三个字都不许出现在界面上。
-  // 所以 isBeta 也跟着 canBeta 走：万一配置里还留着 beta（比如管理员切过之后换了账号），
-  // 普通成员这一页也只会看到「正式版」，不会因为一个残留值露出通道字样。
-  const canBeta = canAdmin();
-  const isBeta = canBeta && u.channel === 'beta';   // 老快照没有 channel 字段 ⇒ 当作正式版
-
-  return `<div class="box" id="updBox">
-    <h3>应用更新</h3>
-    <div class="row" style="margin-bottom:9px">
-      <span class="lbl">当前版本</span><span class="chip mono">${esc(u.current || '—')}</span>
-      ${newer ? `<span class="lbl">新版本</span><span class="chip mono">${esc(u.latest)}</span>` : ''}
-      ${badge(label, kind)}
-    </div>
-    ${canBeta ? `<div class="row" style="margin-bottom:9px">
-      <span class="lbl">更新通道</span>
-      <button class="btn sm${isBeta ? '' : ' primary'}" data-act="upd:chan:stable" ${dl ? 'disabled' : ''}>正式版</button>
-      <button class="btn sm${isBeta ? ' primary' : ''}" data-act="upd:chan:beta" ${dl ? 'disabled' : ''}>测试版</button>
-      ${badge(u.channelLabel || (isBeta ? '测试版' : '正式版'), isBeta ? 'warn' : 'ok')}
-    </div>` : ''}
-    ${dl ? `<div class="progwrap"><div class="bar" id="updBar"><i style="width:${pct}%"></i></div>
-      <span class="chip" id="updTxt">${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}</span></div>` : ''}
-    <div class="row" style="margin-top:9px">
-      <button class="btn sm" data-act="upd:check" ${dl ? 'disabled' : ''}>检查更新</button>
-      <button class="btn sm${(u.status === 'available' || u.status === 'idle') ? ' primary' : ''}" data-act="upd:download" ${(dl || u.status === 'ready') ? 'disabled' : ''}>下载更新</button>
-      <button class="btn sm${u.status === 'ready' ? ' primary' : ''}" data-act="upd:install" ${u.status === 'ready' ? '' : 'disabled'}>立即安装并重启</button>
-    </div>
-    ${u.message ? `<p class="hint">${esc(u.message)}</p>` : ''}
-    <p class="hint">发现新版本<b>不会自动下载</b>，下载完<b>也不会自动重启</b> —— 两步都要你点。
-    「立即安装」在有任务跑着的时候会被拦住（重启会把跑一半的发布掐断）。</p>
-    ${canBeta ? `<p class="hint">${isBeta
-      ? '<b>当前在测试版通道</b>：比正式版早拿到新功能，但没经过正式验收。随时可以切回正式版 —— 切回去时允许降级，不用重装。'
-      : '测试版比正式版早拿到新功能，但<b>没经过正式验收</b>。切通道只是换个清单文件，不用重装、也不会失联。'}</p>` : ''}
-  </div>`;
-}
-
-async function refreshUpdate() {
-  try { state.upd = await appApi.updateStatus(); } catch (e) { /* 读不到就保持原样 */ }
-  renderAll();
-}
-
-/**
- * 切更新通道（正式版 ↔ 测试版）。
- * ★ 这里**不动源地址**（源地址编译在包里，改不了也不许改），只换「读源上哪个清单文件」：
- *   正式版读 latest.yml、测试版读 beta.yml。所以切换不需要重装，也不会失联。
- */
-async function switchUpdateChannel(next) {
-  let r = null;
-  try { r = await appApi.updateSetChannel(next); } catch (e) { r = null; }
-  if (!r || r.ok === false) {
-    toast((r && r.error) || '切换通道失败（取不到原因）', 'err');
-    renderAll();
-    return;
-  }
-  toast(r.unchanged ? `已经在${r.label}通道了` : `已切到${r.label}通道，点「检查更新」看看有没有新版本`, r.unchanged ? '' : 'ok');
-  await refreshUpdate();
-}
-
-/** 下载进度每秒好几条，只动进度条那两处，别整页重画（会把正在输入的框重置掉） */
-function updateUpdateBar(u) {
-  const bar = document.querySelector('#updBar i');
-  const txt = document.querySelector('#updTxt');
-  if (!bar || !txt) return;
-  const pct = Math.max(0, Math.min(100, Math.round(u.percent || 0)));
-  const mb = v => (v ? (v / 1024 / 1024).toFixed(1) + ' MB' : '—');
-  bar.style.width = pct + '%';
-  txt.textContent = `${pct}% · ${mb(u.transferred)} / ${mb(u.total)}${u.bytesPerSecond ? ' · ' + mb(u.bytesPerSecond) + '/s' : ''}`;
-}
 
 /* ---------------- ⑧ 品牌统计 ---------------- */
 function daysLabel(d) { return Number(d) > 0 ? `最近 ${d} 天` : '全部时间'; }
@@ -1980,8 +1879,6 @@ async function enterApp() {
   if (Array.isArray(live)) state.jobs = live.map(j => Object.assign({ progress: null, startedAt: j.startedAt || Date.now() }, j));
   await refreshBrands();
   await refreshUsers();
-  // 更新状态读一次就够，之后靠主进程推 update:changed（下载进度很密，见 onUpdate 的处理）
-  try { state.upd = await appApi.updateStatus(); } catch (e) { state.upd = null; }
   bindOnce();
   renderAll();
   renderLogs();
@@ -2729,25 +2626,6 @@ const ACTS = {
   // 「说明书」弹窗：topic 从按钮的 data-topic 上取（写错 topic ⇒ 弹窗打不开，测试点名抓）
   'help:open': (el) => openHelpModal(el.dataset.topic),
   'help:close': () => closeHelpModal(),
-  // ---- 应用更新：三个动作都要用户点，主进程不会自己下载、更不会自己重启 ----
-  'upd:check': async () => {
-    const r = await appApi.updateCheck();
-    toast(r.ok ? '正在检查更新…' : r.error, r.ok ? '' : 'err');
-    await refreshUpdate();
-  },
-  'upd:download': async () => {
-    const r = await appApi.updateDownload();
-    toast(r.ok ? '开始下载更新…' : r.error, r.ok ? '' : 'err');
-    await refreshUpdate();
-  },
-  'upd:install': async () => {
-    const r = await appApi.updateInstall();
-    if (!r.ok) { toast(r.error, 'err'); return; }
-    toast('正在安装，应用马上重启…', 'ok');
-  },
-  // 切通道：只换「读源上哪个清单文件」，**不动源地址**。换完立刻刷新，别让界面显示旧通道
-  'upd:chan:stable': async () => { await switchUpdateChannel('stable'); },
-  'upd:chan:beta': async () => { await switchUpdateChannel('beta'); },
   'flatten:pick': async () => {
     const d = await appApi.pickDir({ title: '选择素材目录', defaultPath: state.project.sourceDir || '' });
     if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', { sourceDir: d }).then(r => r.ok ? r.result : null); renderAll(); }
@@ -3527,15 +3405,7 @@ function bind() {
     if (!d.ok) toast(d.error || '任务失败', d.cancelled || /已取消/.test(d.error || '') ? '' : 'err');
     renderAll();
   });
-  appApi.onUpdate(u => {
-    const prev = state.upd;
-    // 只有「状态真的变了」才整页重画；下载进度每秒好几条，只动进度条那两处 ——
-    // 整页重画会把用户正在输入的框重置回旧值（品牌弹窗踩过同一个坑）
-    const big = !prev || prev.status !== u.status || prev.supported !== u.supported || prev.latest !== u.latest;
-    state.upd = u;
-    if (state.tab !== 7) return;
-    if (big) renderAll(); else updateUpdateBar(u);
-  });
+
 }
 
 async function boot() {

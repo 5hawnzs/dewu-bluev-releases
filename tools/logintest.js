@@ -600,29 +600,19 @@ app.whenReady().then(async () => {
   ok('⑦e 成员写的那段模板真的落到注册表上了（不是只在返回值里改了一下）',
     !!adminSee && adminSee.promptWrite === '成员自己写的模板', JSON.stringify(adminSee && adminSee.promptWrite));
 
-  // ---- ⑦f 更新通道：只有管理员能切到测试版 ----
-  // ★ 这里**直接调 IPC**，不看界面藏没藏按钮 —— 界面藏起来只是不给人添乱，
-  //   改一行前端就能绕过去，真正要验的是主进程那道 guardAdmin。
-  //   还有一条更容易漏的：通道是**落盘**的，管理员切过去之后换个人登录，
-  //   那个人会一直收测试版更新包，而他连按钮都看不见 —— 所以登录时要按权限收回。
-  const updaterMod = require(path.join(ROOT, 'src/main/updater.js'));
-  updaterMod.init({ send: () => {}, packaged: false, version: '0.0.0-test', channel: 'stable' });
-  const aBeta = await js(`window.api.updateSetChannel('beta')`);
-  ok('⑦f 管理员能把通道切到测试版', aBeta.ok === true && aBeta.channel === 'beta', aBeta.error || JSON.stringify(aBeta));
-
+  // ---- 所有账号均不能从客户端获取安装包 ----
+  const deniedActions = async () => js(`(async () => {
+    const results = await Promise.all([window.api.updateStatus(), window.api.updateCheck(),
+      window.api.updateDownload(), window.api.updateInstall(), window.api.updateSetChannel('beta')]);
+    return results.every(r => r && r.ok === false && r.disabled === true);
+  })()`);
+  ok('管理员的全部客户端分发接口均已关闭', await deniedActions());
+  const adminSettings = await js(`(() => { document.querySelector('.nav[data-tab="7"]').click();
+    return !document.querySelector('#updBox') && !/应用更新|检查更新|下载更新|更新通道/.test(document.querySelector('#head').textContent + document.querySelector('#pane').textContent); })()`);
+  ok('管理员设置页也没有更新入口及文字', adminSettings);
   const backMember = await js(`__t.login(${JSON.stringify(MEMBER)}, 'Member@456', false)`);
-  await new Promise(r => setTimeout(r, 150));
-  const afterMember = await js(`window.api.updateStatus()`);
-  ok('⑦f ★ 普通成员登录后，管理员留下的测试版通道被自动收回（否则他会一直收测试包）',
-    backMember.locked === false && afterMember.ok === true && afterMember.channel === 'stable',
-    `channel=${afterMember.channel}`);
-  const diskCfg1 = JSON.parse(fs.readFileSync(path.join(TMP, 'config.json'), 'utf8'));
-  ok('⑦f 这个收回是**落盘**的（不是内存里改一下、重启又变回 beta）',
-    ((diskCfg1.update || {}).channel || '') === 'stable', JSON.stringify(diskCfg1.update || {}));
-
-  const mBeta = await js(`window.api.updateSetChannel('beta')`);
-  ok('⑦f 普通成员自己切测试版 → 主进程拦下并说清原因',
-    mBeta.ok === false && /只有管理员/.test(mBeta.error), JSON.stringify(mBeta));
+  ok('切换普通成员登录成功', backMember.locked === false);
+  ok('普通成员的全部客户端分发接口均已关闭', await deniedActions());
 
   const backAdmin3 = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
   ok('⑦f 切回管理员（后面几条要管理员会话）', backAdmin3.locked === false, backAdmin3.err || '');
