@@ -167,8 +167,8 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
 /* 外圈亮光沿胶囊边框循环移动，遮罩保证按钮中间保持透明。 */
 @property --folder-tool-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
 .folder-tool-link::after{
-  content:"";position:absolute;inset:0;border-radius:inherit;padding:1.5px;pointer-events:none;
-  background:conic-gradient(from var(--folder-tool-angle),transparent 0deg,transparent 285deg,#9c40ff 315deg,#ffaa40 342deg,#fff4d8 354deg,transparent 360deg);
+  content:"";position:absolute;inset:0;border-radius:inherit;padding:0.9px;pointer-events:none;
+  background:conic-gradient(from var(--folder-tool-angle),transparent 0deg,transparent 328deg,#9c40ff 338deg,#ffaa40 347deg,#fff4d8 352deg,transparent 356deg,transparent 360deg);
   -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
   -webkit-mask-composite:xor;mask-composite:exclude;animation:folder-tool-border-flow 4s linear infinite;
 }
