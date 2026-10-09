@@ -121,6 +121,13 @@
       <h2>最近明细（最新 200 条 · 含模拟/探针，灰色）</h2>
       <div class="tw"><table id="tRows"></table></div>
     </div>
+
+    <div class="card">
+      <h2>任务运行记录（最近 200 条）</h2>
+      <p class="hint">显示任务开始、完成/失败、耗时和脱敏后的错误摘要；与上方设备、执行人、品牌、时间筛选联动。看板公开可读。</p>
+      <p class="hint err" id="runLogNotice" hidden></p>
+      <div class="tw"><table id="tTasks"></table></div>
+    </div>
   </div>
 
   <p class="hint" id="foot"></p>
@@ -130,7 +137,7 @@
 /** 只读看板：只做 select，没有任何写操作。数字取不到就显示「—」，绝不拿 0 冒充。 */
 const $ = s => document.querySelector(s);
 const LS = 'bluev-board';
-let sb = null, timer = null, rows = [], dupFold = 0;
+let sb = null, timer = null, rows = [], taskRows = [], dupFold = 0, taskLoadError = '';
 
 /**
  * ★ 内置的组织默认值 —— 与 App 的 src/main/clouddefaults.js 是**同一份**，改一处必须同时改另一处。
@@ -243,10 +250,16 @@ async function load(){
   conn('wait','读取中…');
   $('#btnRefresh').disabled = true;
   const limit = 5000;   // 只读最近 5000 条来聚合；要全量对账就去本机导 Excel（本机 jsonl 才是完整账）
-  const { data, error } = await sb.from('publish_log')
-    .select('ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_name,username,display_name')
-    .eq('org', ORG)                     // ★ 只看本组织的行（其他组织的条目不上这张看板）
-    .order('ts', { ascending: false }).limit(limit);
+  const [{ data, error }, { data: tasks, error: taskError }] = await Promise.all([
+    sb.from('publish_log')
+      .select('ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_name,username,display_name')
+      .eq('org', ORG)
+      .order('ts', { ascending: false }).limit(limit),
+    sb.from('run_log')
+      .select('event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_name,username,display_name,ok,cancelled,elapsed_sec,error_summary')
+      .eq('org', ORG)
+      .order('ts', { ascending: false }).limit(2000)
+  ]);
   $('#btnRefresh').disabled = false;
   if(error){
     conn('bad','读取失败');
@@ -257,7 +270,9 @@ async function load(){
   const raw = data || [];
   rows = dedupe(raw);
   dupFold = raw.length - rows.length;
-  conn('ok', `已连接 · ${rows.length} 条`);
+  taskRows = tasks || [];
+  taskLoadError = taskError ? String(taskError.message || taskError) : '';
+  conn('ok', `已连接 · 发布 ${rows.length} 条 · 任务最近 ${taskRows.length} 条`);
   $('#main').hidden = false;
   render();
 }
@@ -277,15 +292,26 @@ function fillFilters(){
     el.innerHTML = '<option value="">' + el.options[0].text + '</option>' +
       arr.map(v => `<option value="${esc(v)}" ${v===cur?'selected':''}>${esc(v)}</option>`).join('');
   };
-  const u = [...new Set(rows.map(r => (r.display_name || r.username || '').trim()).filter(Boolean))].sort();
-  const b = [...new Set(rows.map(r => (r.brand_name || '').trim()).filter(Boolean))].sort();
+  const combined = rows.concat(taskRows);
+  const u = [...new Set(combined.map(r => (r.display_name || r.username || '').trim()).filter(Boolean))].sort();
+  const b = [...new Set(combined.map(r => (r.brand_name || '').trim()).filter(Boolean))].sort();
   sel($('#fUser'), u); sel($('#fBrand'), b);
   // ★ 机器按**名字**列（不是 machine_id）：同一台电脑换过 id 时只出现一次
-  const names = [...new Set(rows.map(mkey))].sort();
+  const names = [...new Set(combined.map(mkey))].sort();
   const el = $('#fMachine');
   const cur = el.value;
   el.innerHTML = '<option value="">全部机器</option>' +
     names.map(n => `<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
+}
+
+function filteredTasks(){
+  const days = Number($('#fDays').value) || 0;
+  const cut = days ? Date.now() - days*86400000 : 0;
+  const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
+  return taskRows.filter(r => (!cut || Number(r.ts) >= cut)
+    && (!m || mkey(r) === m)
+    && (!u || (r.display_name || r.username || '') === u)
+    && (!b || (r.brand_name || '') === b));
 }
 
 function render(){
@@ -352,6 +378,21 @@ function render(){
       <td>${esc(r.kind||'')}</td>
       <td>${r.result==='发布成功'?'<span class="chip ok">成功</span>':(r.result==='失败'?'<span class="chip bad">失败</span>':`<span class="chip wait" title="${esc(r.result||'')}">${esc(kindOf(r))}</span>`)}</td>
       <td class="hint">${esc(r.reason||'')}</td><td class="num">${r.elapsed==null?'—':Number(r.elapsed).toFixed(1)+'s'}</td></tr>`).join('') || `<tr><td colspan="10" class="hint">—</td></tr>`) + '</tbody>';
+
+  const tasks = filteredTasks();
+  $('#tTasks').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>任务</th><th>批次</th><th>状态</th><th class="num">耗时</th><th>错误摘要</th></tr></thead><tbody>` +
+    (tasks.slice(0,200).map(r => `<tr>
+      <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
+      <td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.brand_name||'')}</td>
+      <td>${esc(r.task_label||r.task_type||'')}</td><td>${esc(r.batch_no||'')}</td>
+      <td>${r.event_kind==='start'?'<span class="chip">开始</span>':(r.cancelled?'<span class="chip wait">已取消</span>':(r.ok?'<span class="chip ok">完成</span>':'<span class="chip bad">失败</span>'))}</td>
+      <td class="num">${r.elapsed_sec==null?'—':Number(r.elapsed_sec).toFixed(1)+'s'}</td><td class="hint">${esc(r.error_summary||'')}</td></tr>`).join('') || `<tr><td colspan="9" class="hint">—</td></tr>`) + '</tbody>';
+  $('#runLogNotice').hidden = !taskLoadError;
+  $('#runLogNotice').textContent = taskLoadError
+    ? (/PGRST205|Could not find the table|run_log/i.test(taskLoadError)
+      ? '云端任务日志表尚未创建：请管理员先执行 docs/supabase-runlog-migration.sql。发布结果统计仍可正常使用。'
+      : '运行日志暂时读取失败：' + taskLoadError)
+    : '';
 
   $('#foot').innerHTML = `数据来自各台机器上行的<b>发布结果</b>（取回 ${rows.length + dupFold} 行，最多 5000 条）。
     <br>· <b>统计口径：只算真实发布结果</b>（发布成功 / 失败）；另有 <b>${others.length}</b> 条「模拟 / 探针」<b>未计入</b>，
