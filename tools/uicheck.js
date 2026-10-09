@@ -191,6 +191,24 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
+  // 文件夹工具按钮在系统开启「减少动态效果」时也必须继续慢速播放，不能整段停成静态。
+  const cdp = win.webContents.debugger;
+  cdp.attach('1.3');
+  await cdp.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  const folderMotion = await win.webContents.executeJavaScript(`(() => {
+    const b = document.querySelector('.folder-tool-link');
+    const before = getComputedStyle(b, '::before'), after = getComputedStyle(b, '::after');
+    const text = getComputedStyle(b.querySelector('.folder-tool-text'));
+    return { names: [before.animationName, after.animationName, text.animationName],
+      durations: [before.animationDuration, after.animationDuration, text.animationDuration] };
+  })()`);
+  await cdp.sendCommand('Emulation.setEmulatedMedia', { features: [] });
+  cdp.detach();
+  ok('文件夹工具在系统减少动态效果时仍慢速播放渐变和外圈动画',
+    folderMotion.names[0] === 'folder-tool-gradient' && folderMotion.names[1] === 'folder-tool-border-flow'
+      && folderMotion.names[2] === 'folder-tool-gradient' && folderMotion.durations.every(x => x === '18s'),
+    JSON.stringify(folderMotion));
+
   ok('左侧导航是 10 个页签（货号颜色校验与「发布单」已隐藏/删除）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 10,
     await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
   ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
