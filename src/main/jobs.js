@@ -457,9 +457,10 @@ async function dispatch(type, args, ctx) {
     case 'publish.devices': {
       // ★ 两套一起回：devices = 用户加过的（逐台 probe 出详情），found = adb 现在认到的全部。
       //   界面靠 found 把「还没加进来」的设备直接列出来 —— 用户不用再去猜 emulator-5554 这种名字。
+      const found = await publisher.scanDevices();
       return {
-        devices: await publisher.listDevices(),
-        found: await publisher.scanDevices(),
+        devices: publisher.devices().map(d => ({ ...d, online: found.some(f => f.serial === d.serial && f.online) })),
+        found,
         selected: store.get('publish.device') || ''
       };
     }

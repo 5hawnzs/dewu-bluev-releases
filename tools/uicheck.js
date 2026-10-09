@@ -14,6 +14,9 @@ const os = require('os');
 const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');
+// 界面自检隔离真实设备，自动刷新只读取空测试现场。
+require(path.join(ROOT, 'src/main/services/emulators.js')).discover = async () => ({ instances: [], errors: [] });
+require(path.join(ROOT, 'src/main/services/adb.js')).devices = async () => [];
 process.env.BLUEV_NO_LOGIN = '1';   // 自检只验界面，账号逻辑有自己的测试
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-uicheck-'));
 app.setPath('userData', TMP);
@@ -2417,6 +2420,25 @@ app.whenReady().then(async () => {
     }
   }
 
+  const deviceUi = await win.webContents.executeJavaScript(`(() => {
+    deviceScanAt = Date.now(); state.tab = 6;
+    state.devFound = [{name:'MuMu新窗口',serial:'127.0.0.1:21347',state:'device',online:true,configured:false},
+      {name:'MuMu启动窗口',serial:'',state:'starting',online:false,configured:false}];
+    renderAll();
+    const name = document.getElementById('devName'); name.value = '未保存账号草稿';
+    document.querySelector('#devicesPanel details').open = true;
+    paintDevices();
+    const text = document.getElementById('devicesPanel').textContent;
+    const result = {named:text.includes('MuMu新窗口')&&text.includes('21347'),
+      states:text.includes('已连接')&&text.includes('启动中'),
+      draft:document.getElementById('devName').value==='未保存账号草稿'&&document.querySelector('#devicesPanel details').open,
+      noManual:!text.includes('确认它开了')&&text.includes('自动连接')};
+    state.devFound = null; state.tab = 1; renderAll(); return result;
+  })()`);
+  ok('设备界面显示实例名称与实际端口', deviceUi.named);
+  ok('设备界面区分已连接与启动中', deviceUi.states);
+  ok('自动刷新保留账号草稿和展开状态', deviceUi.draft);
+  ok('设备界面不再要求用户手动排查 ADB', deviceUi.noManual);
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 

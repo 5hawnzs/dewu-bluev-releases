@@ -130,8 +130,9 @@ async function version() {
   return r.ok ? r.stdout.split(/\r?\n/)[0].trim() : null;
 }
 
-async function devices() {
+async function devices({ strict = false } = {}) {
   const r = await execAdb(['devices']);
+  if (!r.ok && strict) throw new Error('内置设备连接服务执行失败：' + (r.stderr || r.code || '无法启动 ADB'));
   if (!r.ok) return [];
   return r.stdout.split(/\r?\n/).slice(1)
     .map(l => l.trim()).filter(Boolean)

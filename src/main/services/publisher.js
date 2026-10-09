@@ -15,6 +15,7 @@
 const path = require('path');
 const fs = require('fs');
 const adb = require('./adb');
+const emulators = require('./emulators');
 const uimap = require('./uimap');
 const verifySvc = require('./verify');
 const mainimg = require('./mainimg');
@@ -124,7 +125,15 @@ async function listDevices() {
  */
 async function scanDevices() {
   const conf = devices();
-  const raw = await adb.devices();
+  const discovery = await emulators.connectDiscovered(adb, await emulators.discover());
+  const raw = discovery.raw.slice();
+  discovery.instances.forEach(v => {
+    if (v.serial && !raw.some(d => d.serial === v.serial)) raw.push({ serial: v.serial, state: v.state });
+  });
+  // 端口尚未出现的启动实例也返回给界面，不能伪装成“没有设备”。
+  const starting = discovery.instances.filter(v => !v.serial).map(v => ({
+    serial: '', state: 'starting', online: false, configured: false, name: v.name, detail: v.detail
+  }));
 
   // ★ 2026-10-03 实测：MuMu 12 会把**同一台模拟器**同时暴露在 16384 / 5555 / 7555 三个端口上，
   //   `adb devices` 里就是三行，界面上看着像「我明明只开了一个，怎么有两个序列号」。
@@ -160,11 +169,12 @@ async function scanDevices() {
     const main = dupOf[d.serial] || '';
     return {
       serial: d.serial, state: d.state, online: d.state === 'device',
-      configured: !!c, id: (c && c.id) || '', name: (c && c.name) || '',
+      configured: !!c, id: (c && c.id) || '', name: (c && c.name) || (discovery.instances.find(v => v.serial === d.serial) || {}).name || '',
+      detail: (discovery.instances.find(v => v.serial === d.serial) || {}).detail || '',
       dupOf: main,   // 非空 = 这台跟主串是**同一台设备**，界面上不再单列
       aliases: main ? [] : Object.keys(dupOf).filter(s => dupOf[s] === d.serial)
     };
-  });
+  }).concat(starting, discovery.errors.length ? [{ serial: '', state: 'discovery-error', online: false, configured: false, name: '设备发现异常', detail: discovery.errors.join('；') }] : []);
 }
 
 function rand(a, b) { return Math.round(a + Math.random() * Math.max(0, b - a)); }

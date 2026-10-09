@@ -1553,6 +1553,58 @@ TABS[9] = {
 };
 
 /** 设备矩阵：真机里「一个设备 = 一个账号」（雷电模拟器多台并行） */
+function deviceStateText(f) {
+  return f.online ? '已连接' : ({ starting: '启动中', offline: '离线', unauthorized: '等待授权', 'connect-failed': '连接失败', 'discovery-error': '发现异常' }[f.state] || f.state || '离线');
+}
+let deviceScanBusy = false;
+let deviceScanAt = 0;
+async function refreshDevices(manual = false) {
+  if (!state.auth || (state.auth.requireLogin && !state.auth.user)) return;
+  if (deviceScanBusy || (state.jobs || []).some(j => ['publish.run', 'publish.rerun'].includes(j.type))) return;
+  deviceScanBusy = true;
+  deviceScanAt = Date.now();
+  const button = document.querySelector('[data-act="pub:devScan"]');
+  if (button) { button.disabled = true; button.textContent = '正在连接…'; }
+  try {
+    const r = await appApi.run('publish.devices', {});
+    if (!r.ok) throw new Error(r.error || '设备发现失败');
+    const map = {};
+    (r.result.devices || []).forEach(d => { map[d.serial] = d; });
+    const found = r.result.found || [];
+    const changed = JSON.stringify(found) !== JSON.stringify(state.devFound) || JSON.stringify(map) !== JSON.stringify(state.devStatus);
+    state.devFound = found;
+    state.devStatus = map;
+    state.devScanError = '';
+    if (manual) {
+      const count = found.filter(d => !d.dupOf && d.online).length;
+      const failed = found.find(d => ['connect-failed', 'discovery-error', 'unauthorized'].includes(d.state));
+      toast(count ? `已连接 ${count} 台设备，可直接加入并使用` : (failed ? '自动连接未完成，原因已显示在设备列表中' : (found.length ? '已发现模拟器，正在等待连接就绪，软件会自动重试' : '未发现运行中的模拟器，打开 MuMu 后软件会自动连接')), count ? 'ok' : '');
+    }
+    if (state.tab === 6 && (changed || manual)) paintDevices();
+  } catch (e) {
+    state.devScanError = e.message;
+    if (manual) toast('自动连接未完成：' + e.message, 'err');
+    if (state.tab === 6) paintDevices();
+  } finally {
+    deviceScanBusy = false;
+    deviceScanAt = Date.now();
+    const current = document.querySelector('[data-act="pub:devScan"]');
+    if (current) { current.disabled = false; current.textContent = '扫描设备'; }
+  }
+}
+
+function paintDevices() {
+  const panel = document.getElementById('devicesPanel');
+  if (!panel) return;
+  const name = panel.querySelector('#devName');
+  const serial = panel.querySelector('#devSerial');
+  const draft = { name: name && name.value, serial: serial && serial.value, open: panel.querySelector('details').open };
+  // 自动刷新只更新设备区域，并保留用户手填草稿。
+  panel.outerHTML = devicesHtml();
+  document.getElementById('devName').value = draft.name || '';
+  document.getElementById('devSerial').value = draft.serial || '';
+  document.querySelector('#devicesPanel details').open = draft.open;
+}
 function devicesHtml() {
   const p = state.config.publish || {};
   const list = p.devices || [];
@@ -1568,34 +1620,34 @@ function devicesHtml() {
       <td><button class="btn sm" data-act="pub:useDev" data-serial="${esc(d.serial)}">选用</button>
           <button class="btn sm" data-act="pub:delDev" data-id="${esc(d.id)}">删除</button></td>
     </tr>`).join('')}</tbody></table></div>`
-    : `<div class="empty">还没有设备。点下面「扫描设备」—— 模拟器开着的话它会直接列出来，点一下「加入并使用」就行。</div>`;
+    : `<div class="empty">打开 MuMu 后将自动发现并连接设备，连接成功后点「加入并使用」即可。</div>`;
   // 还没加进列表的那些：直接给「加入并使用」——用户不必知道 emulator-5554 这种名字
   // ★ 2026-10-03：同一个模拟器会被 adb 在多个端口上各报一次（16384 / 5555 / 7555）。
   //   重复的（dupOf 非空的）不再单列 —— 否则用户会以为自己开了两台、不知道该选哪个。
   const fresh = (found || []).filter(f => !f.configured && !f.dupOf);
   const freshBox = fresh.length ? `
     <div style="margin-top:10px">
-      <div class="hint" style="margin:0 0 6px">adb 现在认到这些设备（还没加进来）：</div>
+      <div class="hint" style="margin:0 0 6px">已发现的设备（还没加进来）：</div>
       <div class="tw"><table>
         <thead><tr><th>序列号</th><th>状态</th><th></th></tr></thead>
         <tbody>${fresh.map(f => `<tr>
-          <td class="mono">${esc(f.serial)}${(f.aliases && f.aliases.length)
+          <td class="mono">${esc(f.name || f.serial)}${f.name ? `<div class="hint">${esc(f.serial)}</div>` : ''}${f.detail ? `<div class="hint">${esc(f.detail)}</div>` : ''}${(f.aliases && f.aliases.length)
             ? `<div class="hint" style="margin:2px 0 0">这台还出现在 ${esc(f.aliases.join(' / '))} —— 同一个模拟器的其它端口，不用管</div>`
             : ''}</td>
-          <td>${f.online ? badge('在线', 'ok') : badge(f.state || '离线', 'wait')}</td>
+          <td>${badge(deviceStateText(f), f.online ? 'ok' : 'wait')}</td>
           <td><button class="btn sm primary" data-act="pub:useFound" data-serial="${esc(f.serial)}"${f.online ? '' : ' disabled'}>加入并使用</button></td>
         </tr>`).join('')}</tbody></table></div>
     </div>` : '';
   const noneBox = (found && !found.length)
-    ? `<p class="hint" style="margin-top:9px">adb 现在一台设备都没认到：先把模拟器启动起来，并确认它开了「ADB 调试」，再点一次「扫描设备」。</p>`
+    ? `<p class="hint" style="margin-top:9px">未发现运行中的模拟器。打开 MuMu 后会自动连接，无需输入命令。</p>`
     : '';
-  return `<div class="box"><h3>设备管理（一个设备 = 一个账号）</h3>${rows}
+  return `<div class="box" id="devicesPanel"><h3>设备管理（一个设备 = 一个账号）</h3>${rows}
     <div class="row" style="margin-top:10px">
       <button class="btn sm primary" data-act="pub:devScan">扫描设备</button>
-      <span class="chip ${(state.project.publish || {}).connected ? 'run' : ''}">${(state.project.publish || {}).connected ? '已连接' : '未连接'}</span>
-      <span class="hint" style="margin:0">扫描就是问一下 adb「现在都连着谁」，不用你填序列号</span>
+      <span class="chip">${(state.jobs || []).some(j => ['publish.run', 'publish.rerun'].includes(j.type)) ? '发布中，暂停刷新' : '自动发现已开启'}</span>
+      <span class="hint" style="margin:0">自动发现 · 自动连接 · 每 10 秒刷新</span>
     </div>
-    ${freshBox}${noneBox}
+    ${freshBox}${noneBox}${state.devScanError ? `<p class="hint">自动连接未完成：${esc(state.devScanError)}</p>` : ''}
     <details style="margin-top:9px">
       <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">手动填序列号添加（一般用不到）</summary>
       <div class="row" style="margin-top:8px">
@@ -1775,6 +1827,7 @@ function stateGate() {
 }
 
 function renderAll() {
+  if (state.tab === 6 && !deviceScanBusy && Date.now() - deviceScanAt > 10000) setTimeout(() => refreshDevices(), 0);
   syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 编号在 5 处留了空位。老配置里存过 tab=5、
   //   或按 Ctrl+5 按到空位时，必须兜回第 1 页 —— 否则 t 是 undefined，下面读 t.title 直接崩（整页白屏）。
@@ -2988,32 +3041,16 @@ const ACTS = {
     state.project = await appApi.projectGet();
     renderAll();
   },
-  // 扫描：问 adb「现在都连着谁」——连配置里没加过的设备也一并列出来（用户不用再自己抄序列号）
+  // 手动扫描与定时发现共用同一入口，避免重复连接。
   'pub:devScan': async () => {
-    const r = await appApi.run('publish.devices', {});
-    if (r.ok) {
-      const map = {};
-      (r.result.devices || []).forEach(d => { map[d.serial] = d; });
-      state.devStatus = map;
-      state.devFound = r.result.found || [];
-      // ★ 同一个模拟器在多个端口上会被 adb 各报一次，去重后才是「几台设备」
-      const uniq = state.devFound.filter(d => !d.dupOf);
-      const online = uniq.filter(d => d.online).length;
-      const fresh = uniq.filter(d => !d.configured).length;
-      const dupN = state.devFound.length - uniq.length;
-      toast(uniq.length
-        ? `adb 认到 ${uniq.length} 台设备，${online} 台在线${fresh ? `（其中 ${fresh} 台还没加进来，可直接「加入并使用」）` : ''}`
-          + (dupN ? `；另有 ${dupN} 个序列号是同一台设备的其它端口，已合并` : '')
-        : 'adb 现在一台设备都没认到：先把模拟器启动起来，并确认它开了「ADB 调试」',
-      uniq.length ? (online ? 'ok' : '') : 'err');
-    }
-    renderAll();
+    await refreshDevices(true);
   },
   // adb 认到、还没加进列表的设备：一键加入并选用。
   // ★ 有了这一步，用户永远不用知道 emulator-5554 是什么 —— 原来他得自己把那个名字抄进输入框。
   'pub:useFound': async (el) => {
     const serial = el.dataset.serial;
-    const add = await appApi.run('publish.addDevice', { name: serial, serial });
+    const found = (state.devFound || []).find(d => d.serial === serial);
+    const add = await appApi.run('publish.addDevice', { name: (found && found.name) || serial, serial });
     if (!add.ok && !/已存在/.test(add.error || '')) { toast(add.error || '加入失败', 'err'); renderAll(); return; }
     await appApi.configSet({ publish: { device: serial } });
     state.config = await appApi.configGet();
@@ -3457,4 +3494,7 @@ async function boot() {
   await enterApp();
 }
 
+setInterval(() => {
+  if (state.tab === 6 && !document.hidden && Date.now() - deviceScanAt >= 10000) refreshDevices();
+}, 1000);
 boot();

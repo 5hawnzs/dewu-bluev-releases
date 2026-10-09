@@ -31,7 +31,11 @@ const base = path.resolve(__dirname, '..');
 
 // 假 adb 的现场文件：复制到临时目录（测试会就地改 window.xml 模拟页面变化，不污染仓库）
 const FDB = path.join(TMP, 'fakeadb');
-fs.cpSync(path.join(__dirname, 'fakeadb'), FDB, { recursive: true });
+// 本机 Node 22 的 cpSync 在中文工程路径下会原生崩溃；夹具只有普通文件，逐个复制。
+fs.mkdirSync(FDB);
+for (const file of fs.readdirSync(path.join(__dirname, 'fakeadb'))) {
+  fs.copyFileSync(path.join(__dirname, 'fakeadb', file), path.join(FDB, file));
+}
 const FAKE_WINDOW = path.join(FDB, 'window.xml');
 const CALLS = path.join(FDB, 'calls.log');
 const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
@@ -43,6 +47,8 @@ const clearFiles = () => fs.writeFileSync(FILES, '');
 
 // ★ 必须在 require 被测模块之前替换：src/main/services/adb.js 在加载时就解构了 execFile
 require('child_process').execFile = require(path.join(__dirname, 'fakeadb', 'adb.js')).makeFakeAdb(FDB);
+// 假设备测试不读取宿主机真实模拟器。
+require(path.join(base, 'src/main/services/emulators.js')).discover = async () => ({ instances: [], errors: [] });
 
 const store = require(path.join(base, 'src/main/store.js'));
 const publisher = require(path.join(base, 'src/main/services/pubublisher.js'.replace('pubublisher', 'publisher')));
