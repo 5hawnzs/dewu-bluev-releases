@@ -284,12 +284,46 @@ function register() {
   }));
 
   // ---- 标题热词库（左侧「热词库」页）----
-  // ★ 读：所有登录用户（标题到底从哪些词里挑，谁都能看，免得「词库黑箱」）；
-  // ★ 写：**只有管理员** —— 改的是**全员**的生成口径（一个词错一版，整批标题一起漂），
-  //   与「高级设置」同类。藏按钮只是不添乱，真正拦住的是下面这两个 guardAdmin。
+  // 所有登录用户可编辑本机词库；只写本机配置，不同步到其他电脑。
   ipcMain.handle('hotwords:get', guard(() => hotwords.libraryView()));
-  ipcMain.handle('hotwords:save', guardAdmin((_e, groups, opts) => hotwords.saveLibrary(groups, opts)));
-  ipcMain.handle('hotwords:reset', guardAdmin(() => hotwords.resetLibrary()));
+  ipcMain.handle('hotwords:save', guard((_e, groups, opts) => hotwords.saveLibrary(groups, opts)));
+  ipcMain.handle('hotwords:reset', guard(() => hotwords.resetLibrary()));
+  ipcMain.handle('hotwords:export', guard(async (_e, groups) => {
+    try {
+      const checked = hotwords.sanitizeLibrary(groups);
+      if (checked.rejected.length) return { ok: false, error: '词库中有不允许使用的词，请修改后导出' };
+      const result = await dialog.showSaveDialog(win(), {
+        title: '导出本机热词库', defaultPath: '蓝V热词库.json',
+        filters: [{ name: '热词库文件', extensions: ['json'] }]
+      });
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+      await fileIO.writeFile(result.filePath, JSON.stringify({
+        format: 'bluev-hotwords', version: 1, exportedAt: new Date().toISOString(), groups: checked.groups
+      }, null, 2), 'utf8');
+      return { ok: true };
+    } catch (error) { return { ok: false, error: '导出失败：' + error.message }; }
+  }));
+  ipcMain.handle('hotwords:import', guard(async () => {
+    try {
+      const result = await dialog.showOpenDialog(win(), {
+        title: '导入热词库', properties: ['openFile'],
+        filters: [{ name: '热词库文件', extensions: ['json'] }]
+      });
+      if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
+      const filename = result.filePaths[0];
+      if ((await fileIO.stat(filename)).size > 2 * 1024 * 1024) return { ok: false, error: '词库文件过大，请选择小于 2 MB 的 JSON 文件' };
+      const data = JSON.parse((await fileIO.readFile(filename, 'utf8')).replace(/^\uFEFF/, ''));
+      const editable = hotwords.libraryView().editable;
+      if (data.format !== 'bluev-hotwords' || data.version !== 1 || !Array.isArray(data.groups) || !data.groups.length
+        || new Set(data.groups.map(g => g && g.key)).size !== data.groups.length
+        || data.groups.some(g => !g || !editable.includes(g.key) || !Array.isArray(g.words) || g.words.some(w => typeof w !== 'string'))) {
+        return { ok: false, error: '不是有效的蓝V热词库文件，请选择通过“导出词库”生成的 JSON 文件' };
+      }
+      const checked = hotwords.sanitizeLibrary(data.groups);
+      if (checked.rejected.length) return { ok: false, error: '导入文件含有不允许使用的词：' + checked.rejected.map(x => x.word).join('、') };
+      return { ok: true, groups: checked.groups };
+    } catch (error) { return { ok: false, error: '导入失败：' + error.message }; }
+  }));
 
   // ★★ 2026-10-08 用户要求：「云端协作」整块从**界面上删掉**（不给任何人看到）
   //   ⇒ 这里原来那 5 个 cloud:* IPC（status / sync / test / export / import）已**一并删除**，

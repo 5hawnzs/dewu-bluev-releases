@@ -42,6 +42,7 @@ const state = {
   devFound: null,     // 「扫描设备」时 adb 认到的**全部**设备（含还没加进列表的），null = 还没扫过
   lex: null,          // 热词库快照（主进程 hotwords:get 的返回）；null = 还没读到
   lexBusy: false,
+  lexTransferBusy: false,
   lexTried: false,    // 读失败过就不再自动重试（否则 render → load → render 会打转）
   lexDirty: false,    // 界面上改了但还没点「保存」
   // 得物安装包：点过「装进模拟器」且**设备上本来就有**时置 true ——
@@ -1388,40 +1389,59 @@ TABS[8] = {
 function lexStatusHtml() {
   const L = state.lex;
   if (!L) return '';
-  const adm = !!(state.auth && state.auth.isAdmin);
   const win = L.updatedAt ? Date.parse(L.updatedAt) : 0;
   const src = L.isCustom ? `已自定义${win ? '（' + fmtDate(win) + '）' : ''}` : '内置出厂词库';
   return `<div class="row" id="lxStatusRow">
       <span class="chip ${L.isCustom ? 'warn' : 'run'}">${esc(src)}</span>
       <span class="chip">全库 ${L.wordTotal} 词 · ${L.groups.length} 组</span>
       ${state.lexDirty ? '<span class="chip warn">有未保存的改动</span>' : ''}
-      ${adm ? '' : '<span class="chip warn">只读 —— 改词库要管理员（改的是全员的生成口径）</span>'}
+      <span class="chip">本机词库 · 修改仅在本机生效</span>
     </div>`;
 }
 
 function lexGroupHtml(g) {
-  const adm = !!(state.auth && state.auth.isAdmin);
   const chips = g.words.map(w =>
-    `<span class="chip lxw">${esc(w)}${adm ? `<button class="lxx" data-lx-del="${esc(g.key)}" data-lx-w="${esc(w)}" title="删掉这个词">×</button>` : ''}</span>`
+    `<span class="chip lxw">${esc(w)}<button class="lxx" data-lx-del="${esc(g.key)}" data-lx-w="${esc(w)}" title="删掉这个词">×</button></span>`
   ).join('');
   return `<div class="box" id="lxg-${esc(g.key)}">
     <h3>${esc(g.key)}（${g.words.length} 词）</h3>
     <div class="lxwords">${chips || '<span class="hint">（空的 —— 这一组不会给模型任何词）</span>'}</div>
-    ${adm ? `<div class="row" style="margin-top:9px">
+    <div class="row" style="margin-top:9px">
       <input class="inp" data-lx-in="${esc(g.key)}" maxlength="24" placeholder="加一个词，回车即可">
       <button class="btn sm" data-lx-add="${esc(g.key)}">添加</button>
-    </div>` : ''}
+    </div>
   </div>`;
+}
+
+function lexTransferIcon(kind) {
+  const path = kind === 'import' ? 'M12 16V3m-5 5 5-5 5 5M4 16v4h16v-4' : 'M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4';
+  const icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
+  return '<span class="lx-transfer-icon" aria-hidden="true"><span class="lx-transfer-main">' + icon + '</span>'
+    + (kind === 'export' ? '<span class="lx-transfer-clone">' + icon + '</span>' : '')
+    + '<span class="lx-transfer-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg></span></span>';
+}
+
+function setLexTransferBusy(value) {
+  state.lexTransferBusy = value;
+  document.querySelectorAll('#head [data-act^="lex:"],#pane [data-lx-del],#pane [data-lx-in],#pane [data-lx-add]').forEach(el => { el.disabled = value || !state.lex; });
+}
+
+function markLexTransferDone(action) {
+  const button = document.querySelector('#head [data-act="' + action + '"]');
+  if (!button) return;
+  button.dataset.done = '1';
+  setTimeout(() => { if (button.isConnected) delete button.dataset.done; }, 1800);
 }
 
 TABS[12] = {
   title: '热词库',
-  desc: '标题「产品词 + 热门词」用的词库 · 改完下一次生成就生效（不用重启）· 材质与极限词有红线挡着',
+  desc: '本机热词库 · 所有成员可编辑 · 保存后下次生成生效 · 各台电脑独立保存',
   actions: () => {
-    const adm = !!(state.auth && state.auth.isAdmin);
     return [
-      { act: 'lex:reset', label: '恢复内置', disabled: !adm || !state.lex },
-      { act: 'lex:save', label: '保存', primary: true, disabled: !adm || !state.lex }
+      { act: 'lex:export', label: '导出词库', transfer: 'export', disabled: !state.lex || state.lexTransferBusy },
+      { act: 'lex:import', label: '导入词库', transfer: 'import', disabled: !state.lex || state.lexTransferBusy },
+      { act: 'lex:reset', label: '恢复内置', disabled: !state.lex || state.lexTransferBusy },
+      { act: 'lex:save', label: '保存', primary: true, disabled: !state.lex || state.lexTransferBusy }
     ];
   },
   render() {
@@ -1433,8 +1453,9 @@ TABS[12] = {
       <div id="lxStatus">${lexStatusHtml()}</div>
       <div class="box">
         <h3>这个库是怎么被用到的</h3>
-        <p class="hint">每生成一条标题，程序把下面这些词交给模型挑（提示词里那段「【标题热词库】」就是它），
-          并按行轮换 15 种<b>句式骨架</b>（T01~T15）。所以<b>你在这里改的词，下一次生成就会用上，不用重启</b>。</p>
+        <p class="hint">内置词是默认词库，你可以按需要编辑本机词库，修改不会同步到其他电脑。
+          使用看图模型生成时，模型结合<b>当前机器保存的热词库和本批素材图片</b>撰写文案，并按行轮换 15 种<b>句式骨架</b>（T01~T15）。
+          <b>保存后，下一次生成就会使用新词库，不用重启</b>。</p>
       </div>
       <div class="box">
         <h3>三条红线（进不去的词会当场告诉你原因）</h3>
@@ -1490,8 +1511,7 @@ function paintLexGroup(key) {
 }
 
 function bindLexicon() {
-  const adm = !!(state.auth && state.auth.isAdmin);
-  if (!adm || !state.lex) return;
+  if (!state.lex) return;
   const pane = $('#pane');
   pane.querySelectorAll('[data-lx-del]').forEach(b => {
     b.onclick = () => {
@@ -1849,7 +1869,7 @@ function renderAll() {
     return;
   }
   $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(typeof t.desc === 'function' ? t.desc() : t.desc)}</p></div>
-    <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}" data-act="${a.act}" ${a.disabled ? 'disabled' : ''}>${esc(a.label)}</button>`).join('')}</div>`;
+    <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}${a.transfer ? ' lx-transfer lx-' + a.transfer : ''}" data-act="${a.act}" ${a.disabled ? 'disabled' : ''}>${a.transfer ? lexTransferIcon(a.transfer) + '<span>' + esc(a.label) + '</span>' : esc(a.label)}</button>`).join('')}</div>`;
   const scroll = $('#pane').scrollTop;
   $('#pane').innerHTML = t.render();
   $('#pane').scrollTop = scroll;
@@ -2651,7 +2671,35 @@ const ACTS = {
   },
 
   // ---- 热词库（左侧第 12 页）----
-  // ★ 改的是**全员**的生成口径，真正拦住的是主进程那两个 guardAdmin（这里只是把话说清楚）。
+  // 所有登录用户均可修改本机词库，保存不会影响其他电脑。
+  'lex:export': async () => {
+    if (!state.lex || state.lexTransferBusy) return;
+    setLexTransferBusy(true);
+    try {
+      const result = await appApi.hotwordsExport(state.lex.groups.map(g => ({ key: g.key, words: g.words.slice() })));
+      if (!result || !result.ok) { toast((result && result.error) || '导出失败', 'err'); return; }
+      if (!result.canceled) { markLexTransferDone('lex:export'); toast('词库已导出，可在其他电脑导入'); }
+    } catch (error) { toast('导出失败：' + error.message, 'err'); }
+    finally { setLexTransferBusy(false); }
+  },
+  'lex:import': async () => {
+    if (!state.lex || state.lexTransferBusy) return;
+    setLexTransferBusy(true);
+    try {
+      const result = await appApi.hotwordsImport();
+      if (!result || !result.ok) { toast((result && result.error) || '导入失败', 'err'); return; }
+      if (result.canceled) return;
+      if (!window.confirm('导入会替换本机的可编辑词库' + (state.lexDirty ? '，包括当前尚未保存的修改' : '') + '。内置锁定词组和句式骨架保持不变。\n\n确定导入并保存吗？')) return;
+      const saved = await appApi.hotwordsSave(result.groups);
+      if (!saved || !saved.ok) { toast((saved && saved.error) || '导入保存失败', 'err'); return; }
+      state.lex = saved.library;
+      state.lexDirty = false;
+      renderAll();
+      markLexTransferDone('lex:import');
+      toast(saved.warnings.length ? '已导入并保存：' + saved.warnings.join('；') : '词库已导入并保存，下次生成生效');
+    } catch (error) { toast('导入失败：' + error.message, 'err'); }
+    finally { setLexTransferBusy(false); }
+  },
   'lex:save': async () => {
     const L = state.lex;
     if (!L) return;
@@ -2664,7 +2712,7 @@ const ACTS = {
     } else if (r.warnings.length) {
       toast('已保存，但有要留意的地方：' + r.warnings.join('；'), 'err');
     } else {
-      toast('词库已保存 —— 下一次生成标题就会用新词（不用重启）');
+      toast('本机词库已保存 —— 下一次生成就会使用，不影响其他电脑');
     }
     renderAll();
   },

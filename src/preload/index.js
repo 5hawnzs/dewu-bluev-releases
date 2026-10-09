@@ -41,10 +41,12 @@ contextBridge.exposeInMainWorld('api', {
   configSet: patch => ipcRenderer.invoke('config:set', patch),
   // 「模型配置」弹窗：读当前**实际生效**的模型与来源（不发网络请求，只解析配置）
   llmEffective: () => ipcRenderer.invoke('llm:effective'),
-  // 标题热词库：get 所有人可用；save / reset 主进程侧 guardAdmin（改的是全员口径）
+  // 标题热词库：所有登录用户可读取、编辑和恢复本机词库。
   hotwordsGet: () => ipcRenderer.invoke('hotwords:get'),
   hotwordsSave: (groups, opts) => ipcRenderer.invoke('hotwords:save', groups, opts),
   hotwordsReset: () => ipcRenderer.invoke('hotwords:reset'),
+  hotwordsExport: groups => ipcRenderer.invoke('hotwords:export', groups),
+  hotwordsImport: () => ipcRenderer.invoke('hotwords:import'),
   projectGet: () => ipcRenderer.invoke('project:get'),
   logHistory: () => ipcRenderer.invoke('log:history'),
   logExport: payload => ipcRenderer.invoke('log:export', payload),

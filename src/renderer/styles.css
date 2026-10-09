@@ -477,10 +477,30 @@ body:not(.locked) .gate{display:none}
 
 /* ---------- 热词库页（页签 12） ---------- */
 .lxwords{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
-.lxw{display:inline-flex;align-items:center;gap:4px;padding-right:5px}
-.lxw .lxx{border:0;background:transparent;color:var(--tx3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;border-radius:50%}
+.lxw{position:relative;display:inline-flex;align-items:center;justify-content:center;text-align:center;min-height:28px;line-height:1.2;padding:4px 24px}
+.lxw .lxx{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:14px;height:16px;border:0;background:transparent;color:var(--tx3);cursor:pointer;font-size:14px;line-height:1;padding:0;border-radius:50%}
 .lxw .lxx:hover{color:var(--red)}
 .lxlock{opacity:.72}
+.lxlock .lxw{padding:4px 10px}
+#lxStatus{margin-bottom:16px}
+#lxStatusRow .chip{display:inline-flex;align-items:center;justify-content:center;min-height:28px;line-height:1.4}
+.head .act:has(.lx-transfer){flex-wrap:wrap;justify-content:flex-end}
+button.btn.lx-transfer{display:inline-flex;align-items:center;justify-content:center;gap:10px;height:36px;padding:0 18px;border-radius:40px;background:var(--panel2);font-size:13px;font-weight:500;transition:background .15s,transform .15s}
+button.btn.lx-transfer:hover:not(:disabled){background:var(--panel);transform:scale(1.02)}
+button.btn.lx-transfer:active:not(:disabled){transform:scale(.96)}
+.lx-transfer-icon{position:relative;display:block;flex:none;width:16px;height:16px;overflow:hidden}
+.lx-transfer-icon>span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transition:transform .2s,opacity .2s}
+.lx-transfer-icon svg{width:16px;height:16px}
+.lx-transfer-clone{transform:translateY(-20px);opacity:0}
+.lx-transfer-check{transform:scale(.5);opacity:0}
+.lx-export:hover:not(:disabled) .lx-transfer-main{animation:lx-download-main .8s ease-in-out infinite}
+.lx-export:hover:not(:disabled) .lx-transfer-clone{animation:lx-download-clone .8s ease-in-out infinite}
+.lx-import:hover:not(:disabled) .lx-transfer-main,.lx-transfer[data-done="1"] .lx-transfer-main{transform:scale(.5);opacity:0}
+.lx-import:hover:not(:disabled) .lx-transfer-check,.lx-transfer[data-done="1"] .lx-transfer-check{transform:scale(1);opacity:1}
+.lx-transfer[data-done="1"] .lx-transfer-main,.lx-transfer[data-done="1"] .lx-transfer-clone{animation:none!important;opacity:0}
+@keyframes lx-download-main{0%,15%{transform:translateY(0);opacity:1}65%,100%{transform:translateY(20px);opacity:0}}
+@keyframes lx-download-clone{0%,15%{transform:translateY(-20px);opacity:0}65%,100%{transform:translateY(0);opacity:1}}
+@media(prefers-reduced-motion:reduce){.lx-transfer-icon>span,button.btn.lx-transfer{transition:none}.lx-export:hover:not(:disabled) .lx-transfer-main,.lx-export:hover:not(:disabled) .lx-transfer-clone{animation:none}button.btn.lx-transfer:hover:not(:disabled),button.btn.lx-transfer:active:not(:disabled){transform:none}}
 
 /* ---------- 窄屏适配：**没有**「侧栏横排」这一档（有意删掉的，别加回来） ----------
    ★ 2026-10-03 用户要求：「目录始终固定在左侧，不能因窗口变小就放到上面」。
