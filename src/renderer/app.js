@@ -1548,6 +1548,7 @@ async function addLexWord(key, inp) {
  */
 TABS[9] = {
   title: '品牌与权限',
+  admin: true,
   desc: '品牌清单 · 账号与密码 · 按账号分配品牌权限 · 默认品牌（新建品牌、分配权限只有管理员能做）',
   actions: () => [],
   render() {
