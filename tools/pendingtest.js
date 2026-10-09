@@ -46,7 +46,9 @@ const state = {
 };
 
 (async () => {
-  store.set({ paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
+  // 当前套件测发布/文案行为，显式准备品牌前置；配置仍只写测试临时目录。
+  store.set({ brandsSeeded: true, brands: [{ id: 'brd_regression', name: '品牌甲', enabled: true,
+    promptWrite: '请根据素材生成真实自然的种草文案。' }], paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     publish: { devices: [], device: '', intervalSec: 60 } });
 
   // ① 正常导出 + 回写

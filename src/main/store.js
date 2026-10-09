@@ -152,6 +152,7 @@ function defaults() {
  */
 
 function mergeDeep(base, patch) {
+  require('./security').assertSafeTree(patch);
   if (!patch || typeof patch !== 'object') return base;
   const out = Array.isArray(base) ? base.slice() : Object.assign({}, base);
   for (const k of Object.keys(patch)) {
@@ -238,7 +239,7 @@ function withBuiltinMap(c) {
 function get(key) {
   const c = withBuiltinMap(load());
   if (!key) return c;
-  return key.split('.').reduce((o, k) => (o == null ? o : o[k]), c);
+  return String(key).split('.').reduce((o, k) => (o && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined), c);
 }
 
 function set(patch) {

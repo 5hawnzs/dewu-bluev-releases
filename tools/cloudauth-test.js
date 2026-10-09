@@ -93,6 +93,22 @@ async function main() {
     ok('记住登录恢复时也会重新拉取云端品牌目录，支持新设备首次登录', () => {
       assert(cloudBrandPulls >= 2, `expected login + status brand pulls, got ${cloudBrandPulls}`);
     });
+    process.env.BLUEV_NO_LOGIN = '1';
+    process.env.BLUEV_LOCAL_AUTH = '1';
+    ok('正式安装包忽略开发免登录与本机账号开关', () => {
+      assert.equal(mainAuth.enabled(), true);
+      assert.equal(mainAuth.cloudMode(), true);
+    });
+    const successFetch = global.fetch;
+    global.fetch = async (url, opts) => String(url).endsWith('bluev_auth_brands')
+      ? new Response(JSON.stringify({ ok: false, error: '权限读取失败' }), { status: 200 })
+      : successFetch(url, opts);
+    const failedScope = await mainAuth.status();
+    ok('品牌权限刷新失败时清除内存身份，不沿用旧品牌继续工作', () => {
+      assert.equal(failedScope.user, null);
+      assert.equal(mainAuth.current(), null);
+    });
+    global.fetch = successFetch;
     await mainAuth.logout();
     assert.equal(mainAuth.current(), null);
     Module._load = originalLoad;

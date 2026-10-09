@@ -15,11 +15,13 @@ const cloudsync = require('./services/cloudsync');   // 云端协作（可选）
 const pool = require('./services/pool');
 const copywriter = require('./services/copywriter');   // 「模型配置」弹窗要读**当前生效**的模型（无网络，只解析配置）
 const hotwords = require('./services/hotwords');   // 标题热词库（读写 + 红线校验都在它里面）
+const hotwordstransfer = require('./services/hotwordstransfer');
 const stats = require('./services/stats');
 const adb = require('./services/adb');
 const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装包（设置页「下载到本机」用它）
 const wp = require('./util/winpath');
 const winmod = require('./window');
+const security = require('./security');
 
 function win() {
   const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
@@ -65,33 +67,40 @@ function statsOptions(opts) {
 }
 
 function register() {
+  const handle = (channel, fn) => ipcMain.handle(channel, (event, ...args) => {
+    if (!security.trustedSender(event)) return { ok: false, error: '不允许的页面来源' };
+    return fn(event, ...args);
+  });
+  const on = (channel, fn) => ipcMain.on(channel, (event, ...args) => {
+    if (security.trustedSender(event)) fn(event, ...args);
+  });
   // ---- 账号与登录：登录页本身要用，不设门禁 ----
-  ipcMain.handle('auth:status', () => auth.status());
+  handle('auth:status', () => auth.status());
   // 登录成功 → 窗口从「登录小窗」还原成正常尺寸；退出登录 → 重新收回小窗
-  ipcMain.handle('auth:login', async (_e, u, p, remember) => {
+  handle('auth:login', async (_e, u, p, remember) => {
     const r = await auth.login(u, p, remember);
     if (r && r.ok) {
       winmod.setLoginMode(false);
     }
     return r;
   });
-  ipcMain.handle('auth:logout', async () => {
+  handle('auth:logout', async () => {
     const r = await auth.logout();
     winmod.setLoginMode(true);
     return r;
   });
-  ipcMain.handle('auth:change-password', (_e, oldP, newP) => auth.changePassword(oldP, newP));
-  ipcMain.handle('auth:users', () => auth.listUsers());
-  ipcMain.handle('auth:create-user', (_e, input) => auth.createUser(input));
-  ipcMain.handle('auth:update-user', (_e, id, patch) => auth.updateUser(id, patch));
-  ipcMain.handle('auth:reset-password', (_e, id, newP) => auth.resetPassword(id, newP));
-  ipcMain.handle('auth:remove-user', (_e, id) => auth.removeUser(id));
-  ipcMain.handle('auth:bootstrap', (_e, setupCode, username, password, displayName, remember) => auth.cloudBootstrap(setupCode, username, password, displayName, remember));
+  handle('auth:change-password', (_e, oldP, newP) => auth.changePassword(oldP, newP));
+  handle('auth:users', () => auth.listUsers());
+  handle('auth:create-user', (_e, input) => auth.createUser(input));
+  handle('auth:update-user', (_e, id, patch) => auth.updateUser(id, patch));
+  handle('auth:reset-password', (_e, id, newP) => auth.resetPassword(id, newP));
+  handle('auth:remove-user', (_e, id) => auth.removeUser(id));
+  handle('auth:bootstrap', (_e, setupCode, username, password, displayName, remember) => auth.cloudBootstrap(setupCode, username, password, displayName, remember));
 
   // ---- 品牌注册表 ----
   // 读取对所有登录用户开放（发布侧要拉品牌下拉），但只回「这个人能用的」那部分 id；
   // 注册表本身（全部品牌名）要给管理员管，所以整体只对管理员回全量。
-  ipcMain.handle('brand:list', guard(() => {
+  handle('brand:list', guard(() => {
     const u = auth.current();
     const a = brands.allowed(u);
     // 提示词是各品牌自己的写作口径，只回「这个人用得上的」那份：
@@ -102,7 +111,7 @@ function register() {
     return {
       ok: true,
       isAdmin: a.all,
-      brands: brands.list().map(b => ({
+      brands: brands.list().filter(b => !okIds || okIds.includes(b.id)).map(b => ({
         id: b.id, name: b.name, enabled: b.enabled, note: b.note,
         promptWrite: promptOf(b)
       })),
@@ -110,7 +119,7 @@ function register() {
       defaultBrandId: store.get('copy.defaultBrandId') || ''
     };
   }));
-  ipcMain.handle('brand:add', guardAdmin(async (_e, input) => {
+  handle('brand:add', guardAdmin(async (_e, input) => {
     const before = brands.list();
     const r = brands.add(input);
     if (r.ok) {
@@ -120,7 +129,7 @@ function register() {
     if (r.ok) logbus.ok(`已新增品牌「${r.brand.name}」`);
     return r;
   }));
-  ipcMain.handle('brand:update', guardAdmin(async (_e, id, patch) => {
+  handle('brand:update', guardAdmin(async (_e, id, patch) => {
     const before = brands.list();
     const r = brands.update(id, patch);
     if (r.ok) {
@@ -133,7 +142,7 @@ function register() {
   // 提示词**不是**管理员专属：写文案的是运营，让每个人都去找管理员改模板不现实。
   // 但只能改自己名下有权限的品牌，而且**只开放提示词这两个字段** ——
   // 改名 / 启停 / 删除仍然走 brand:update / brand:remove（guardAdmin）
-  ipcMain.handle('brand:prompts', guard(async (_e, id, patch) => {
+  handle('brand:prompts', guard(async (_e, id, patch) => {
     const u = auth.current();
     const a = brands.allowed(u);
     const b = brands.byId(id);
@@ -152,7 +161,7 @@ function register() {
     if (r.ok) logbus.ok(`已更新品牌「${r.brand.name}」的提示词`);
     return r;
   }));
-  ipcMain.handle('brand:remove', guardAdmin(async (_e, id) => {
+  handle('brand:remove', guardAdmin(async (_e, id) => {
     const before = brands.list();
     const b = brands.byId(id);
     const r = brands.remove(id);
@@ -169,12 +178,12 @@ function register() {
   }));
 
   // ---- 品牌统计（频次 / 数量 / 执行日志）----
-  ipcMain.handle('stats:query', guard((_e, opts) => {
+  handle('stats:query', guard((_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;                       // 范围只认主进程算出来的，不认前端传的
     return Object.assign({ ok: true }, stats.query(statsOptions(o)));
   }));
-  ipcMain.handle('stats:export', guard(async (_e, opts) => {
+  handle('stats:export', guard(async (_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;
     const r = await stats.exportXlsx(statsOptions(o));
@@ -184,7 +193,7 @@ function register() {
   // 单独导出「执行日志」（run-log.jsonl，任务级）—— .log 给人看 + .csv 给 Excel，
   // **不截断**（xlsx 那张执行日志表过去只导最近 100 条、界面上一句不提）。
   // ★ 同样删掉前端传来的 scopeIds：可见范围只认主进程算出来的
-  ipcMain.handle('stats:exportLog', guardAdmin(async (_e, opts) => {
+  handle('stats:exportLog', guardAdmin(async (_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;
     const r = await stats.exportRunLog(statsOptions(o));
@@ -193,14 +202,14 @@ function register() {
   }));
   // 输出目录可写性自检：日志是「追加写、失败不报错」的，共享盘掉线时会**静默少数据**。
   // ★ 只查配置里那个输出目录，不收前端传的路径；只读性质（建一个临时文件再删掉 + 追加方式打开）
-  ipcMain.handle('stats:checkPath', guard(() => stats.checkOutput()));
+  handle('stats:checkPath', guard(() => stats.checkOutput()));
 
   // 兼容旧界面接口，但所有账号都不能从客户端访问分发服务器。
   for (const channel of ['update:status', 'update:check', 'update:download', 'update:install', 'update:set-channel']) {
-    ipcMain.handle(channel, guard(() => ({ ok: false, disabled: true, error: '此功能已关闭' })));
+    handle(channel, guard(() => ({ ok: false, disabled: true, error: '此功能已关闭' })));
   }
 
-  ipcMain.handle('app:info', () => ({
+  handle('app:info', () => ({
     platform: process.platform,
     isWin: wp.isWin(),
     arch: process.arch,
@@ -227,7 +236,7 @@ function register() {
   // ★★ 只回 `apiKeySet` 布尔，**不回明文 key** —— 弹窗的输入框从 config:get 取原值，这条通道没必要带密钥。
   // ★ 它替代的正是原来「设置 → 高级设置 → 文案模型」那块：搬进弹窗后，「留空＝跟随内置」这个语义
   //   仍然要有**唯一的可见出口**（否则用户只看到空框，不知道实际用的是什么，界面等于在骗人）。
-  ipcMain.handle('llm:effective', guard(() => {
+  handle('llm:effective', guard(() => {
     const c = copywriter.cfgOf();
     const raw = store.get('copy.llm') || {};
     const src = k => (String(raw[k] == null ? '' : raw[k]).trim() ? '本机配置' : '跟随内置');
@@ -240,8 +249,17 @@ function register() {
     };
   }));
 
-  ipcMain.handle('config:get', guard((_e, key) => store.get(key)));
-  ipcMain.handle('config:set', guard((_e, patch) => {
+  const configView = key => {
+    const view = JSON.parse(JSON.stringify(store.get()));
+    const allowed = scopeOf();
+    if (allowed) view.brands = (view.brands || []).filter(b => allowed.includes(b.id));
+    if (!key) return view;
+    return String(key).split('.').reduce((o, k) => o && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined, view);
+  };
+  handle('config:get', guard((_e, key) => configView(key)));
+  handle('config:set', guard((_e, patch) => {
+    try { security.validateConfigPatch(patch, !auth.enabled() || auth.current().role === 'admin'); }
+    catch (e) { return { ok: false, error: e.message }; }
     store.set(patch);
     // adb 路径改完要**立刻**生效：用户填完就想点「检查能不能发布」看结果对不对，不该等重启
     if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'adbPath')) {
@@ -251,49 +269,39 @@ function register() {
     if (patch && patch.publish && Object.prototype.hasOwnProperty.call(patch.publish, 'ffmpegPath')) {
       video.setFfmpegPath(store.get('publish.ffmpegPath'));
     }
-    // 云端协作：界面上已无入口，但 config.json 里那个「cloud」块若被改（换项目 / 排障），
-    // 改完要立刻生效 —— 当场重启定时器，不用重启应用。
-    if (patch && patch.cloud) cloudsync.configure();
-    return store.get();
+    return configView();
   }));
 
   // ---- 标题热词库（左侧「热词库」页）----
   // 所有登录用户可编辑本机词库；只写本机配置，不同步到其他电脑。
-  ipcMain.handle('hotwords:get', guard(() => hotwords.libraryView()));
-  ipcMain.handle('hotwords:save', guard((_e, groups, opts) => hotwords.saveLibrary(groups, opts)));
-  ipcMain.handle('hotwords:reset', guard(() => hotwords.resetLibrary()));
-  ipcMain.handle('hotwords:export', guard(async (_e, groups) => {
+  handle('hotwords:get', guard(() => hotwords.libraryView()));
+  handle('hotwords:save', guard((_e, groups, opts) => hotwords.saveLibrary(groups, opts)));
+  handle('hotwords:reset', guard(() => hotwords.resetLibrary()));
+  handle('hotwords:export', guard(async (_e, groups) => {
     try {
       const checked = hotwords.sanitizeLibrary(groups);
       if (checked.rejected.length) return { ok: false, error: '词库中有不允许使用的词，请修改后导出' };
       const result = await dialog.showSaveDialog(win(), {
-        title: '导出本机热词库', defaultPath: '蓝V热词库.json',
-        filters: [{ name: '热词库文件', extensions: ['json'] }]
+        title: '导出本机热词库', defaultPath: '蓝V热词库.xlsx',
+        filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
       });
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
-      await fileIO.writeFile(result.filePath, JSON.stringify({
-        format: 'bluev-hotwords', version: 1, exportedAt: new Date().toISOString(), groups: checked.groups
-      }, null, 2), 'utf8');
+      await fileIO.writeFile(result.filePath, await hotwordstransfer.toXlsx(checked.groups));
       return { ok: true };
     } catch (error) { return { ok: false, error: '导出失败：' + error.message }; }
   }));
-  ipcMain.handle('hotwords:import', guard(async () => {
+  handle('hotwords:import', guard(async () => {
     try {
       const result = await dialog.showOpenDialog(win(), {
         title: '导入热词库', properties: ['openFile'],
-        filters: [{ name: '热词库文件', extensions: ['json'] }]
+        filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
       });
       if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
       const filename = result.filePaths[0];
-      if ((await fileIO.stat(filename)).size > 2 * 1024 * 1024) return { ok: false, error: '词库文件过大，请选择小于 2 MB 的 JSON 文件' };
-      const data = JSON.parse((await fileIO.readFile(filename, 'utf8')).replace(/^\uFEFF/, ''));
+      if ((await fileIO.stat(filename)).size > 2 * 1024 * 1024) return { ok: false, error: '词库文件过大，请选择小于 2 MB 的 Excel 文件' };
       const editable = hotwords.libraryView().editable;
-      if (data.format !== 'bluev-hotwords' || data.version !== 1 || !Array.isArray(data.groups) || !data.groups.length
-        || new Set(data.groups.map(g => g && g.key)).size !== data.groups.length
-        || data.groups.some(g => !g || !editable.includes(g.key) || !Array.isArray(g.words) || g.words.some(w => typeof w !== 'string'))) {
-        return { ok: false, error: '不是有效的蓝V热词库文件，请选择通过“导出词库”生成的 JSON 文件' };
-      }
-      const checked = hotwords.sanitizeLibrary(data.groups);
+      const groups = await hotwordstransfer.fromXlsx(await fileIO.readFile(filename), editable);
+      const checked = hotwords.sanitizeLibrary(groups);
       if (checked.rejected.length) return { ok: false, error: '导入文件含有不允许使用的词：' + checked.rejected.map(x => x.word).join('、') };
       return { ok: true, groups: checked.groups };
     } catch (error) { return { ok: false, error: '导入失败：' + error.message }; }
@@ -307,11 +315,11 @@ function register() {
   //   ★ cloudsync 的 exportConfig / importConfig / test 三个函数**保留** ——
   //     tools/cloudtest.js 直接调它们做服务级断言（不走 IPC），删了会红一片。
 
-  ipcMain.handle('project:get', guard(() => project.get()));
-  ipcMain.handle('log:history', guard(() => logbus.visibleHistory()));
+  handle('project:get', guard(() => project.get()));
+  handle('log:history', guard(() => logbus.visibleHistory()));
   // 运行日志导出：写成一个 .log（给人看）+ 一个 .jsonl（给脚本看），落到输出目录。
   // 主进程按当前账号与筛选条件生成导出内容；普通成员只能导出本人日志。
-  ipcMain.handle('log:export', guard((_e, payload) => {
+  handle('log:export', guard((_e, payload) => {
     const p = payload || {};
     const filter = Object.assign({}, p.filter || {}, { q: String((p.filter || {}).q || '').trim() });
     // 从主进程缓存重新筛选，拒绝前端夹带其他账号的日志或伪造总条数。
@@ -342,14 +350,14 @@ function register() {
   // 只改 nativeTheme 的话下次启动又回到默认值，用户会以为「切了没记住」。
   // ★ 返回值统一成 window.theme() 那整个对象（含 theme 字段）：渲染层要靠它区分「玻璃」和「深色」，
   //   只回一个 shouldUseDarkColors 的话，玻璃和夜间在渲染层长得一模一样。
-  ipcMain.handle('theme:get', () => {
+  handle('theme:get', () => {
     // ★ 先做一次幂等的归一（把配置里的口径真正套到 nativeTheme 上）。
     //   只报 themeSource 是不够的：nativeTheme 还是 'system' 时 shouldUseDarkColors 会跟着 Windows 走，
     //   于是「themeSource=light」和「界面是深色」同时成立 —— 真窗口自检抓到过。
     winmod.applyStoredTheme();
     return winmod.theme();
   });
-  ipcMain.handle('theme:set', (_e, source) => {
+  handle('theme:set', (_e, source) => {
     const s = winmod.normSkin(source);
     nativeTheme.themeSource = winmod.nativeForSkin(s);
     store.set({ ui: { theme: s } });
@@ -357,7 +365,7 @@ function register() {
     return winmod.theme();
   });
   // 顶栏那个按钮走这条：**三档循环** 浅色 → 深色 → 玻璃 → 浅色。返回值 = 切完之后的完整主题。
-  ipcMain.handle('theme:toggle', () => {
+  handle('theme:toggle', () => {
     const s = winmod.nextSkin(store.get('ui.theme'));
     nativeTheme.themeSource = winmod.nativeForSkin(s);
     store.set({ ui: { theme: s } });
@@ -365,11 +373,11 @@ function register() {
     return winmod.theme();
   });
 
-  ipcMain.handle('job:run', guard((_e, type, args) => jobs.run(type, args || {})));
-  ipcMain.handle('job:cancel', guard((_e, type) => jobs.cancel(type)));
-  ipcMain.handle('job:busy', guard((_e, type) => jobs.busy(type)));
+  handle('job:run', guard((_e, type, args) => jobs.run(type, args || {})));
+  handle('job:cancel', guard((_e, type) => jobs.cancel(type)));
+  handle('job:busy', guard((_e, type) => jobs.busy(type)));
 
-  ipcMain.handle('dialog:dir', guard(async (_e, opts) => {
+  handle('dialog:dir', guard(async (_e, opts) => {
     const w = win();
     const r = await dialog.showOpenDialog(w, {
       title: (opts && opts.title) || '选择目录',
@@ -379,7 +387,7 @@ function register() {
     return r.canceled ? null : r.filePaths[0];
   }));
 
-  ipcMain.handle('dialog:file', guard(async (_e, opts) => {
+  handle('dialog:file', guard(async (_e, opts) => {
     const w = win();
     const r = await dialog.showOpenDialog(w, {
       title: (opts && opts.title) || '选择文件',
@@ -390,12 +398,12 @@ function register() {
     return r.canceled ? null : r.filePaths[0];
   }));
 
-  ipcMain.handle('shell:open', guard(async (_e, p) => {
-    if (!p) return false;
+  handle('shell:open', guard(async (_e, p) => {
+    if (!await security.canOpenPath(p)) return false;
     const err = await shell.openPath(p);
     return err === '' ? true : err;
   }));
-  ipcMain.handle('shell:openExternal', guard(async (_e, value) => {
+  handle('shell:openExternal', guard(async (_e, value) => {
     try {
       const url = new URL(String(value || ''));
       if (url.protocol !== 'https:' || url.username || url.password) return false;
@@ -405,7 +413,7 @@ function register() {
       return false;
     }
   }));
-  ipcMain.handle('shell:reveal', guard((_e, p) => { if (p) shell.showItemInFolder(p); return true; }));
+  handle('shell:reveal', guard((_e, p) => { if (p) shell.showItemInFolder(p); return true; }));
 
   /**
    * 「下载到本机」：把**内置**的得物安装包另存到用户选的位置（不联网）。
@@ -414,7 +422,7 @@ function register() {
    * ★ 存完**回读大小**（dewuapk.saveAs 里做）—— 磁盘满/被杀软拦下会留半截文件，
    *   那时回一句"存好了"就是骗人。
    */
-  ipcMain.handle('apk:saveDewu', guard(async () => {
+  handle('apk:saveDewu', guard(async () => {
     const st = dewuapk.status();
     if (!st.exists) return { ok: false, error: `安装包里没有内置得物安装包（应该在 ${st.path || 'resources/dewu'}）` };
     if (!st.sizeOk) {
@@ -430,15 +438,15 @@ function register() {
   }));
 
   // ---- 窗口控制（自绘标题栏） ----
-  ipcMain.on('win:min', () => { const w = win(); if (w) w.minimize(); });
-  ipcMain.on('win:toggle-max', () => {
+  on('win:min', () => { const w = win(); if (w) w.minimize(); });
+  on('win:toggle-max', () => {
     const w = win(); if (!w) return;
     if (w.isMaximized()) w.unmaximize(); else w.maximize();
   });
-  ipcMain.on('win:close', () => { const w = win(); if (w) w.close(); });
-  ipcMain.handle('win:is-max', () => { const w = win(); return w ? w.isMaximized() : false; });
-  ipcMain.on('win:flash', () => { const w = win(); if (w) w.flashFrame(true); });
-  ipcMain.on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
+  on('win:close', () => { const w = win(); if (w) w.close(); });
+  handle('win:is-max', () => { const w = win(); return w ? w.isMaximized() : false; });
+  on('win:flash', () => { const w = win(); if (w) w.flashFrame(true); });
+  on('win:fit-gate', (_e, h) => winmod.fitGate(h));   // 登录门：按卡片实测高度收紧窗口
 }
 
 module.exports = { register };

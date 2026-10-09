@@ -178,7 +178,7 @@ async function mediaScan(serial, remoteFile) {
   const abs = toMediaPath(remoteFile);
   let raw = '';
   if (abs) {
-    const r = await shell(serial, `content call --uri content://media/external/file --method scan_file --arg '${abs}'`, { timeout: 30000 });
+    const r = await shell(serial, `content call --uri content://media/external/file --method scan_file --arg ${shq(abs)}`, { timeout: 30000 });
     raw = `${r.stdout || ''}${r.stderr || ''}`;
     if (r.ok && /content:\/\/media\//.test(raw)) return { ok: true, how: 'scan_file', raw };
   }
@@ -1542,7 +1542,7 @@ async function inputText(serial, text) {
 
   // 纯 ASCII：`input text` 实测可用，而且不依赖设备上的输入法状态，优先用它。
   //   ★ 这里把空格换成 `%s` 是**对的** —— `input text` 认这个写法，不换的话整串会被拆成多个参数。
-  if (asciiOnly) {
+  if (asciiOnly && !s.includes('\\')) {
     const esc = shellQuoteForInputText(s).replace(/ /g, '%s');
     return shell(serial, `input text "${esc}"`);
   }
@@ -1552,7 +1552,7 @@ async function inputText(serial, text) {
     const short = s.length > 12 ? s.slice(0, 12) + '…' : s;
     return {
       ok: false, code: 'ime-not-active', stdout: '',
-      stderr: `要输入的内容「${short}」里有中文（或其它非 ASCII 字符），这类字符只有 ADBKeyboard 能打进去，`
+      stderr: `要输入的内容「${short}」包含中文、特殊字符或反斜杠，需要 ADBKeyboard 输入，`
         + `而设备上它现在不是当前输入法（当前是 ${kbd.current || '未知'}）—— 广播没有人接收，一个字也进不去。`
         + '（不要去改「用 input text 硬打」：实测它对中文无效，却照样返回成功，会把没标题没正文的帖子发出去。）'
         + '程序会在设备连接/检查时自动重试内置输入法配置；配置完成前发布会被拦住。'

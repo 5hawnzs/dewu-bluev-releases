@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none'">
 <title>得物蓝V 素材发布工具</title>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -90,7 +90,7 @@
            所有登录成员可编辑本机词库；各台电脑独立保存，不向其他电脑同步。 -->
       <button class="nav" data-tab="12">
         <span class="ic"><svg viewBox="0 0 24 24"><path d="M20 12.5l-7.5 7.5L4 11.5V4h7.5L20 12.5z"/><circle cx="8.6" cy="8.6" r="1.5"/></svg></span>
-        <span>热词库</span>
+        <span>本地词库</span>
       </button>
       <!-- 「发布单」页签 2026-10-03 按用户要求删除：那一页只是个 xlsx 路径 + 12 行预览 + 4 个按钮，
            和本页（模拟器发布）高度重复。导出 xlsx / 打开文件 / 打开目录已挪到本页「装置与节奏」那一块。

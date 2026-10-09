@@ -214,6 +214,8 @@ console.log('\nK. ★ 端到端：真跑一次任务，验证「流水走明细�
   try {
     const LB = require(path.join(ROOT, 'src/main/logbus.js'));
     const jobs = require(path.join(ROOT, 'src/main/jobs.js'));
+    // 日志套件需要真实发布任务，显式创建隔离品牌，避免被前置归属校验拦下。
+    require(path.join(ROOT, 'src/main/brands.js')).add({ name: '日志测试品牌' });
 
     // 造一个最小素材目录：一个叶子文件夹（货号+颜色）
     const srcDir = path.join(TMP, 'src');

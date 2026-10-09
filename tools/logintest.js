@@ -17,7 +17,8 @@
    用法：npx electron tools/logintest.js
    注意：userData 指到临时目录，不会动你本机的 auth.json / config.json / project.json。
 */
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
+require('./test-runtime')({ app });
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -89,7 +90,9 @@ app.whenReady().then(async () => {
         document.getElementById('lgRem').checked = !!rem;
         document.getElementById('loginForm').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
         await new Promise(r => setTimeout(r, 900));
-        return { locked: window.__t.locked(), err: window.__t.err(), user: window.__t.user(), title: window.__t.title() };
+        const button = document.getElementById('lgGo');
+        return { locked: window.__t.locked(), appHidden: window.__t.appHidden(), loading: button.getAttribute('aria-busy') === 'true',
+          waveBars: button.querySelectorAll('.gate-wave-bar').length, err: window.__t.err(), user: window.__t.user(), title: window.__t.title() };
       },
       logout: async () => {
         document.getElementById('btnLogout').click();
@@ -143,8 +146,20 @@ app.whenReady().then(async () => {
   const noUser = await js(`__t.login('no-such-user', 'whatever', false)`);
   ok('账号不存在 → 提示与口令错一致（不泄露账号是否存在）', noUser.locked && noUser.err === wrong.err, noUser.err);
 
-  // ---- ④ 正确口令 + 记住登录 → 进主界面 ----
-  const inApp = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, true)`);
+  // ---- ④ 登录成功后延迟首页配置：主界面准备完成前，登录页须持续显示波形并挡住空白主界面 ----
+  let delayFirstConfig = true;
+  ipcMain.removeHandler('config:get');
+  ipcMain.handle('config:get', async (_e, key) => {
+    if (delayFirstConfig) { delayFirstConfig = false; await new Promise(r => setTimeout(r, 1500)); }
+    if (auth.enabled() && !auth.current()) return { ok: false, error: '未登录或登录已过期，请重新登录' };
+    return store.get(key);
+  });
+  const loading = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, true)`);
+  ok('登录确认后首页数据仍在加载时留在登录页，按钮持续显示 9 条波形且主界面隐藏',
+    loading.locked && loading.appHidden && loading.loading && loading.waveBars === 9,
+    JSON.stringify({ locked: loading.locked, appHidden: loading.appHidden, loading: loading.loading, waveBars: loading.waveBars }));
+  await js('new Promise(r => setTimeout(r, 800))');
+  const inApp = await js(`({ locked: __t.locked(), appHidden: __t.appHidden(), title: __t.title(), user: __t.user() })`);
   ok('口令正确 → 进入主界面', !inApp.locked && inApp.title === '素材整理', `locked=${inApp.locked} 标题=${inApp.title}`);
   ok('标题栏显示当前账号与角色', /管理员/.test(inApp.user), inApp.user);
   const allowed = await js(`(async () => { const c = await window.api.configGet(); return !!(c && c.paths && c.paths.output); })()`);
@@ -185,13 +200,13 @@ app.whenReady().then(async () => {
     tabs.includes('高级设置'), tabs.join(' / '));
   ok('页签里不包含「货号颜色校验」（所有账号均不可见）',
     !tabs.includes('货号颜色校验'), tabs.join(' / '));
-  ok('页签里有「热词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
-    tabs.includes('热词库'), tabs.join(' / '));
+  ok('页签里有「本地词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
+    tabs.includes('本地词库'), tabs.join(' / '));
   // ★ 负向断言：删掉的页签必须**真的不在**（否则以后有人加回来，整套回归照样全绿）
   ok('★「发布单」页签已删除（2026-10-03 用户要求；导出/打开/目录已挪到「模拟器发布」页）',
     !tabs.includes('发布单'), tabs.join(' / '));
 
-  // ---- ④a 页签 12「热词库」：**管理员**可编辑（真读 DOM，不是看源码）----
+  // ---- ④a 页签 12「本地词库」：**管理员**可编辑（真读 DOM，不是看源码）----
   const lexAdm = await js(`(async () => {
     document.querySelector('.nav[data-tab="12"]').click();
     const pane = document.querySelector('#pane');
@@ -211,7 +226,7 @@ app.whenReady().then(async () => {
       redlines: /三条红线/.test(pane.textContent)
     };
   })()`);
-  ok('★ 管理员进「热词库」：7 个可编辑组，每组一个加词框、每个词一个删词按钮',
+  ok('★ 管理员进「本地词库」：7 个可编辑组，每组一个加词框、每个词一个删词按钮',
     lexAdm.editable === 7 && lexAdm.inputs === 7 && lexAdm.delBtns === 52,
     `组=${lexAdm.editable} 加词框=${lexAdm.inputs} 删词按钮=${lexAdm.delBtns}`);
   ok('★ 「收尾」组确实锁着：那一块里一个输入框 / 按钮都没有（7 组之外就它）',
@@ -219,7 +234,7 @@ app.whenReady().then(async () => {
   ok('★ 管理员看到的是**可用**的「保存 / 恢复内置」（不是灰的）',
     lexAdm.saveDisabled === false && lexAdm.resetDisabled === false,
     JSON.stringify({ save: lexAdm.saveDisabled, reset: lexAdm.resetDisabled }));
-  ok('★ 热词库页常驻三条红线提示', lexAdm.redlines === true);
+  ok('★ 本地词库页常驻三条红线提示', lexAdm.redlines === true);
 
 
   // ---- ⑤ 口令存储与「记住登录」落盘 ----
@@ -268,6 +283,28 @@ app.whenReady().then(async () => {
     store.get('copy.llm.model'));
   store.set({ copy: { llm: oldLlm || {} } });
 
+  const rogueFile = path.join(TMP, 'attacker.html');
+  fs.writeFileSync(rogueFile, '<!doctype html><title>隔离来源攻击测试</title>');
+  const rogue = new BrowserWindow({ show: false, webPreferences: {
+    preload: path.join(ROOT, 'src/preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true
+  } });
+  try {
+    await rogue.loadFile(rogueFile);
+    const rejected = await rogue.webContents.executeJavaScript('window.api.configSet({copy:{llm:{model:"attacker-model"}}})');
+    ok('其他本地页面即使加载相同 preload，也无法调用真实 IPC',
+      rejected.ok === false && /来源/.test(rejected.error) && store.get('copy.llm.model') !== 'attacker-model');
+  } finally { rogue.destroy(); }
+
+  const oldBrands = JSON.stringify(store.get('brands'));
+  const injectedBrands = await js(`window.api.configSet({ brands: [{ id: 'stolen', name: '越权品牌' }] })`);
+  ok('成员无法绕过品牌管理接口修改品牌注册表', injectedBrands.ok === false && JSON.stringify(store.get('brands')) === oldBrands);
+  const injectedCloud = await js(`window.api.configSet({ cloud: { url: 'https://attacker.invalid', anonKey: 'fake' } })`);
+  ok('成员无法改写同步目标窃取数据', injectedCloud.ok === false);
+  const injectedExe = await js(`window.api.configSet({ publish: { adbPath: 'C:\\\\attack.exe' } })`);
+  ok('成员无法通过配置接口替换可执行程序', injectedExe.ok === false);
+  const injectedProto = await js(`window.api.configSet(JSON.parse('{"copy":{"__proto__":{"polluted":true}}}'))`);
+  ok('配置入口拒绝原型污染载荷', injectedProto.ok === false && !({}).polluted);
+
   // ---- ⑦a-2 管理员专属页签：「高级设置」11 ----
   // ★ 这条必须真跑一遍（而不是看源码里有没有 syncAdminNav）：页签是 index.html 里的静态按钮，
   //   藏它的逻辑在渲染层，只有登录成普通成员再看 DOM 才算数。
@@ -289,7 +326,7 @@ app.whenReady().then(async () => {
   ok('★ 普通成员就算硬点第 11 个页签也进不去（会被拉回«素材整理»）',
     !!advHide && advHide['11'].title === '素材整理', advHide && advHide['11'].title);
 
-  // ---- ⑦a-3「热词库」：所有登录成员均可编辑本机词库，仍受红线约束----
+  // ---- ⑦a-3「本地词库」：所有登录成员均可编辑本机词库，仍受红线约束----
   const lexMem = await js(`(async () => {
     const btn = document.querySelector('.nav[data-tab="12"]');
     const visible = !!btn && btn.hidden !== true && getComputedStyle(btn).display !== 'none';
@@ -307,8 +344,8 @@ app.whenReady().then(async () => {
       localChip: /本机词库/.test(pane.textContent)
     };
   })()`);
-  ok('★ 普通成员**看得见**「热词库」（不是管理员专属 —— 标题从哪些词里挑，谁都能看）',
-    lexMem.visible === true && lexMem.title === '热词库', lexMem.title);
+  ok('★ 普通成员**看得见**「本地词库」（不是管理员专属 —— 标题从哪些词里挑，谁都能看）',
+    lexMem.visible === true && lexMem.title === '本地词库', lexMem.title);
   ok('★ 普通成员可编辑本机词库：七组加词框、删词按钮、保存可用',
     lexMem.groupsShown && lexMem.inputs === 7 && lexMem.delBtns > 0 && lexMem.saveDisabled === false,
     JSON.stringify(lexMem));
@@ -555,8 +592,8 @@ app.whenReady().then(async () => {
   const mList = await js(`window.api.brandList()`);
   const mineRow = (mList.brands || []).find(b => b.id === brandId);
   const otherRow = (mList.brands || []).find(b => b.id === otherId);
-  ok('⑦e 成员只在「自己名下的品牌」上拿到提示词，别人的那份是空的',
-    mList.ok === true && mList.isAdmin === false && !!mineRow && !!otherRow && !(otherRow.promptWrite || ''),
+  ok('⑦e 成员只能读取自己品牌，其他品牌不会下发',
+    mList.ok === true && mList.isAdmin === false && !!mineRow && !otherRow,
     JSON.stringify({ 自己: !!mineRow, 别人的: (otherRow || {}).promptWrite }));
 
   const mSave = await js(`window.api.brandPrompts(${JSON.stringify(brandId)}, { promptWrite: '成员自己写的模板' })`);

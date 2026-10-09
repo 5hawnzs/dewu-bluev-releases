@@ -36,7 +36,10 @@ function file() { return path.join(app.getPath('userData'), 'auth.json'); }
 
 // 正式包统一走云端。开发者可以显式设 BLUEV_LOCAL_AUTH=1 隔离回归数据；
 // 不把本地账号自动回退成云端登录失败的后门。
-function cloudMode() { return enabled() && process.env.BLUEV_LOCAL_AUTH !== '1' && (!!(app && app.isPackaged) || process.env.BLUEV_CLOUD_AUTH === '1'); }
+function cloudMode() {
+  if (app && app.isPackaged) return true;
+  return enabled() && process.env.BLUEV_LOCAL_AUTH !== '1' && process.env.BLUEV_CLOUD_AUTH === '1';
+}
 
 function hashPassword(pw, salt) {
   return crypto.scryptSync(String(pw), salt, 64).toString('hex');
@@ -168,7 +171,7 @@ function restoreSession() {
   session = { userId: u.id, loginAt: Date.now(), remembered: true };
 }
 
-function enabled() { return process.env.BLUEV_NO_LOGIN !== '1'; }
+function enabled() { return !!(app && app.isPackaged) || process.env.BLUEV_NO_LOGIN !== '1'; }
 
 function current() {
   if (cloudMode()) {
@@ -207,7 +210,12 @@ async function cloudStatus() {
       // Also hydrate the canonical brand directory on startup and every status refresh.
       // A remembered session on a new device must not depend on a local config.json copy.
       const remoteBrands = await cloudauth.brands(token);
-      if (remoteBrands.ok && Array.isArray(remoteBrands.brands)) brands.replaceAll(remoteBrands.brands);
+      if (!remoteBrands.ok || !Array.isArray(remoteBrands.brands)) {
+        cloudSession = null;
+        return { requireLogin: true, user: null, isAdmin: false, cloud: true,
+          error: remoteBrands.error || '无法读取品牌权限，请重试' };
+      }
+      brands.replaceAll(remoteBrands.brands);
       if (cloudSession.remembered) { db.cloudRemember.user = cloudSession.user; save(); }
       return { requireLogin: true, user: cloudSession.user, isAdmin: cloudSession.user.role === 'admin', userCount: null, rememberDays: REMEMBER_DAYS, cloud: true };
     }

@@ -1,4 +1,5 @@
 'use strict';
+require('./test-runtime')();
 /**
  * 一键回归（跨平台：macOS / Linux / Windows 都能跑）
  *   node tools/run-all.js            跑全部
@@ -58,6 +59,8 @@ delete CHILD_ENV.ELECTRON_RUN_AS_NODE;
 const ELECTRON_FLAGS = ['--in-process-gpu', '--disable-gpu'];
 
 const SUITES = [
+  ['securitytest', 'node', ['tools/securitytest.js']],
+  ['sqlauth-securitytest', 'node', ['tools/sqlauth-securitytest.js']],
   ['topicinputtest', 'node', ['tools/topicinputtest.js']],
   ['emulatortest', 'node', ['tools/emulatortest.js']],
   ['smoke', 'node', ['tools/smoke.js']],
@@ -78,7 +81,9 @@ const SUITES = [
   ['logtest', 'node', ['tools/logtest.js']],
   ['cloudauth-test', 'node', ['tools/cloudauth-test.js']],
   ['cloudtest', 'node', ['tools/cloudtest.js']],
-  ['defaultstest', 'node', ['tools/defaultstest.js']]
+  ['defaultstest', 'node', ['tools/defaultstest.js']],
+  ['hotwordsexceltest', 'node', ['tools/hotwordsexceltest.js']],
+  ['hotwordstransfertest', 'electron', ['tools/hotwordstransfertest.js']]
 ];
 
 /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */
@@ -122,7 +127,7 @@ for (const [name, kind, args] of SUITES) {
   if (FILTER && !name.includes(FILTER)) continue;
   const bin = kind === 'electron' ? ELECTRON : NODE;
   const argv = kind === 'electron' ? ELECTRON_FLAGS.concat(args) : args;
-  const r = spawnSync(bin, argv, { cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(bin, argv, { cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, timeout: 240000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   const pass = (out.match(/^PASS/gm) || []).length;
   const fail = (out.match(/^FAIL/gm) || []).length;

@@ -9,6 +9,7 @@
    同理，运行日志的导出目录也会被临时改掉 —— 默认输出目录是「我的文档\输出\得物」，自检不许往那里写。
 */
 const { app, BrowserWindow } = require('electron');
+require('./test-runtime')({ app });
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -24,7 +25,7 @@ app.commandLine.appendSwitch('disable-gpu');
 
 // ★ 下标 = 页签编号 - 1。页签 5「发布单」2026-10-03 已按用户要求删除，编号**不重排**
 //   ⇒ 第 5 位留 null 占位（否则 6~12 的标题会整体错位一格）。
-const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '热词库'];
+const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '本地词库'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -224,6 +225,17 @@ app.whenReady().then(async () => {
       return iExec >= 0 && iLog > iExec && iOther > iLog;
     })()`));
   // 品牌和权限必须自成一块：设置页里不能再出现品牌管理 / 账号管理（2026-10-01 用户要求）
+  const escapedBrandId = await win.webContents.executeJavaScript(`(() => {
+    const before = state.brandsMeta;
+    const id = 'x"><img id="audit-injected" src="x">';
+    try {
+      state.brandsMeta = { brands: [{ id, name: '测试品牌', enabled: true }], mine: [id] };
+      const fragment = document.createElement('div');
+      fragment.innerHTML = bmListHtml();
+      return !fragment.querySelector('#audit-injected') && fragment.querySelector('[data-id]').dataset.id === id;
+    } finally { state.brandsMeta = before; }
+  })()`);
+  ok('品牌 ID 含 HTML 字符时仍作为文本，不能注入控件', escapedBrandId);
   const moved = await win.webContents.executeJavaScript(`(async () => {
     const pane = () => document.querySelector('#pane').textContent;
     document.querySelector('.nav[data-tab="7"]').click();
@@ -339,7 +351,7 @@ app.whenReady().then(async () => {
     sh.back.threw.length === 0 && sh.back.rendered === 10,
     `渲染 ${sh.back.rendered}/10 · 异常 ${sh.back.threw.length}`);
 
-  // ---- 页签 12「热词库」：真读 DOM 断言（不是看源码里有没有那行字）----
+  // ---- 页签 12「本地词库」：真读 DOM 断言（不是看源码里有没有那行字）----
   // ★ 开发免登录状态也可编辑本机词库。
   //   管理员与普通成员的保存权限由 logintest 用真实会话覆盖。
   const lexPage = await win.webContents.executeJavaScript(`(async () => {
@@ -358,11 +370,14 @@ app.whenReady().then(async () => {
       inputs: pane.querySelectorAll('[data-lx-in]').length,
       addBtns: pane.querySelectorAll('[data-lx-add]').length,
       delBtns: pane.querySelectorAll('[data-lx-del]').length,
+      hasXlsxHint: /Excel 工作簿（\.xlsx）/.test(txt),
+      transferActions: [...document.querySelectorAll('#head [data-act^="lex:"]')].map(b => b.dataset.act),
+      transferLabels: [...document.querySelectorAll('#head .lx-transfer')].map(b => b.textContent.trim()),
       statusText: (document.querySelector('#lxStatus') || {}).textContent || ''
     };
   })()`);
-  ok('★ 页签 12「热词库」能渲染出来', lexPage.size > 200 && lexPage.title === '热词库', `${lexPage.title} · ${lexPage.size} 字节`);
-  ok('★ 热词库页常驻「三条红线」提示（材质/极限/别的平台名）', lexPage.hasRedlines === true);
+  ok('★ 页签 12「本地词库」能渲染出来', lexPage.size > 200 && lexPage.title === '本地词库', `${lexPage.title} · ${lexPage.size} 字节`);
+  ok('★ 本地词库页常驻「三条红线」提示（材质/极限/别的平台名）', lexPage.hasRedlines === true);
   ok('★ 7 个可编辑组都在页面上（风格/氛围/色感/场景/人群/季节/情绪）',
     lexPage.editableBoxes === 7, String(lexPage.editableBoxes));
   ok('★ 「收尾」组在页面上、且明确标着「已锁定，不可编辑」',
@@ -373,6 +388,10 @@ app.whenReady().then(async () => {
     `inputs=${lexPage.inputs} add=${lexPage.addBtns} del=${lexPage.delBtns}`);
   ok('★ 词库页明确标出仅在本机生效',
     /本机词库/.test(lexPage.statusText), lexPage.statusText.slice(0, 70));
+  ok('★ 本地词库导入导出明确使用 Excel 工作簿',
+    lexPage.hasXlsxHint && lexPage.transferActions.includes('lex:export') && lexPage.transferActions.includes('lex:import'),
+    JSON.stringify({ hint: lexPage.hasXlsxHint, actions: lexPage.transferActions }));
+  ok('词库按钮仅显示「导出」「导入」', JSON.stringify(lexPage.transferLabels) === JSON.stringify(['导出', '导入']));
 
 
   // ---- 界面里不许再出现「别人家的品牌名」 ----
@@ -1941,7 +1960,7 @@ app.whenReady().then(async () => {
         sawBox = !!box;
         sawCancel = !!(box && box.querySelector('[data-act="batch:cancelAll"]'));
       });
-      const r = await window.api.run('copy.generate', { sourceDir: dir, batchId: '自检批次_20260930_000000', label: '自检批次_20260930_000000' });
+      const r = await window.api.run('copy.generate', { brandId: ${JSON.stringify(brands.byName('自检品牌A').id)}, sourceDir: dir, batchId: '自检批次_20260930_000000', label: '自检批次_20260930_000000' });
       await new Promise(res => setTimeout(res, 400));
       const box = document.querySelector('[data-batches="copy.generate"]');
       return {

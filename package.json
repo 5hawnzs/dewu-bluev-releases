@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "addon:win": "npm install --no-save --force --os=win32 --cpu=x64 @img/sharp-win32-x64@0.33.5 @img/sharp-libvips-win32-x64@1.0.4",
+    "addon:win": "npm install --no-save --os=win32 --cpu=x64 @img/sharp-win32-x64@0.35.5",
     "assemble:dewuapk": "node tools/dewuapk-assemble.js",
     "dist:win": "npm run assemble:dewuapk && npm run addon:win && electron-builder --win --x64 --publish never",
     "dist:win-only": "npm run assemble:dewuapk && electron-builder --win --x64 --publish never",
@@ -27,12 +27,19 @@
     "pngjs": "^7.0.0"
   },
   "optionalDependencies": {
-    "sharp": "^0.33.5"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "cos-nodejs-sdk-v5": "^3.0.0",
-    "electron": "^31.7.7",
-    "electron-builder": "^24.13.3"
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "@electron/get": "5.1.0"
   },
   "build": {
     "appId": "com.bluev.publisher",
@@ -105,7 +112,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",
@@ -121,9 +130,14 @@
       "shortcutName": "得物蓝V素材发布工具",
       "language": "2052",
       "deleteAppDataOnUninstall": false,
-      "installerLanguages": ["zh_CN"]
+      "installerLanguages": [
+        "zh_CN"
+      ]
     },
     "compression": "maximum",
-    "electronLanguages": ["zh-CN", "en-US"]
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ]
   }
 }

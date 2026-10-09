@@ -55,7 +55,9 @@ const ok = (label, cond, extra) => {
 };
 
 (async () => {
-  store.set({
+  // 当前套件测发布/文案行为，显式准备品牌前置；配置仍只写测试临时目录。
+  store.set({ brandsSeeded: true, brands: [{ id: 'brd_regression', name: '品牌甲', enabled: true,
+    promptWrite: '请根据素材生成真实自然的种草文案。' }],
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4 },
     publish: { intervalSec: 5, videoIntervalSec: 5 }   // 「演示节奏」开关已删：直接给 5 秒间隔；★ retry 也已删（失败不重试）

@@ -905,6 +905,14 @@ const state = {
       rWrong.ok === true && gotW.length === 1 && gotW[0].indexOf(BSc + '#') >= 0,
       JSON.stringify(String(gotW[0] == null ? '' : gotW[0])));
 
+    // ASCII 的反斜杠可能抵消引号转义，必须走不经过 shell 文本解析的 B64 通道。
+    if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
+    clearCalls();
+    const attackText = 'x' + BSc + '"; touch /sdcard/attack; #';
+    const attackResult = await adbMod.inputText('127.0.0.1:5555', attackText);
+    ok('⑯b ASCII 引号与反斜杠攻击载荷仅作为文字输入，不进入 shell 命令',
+      attackResult.ok && readBcast()[0] === attackText && !calls().includes('touch /sdcard/attack'));
+
     // D) 负向：普通中文正文照常（别把修法做成"到处乱加反斜杠"）
     if (fs.existsSync(BCAST_LOG)) fs.unlinkSync(BCAST_LOG);
     clearCalls();

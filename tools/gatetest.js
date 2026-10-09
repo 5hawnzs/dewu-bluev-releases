@@ -9,6 +9,7 @@
    注意：userData 会被指到临时目录，不会动你本机的 auth.json / config.json / project.json。
 */
 const { app, screen } = require('electron');
+require('./test-runtime')({ app });
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -191,6 +192,8 @@ app.whenReady().then(async () => {
   ok('退出登录：高度再次贴合卡片', Math.abs(g.height - (ch + PAD_Y * 2)) <= 3, '窗' + g.height + ' / 卡' + ch);
   ok('退出登录：登录门回来', (await isLocked()) === true);
   const savedAtGate = store.get('window.bounds') || {};
+  ok('正式窗口开启渲染进程沙箱且关闭 Node 集成',
+    w.webContents.getLastWebPreferences().sandbox === true && w.webContents.getLastWebPreferences().nodeIntegration === false);
   ok('登录门的临时尺寸不写进 config.json', !savedAtGate.width || savedAtGate.width >= 900, JSON.stringify(savedAtGate));
 
   console.log('\nuserData(临时): ' + TMP);

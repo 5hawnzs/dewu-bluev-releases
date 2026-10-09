@@ -249,7 +249,7 @@ function baselineViolations() {
 
 /** 逐词过三条红线 + 去重；返回 `{words, rejected:[{word,why}]}` */
 function sanitizeWords(words) {
-  const out = [], rejected = [], seen = {};
+  const out = [], rejected = [], seen = new Set();
   for (const raw of (words || [])) {
     const w = String(raw == null ? '' : raw).trim();
     if (!w) continue;
@@ -258,8 +258,8 @@ function sanitizeWords(words) {
     if (FORBIDDEN_SPEC_RE.test(w)) { rejected.push({ word: w, why: '材质 / 参数词（红线 1）' }); continue; }
     if (FORBIDDEN_AD_RE.test(w)) { rejected.push({ word: w, why: '极限词（红线 2）' }); continue; }
     if (FORBIDDEN_PLATFORM_RE.test(w)) { rejected.push({ word: w, why: '别的平台名（红线 3）' }); continue; }
-    if (seen[w]) continue;
-    seen[w] = 1;
+    if (seen.has(w)) continue;
+    seen.add(w);
     out.push(w);
   }
   return { words: out, rejected };

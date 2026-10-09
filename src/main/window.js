@@ -139,12 +139,13 @@ function createWindow(locked) {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       spellcheck: false,
       backgroundThrottling: false   // 发布任务在后台也要走完
     }
   });
 
+  require('./security').protectWindow(win.webContents);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   win.once('ready-to-show', () => {

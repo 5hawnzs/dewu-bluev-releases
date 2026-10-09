@@ -138,7 +138,9 @@ function startServer() {
   srvRef = srv;
   const ENDPOINT = `http://127.0.0.1:${port}/v1`;
 
-  store.set({
+  // 当前套件测发布/文案行为，显式准备品牌前置；配置仍只写测试临时目录。
+  store.set({ brandsSeeded: true, brands: [{ id: 'brd_regression', name: '品牌甲', enabled: true,
+    promptWrite: '请根据素材生成真实自然的种草文案。' }],
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
     copy: { concurrency: 3, requiredTopic: '#品牌甲', extraTopics: 4, llm: { enabled: false } },
     publish: { intervalSec: 5, videoIntervalSec: 5 }   // ★ retry 已删（失败不重试，2026-10-03）

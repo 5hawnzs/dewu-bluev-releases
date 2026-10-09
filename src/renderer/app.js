@@ -1156,7 +1156,7 @@ TABS[8] = {
           <span class="lbl">品牌</span>
           <select class="inp" id="stBrand">
             <option value="">全部品牌</option>
-            ${usable.map(b => `<option value="${b.id}" ${state.statsOpts.brandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
+            ${usable.map(b => `<option value="${esc(b.id)}" ${state.statsOpts.brandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
             ${m.isAdmin && s && s.untagged && s.untagged.rows > 0 ? '<option value="__none__" ' + (state.statsOpts.brandId === '__none__' ? 'selected' : '') + '>历史无品牌记录</option>' : ''}
           </select>
           ${m.isAdmin ? `<span class="lbl">执行人</span>
@@ -1332,38 +1332,36 @@ function markLexTransferDone(action) {
 }
 
 TABS[12] = {
-  title: '热词库',
-  desc: '本机热词库 · 所有成员可编辑 · 保存后下次生成生效 · 各台电脑独立保存',
+  title: '本地词库',
+  desc: '所有成员可编辑 · 仅保存在本机',
   actions: () => {
     return [
-      { act: 'lex:export', label: '导出词库', transfer: 'export', disabled: !state.lex || state.lexTransferBusy },
-      { act: 'lex:import', label: '导入词库', transfer: 'import', disabled: !state.lex || state.lexTransferBusy },
+      { act: 'lex:export', label: '导出', transfer: 'export', disabled: !state.lex || state.lexTransferBusy },
+      { act: 'lex:import', label: '导入', transfer: 'import', disabled: !state.lex || state.lexTransferBusy },
       { act: 'lex:reset', label: '恢复内置', disabled: !state.lex || state.lexTransferBusy },
       { act: 'lex:save', label: '保存', primary: true, disabled: !state.lex || state.lexTransferBusy }
     ];
   },
   render() {
     const L = state.lex;
-    if (!L) return '<div class="box"><h3>热词库</h3><p class="hint">正在读取…</p></div>';
+    if (!L) return '<div class="box"><h3>本地词库</h3><p class="hint">正在读取…</p></div>';
     const editables = L.groups.filter(g => !g.locked);
     const lockeds = L.groups.filter(g => g.locked);
     return `
       <div id="lxStatus">${lexStatusHtml()}</div>
       <div class="box">
-        <h3>这个库是怎么被用到的</h3>
-        <p class="hint">内置词是默认词库，你可以按需要编辑本机词库，修改不会同步到其他电脑。
-          使用看图模型生成时，模型结合<b>当前机器保存的热词库和本批素材图片</b>撰写文案，并按行轮换 15 种<b>句式骨架</b>（T01~T15）。
-          <b>保存后，下一次生成就会使用新词库，不用重启</b>。</p>
+        <h3>使用说明</h3><p class="hint">词库仅保存在本机，保存后下次生成生效。</p>
+        <p class="hint">导入和导出使用 Excel 工作簿（.xlsx）：表格的「分组 / 热词」两列可直接编辑，改好后再导入。</p>
       </div>
       <div class="box">
-        <h3>三条红线（进不去的词会当场告诉你原因）</h3>
+        <h3>三条红线</h3>
         <p class="hint">${L.redlines.map(s => '· ' + esc(s)).join('<br>')}</p>
       </div>
       ${editables.map(lexGroupHtml).join('')}
       ${lockeds.map(g => `<div class="box lxlock">
         <h3>${esc(g.key)}（${g.words.length} 词）· 已锁定，不可编辑</h3>
         <div class="lxwords">${g.words.map(w => `<span class="chip lxw">${esc(w)}</span>`).join('')}</div>
-        <p class="hint">它<b>照样参与生成</b>（词照给模型），只是不给编辑。</p>
+        <p class="hint">参与生成，不可编辑。</p>
       </div>`).join('')}
       <div class="box">
         <h3>15 种句式骨架（T01~T15）· 不可编辑</h3>
@@ -1864,24 +1862,41 @@ function showGate(msg) {
   }, 30);
 }
 
+/** 登录确认后的云端校验和首页数据仍在加载时，留在登录页显示对称波形。 */
+function setGateLoading(button, loading, label) {
+  if (!button) return;
+  button.disabled = !!loading;
+  button.setAttribute('aria-busy', loading ? 'true' : 'false');
+  button.innerHTML = loading
+    ? `<span class="gate-wave" role="status" aria-label="正在加载">${[0, 1, 2, 3, 4, 3, 2, 1, 0].map(level => `<i class="gate-wave-bar" style="--wave-level:${level}"></i>`).join('')}</span>`
+    : esc(label);
+  if (loading) fitGateWindow();
+}
+
 async function doLogin() {
   const u = $('#lgUser').value.trim();
   const p = $('#lgPwd').value;
   const remember = $('#lgRem').checked;
   if (!u || !p) { $('#lgErr').textContent = '请输入账号和密码'; return; }
   const btn = $('#lgGo');
-  btn.disabled = true; btn.textContent = '登录中…';
-  const r = await appApi.authLogin(u, p, remember);
-  btn.disabled = false; btn.textContent = '登 录';
-  if (!r.ok) {
-    $('#lgErr').textContent = r.error || '登录失败';
-    fitGateWindow();                     // 报错行会让卡片变高，窗口跟着收紧一次
-    $('#lgPwd').select();
-    return;
+  setGateLoading(btn, true, '登 录');
+  try {
+    const r = await appApi.authLogin(u, p, remember);
+    if (!r.ok) {
+      $('#lgErr').textContent = r.error || '登录失败';
+      setGateLoading(btn, false, '登 录');
+      fitGateWindow();                   // 报错行会让卡片变高，窗口跟着收紧一次
+      $('#lgPwd').select();
+      return;
+    }
+    $('#lgPwd').value = '';
+    state.auth = await appApi.authStatus();
+    await enterApp();
+  } catch (error) {
+    showGate('登录已确认，但主界面加载失败：' + (error.message || '请重试'));
+  } finally {
+    if (document.body.classList.contains('locked')) setGateLoading(btn, false, '登 录');
   }
-  $('#lgPwd').value = '';
-  state.auth = await appApi.authStatus();
-  await enterApp();
 }
 
 async function doBootstrap() {
@@ -1891,18 +1906,22 @@ async function doBootstrap() {
   const name = $('#lgSetupName').value.trim();
   if (!code || !user || !pass) { $('#lgSetupErr').textContent = '请填写初始化码、管理员账号和密码'; return; }
   const btn = $('#lgSetupGo');
-  btn.disabled = true; btn.textContent = '创建中…';
-  const r = await appApi.authBootstrap(code, user, pass, name, $('#lgSetupRem').checked);
-  btn.disabled = false; btn.textContent = '创建云端管理员';
-  if (!r.ok) { $('#lgSetupErr').textContent = r.error || '初始化失败'; fitGateWindow(); return; }
-  $('#lgSetupCode').value = ''; $('#lgSetupPwd').value = '';
-  state.auth = await appApi.authStatus();
-  await enterApp();
-  if (r.warning) toast(r.warning, 'err');
+  setGateLoading(btn, true, '创建云端管理员');
+  try {
+    const r = await appApi.authBootstrap(code, user, pass, name, $('#lgSetupRem').checked);
+    if (!r.ok) { $('#lgSetupErr').textContent = r.error || '初始化失败'; fitGateWindow(); return; }
+    $('#lgSetupCode').value = ''; $('#lgSetupPwd').value = '';
+    state.auth = await appApi.authStatus();
+    await enterApp();
+    if (r.warning) toast(r.warning, 'err');
+  } catch (error) {
+    showGate('管理员已确认，但主界面加载失败：' + (error.message || '请重试'));
+  } finally {
+    if (document.body.classList.contains('locked')) setGateLoading(btn, false, '创建云端管理员');
+  }
 }
 
 async function enterApp() {
-  document.body.classList.remove('locked');
   state.config = await appApi.configGet();
   state.project = await appApi.projectGet();
   state.logs = await appApi.logHistory();
@@ -1914,6 +1933,8 @@ async function enterApp() {
   bindOnce();
   renderAll();
   renderLogs();
+  // 先准备好完整主界面，再切走登录页，避免登录确认后露出空白窗口。
+  document.body.classList.remove('locked');
   const me = state.auth && state.auth.user;
   if (me && me.mustChange) toast('当前还是出厂口令，建议到「品牌与权限 → 账号与安全」改掉', 'err');
 }
@@ -2298,9 +2319,9 @@ function bmListHtml() {
       ${isPick ? '<span class="chip run">本次</span>' : ''}
       ${isDefault ? '<span class="chip chip-user">默认</span>' : ''}
       <span class="grow snip">${esc(String(b.promptWrite || '').replace(/\s+/g, ' ').slice(0, 46) || '—')}</span>
-      <button class="btn sm" data-act="bm:open" data-id="${b.id}">配置</button>
-      <button class="btn sm${isPick ? ' primary' : ''}" data-act="bm:pick" data-id="${b.id}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>选择</button>
-      <button class="btn sm${isDefault ? ' primary' : ''}" data-act="bm:default" data-id="${b.id}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>默认选择</button>
+      <button class="btn sm" data-act="bm:open" data-id="${esc(b.id)}">配置</button>
+      <button class="btn sm${isPick ? ' primary' : ''}" data-act="bm:pick" data-id="${esc(b.id)}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>选择</button>
+      <button class="btn sm${isDefault ? ' primary' : ''}" data-act="bm:default" data-id="${esc(b.id)}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>默认选择</button>
     </div>`;
   }).join('') : `<div class="empty">${isAdmin
     ? '还没有品牌。点左下角「新增品牌」建一个，再给它写文案提示词。'
@@ -2364,10 +2385,10 @@ function bmEditHtml(id) {
       ${meta ? '' : '<p class="mnote">品牌名 / 启用 / 选用由管理员维护，你能改的是上面两段提示词。</p>'}
     </div>
     <div class="mf">
-      ${(isAdmin && !isNew) ? `<button class="btn sm" data-act="bm:del" data-id="${b.id}">删除品牌</button>` : ''}
+      ${(isAdmin && !isNew) ? `<button class="btn sm" data-act="bm:del" data-id="${esc(b.id)}">删除品牌</button>` : ''}
       <span class="grow"></span>
       <button class="btn sm" data-act="bm:close">取消</button>
-      <button class="btn sm primary" data-act="bm:save" data-id="${b.id}">保存</button>
+      <button class="btn sm primary" data-act="bm:save" data-id="${esc(b.id)}">保存</button>
     </div>`;
 }
 
@@ -2401,11 +2422,11 @@ function brandsHtml() {
         <td class="cut">${esc(b.note || '—')}</td>
         <td class="cut">${us.length ? esc(us.map(u => u.displayName || u.username).join('、')) : '<span style="opacity:.6">（没有账号分配）</span>'}</td>
         <td>${editing
-        ? `<button class="btn sm primary" data-act="brand:save" data-id="${b.id}">保存</button>
+        ? `<button class="btn sm primary" data-act="brand:save" data-id="${esc(b.id)}">保存</button>
              <button class="btn sm" data-act="brand:cancel">取消</button>`
-        : `<button class="btn sm" data-act="brand:edit" data-id="${b.id}">改名</button>
-             <button class="btn sm" data-act="brand:toggle" data-id="${b.id}" data-next="${b.enabled === false ? '1' : '0'}">${b.enabled === false ? '启用' : '停用'}</button>
-             <button class="btn sm" data-act="brand:del" data-id="${b.id}" data-name="${esc(b.name)}">删除</button>`}</td>
+        : `<button class="btn sm" data-act="brand:edit" data-id="${esc(b.id)}">改名</button>
+             <button class="btn sm" data-act="brand:toggle" data-id="${esc(b.id)}" data-next="${b.enabled === false ? '1' : '0'}">${b.enabled === false ? '启用' : '停用'}</button>
+             <button class="btn sm" data-act="brand:del" data-id="${esc(b.id)}" data-name="${esc(b.name)}">删除</button>`}</td>
       </tr>`;
   }).join('')}</tbody></table></div>`
     : '<div class="empty">还没有品牌。添加一个之后，才能给账号分配权限，发布记录也才有归属可查。</div>';
@@ -2422,7 +2443,7 @@ function brandsHtml() {
         <span class="lbl">默认品牌</span>
         <select class="inp" id="brandDefault">
           <option value="">（不预选）</option>
-          ${all.filter(b => b.enabled !== false).map(b => `<option value="${b.id}" ${m.defaultBrandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
+          ${all.filter(b => b.enabled !== false).map(b => `<option value="${esc(b.id)}" ${m.defaultBrandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
         </select>
         <button class="btn sm" data-act="brand:default">设为默认</button>
         <span class="chip">标题栏的「当前品牌」只列当前账号<b>有权限</b>的品牌</span>
@@ -2494,10 +2515,10 @@ function adminUsersHtml() {
       <td class="brandcell">${brandTag(u)}</td>
       <td class="mono">${esc(u.lastLoginAt ? fmtDate(u.lastLoginAt) : '—')}</td>
       <td>${u.id === myId ? '<span class="chip">本人</span>' : `
-        <button class="btn sm" data-act="up:perm" data-id="${u.id}">配置权限</button>
-        <button class="btn sm" data-act="up:pwd" data-id="${u.id}">重置密码</button>
-        <button class="btn sm" data-act="auth:toggle" data-id="${u.id}" data-next="${u.disabled ? '0' : '1'}">${u.disabled ? '启用' : '停用'}</button>
-        <button class="btn sm" data-act="auth:del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>`}</td>
+        <button class="btn sm" data-act="up:perm" data-id="${esc(u.id)}">配置权限</button>
+        <button class="btn sm" data-act="up:pwd" data-id="${esc(u.id)}">重置密码</button>
+        <button class="btn sm" data-act="auth:toggle" data-id="${esc(u.id)}" data-next="${u.disabled ? '0' : '1'}">${u.disabled ? '启用' : '停用'}</button>
+        <button class="btn sm" data-act="auth:del" data-id="${esc(u.id)}" data-name="${esc(u.username)}">删除</button>`}</td>
     </tr>`).join('');
   return `
     <div class="box">
@@ -2518,12 +2539,8 @@ function adminUsersHtml() {
             : '<span class="hint">暂无启用品牌，请先到上方品牌管理新增或启用品牌。</span>'}
         </div>
       </div>
-      <p class="hint">普通成员创建时至少勾选一个启用品牌；创建后也可用行里的「<b>配置权限</b>」调整。管理员自动拥有全部品牌。
-        勾上的品牌决定成员能在标题栏选到哪些品牌、能起哪些文案生成 / 发布单 / 发布任务；
-        一个都没勾，他起任务会被直接拦下（不会悄悄发出去）。管理员那一行显示「全部品牌」—— 管理员本来就是全部，不必逐个分配。</p>
-      <p class="hint">正式版账号和品牌授权存在 Supabase 私有 schema，密码只保存加盐哈希；本机 <code>auth.json</code> 只在勾选「记住登录」时保存会话令牌。
-        停用/删除账号<b>不影响</b>已产出的素材、发布单与商品池。连续输错 6 次会锁定 5 分钟。</p>
-      <p class="hint"><b>登录需要网络</b>：账号、状态和品牌授权由云端统一校验；素材、发布执行与运行日志仍保存在本机并按现有规则同步。</p>
+      <p class="hint">成员需至少分配一个启用品牌，可通过「配置权限」调整。管理员拥有全部品牌。</p>
+      <p class="hint">账号和品牌权限跨设备同步，登录需要联网。连续输错 6 次会锁定 5 分钟。</p>
     </div>`;
 }
 
@@ -2553,7 +2570,7 @@ function upPermHtml(id) {
       ${isAdminTarget
       ? '<p class="mnote">管理员 = <b>全部品牌</b>（包括以后新增的），不必逐个分配。要限制他，先把角色改成普通成员。</p>'
       : (all.length
-        ? `<div class="perm-list">${all.map(b => `<label class="perm"><input type="checkbox" data-brand="${b.id}" ${mine.includes(b.id) ? 'checked' : ''}> ${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</label>`).join('')}</div>`
+        ? `<div class="perm-list">${all.map(b => `<label class="perm"><input type="checkbox" data-brand="${esc(b.id)}" ${mine.includes(b.id) ? 'checked' : ''}> ${esc(b.name)}${b.enabled === false ? '（停用）' : ''}</label>`).join('')}</div>`
         : '<div class="empty">还没有品牌。先到上面的「品牌管理」加一个，再回来分配。</div>')}
     </div>
     <div class="mf">
@@ -3457,7 +3474,12 @@ async function boot() {
   applyTheme(await appApi.themeGet());
   state.auth = await appApi.authStatus();
   if (state.auth.requireLogin && !state.auth.user) { showGate(state.auth.error || ''); return; }
-  await enterApp();
+  if (state.auth.requireLogin) setGateLoading($('#lgGo'), true, '登 录');
+  try { await enterApp(); }
+  catch (error) {
+    showGate('主界面加载失败：' + (error.message || '请重试'));
+    setGateLoading($('#lgGo'), false, '登 录');
+  }
 }
 
 setInterval(() => {

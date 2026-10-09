@@ -114,6 +114,26 @@ const localInput = ts => {
     return !r.ok && /已停用或被删除/.test(r.error);
   })());
 
+  // 免登录也必须遵守产出归属；没有账号不能成为跳过品牌校验的理由。
+  {
+    const savedBrands = brands.list();
+    brands.replaceAll([]);
+    const missing = brands.resolveFor(null, '', { required: true });
+    ok('免登录产出在零品牌时明确拒绝', !missing.ok && /还没有启用的品牌/.test(missing.error));
+    const optional = brands.resolveFor(null, '', { required: false });
+    ok('免登录准备任务允许无品牌并如实记未标', optional.ok && optional.brand === null);
+    const only = brands.add({ name: '归属测试甲' }).brand;
+    const auto = brands.resolveFor(null, '', { required: true });
+    ok('免登录只有一个启用品牌时自动归属', auto.ok && auto.auto && auto.brand.id === only.id);
+    const other = brands.add({ name: '归属测试乙' }).brand;
+    const ambiguous = brands.resolveFor(null, '', { required: true });
+    ok('免登录多个品牌未选时拒绝并列出可选品牌', !ambiguous.ok && /归属测试甲/.test(ambiguous.error) && /归属测试乙/.test(ambiguous.error));
+    const explicit = brands.resolveFor(null, other.id, { required: true });
+    ok('免登录明确选择的品牌真实生效', explicit.ok && explicit.brand.id === other.id);
+    ok('免登录不存在的品牌仍拒绝', !brands.resolveFor(null, 'brd_missing', { required: true }).ok);
+    brands.replaceAll(savedBrands);
+  }
+
   // ---- ③ 归属记录：往 publish-log 里写几条带品牌/不带品牌的 ----
   const actor1 = { userId: 'u2', username: 'zhang', displayName: '张三' };
   const actor2 = { userId: 'u3', username: 'li', displayName: '李四' };
