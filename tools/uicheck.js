@@ -1266,10 +1266,10 @@ app.whenReady().then(async () => {
   const hintCont = (ivSel && ivSel.as0 && ivSel.as0.paneText) || '';
   const hintFix = (ivSel && ivSel.as60 && ivSel.as60.paneText) || '';
   ok('★ 界面自洽：连续发布档下，提示换成"不再叠加等待"，且不再出现「93% 的时间是在等间隔」',
-    hintCont.includes('不再叠加等待') && !hintCont.includes('93% 的时间是在等间隔'),
+    hintCont.includes('不再等待') && !hintCont.includes('93% 的时间是在等间隔'),
     JSON.stringify({ hasNew: hintCont.includes('不再叠加等待'), hasOld: hintCont.includes('93% 的时间是在等间隔') }));
-  ok('★ 正向对照：固定档那句「93% 的时间是在等间隔」照旧在（证明上面那条不是"整页没渲染"造成的）',
-    hintFix.includes('93% 的时间是在等间隔') && !hintFix.includes('不再叠加等待'),
+  ok('固定间隔也显示预计耗时，删除无依据的 93% 描述',
+    hintFix.includes('预计约') && !hintFix.includes('93% 的时间是在等间隔'),
     JSON.stringify({ hasOld: hintFix.includes('93% 的时间是在等间隔'), hasNew: hintFix.includes('不再叠加等待') }));
 
   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
@@ -1661,6 +1661,8 @@ app.whenReady().then(async () => {
         memberCanAdmin,
         open: !!mask && mask.hidden === false,
         fEnabled: has('#lmEnabled'), fEndpoint: has('#lmEndpoint'), fKey: has('#lmKey'), fModel: has('#lmModel'),
+        onlineOnly: box.querySelector('#lmEnabled').value === 'true' && box.querySelector('#lmEnabled').disabled && box.querySelector('#lmEnabled').options.length === 1,
+        visionLocked: ['lmVision','lmCount','lmSide'].every(id => box.querySelector('#'+id).disabled),
         listBtn: has('[data-act="lm:list"]'), testBtn: has('[data-act="lm:test"]'), saveBtn: has('[data-act="lm:save"]'),
         effText: (document.getElementById('lmCur') || {}).textContent || '',
         effKeys: Object.keys(eff).sort(),
@@ -1679,22 +1681,30 @@ app.whenReady().then(async () => {
     ok('★ 弹窗里「实际在用」显示的是**真值**（不是空框、不是停在「读取中」）',
       lmUi.effText.indexOf('实际在用') >= 0 && lmUi.effText.indexOf('读取中') < 0,
       JSON.stringify({ eff: lmUi.effText }));
+    ok('模型配置固定使用在线模型，不再提供离线模板选项', lmUi.onlineOnly);
+    ok('送图、每条张数和缩放尺寸均灰置禁用', lmUi.visionLocked);
     ok('★ 「实际在用」只回一个「配没配」的布尔，**不带明文 key**（少一条泄漏面）',
       lmUi.effKeyLeak === false && lmUi.effKeys.indexOf('apiKeySet') >= 0, JSON.stringify(lmUi.effKeys));
   }
   // 改「默认模型」→ 保存 → 真落进配置
   {
     const oldModel = store.get('copy.llm.model') || '';
+    const visionBefore = store.get('copy.llm');
     const sv = await win.webContents.executeJavaScript(`(async () => {
       const box = document.getElementById('lmBox');
       const m = box && box.querySelector('#lmModel');
       if (!m) return { ok: false, why: '弹窗里的 #lmModel 找不到' };
       m.value = '__uicheck_default_model__';
+      box.querySelector('#lmVision').value = 'false';
+      box.querySelector('#lmCount').value = '4';
+      box.querySelector('#lmSide').value = '1568';
       box.querySelector('[data-act="lm:save"]').click();
       await new Promise(r => setTimeout(r, 400));
       return { ok: true, closed: document.getElementById('lmmodal').hidden === true };
     })()`);
     const after = store.get('copy.llm.model');
+    const visionAfter = store.get('copy.llm');
+    ok('保存模型不修改灰置的送图参数', ['vision','imageCount','imageMaxSide'].every(k => visionBefore[k] === visionAfter[k]));
     ok('★ 改完点「保存」真的写进 copy.llm.model、并自动关掉弹窗（＝「后续默认选用这个」）',
       sv.ok && after === '__uicheck_default_model__' && sv.closed === true,
       JSON.stringify({ saved: after, closed: sv.closed, why: sv.why || '' }));
@@ -1762,7 +1772,7 @@ app.whenReady().then(async () => {
   //   下面这几个变量**必须保留** —— 紧随其后的「说明书弹窗」那条断言还在用它们。
   const idxHtml = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
   const iLines = idxHtml.split(/\r?\n/);
-  const appOpen = iLines.findIndex(l => /<div class="app">/.test(l));
+  const appOpen = iLines.findIndex(l => /<div class="app"(?:\s[^>]*)?>/.test(l));
   const appClose = iLines.findIndex((l, i) => i > appOpen && /^<\/div>/.test(l));
 
   // ---- ★ 2026-10-03：「批次设置」那六百多字长文 ⇒ 「说明书」弹窗（用户要求）----
@@ -2273,7 +2283,7 @@ app.whenReady().then(async () => {
     // ① 「发布单」页签已删 ⇒ 任何用户可见文案都不许再让人「到『发布单』去」
     ok('★ 用户可见文案不再把用户指到已删除的「发布单」页签',
       !/到「发布单」/.test(A4c) && !/「发布单」页/.test(A4c)
-      && /先点右上角「导出 xlsx」/.test(A4c));
+      && /请先导入 AI 内容报告/.test(A4c));
 
     // ② 已删功能的名字不许再出现在用户可见文案里
     //    （「失败恢复动作」「失败重试 N 次」是 2026-10-03 用户要求整块删的两项）
@@ -2413,20 +2423,48 @@ app.whenReady().then(async () => {
     state.devFound = [{name:'MuMu新窗口',serial:'127.0.0.1:21347',state:'device',online:true,configured:false},
       {name:'MuMu启动窗口',serial:'',state:'starting',online:false,configured:false}];
     renderAll();
-    const name = document.getElementById('devName'); name.value = '未保存账号草稿';
-    document.querySelector('#devicesPanel details').open = true;
     paintDevices();
     const text = document.getElementById('devicesPanel').textContent;
     const result = {named:text.includes('MuMu新窗口')&&text.includes('21347'),
       states:text.includes('已连接')&&text.includes('启动中'),
-      draft:document.getElementById('devName').value==='未保存账号草稿'&&document.querySelector('#devicesPanel details').open,
+      noSerial:!document.getElementById('devName')&&!document.getElementById('devSerial')&&!document.querySelector('[data-act="pub:addDev"]'),
       noManual:!text.includes('确认它开了')&&text.includes('自动连接')};
     state.devFound = null; state.tab = 1; renderAll(); return result;
   })()`);
   ok('设备界面显示实例名称与实际端口', deviceUi.named);
   ok('设备界面区分已连接与启动中', deviceUi.states);
-  ok('自动刷新保留账号草稿和展开状态', deviceUi.draft);
+  ok('自动刷新后也没有手填序列号入口', deviceUi.noSerial);
   ok('设备界面不再要求用户手动排查 ADB', deviceUi.noManual);
+  const simplified = await win.webContents.executeJavaScript(`(() => {
+    state.tab = 6; renderAll();
+    const acts = [...document.querySelectorAll('#head [data-act]')].map(b => b.dataset.act);
+    const text = document.querySelector('#pane').textContent;
+    const keep = state.probe;
+    state.probe = { device:{serial:'test-device'}, fix:[{level:'bad',title:'模拟器里没找到得物',how:'请先安装',act:{act:'go:dewu',label:'去设置下载得物'}}] };
+    renderAll();
+    const jump = document.querySelector('[data-act="go:dewu"]');
+    jump.click();
+    const routed = state.tab === 7 && !!document.querySelector('[data-act="apk:save"]') && !!document.querySelector('[data-act="apk:install"]');
+    state.probe = keep; state.tab = 1; renderAll();
+    return { acts, noInternals: !/模拟通道|定位表.*步|视频.*步/.test(text), routed,
+      names: [...document.querySelectorAll('.name,#loginForm .gname')].every(e => e.textContent === '得物蓝V素材发布工具') };
+  })()`);
+  ok('发布页顶部只保留导入、停止、开始三个入口', simplified.acts.join(',') === 'sheet:importReport,pub:stop,pub:run');
+  ok('发布页不显示模拟通道和定位步骤等内部信息', simplified.noInternals);
+  ok('缺少得物时可一键跳到设置的下载及安装入口', simplified.routed);
+  ok('登录页和正式页面标题统一删除蓝V后的空格', simplified.names);
+  const { dialog } = require('electron');
+  const originalDirDialog = dialog.showOpenDialog;
+  let dirOptions = null;
+  dialog.showOpenDialog = async (...args) => { dirOptions = args[args.length - 1]; return { canceled:true, filePaths:[] }; };
+  try {
+    await win.webContents.executeJavaScript(`(async () => {
+      const keep = state.project.flatDir;
+      state.project.flatDir = 'C:\\\\素材\\\\flat_20261010';
+      try { await ACTS['copy:pickRun'](); } finally { state.project.flatDir = keep; }
+    })()`);
+    ok('文案目录选择器直接打开生成目录的母目录', dirOptions && dirOptions.defaultPath === path.join('C:\\素材'));
+  } finally { dialog.showOpenDialog = originalDirDialog; }
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 

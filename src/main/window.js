@@ -115,7 +115,7 @@ function createWindow(locked) {
   const start = locked ? { width: GATE_WIDTH, height: GATE_HEIGHT } : fitToWorkArea(normal);
 
   win = new BrowserWindow({
-    title: '得物蓝V 素材发布工具',
+    title: '得物蓝V素材发布工具',
     width: start.width,
     height: start.height,
     minWidth: locked ? 340 : MAIN_MIN_W,

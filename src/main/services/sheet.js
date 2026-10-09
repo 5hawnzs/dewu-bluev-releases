@@ -62,7 +62,7 @@ function buildRows(state, { startAt, intervalSec }) {
 
 async function writeWorkbook(file, rows) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = '得物蓝V 素材发布工具';
+  wb.creator = '得物蓝V素材发布工具';
   wb.created = new Date();
   const ws = wb.addWorksheet('发布单', { views: [{ state: 'frozen', ySplit: 1 }] });
   ws.columns = COLUMNS.map((h, i) => ({ header: h, key: 'c' + i, width: i === 4 ? 34 : (i === 5 ? 46 : 16) }));

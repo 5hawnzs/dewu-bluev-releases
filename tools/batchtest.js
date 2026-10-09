@@ -59,9 +59,26 @@ const ok = (label, cond, extra) => {
   store.set({ brandsSeeded: true, brands: [{ id: 'brd_regression', name: '品牌甲', enabled: true,
     promptWrite: '请根据素材生成真实自然的种草文案。' }],
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
-    copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4 },
+    copy: { concurrency: 6, requiredTopic: '#品牌甲', extraTopics: 4, llm: { enabled: false } },
     publish: { intervalSec: 5, videoIntervalSec: 5 }   // 「演示节奏」开关已删：直接给 5 秒间隔；★ retry 也已删（失败不重试）
   });
+
+  // 新一批素材不得继承旧批次的合规报告，也不得在整理时偷偷检查时长。
+  const project = require(path.join(base, 'src/main/project.js'));
+  const compliance = require(path.join(base, 'src/main/services/compliance.js'));
+  const oldScan = compliance.scan;
+  let scanned = 0;
+  compliance.scan = async () => { scanned++; throw new Error('整理不应启动合规扫描'); };
+  project.patch({ compliance: { rows: [{ status: 'manual' }], stats: { total: 30, manual: 28 }, scannedAt: 123, groups: [{ name: '旧批次' }] } });
+  const imported = await jobs.run('flatten.run', { sourceDir: makeBatch('合规状态隔离', 1) });
+  compliance.scan = oldScan;
+  const cleared = project.get().compliance;
+  ok('导入新素材清除旧的 28 条人工判定、分组和检查时间', imported.ok && cleared.stats === null && cleared.rows.length === 0 && cleared.scannedAt === 0 && !cleared.groups);
+  ok('尚未开始检查时不调用合规扫描', scanned === 0);
+  project.patch({ compliance: { rows: [{ status: 'manual' }], stats: { total: 30, manual: 28 }, scannedAt: 123 } });
+  const selected = await jobs.run('flatten.plan', { sourceDir: makeBatch('仅选择新目录', 1) });
+  ok('仅选择新目录、未开始整理时也清除旧合规结果', selected.ok && project.get().compliance.stats === null && project.get().items.length === 0 && !project.get().flatDir);
+  project.patch({ sourceDir: '', flatDir: '', items: [] });
 
   // ---- 发布间隔的取消必须清除等待定时器 ----
   const realSetTimeout = global.setTimeout, realClearTimeout = global.clearTimeout;

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   info: () => ipcRenderer.invoke('app:info'),
 
   authStatus: () => ipcRenderer.invoke('auth:status'),
+  authUiReady: () => ipcRenderer.invoke('auth:ui-ready'),
   authLogin: (u, p, remember) => ipcRenderer.invoke('auth:login', u, p, remember),
   authBootstrap: (code, u, p, displayName, remember) => ipcRenderer.invoke('auth:bootstrap', code, u, p, displayName, remember),
   authLogout: () => ipcRenderer.invoke('auth:logout'),

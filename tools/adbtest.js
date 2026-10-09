@@ -106,6 +106,11 @@ const state = {
 
   // 1) 设备检查（界面上叫「检查能不能发布」；probe() 的返回体同时带 notes 与 fix 两套说法）
   clearCalls();
+  fs.writeFileSync(path.join(FDB, 'DEWU_ABSENT'), '1');
+  const absent = await publisher.probe('127.0.0.1:5555');
+  fs.unlinkSync(path.join(FDB, 'DEWU_ABSENT'));
+  ok('未安装得物时只提示一个待处理问题，不叠加输入法等警告', absent.fix.length === 1 && !absent.appPackage);
+  ok('未安装得物的提示提供去设置下载按钮', absent.fix[0] && absent.fix[0].act && absent.fix[0].act.act === 'go:dewu');
   const p = await publisher.probe('127.0.0.1:5555');
   ok('自检：adb 版本', !!p.adb, p.adb);
   ok('自检：设备在线', !!p.device, p.device && p.device.serial);

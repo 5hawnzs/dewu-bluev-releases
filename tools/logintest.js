@@ -147,6 +147,10 @@ app.whenReady().then(async () => {
   ok('账号不存在 → 提示与口令错一致（不泄露账号是否存在）', noUser.locked && noUser.err === wrong.err, noUser.err);
 
   // ---- ④ 登录成功后延迟首页配置：主界面准备完成前，登录页须持续显示波形并挡住空白主界面 ----
+  const winmod = require(path.join(ROOT, 'src/main/window.js'));
+  const originalLoginMode = winmod.setLoginMode;
+  const windowChanges = [];
+  winmod.setLoginMode = on => { windowChanges.push(on); };
   let delayFirstConfig = true;
   ipcMain.removeHandler('config:get');
   ipcMain.handle('config:get', async (_e, key) => {
@@ -155,11 +159,24 @@ app.whenReady().then(async () => {
     return store.get(key);
   });
   const loading = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, true)`);
+  ok('首页加载期间主进程没有提前放大登录窗口', windowChanges.length === 0);
+  const exclusive = await js(`(() => {
+    const el = document.querySelector('.app');
+    const before = el.hidden && el.inert && !document.querySelector('#gate').hidden;
+    document.body.classList.remove('locked');
+    const stillHidden = getComputedStyle(el).display === 'none';
+    document.body.classList.add('locked');
+    return before && stillHidden;
+  })()`);
+  ok('慢加载期间主界面 hidden 且 inert，即使临时移除 locked 也不叠显', exclusive);
   ok('登录确认后首页数据仍在加载时留在登录页，按钮持续显示 9 条波形且主界面隐藏',
     loading.locked && loading.appHidden && loading.loading && loading.waveBars === 9,
     JSON.stringify({ locked: loading.locked, appHidden: loading.appHidden, loading: loading.loading, waveBars: loading.waveBars }));
   await js('new Promise(r => setTimeout(r, 800))');
   const inApp = await js(`({ locked: __t.locked(), appHidden: __t.appHidden(), title: __t.title(), user: __t.user() })`);
+  ok('首页准备完成后才通知主进程放大窗口，且仅一次', windowChanges.length === 1 && windowChanges[0] === false);
+  winmod.setLoginMode = originalLoginMode;
+  ok('正式界面显示时登录页显式隐藏、主界面解除 inert', await js(`document.querySelector('#gate').hidden && !document.querySelector('.app').hidden && !document.querySelector('.app').inert`));
   ok('口令正确 → 进入主界面', !inApp.locked && inApp.title === '素材整理', `locked=${inApp.locked} 标题=${inApp.title}`);
   ok('标题栏显示当前账号与角色', /管理员/.test(inApp.user), inApp.user);
   const allowed = await js(`(async () => { const c = await window.api.configGet(); return !!(c && c.paths && c.paths.output); })()`);

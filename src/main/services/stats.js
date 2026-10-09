@@ -289,7 +289,7 @@ function line(b) {
 async function exportXlsx(opts = {}) {
   const r = query(Object.assign({}, opts, { allLogs: true }));
   const wb = new ExcelJS.Workbook();
-  wb.creator = '得物蓝V 素材发布工具';
+  wb.creator = '得物蓝V素材发布工具';
   wb.created = new Date();
 
   const head = ws => {

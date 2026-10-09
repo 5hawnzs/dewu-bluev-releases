@@ -443,9 +443,7 @@ function batchesHtml(type, title) {
 function reportBoxHtml() {
   const pub = state.project.publish || {};
   if (!pub.reportFile) {
-    return `<p class="hint">也可以直接点「<b>导入 AI 内容报告</b>」（真机那份 26 列 xlsx）：表里是
-      <code>素材路径 / 标题 / 文案 / 内容类型 / 好物1~9_货号+颜色</code>，按<b>列名</b>识别、不认列位置。
-      一个叶子文件夹 = 一条内容；报告里标题/文案空着就本地生成；发布完把「实际执行时间 / 执行结果」写回那两列。</p>`;
+    return `<p class="hint">请先导入 AI 内容报告（Excel），发布结果会写回原报告。</p>`;
   }
   const rows = pub.rows || [];
   const blocked = rows.filter(r => r.result === '校验未通过').length;
@@ -462,7 +460,7 @@ function reportBoxHtml() {
       <button class="btn sm" data-act="sheet:openReport">打开报告</button>
     </div>
     <p class="hint">发布完会回写报告的 <b>实际执行时间（B）/ 执行结果（C）</b> 两列；报告被 WPS 占用时整批暂存，
-      下次导入或发布时先补写。含视频的叶子目前不发布（真实通道只推图片），该行会标成「校验未通过」并写明原因。</p>
+      下次导入或发布时先补写。</p>
   </div>`;
 }
 
@@ -561,7 +559,7 @@ TABS[1] = {
 
 TABS[2] = {
   title: '合规检查',
-  desc: '图片转 JPG ≤10MB · 视频转 MP4 ≤600s · 不合规文件隔离而非删除',
+  desc: '检查图片尺寸、格式及视频时长，支持自动转换格式',
   actions: () => [
     { act: 'comp:parent', label: '检查父目录' },
     { act: 'comp:scan', label: '开始检查' },
@@ -572,7 +570,7 @@ TABS[2] = {
     const c = state.project.compliance || {};
     const s = c.stats;
     const cfg0 = state.config.compliance || {};
-    if (!s) return `<div class="empty">还没有扫描记录。先做完「素材整理」，再点「开始检查」—— 只读取元数据，秒级出报告。也可以直接「检查父目录」，里面每个子文件夹独立出报告。</div>`;
+    if (!s) return `<div class="empty">素材待检查。点击「开始检查」后才会读取视频时长和图片信息；也可选择「检查父目录」。</div>`;
     const rows = c.rows.filter(r => r.status !== 'ok').slice(0, 60);
     const okRows = c.rows.filter(r => r.status === 'ok').length;
     return `
@@ -584,7 +582,7 @@ TABS[2] = {
         <div class="stat bad"><b>${n(s.tooSmall)}</b><span>尺寸不足</span></div>
         <div class="stat bad"><b>${n(s.notMp4)}</b><span>非 MP4</span></div>
         ${cfg0.enforceMaxMB ? `<div class="stat bad"><b>${n(s.oversize)}</b><span>超 ${cfg0.maxImageMB}MB 压缩</span></div>` : ''}
-        <div class="stat"><b>${n(s.isolate)}</b><span>隔离到 _rejected</span></div>
+        ${n(s.isolate) ? `<div class="stat"><b>${n(s.isolate)}</b><span>待隔离的非素材文件</span></div>` : ''}
       </div>
       <p class="hint">规则（按你的口径，2026-10-05 起）：图片<b>必须为 JPG</b>、≥<b>${cfg0.minPixels}</b> 像素²（约 42×42）、边长 <b>${cfg0.enforceMaxSide ? `${cfg0.minSide}~${cfg0.maxSide}` : `≥${cfg0.minSide}`}</b>${cfg0.enforceMaxSide ? (cfg0.autoScale ? '（超限自动等比缩放）' : '（超限需更换）') : '（<b>超出不限制、不缩放</b>）'}${cfg0.enforceMaxMB ? `、≤${cfg0.maxImageMB}MB` : '、<b>体积不限</b>（不压缩）'}；视频<b>必须 .mp4</b>（<code>.mov</code>/<code>.m4v</code> 等会自动转成 mp4）且 &lt;${cfg0.maxVideoSec} 秒（超时只标红不裁剪）。</p>
       ${(c.groups && c.groups.length) ? `<div class="box"><h3>按子文件夹（${c.groups.length} 个）</h3>
@@ -747,15 +745,11 @@ TABS[4] = {
 
 TABS[6] = {
   title: '模拟器发布',
-  desc: '导入 AI 内容报告 → 选发布间隔 → 开始发布（ADB 驱动得物 App · 失败可单独重跑）',
+  desc: '导入 AI 内容报告 → 选择设备和发布间隔 → 开始发布',
   actions: () => [
     // ★ 2026-10-03 用户给的流程：「从模拟器发布的入口导入，选择发布间隔时间，点击开始发布」
     //   ⇒ 导入入口放到这一页（原来「发布单」页那个随页签一起删了，现在只剩这一处）
     { act: 'sheet:importReport', label: '导入 AI 内容报告' },
-    // ★ 2026-10-03：原「发布单」页的「导出 xlsx」挪到这一页（用户指定的落点）
-    { act: 'sheet:export', label: '导出 xlsx' },
-    { act: 'pub:connect', label: '连接模拟器' },
-    { act: 'pub:exportLog', label: '重导出日志' },
     { act: 'pub:stop', label: '停止', disabled: !running('publish.run') && !running('publish.rerun') },
     { act: 'pub:run', label: '开始发布', primary: true, disabled: !(state.project.publish && state.project.publish.rows && state.project.publish.rows.length) }
   ],
@@ -763,14 +757,13 @@ TABS[6] = {
     const cfg = state.config.publish;
     const pub = state.project.publish || {};
     const sh = state.project.sheet || {};   // 发布单 xlsx（原「发布单」页那一行挪到这儿）
-    const mode = pub.mode || 'mock';
     const rows = pub.rows || [];
     // ★★ 当前生效的发布间隔秒数。**0 是合法值**（连续发布：发完一条直接发下一条），
     //   所以这里不能写 `cfg.intervalSec || 60` —— 那样 0 会被兜成 60，
     //   用户明明选了「连续发布」，界面却按 60 秒算/显示（而主进程那边是按 0 跑的）。
     const ivRaw = Number(cfg.intervalSec);
     const ivNow = (cfg.intervalSec === '' || cfg.intervalSec === null || cfg.intervalSec === undefined
-      || !Number.isFinite(ivRaw)) ? 60 : ivRaw;
+      || !Number.isFinite(ivRaw)) ? 0 : ivRaw;
     // ★ 与主进程 publisher.estimate 同一口径（gapSecFor）：图文「间隔+30s」、视频「间隔+60s」
     //   （视频推得久，还要等媒体库索引）。
     //   视频间隔只在 >0 时单独生效；0 的含义是「跟随主间隔」，与主间隔的 0 = 连续不是一回事。
@@ -784,8 +777,6 @@ TABS[6] = {
     return `
       <div class="box">
         <h3>装置与节奏</h3>
-        <!-- ★ 2026-10-03：原「发布单」页的路径 / 行数 / 打开文件 / 打开目录挪到这儿。
-             「导出 xlsx」在右上角动作条里。 -->
         <div class="row" style="margin-bottom:10px">
           <span class="lbl">发布单</span>
           <input class="inp mono" value="${esc(sh.file || '（还没导出过发布单）')}" readonly>
@@ -794,6 +785,10 @@ TABS[6] = {
           <button class="btn sm" data-act="sheet:open" ${sh.file ? '' : 'disabled'}>打开文件</button>
           <button class="btn sm" data-act="sheet:dir">打开目录</button>
         </div>
+        <details style="margin-bottom:10px"><summary>导出文件</summary><div class="row" style="margin-top:8px">
+          <button class="btn sm" data-act="sheet:export">导出发布单</button>
+          <button class="btn sm" data-act="pub:exportLog">导出发布日志</button>
+        </div></details>
         ${devicesHtml()}
         <div class="row" style="margin-top:10px">
           <span class="lbl">发布间隔</span>
@@ -808,16 +803,9 @@ TABS[6] = {
           + '注意单条本身仍要花 ≈30 秒（视频 ≈60 秒）—— 那是设备上的真实耗时（推素材 / 上传 / 填内容），不是间隔。</p>' : ''}
         <div class="row" style="margin-top:10px">
           <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
-          ${((cfg.uiMap || {}).steps ? '' : (canAdmin() ? '<button class="btn sm" data-act="go:advanced">去「高级设置」配 UI 定位表</button>' : ''))}
-          <span class="chip">${mode === 'adb' ? '真实设备通道' : '模拟通道'}</span>
-          <span class="chip ${(state.config.publish.uiMap || {}).steps ? '' : 'warn'}">${(state.config.publish.uiMap || {}).steps ? '定位表 ' + state.config.publish.uiMap.steps.length + ' 步' : '定位表未配'}</span>
-          ${(() => { const m = state.config.publish.uiMap || {}; if (!m.steps) return ''; const vn = (m.videoSteps || []).length; return vn ? `<span class="chip">视频 ${vn} 步</span>` : '<span class="chip">视频复用图文</span>'; })()}
-          <span class="chip">批次 ${esc(pub.batch || '（导出发布单后自动命名）')}</span>
         </div>
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
-        <p class="hint">预计 <b>${est} 分钟</b>：单条技术下限 ≈30 秒（视频 ≈60 秒，还要等媒体库索引）${ivNow === 0
-          ? '。<b>当前是连续发布，两条之间不再叠加等待</b> —— 上面的预计就是设备真实耗时本身，不是"等待"堆出来的。'
-          : ' + 人为间隔 —— <b>93% 的时间是在等间隔</b>，不是性能问题。间隔多长你自己拍板；视频想单独放宽，在配置里设 videoIntervalSec，不设就跟主间隔。'}</p>
+        <p class="hint">预计约 <b>${est} 分钟</b>，包含发布操作及所选间隔，实际耗时受网络和设备影响。</p>
         <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
           报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
           并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
@@ -833,20 +821,15 @@ TABS[6] = {
           <td>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
           <td>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`
-        : `<div class="empty">还没有发布队列，先点右上角「导出 xlsx」生成一份。</div>`}
+        : `<div class="empty">还没有发布队列，请先导入 AI 内容报告。</div>`}
       <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
-      发布时按你填的<b>货号</b>在「关联好物」里搜出结果，<b>默认选第一件商品</b>发出去（这条做法已实测可行）。
-      ${canAdmin()
-        ? `要精确到某个颜色，需要在 UI 定位表里、
-      「搜索货号」后面补一步「点第一件商品」（「设置 → 高级设置 → 抓取页面结构」生成的候选表里改）。`
-        : `要精确到某个颜色，请联系管理员核对颜色校验（这一页只对管理员开放）。`}</p>
+      发布时按货号搜索，<b>默认选第一件商品</b>。</p>
       <p class="hint"><b>内容主图</b>：默认用这个叶子里<b>排在最前面那张</b>（你实拍一般就是先拍的正面照）。
       想让某一张当主图，把它的文件名改成以 <code>1</code> 开头（如 <code>1_微信图片_2026-10-05_031033_240.jpg</code>）——
       程序会把那张排到相册第 1 格（<b>得物取相册第 1 格当内容主图</b>）；<code>10</code>/<code>12</code> 这种编号不会被误认。
       排不成就<b>不发这一条</b>（不会闷着头把主图放错）。</p>
       <p class="hint">已发 ${okCount} / ${rows.length}。发布完还要<b>回查审核状态</b>（创作中心 → 等级权益），发完 ≠ 发出去了。
-      「重导出日志」会把 <code>publish-log.jsonl</code> 按批次导成可读的 <code>发布日志_批次_时间戳.log</code>（另有 .csv），
-      内容对齐真机：<code>[V] 行 2 [图文] 发布完成，已回填时间 15:34:41（耗时 65.2s）</code>。</p>`;
+      可在「导出文件」中导出发布日志。</p>`;
   }
 };
 
@@ -1512,14 +1495,8 @@ async function refreshDevices(manual = false) {
 function paintDevices() {
   const panel = document.getElementById('devicesPanel');
   if (!panel) return;
-  const name = panel.querySelector('#devName');
-  const serial = panel.querySelector('#devSerial');
-  const draft = { name: name && name.value, serial: serial && serial.value, open: panel.querySelector('details').open };
-  // 自动刷新只更新设备区域，并保留用户手填草稿。
+  // 自动刷新只更新设备区域。
   panel.outerHTML = devicesHtml();
-  document.getElementById('devName').value = draft.name || '';
-  document.getElementById('devSerial').value = draft.serial || '';
-  document.querySelector('#devicesPanel details').open = draft.open;
 }
 function devicesHtml() {
   const p = state.config.publish || {};
@@ -1564,14 +1541,6 @@ function devicesHtml() {
       <span class="hint" style="margin:0">自动发现 · 自动连接 · 每 10 秒刷新</span>
     </div>
     ${freshBox}${noneBox}${state.devScanError ? `<p class="hint">自动连接未完成：${esc(state.devScanError)}</p>` : ''}
-    <details style="margin-top:9px">
-      <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">手动填序列号添加（一般用不到）</summary>
-      <div class="row" style="margin-top:8px">
-        <input class="inp mono" id="devName" placeholder="账号名，如 主号" style="flex:0 0 160px;min-width:0">
-        <input class="inp mono" id="devSerial" placeholder="序列号（一般不用填，用上面的「扫描设备」）" style="flex:0 0 190px;min-width:0">
-        <button class="btn sm" data-act="pub:addDev">添加设备</button>
-      </div>
-    </details>
   </div>`;
 }
 
@@ -1826,6 +1795,9 @@ function fitGateWindow() {
 
 function showGate(msg) {
   document.body.classList.add('locked');
+  $('.app').hidden = true;
+  $('.app').inert = true;
+  $('#gate').hidden = false;
   const bootstrapMode = !!(state.auth && state.auth.bootstrapRequired);
   const loginForm = $('#loginForm'), bootstrapForm = $('#bootstrapForm');
   if (loginForm) loginForm.hidden = bootstrapMode;
@@ -1879,6 +1851,7 @@ async function doLogin() {
   const remember = $('#lgRem').checked;
   if (!u || !p) { $('#lgErr').textContent = '请输入账号和密码'; return; }
   const btn = $('#lgGo');
+  if (btn.disabled) return;
   setGateLoading(btn, true, '登 录');
   try {
     const r = await appApi.authLogin(u, p, remember);
@@ -1895,7 +1868,7 @@ async function doLogin() {
   } catch (error) {
     showGate('登录已确认，但主界面加载失败：' + (error.message || '请重试'));
   } finally {
-    if (document.body.classList.contains('locked')) setGateLoading(btn, false, '登 录');
+    setGateLoading(btn, false, '登 录');
   }
 }
 
@@ -1917,24 +1890,42 @@ async function doBootstrap() {
   } catch (error) {
     showGate('管理员已确认，但主界面加载失败：' + (error.message || '请重试'));
   } finally {
-    if (document.body.classList.contains('locked')) setGateLoading(btn, false, '创建云端管理员');
+    setGateLoading(btn, false, '创建云端管理员');
   }
 }
 
-async function enterApp() {
-  state.config = await appApi.configGet();
-  state.project = await appApi.projectGet();
-  state.logs = await appApi.logHistory();
+let enterAppPending = null;
+function enterApp() {
+  if (enterAppPending) return enterAppPending;
+  enterAppPending = prepareApp().finally(() => { enterAppPending = null; });
+  return enterAppPending;
+}
+async function prepareApp() {
+  document.body.classList.add('locked');
+  $('.app').hidden = true;
+  $('.app').inert = true;
+  $('#gate').hidden = false;
+  [state.config, state.project, state.logs] = await Promise.all([
+    appApi.configGet(), appApi.projectGet(), appApi.logHistory()
+  ]);
+  const gate = stateGate();
+  if (gate) throw new Error(gate.why);
   // 启动时对齐一次「运行中的批次」（job:busy 不传类型就是清单），免得刷新后看不见正在跑的任务
   const live = await appApi.busy();
   if (Array.isArray(live)) state.jobs = live.map(j => Object.assign({ progress: null, startedAt: j.startedAt || Date.now() }, j));
-  await refreshBrands();
-  await refreshUsers();
+  await Promise.all([refreshBrands(), refreshUsers()]);
   bindOnce();
   renderAll();
   renderLogs();
   // 先准备好完整主界面，再切走登录页，避免登录确认后露出空白窗口。
+  if (appApi.authUiReady) {
+    const ready = await appApi.authUiReady();
+    if (!ready || !ready.ok) throw new Error((ready && ready.error) || '登录状态已失效，请重新登录');
+  }
+  $('#gate').hidden = true;
   document.body.classList.remove('locked');
+  $('.app').hidden = false;
+  $('.app').inert = false;
   const me = state.auth && state.auth.user;
   if (me && me.mustChange) toast('当前还是出厂口令，建议到「品牌与权限 → 账号与安全」改掉', 'err');
 }
@@ -2149,16 +2140,15 @@ function lmHtml() {
     <div class="mh"><h3>模型配置</h3><span class="grow"></span>
       <button class="btn sm" data-act="lm:close">关闭</button></div>
     <div class="mb">
-      <p class="hint">「AI 文案」走哪个模型，就在这一份里配 —— <b>全程序只有这一个入口</b>
-        （原「设置 → 高级设置 → 文案模型」那一块已删除）。<b>接口地址 / API Key 留空 = 跟随内置</b>
-        （随包内置，换服务商发新包即可）。</p>
-      <div class="mfld"><span>启用</span>
-        <select class="inp" id="lmEnabled" style="width:100%">
-          <option value="true" ${c.enabled ? 'selected' : ''}>调用模型（看图写）</option>
-          <option value="false" ${!c.enabled ? 'selected' : ''}>本地模板（离线）</option>
+      <p class="hint">默认使用在线模型。使用内置服务时，接口地址、API Key 和模型均可留空。
+        更换服务商时，请填写该服务商对应的三项配置。</p>
+      <div class="mfld"><span>生成方式</span>
+        <select class="inp" id="lmEnabled" style="width:100%" disabled>
+          <option value="true" selected>在线模型</option>
         </select></div>
-      <div class="mfld"><span>接口地址（留空 = 跟随内置）</span>
-        <input class="inp mono" id="lmEndpoint" style="width:100%" value="${esc(c.endpoint || '')}" placeholder="留空 = 跟随内置"></div>
+      <div class="mfld"><span>模型服务地址</span>
+        <input class="inp mono" id="lmEndpoint" style="width:100%" value="${esc(c.endpoint || '')}" placeholder="服务商提供的 API 地址，通常以 /v1 结尾">
+        <p class="hint">地址决定请求发到哪个服务商。只填 API Key 和模型、地址留空时，仍使用内置服务地址；切换服务商必须填写对应地址。</p></div>
       <div class="mfld"><span>API Key（留空 = 跟随内置）</span>
         <input class="inp mono" id="lmKey" type="password" style="width:100%" value="${esc(c.apiKey || '')}" placeholder="留空 = 跟随内置"></div>
       <div class="mfld"><span>默认模型（所有调用都用它）</span>
@@ -2173,21 +2163,16 @@ function lmHtml() {
       </div>
       <div class="row" style="margin-top:12px">
         <span class="lbl">看图</span>
-        <select class="inp" id="lmVision">
+        <select class="inp" id="lmVision" disabled>
           <option value="true" ${b(c.vision === undefined ? true : c.vision) ? 'selected' : ''}>送实拍图</option>
           <option value="false" ${!b(c.vision === undefined ? true : c.vision) ? 'selected' : ''}>不送图</option>
         </select>
         <span class="lbl">每条送图</span>
-        <select class="inp" id="lmCount">${[1, 2, 3, 4].map(v => `<option value="${v}" ${num(c.imageCount, 2) === v ? 'selected' : ''}>${v} 张</option>`).join('')}</select>
+        <select class="inp" id="lmCount" disabled>${[1, 2, 3, 4].map(v => `<option value="${v}" ${num(c.imageCount, 2) === v ? 'selected' : ''}>${v} 张</option>`).join('')}</select>
         <span class="lbl">单边缩到</span>
-        <select class="inp" id="lmSide">${[512, 768, 1024, 1568].map(v => `<option value="${v}" ${num(c.imageMaxSide, 768) === v ? 'selected' : ''}>${v}px</option>`).join('')}</select>
+        <select class="inp" id="lmSide" disabled>${[512, 768, 1024, 1568].map(v => `<option value="${v}" ${num(c.imageMaxSide, 768) === v ? 'selected' : ''}>${v}px</option>`).join('')}</select>
       </div>
-      <p class="hint" style="margin-top:12px"><b>标题是看图写的</b>：每条素材把前几张实拍图缩到上面那个尺寸发给模型，
-        标题里的品类 / 款式特征 / 颜色都来自图里真实看到的，不是拿货号颜色套模板。
-        <b>只有视频、没有实拍图的素材</b>会从视频里抽 1 帧当图（在本机抽，不往素材目录里落东西；
-        抽到的帧是黑场/纯色就一张都不送，报告里「生成来源」会写明是「视频抽帧」还是「视频没抽出帧」）。
-        ★ 模型连不上时<b>会直接停下来报错</b>，不会拿本地模板冒充 AI 文案
-        （要用模板就把「启用」改成「本地模板（离线）」，那时报告里会逐行标出「本地模板」）。</p>
+      <p class="hint" style="margin-top:12px">看图参数暂不开放修改。只有视频时会尝试抽帧；模型连接失败会停止并提示原因。</p>
     </div>
     <div class="mf"><span class="grow"></span>
       <button class="btn sm" data-act="lm:close">取消</button>
@@ -2714,7 +2699,7 @@ const ACTS = {
   //   注意：'copy:run' 原来就是不带 sourceDir 直接调 copy.generate —— 删掉它是**真的删功能**，
   //   主进程那条对应分支（jobs.js）也一并删了，不是只把按钮藏起来。
   'copy:pickRun': async () => {
-    const d = await appApi.pickDir({ title: '选择素材目录（一个目录 = 一个批次，可同时跑多个）', defaultPath: state.project.sourceDir || '' });
+    const d = await appApi.pickDir({ title: '选择素材目录', parentOf: state.project.flatDir || state.project.sourceDir || '' });
     if (!d) return;
     const name = d.split(/[\\/]/).filter(Boolean).pop() || '批次';
     const batchId = `${name}_${batchStamp()}`;
@@ -2768,13 +2753,10 @@ const ACTS = {
   'lm:save': async () => {
     const val = sel => { const e = $(sel); return e ? e.value.trim() : ''; };
     const llm = {
-      enabled: val('#lmEnabled') === 'true',
+      enabled: true,
       endpoint: val('#lmEndpoint'),
       apiKey: val('#lmKey'),
       model: val('#lmModel'),
-      vision: val('#lmVision') === 'true',
-      imageCount: Number(val('#lmCount')) || 2,
-      imageMaxSide: Number(val('#lmSide')) || 768
     };
     await appApi.configSet({ copy: { llm } });
     state.config = await appApi.configGet();
@@ -3003,14 +2985,6 @@ const ACTS = {
     if (r.ok) { state.config = await appApi.configGet(); toast(`定位表已导入：${r.result.steps} 步`, 'ok'); }
     renderAll();
   },
-  'pub:addDev': async () => {
-    const name = (document.getElementById('devName') || {}).value || '';
-    const serial = (document.getElementById('devSerial') || {}).value || '';
-    if (!serial.trim()) { toast('这里要先填序列号 —— 更省事的是上面点「扫描设备」，从列表里「加入并使用」', 'err'); return; }
-    const r = await appApi.run('publish.addDevice', { name: name.trim(), serial: serial.trim() });
-    if (r.ok) { state.config = await appApi.configGet(); toast('已添加设备', 'ok'); }
-    renderAll();
-  },
   'pub:delDev': async (el) => {
     await appApi.run('publish.removeDevice', { id: el.dataset.id });
     state.config = await appApi.configGet();
@@ -3045,6 +3019,11 @@ const ACTS = {
   },
   // 「去高级设置」：发布页/设置页只剩只读回显时，给管理员一条直达的路
   'go:advanced': () => { state.tab = 11; renderAll(); },
+  'go:dewu': () => {
+    state.tab = 7; renderAll();
+    const button = document.querySelector('[data-act="apk:save"]');
+    if (button) button.closest('tr').scrollIntoView({ block: 'center' });
+  },
   'pub:run': async () => {
     // ★★ 不是真实设备通道就先问一句：模拟通道**不碰设备**，跑完只是演练节奏与回写。
     //   以前这里默默就跑，用户看到界面一路「发布成功」、模拟器里却毫无动静（2026-10-03 实际发生）。
@@ -3522,4 +3501,7 @@ setInterval(async () => {
     cloudAuthCheckBusy = false;
   }
 }, 60000);
-boot();
+boot().catch(error => {
+  showGate('连接失败：' + (error.message || '请重试'));
+  setGateLoading($('#lgGo'), false, '登 录');
+});

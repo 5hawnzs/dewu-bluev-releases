@@ -85,6 +85,14 @@ const sizeOf = p => (fs.existsSync(p) ? fs.statSync(p).size : -1);
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-shortest', P('src.mp4')]);
   ok('样本 ① 造出基准 mp4', sizeOf(P('src.mp4')) > 0, sizeOf(P('src.mp4')) + ' B');
+  const directDuration = await video.durationSec(P('src.mp4'));
+  ok('时长：MP4 元数据能读到真实 2 秒', Math.abs(directDuration - 2) < .1, String(directDuration));
+  ff(['-i', P('src.mp4'), '-c', 'copy', P('duration.mkv')]);
+  const fallbackDuration = await video.durationSec(P('duration.mkv'));
+  ok('时长：纯 JS 读不了的 MKV 用内置 ffmpeg 读到 2 秒', Number.isFinite(fallbackDuration) && Math.abs(fallbackDuration - 2) < .2, String(fallbackDuration));
+  fs.writeFileSync(P('duration-bad.mp4'), '损坏视频');
+  ok('时长：损坏视频仍为未知，不冒充零秒或合格', await video.durationSec(P('duration-bad.mp4')) === null);
+  ok('时长：取消时不再启动备用探测', await video.durationSec(P('duration.mkv'), { cancelled: () => true }) === null);
 
   // ---- A 已经是 mp4：无损转封装 ----
   const rA = await video.toMp4(P('src.mp4'), P('A.mp4'), { log: () => {} });

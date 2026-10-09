@@ -61,7 +61,7 @@ function defaults() {
       //   videoFrames 是第四个：只有视频、没有实拍图时抽几帧（出厂 1，见 llmdefaults.js）。
       //   （出厂值也在 llmdefaults 里，这里存的是「界面上改过的值」）。
       llm: {
-        enabled: false, endpoint: '', apiKey: '', model: '', temperature: 0.9,
+        enabled: true, endpoint: '', apiKey: '', model: '', temperature: 0.9,
         vision: true, imageCount: 2, imageMaxSide: 768, timeoutSec: 90, videoFrames: 1
       },
       pool: { 品类: ['#男生穿搭', '#OOTD', '#秋冬新款', '#质感生活', '#日常搭配', '#好物分享'] },  // 出厂只给不含品牌的品类词示例（要 6 个：与「额外话题 4」才够凑出 5 种互不相同的组合）
@@ -83,7 +83,7 @@ function defaults() {
       adbPath: '',
       device: '',                      // 选中的设备 serial（多设备矩阵）
       devices: [],                     // [{id, name, serial}] 一个设备 = 一个账号
-      intervalSec: 60,                 // 60 = 固定 1 分钟间隔，带倒计时；**0 = 连续发布**（发完一条直接发下一条）
+      intervalSec: 0,                  // 默认连续发布；用户可自行选择固定间隔。
       // ★ 2026-10-03 用户要求加「连续发布」档 ⇒ intervalSec 允许为 0。
       //   读取端一律走 publisher 的 secOr/gapSecFor（**不能**再写 `intervalSec || 60`，
       //   否则 0 被兜成 60 ⇒ 界面选了「连续」却还是等一分钟）。
@@ -216,6 +216,13 @@ function load() {
   // ★★ 2026-10-03：旧出厂默认值迁移必须在这里做 —— mergeDeep 只覆盖不删键，
   //    defaults 改成 0 对老 config.json 里写死的 90/180 无效（见 migrateLegacyPublishIntervals）。
   const moved = migrateLegacyPublishIntervals(cache);
+  // 升级时切换新的默认流程，仅迁移一次；后续用户选择的发布间隔保持不变。
+  if (!cache.workflowDefaults20261010) {
+    cache.copy.llm.enabled = true;
+    cache.publish.intervalSec = 0;
+    cache.workflowDefaults20261010 = true;
+    moved.push('已启用在线文案模型，发布间隔默认为连续发布；可自行调整间隔。');
+  }
   if (moved.length) { migrations = moved; scheduleSave(); }
   return cache;
 }

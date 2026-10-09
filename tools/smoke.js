@@ -62,6 +62,7 @@ const publisher = require(path.join(base, 'src/main/services/publisher.js'));
 const imaging = require(path.join(base, 'src/main/services/imaging.js'));
 
 store.set({
+  copy: { llm: { enabled: false } }, // 模板规则回归显式使用本地样本，在线模型另有接口测试。
   paths: { output: path.join(TMP, '输出/得物'), rejected: path.join(TMP, '素材/_rejected') },
   compliance: { maxImageMB: 0.0005, maxVideoSec: 600, isolateJunk: true },  // 故意压得很小 —— 但体积上限默认不判，所以不该产生任何「压缩」行
   publish: { intervalSec: 1, videoIntervalSec: 1 }   // 「演示节奏」开关已删：直接给 1 秒间隔；★ retry 也已删（失败不重试）

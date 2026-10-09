@@ -139,6 +139,10 @@ async function dispatch(type, args, ctx) {
   switch (type) {
     case 'flatten.plan': {
       const dir = needSourceDir(args.sourceDir || st().sourceDir);
+      // 选择了新来源，即使尚未点击整理，也不能继续展示上一批检查结果。
+      if (dir !== st().sourceDir) {
+        project.patch({ sourceDir: dir, flatDir: '', items: [], compliance: { rows: [], stats: null, scannedAt: 0 }, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: 0, colCount: 26, locked: false, exportedAt: 0 } });
+      }
       const plan = await flatten.plan(dir, ctx);
       logbus.info(`待整理清单：${plan.total} 个叶子目录 · ${plan.fileTotal} 个文件`);
       return plan;
@@ -147,7 +151,7 @@ async function dispatch(type, args, ctx) {
       const dir = needSourceDir(args.sourceDir || st().sourceDir);
       const res = await flatten.run(dir, store.get('flatten'), ctx);
       if (!res.ok) throw new Error(res.message);
-      project.patch({ sourceDir: dir, flatDir: res.flatDir, items: res.items, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: res.items.length, colCount: 26, locked: false, exportedAt: 0 } });
+      project.patch({ sourceDir: dir, flatDir: res.flatDir, items: res.items, compliance: { rows: [], stats: null, scannedAt: 0 }, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: res.items.length, colCount: 26, locked: false, exportedAt: 0 } });
       // 大结论（2026-10-05）：一行说清这次整理出来多少
       ctx.conclude(`素材整理完成【${res.summary}】`);
       return res;

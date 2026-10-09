@@ -44,7 +44,7 @@ async function scan(items, ctx = {}) {
         continue;
       }
       if (wp.isVideo(name)) {
-        const dur = await imaging.videoDurationSec(abs);
+        const dur = await video.durationSec(abs, { cancelled: ctx.cancelled });
         const notMp4 = RULES.videoExtMustBeMp4 && e !== '.mp4';
         if (notMp4) {
           // 得物只收 mp4，而这里能**真的转**（内置 ffmpeg：先无损转封装、不兼容再转码）。
@@ -57,7 +57,7 @@ async function scan(items, ctx = {}) {
             rows.push({ item: item.id, file: name, type: '视频', issue: `${e} 不是 .mp4，且程序里没找到 ffmpeg（转不了）`, action: '需手动转 MP4', status: 'manual', size, duration: dur });
           }
         } else if (dur == null) {
-          rows.push({ item: item.id, file: name, type: '视频', issue: '时长读取失败（moov 缺失或编码不受支持）', action: '人工确认', status: 'manual', size, duration: null });
+          rows.push({ item: item.id, file: name, type: '视频', issue: '无法读取视频时长，请确认文件完整且能正常播放', action: '人工确认', status: 'manual', size, duration: null });
         } else if (dur > maxSec) {
           rows.push({ item: item.id, file: name, type: '视频', issue: `时长 ${dur} 秒，超 ${maxSec} 秒上限`, action: '只标红不裁剪', status: 'manual', size, duration: dur });
         } else {
@@ -427,7 +427,7 @@ async function exportReport(report, opts = {}) {
   if (fmt === 'xlsx' || fmt === 'both') {
     const ExcelJS = require('exceljs');
     const wb = new ExcelJS.Workbook();
-    wb.creator = '得物蓝V 素材发布工具';
+    wb.creator = '得物蓝V素材发布工具';
     wb.created = new Date();
 
     const ws1 = wb.addWorksheet('汇总');

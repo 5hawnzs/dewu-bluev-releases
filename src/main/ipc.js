@@ -76,14 +76,12 @@ function register() {
   });
   // ---- 账号与登录：登录页本身要用，不设门禁 ----
   handle('auth:status', () => auth.status());
-  // 登录成功 → 窗口从「登录小窗」还原成正常尺寸；退出登录 → 重新收回小窗
+  // 身份确认后仍保持登录小窗，等渲染层准备好首页后再放大。
   handle('auth:login', async (_e, u, p, remember) => {
     const r = await auth.login(u, p, remember);
-    if (r && r.ok) {
-      winmod.setLoginMode(false);
-    }
     return r;
   });
+  handle('auth:ui-ready', guard(() => { winmod.setLoginMode(false); return { ok: true }; }));
   handle('auth:logout', async () => {
     const r = await auth.logout();
     winmod.setLoginMode(true);
@@ -381,7 +379,7 @@ function register() {
     const w = win();
     const r = await dialog.showOpenDialog(w, {
       title: (opts && opts.title) || '选择目录',
-      defaultPath: (opts && opts.defaultPath) || undefined,
+      defaultPath: opts && opts.parentOf ? path.dirname(String(opts.parentOf)) : ((opts && opts.defaultPath) || undefined),
       properties: ['openDirectory', 'createDirectory', 'dontAddToRecent']
     });
     return r.canceled ? null : r.filePaths[0];

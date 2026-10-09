@@ -41,6 +41,15 @@ const cfgRaw = () => (fs.existsSync(store.file()) ? fs.readFileSync(store.file()
 
   /* ---- ① 出厂默认值里不许有它（不固化） ---- */
   const d = store.defaults();
+  ok('默认启用在线文案模型', d.copy.llm.enabled === true);
+  ok('发布间隔默认连续发布', d.publish.intervalSec === 0);
+  fs.writeFileSync(store.file(), JSON.stringify({ copy: { llm: { enabled: false } }, publish: { intervalSec: 60 } }));
+  ok('旧版配置首次升级切换到在线模型和连续发布', store.get('copy.llm.enabled') === true && store.get('publish.intervalSec') === 0);
+  store.set({ publish: { intervalSec: 90 } });
+  store.flush();
+  delete require.cache[require.resolve(path.join(base, 'src/main/store.js'))];
+  const reloaded = require(path.join(base, 'src/main/store.js'));
+  ok('完成迁移后保留用户自行选择的 90 秒间隔', reloaded.get('publish.intervalSec') === 90);
   ok('① 出厂 publish.uiMap **不存在**（写进 defaults 就会随保存落盘 ⇒ 固化）',
     d.publish && d.publish.uiMap === undefined,
     JSON.stringify({ has: !!(d.publish && d.publish.uiMap), keys: Object.keys(d.publish || {}).length }));

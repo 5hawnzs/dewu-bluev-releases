@@ -401,9 +401,19 @@ function explain(s) {
   return raw || '未知原因';
 }
 
-/**
- * 跑一次 ffmpeg。`cancelled` 每 500ms 查一次，为真就 kill 掉子进程（规范是超时 0 = 无限等）。
- */
+/** 先读 MP4 元数据，失败时使用内置 ffmpeg 探测其它容器；未知仍返回 null。 */
+async function durationSec(src, { cancelled = null } = {}) {
+  const direct = await imaging.videoDurationSec(src);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  if ((cancelled && cancelled()) || !status().usable) return null;
+  const r = await runFfmpeg(['-hide_banner', '-nostdin', '-i', src], { timeout: 10000, cancelled });
+  // 未指定输出文件时 ffmpeg 正常以非零码退出；超时探测结果不可用。
+  if (r.killed) return null;
+  const match = r.stderr.match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/);
+  const seconds = match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : null;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+/** 跑一次 ffmpeg，取消时每 500ms 检查并终止；timeout=0 表示无限等。 */
 function runFfmpeg(args, { timeout = 0, cancelled = null } = {}) {
   return new Promise(resolve => {
     const exe = active().path;
@@ -527,5 +537,5 @@ module.exports = {
   videoTrackInfo, decoderCompat, codecLabel, probeDecodable,
   // ★ 给 frame.js（视频抽帧）复用：**同一条 ffmpeg 通道、同一套三段解析**，别在别处另起 execFile。
   //   explain 一并导出 —— 抽帧失败时要把 ffmpeg 的原文翻成人话，措辞口径与转码那边保持一致。
-  runFfmpeg, explain
+  runFfmpeg, explain, durationSec
 };

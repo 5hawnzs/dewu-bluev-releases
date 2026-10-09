@@ -1959,6 +1959,13 @@ async function probe(serial) {
   // ★★ 包名要先拿到：备用通道（dumpsys）得靠它才能从整份层级里挑出得物那一段。
   let pkgs = await packages(serial);
   out.appPackage = pkgs.find(p => /shizhuang|duapp|poizon|dewu/i.test(p)) || null;
+  if (!out.appPackage) {
+    out.notes.push('设备里未安装得物，请先安装并登录');
+    say('bad', '模拟器里没找到「得物」',
+      '去「设置 → 外部依赖」下载得物，或直接装进当前模拟器。安装并登录后，再检查能不能发布。',
+      { act: 'go:dewu', label: '去设置下载得物' });
+    return out;
+  }
 
   out.tools.uiautomator = !!(await dump(serial));
   if (out.tools.uiautomator) {
@@ -2046,11 +2053,6 @@ async function probe(serial) {
       + (out.imeApkExists
         ? (setupError ? `${setupError}。重新连接设备后程序会自动重试。` : '程序已自动尝试配置内置输入法；连接设备后会自动重试。')
         : '程序安装包缺少内置 ADBKeyboard.apk，请修复或重新安装本工具；不需要用户另行下载。'));
-  }
-  if (!out.appPackage) {
-    out.notes.push('设备里没找到得物 App 包名，请确认已安装登录');
-    say('bad', '模拟器里没找到「得物」',
-      '确认这台模拟器装的是得物并且已经登录，再点一次「检查能不能发布」。');
   }
   return out;
 }
