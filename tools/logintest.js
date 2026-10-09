@@ -92,7 +92,10 @@ app.whenReady().then(async () => {
         await new Promise(r => setTimeout(r, 900));
         const button = document.getElementById('lgGo');
         return { locked: window.__t.locked(), appHidden: window.__t.appHidden(), loading: button.getAttribute('aria-busy') === 'true',
-          waveBars: button.querySelectorAll('.gate-wave-bar').length, err: window.__t.err(), user: window.__t.user(), title: window.__t.title() };
+          waveBars: document.querySelectorAll('#gateLoading .gate-wave-bar').length,
+          separate: !document.getElementById('gateLoading').hidden && document.getElementById('loginForm').hidden,
+          buttonPlain: button.textContent === '登 录' && button.querySelectorAll('.gate-wave-bar').length === 0,
+          err: window.__t.err(), user: window.__t.user(), title: window.__t.title() };
       },
       logout: async () => {
         document.getElementById('btnLogout').click();
@@ -169,8 +172,8 @@ app.whenReady().then(async () => {
     return before && stillHidden;
   })()`);
   ok('慢加载期间主界面 hidden 且 inert，即使临时移除 locked 也不叠显', exclusive);
-  ok('登录确认后首页数据仍在加载时留在登录页，按钮持续显示 9 条波形且主界面隐藏',
-    loading.locked && loading.appHidden && loading.loading && loading.waveBars === 9,
+  ok('登录确认后显示独立加载页，波形不再占用登录按钮，主界面隐藏',
+    loading.locked && loading.appHidden && loading.loading && loading.waveBars === 9 && loading.separate && loading.buttonPlain,
     JSON.stringify({ locked: loading.locked, appHidden: loading.appHidden, loading: loading.loading, waveBars: loading.waveBars }));
   await js('new Promise(r => setTimeout(r, 800))');
   const inApp = await js(`({ locked: __t.locked(), appHidden: __t.appHidden(), title: __t.title(), user: __t.user() })`);
@@ -744,8 +747,54 @@ app.whenReady().then(async () => {
   // ---- ⑧ 退出登录 → 回到登录门，业务通道再次被拦 ----
   const out = await js(`__t.logout()`);
   ok('退出登录回到登录门', out.locked && out.gateShown && out.appHidden, JSON.stringify(out));
+  ok('退出后登录按钮有文字、可点击，独立加载页隐藏', await js(`!document.getElementById('lgGo').disabled && document.getElementById('lgGo').textContent === '登 录' && document.getElementById('gateLoading').hidden && !document.getElementById('loginForm').hidden`));
   const blockedAgain = await js(`(async () => (await window.api.run('copy.generate', {})).error)()`);
   ok('退出后业务通道重新被拦', /未登录|过期/.test(blockedAgain || ''), blockedAgain);
+
+  // 复现用户截图：返回登录页时遗留禁用状态和按钮里的旧波形。
+  const recoveredButton = await js(`(() => {
+    const b = document.getElementById('lgGo');
+    b.disabled = true; b.innerHTML = '<span class="gate-wave">旧加载动画</span>';
+    showGate('已退出登录');
+    return !b.disabled && b.textContent === '登 录' && b.getAttribute('aria-busy') === 'false'
+      && document.getElementById('gateLoading').hidden && !document.getElementById('loginForm').hidden;
+  })()`);
+  ok('复现旧波形残留后回到登录页，强制恢复真实可点击登录按钮', recoveredButton);
+
+  // 登录后首页读取失败也必须恢复表单，不留下一个禁用的假按钮。
+  ipcMain.removeHandler('config:get');
+  ipcMain.handle('config:get', () => ({ ok: false, error: '模拟首页加载失败' }));
+  const failedHome = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
+  ok('首页加载失败返回登录表单并显示原因', failedHome.locked && /模拟首页加载失败/.test(failedHome.err));
+  ok('首页加载失败后登录按钮仍有文字且能重新点击', await js(`!document.getElementById('lgGo').disabled && document.getElementById('lgGo').textContent === '登 录' && document.getElementById('gateLoading').hidden && !document.getElementById('loginForm').hidden`));
+  ipcMain.removeHandler('config:get');
+  let repeatDelay = 0;
+  ipcMain.handle('config:get', async (_e, key) => {
+    if (repeatDelay) await new Promise(resolve => setTimeout(resolve, repeatDelay));
+    if (auth.enabled() && !auth.current()) return { ok: false, error: '未登录或登录已过期，请重新登录' };
+    return store.get(key);
+  });
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    repeatDelay = cycle === 2 ? 1200 : 0;
+    const clicked = await js(`(async () => {
+      document.getElementById('lgUser').value = ${JSON.stringify(ADMIN)};
+      document.getElementById('lgPwd').value = ${JSON.stringify(PASS)};
+      const button = document.getElementById('lgGo');
+      const clickable = !button.disabled && button.textContent === '登 录' && button.getBoundingClientRect().height > 0;
+      button.click();
+      for (let i = 0; i < 60 && document.body.classList.contains('locked'); i++) await new Promise(r => setTimeout(r, 50));
+      return clickable && !document.body.classList.contains('locked') && document.getElementById('gate').hidden;
+    })()`);
+    ok('真实点击登录按钮后成功进入主界面，第 ' + cycle + ' 轮' + (repeatDelay ? '（慢加载）' : ''), clicked);
+    const again = await js(`(async () => {
+      await doLogout();
+      return document.body.classList.contains('locked') && !document.getElementById('loginForm').hidden
+        && document.getElementById('gateLoading').hidden && !document.getElementById('lgGo').disabled
+        && document.getElementById('lgGo').textContent === '登 录';
+    })()`);
+    ok('退出后按钮恢复且加载页隐藏，第 ' + cycle + ' 轮', again);
+  }
+  repeatDelay = 0;
 
   // ---- ⑨ 防爆破：连错到上限后锁定，锁定期间口令正确也进不去 ----
   let lockMsg = '', attempts = 0;

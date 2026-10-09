@@ -1802,6 +1802,9 @@ function showGate(msg) {
   const loginForm = $('#loginForm'), bootstrapForm = $('#bootstrapForm');
   if (loginForm) loginForm.hidden = bootstrapMode;
   if (bootstrapForm) bootstrapForm.hidden = !bootstrapMode;
+  $('#gateLoading').hidden = true;
+  setGateLoading($('#lgGo'), false, '登 录');
+  setGateLoading($('#lgSetupGo'), false, '创建云端管理员');
   const loginErr = $('#lgErr'), setupErr = $('#lgSetupErr');
   if (loginErr) loginErr.textContent = bootstrapMode ? '' : (msg || '');
   if (setupErr) setupErr.textContent = bootstrapMode ? (msg || '') : '';
@@ -1834,15 +1837,24 @@ function showGate(msg) {
   }, 30);
 }
 
-/** 登录确认后的云端校验和首页数据仍在加载时，留在登录页显示对称波形。 */
+/** 登录按钮始终保留文字；波形只放在独立加载页。 */
 function setGateLoading(button, loading, label) {
   if (!button) return;
   button.disabled = !!loading;
   button.setAttribute('aria-busy', loading ? 'true' : 'false');
-  button.innerHTML = loading
-    ? `<span class="gate-wave" role="status" aria-label="正在加载">${[0, 1, 2, 3, 4, 3, 2, 1, 0].map(level => `<i class="gate-wave-bar" style="--wave-level:${level}"></i>`).join('')}</span>`
-    : esc(label);
-  if (loading) fitGateWindow();
+  button.textContent = label;
+}
+
+function showGateLoadingPage() {
+  document.body.classList.add('locked');
+  $('.app').hidden = true;
+  $('.app').inert = true;
+  $('#gate').hidden = false;
+  $('#loginForm').hidden = true;
+  $('#bootstrapForm').hidden = true;
+  $('#gateLoading').hidden = false;
+  $('#loadingClose').onclick = () => appApi.close();
+  fitGateWindow();
 }
 
 async function doLogin() {
@@ -1862,6 +1874,7 @@ async function doLogin() {
       $('#lgPwd').select();
       return;
     }
+    showGateLoadingPage();
     $('#lgPwd').value = '';
     state.auth = await appApi.authStatus();
     await enterApp();
@@ -1883,6 +1896,7 @@ async function doBootstrap() {
   try {
     const r = await appApi.authBootstrap(code, user, pass, name, $('#lgSetupRem').checked);
     if (!r.ok) { $('#lgSetupErr').textContent = r.error || '初始化失败'; fitGateWindow(); return; }
+    showGateLoadingPage();
     $('#lgSetupCode').value = ''; $('#lgSetupPwd').value = '';
     state.auth = await appApi.authStatus();
     await enterApp();
@@ -1901,10 +1915,7 @@ function enterApp() {
   return enterAppPending;
 }
 async function prepareApp() {
-  document.body.classList.add('locked');
-  $('.app').hidden = true;
-  $('.app').inert = true;
-  $('#gate').hidden = false;
+  showGateLoadingPage();
   [state.config, state.project, state.logs] = await Promise.all([
     appApi.configGet(), appApi.projectGet(), appApi.logHistory()
   ]);
