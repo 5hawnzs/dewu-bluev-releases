@@ -1,9 +1,9 @@
 'use strict';
 /**
- * 云端同步（阶段 1：只上行「发布结果」，不碰发布核心）
+ * 云端同步：上行发布结果与脱敏后的任务级运行记录，不碰发布核心。
  *
  * ★ 这条线是**协作层**，不是执行层。它能解决的是「多个人各发各的，谁也不知道别人发到哪了」：
- *   各台机器把本机 publish-log.jsonl 里**新增的那几行**推到 Supabase，网页看板只读聚合。
+ *   各台机器把本机新增的发布结果和任务起止记录推到 Supabase，网页看板只读聚合。
  *   发布本身仍然只能由本机 adb 驱动模拟器完成 —— 浏览器碰不到 adb，这是硬边界。
  *
  * ★★ 四条红线（改这个文件前先读一遍）：
@@ -14,8 +14,7 @@
  *        改配置只能改 config.json，组织级切换走「发新包」。
  *   2) **失败绝不能阻断发布**。上行失败只记状态、静默退避；发布结果早就在本机 jsonl 里落盘了，
  *      云上少几条只是看板不全，绝不能反过来让发布挂掉（和 sheet.appendLog 一个口径）。
- *   3) **只上行结构化结果，不上行素材内容、不上行绝对路径**（dir 只取最后一段目录名）。
- *      日志原文也别上行 —— 行数会爆，且里面有本地路径。
+ *   3) **只上行结构化结果与任务起止/脱敏错误摘要**，不上传过程日志、素材内容、绝对路径。
  *   4) **幂等**：靠表上 (machine_id, ts, seq) 唯一索引，且**两半缺一不可** ——
  *      URL 上要写 `?on_conflict=machine_id,ts,seq`，头里要写 `Prefer: resolution=ignore-duplicates`。
  *      ★★ 只写后者是无效的（2026-10-02 实测：裸 POST 重复行 ⇒ 409 + 23505「duplicate key value
@@ -34,6 +33,7 @@ const crypto = require('crypto');
 const store = require('../store');
 const wp = require('../util/winpath');
 const CD = require('../clouddefaults');   // 内置默认值：界面上没填时用它（只有 anon/publishable key）
+const runlog = require('./runlog');
 
 const BATCH = 200;          // 单批最多几行（PostgREST 一次插入）
 const MAX_BATCHES = 5;      // 单次同步最多几批：台账积压很多时也要给界面留出响应
@@ -134,6 +134,10 @@ function logFile() {
   return path.join(store.get('paths.output') || '', 'publish-log.jsonl');
 }
 
+function runLogFile() {
+  return path.join(store.get('paths.output') || '', 'run-log.jsonl');
+}
+
 function readEntries() {
   try {
     return fs.readFileSync(wp.toLong(logFile()), 'utf8')
@@ -141,6 +145,59 @@ function readEntries() {
       .map(l => { try { return JSON.parse(l); } catch (e) { return null; } })
       .filter(Boolean);
   } catch (e) { return []; }
+}
+
+function readRunEntries() {
+  try {
+    return fs.readFileSync(wp.toLong(runLogFile()), 'utf8')
+      .split(/\r?\n/).filter(Boolean)
+      .map(l => { try { return JSON.parse(l); } catch (e) { return null; } })
+      .filter(Boolean);
+  } catch (e) { return []; }
+}
+
+/** 只留可排错的短错误摘要，并抹掉本机绝对路径与凭据样式字符串。 */
+function safeRunText(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    // Windows 异常常把含空格路径用引号包住，先整体删除，再处理未加引号的路径片段。
+    .replace(/(["'])(?:[A-Za-z]:\\|\\\\)[\s\S]*?\1/g, '[本机路径]')
+    .replace(/\b[A-Za-z]:\\[^\s"'<>|]*/g, '[本机路径]')
+    .replace(/\\\\[^\\\s]+\\[^\s"'<>|]*/g, '[网络路径]')
+    .replace(/\/(?:Users|home|root|private|tmp|var|mnt|Volumes)\/[^\s"'<>]*/g, '[本机路径]')
+    .replace(/\bBearer\s+[A-Za-z0-9._-]+/ig, 'Bearer [已隐藏]')
+    .replace(/(?:service[_ -]?role|secret|anon)[_ -]?(?:key)?\s*[:=]\s*[^\s,;]+/ig, '[已隐藏凭据]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+/** 任务运行表只接收开始/结束事件；过程日志可能含路径、商品信息，不上传。 */
+function toRunRow(e, machine, index = 0) {
+  if (!e || (e.kind !== 'start' && e.kind !== 'end')) return null;
+  const stableId = e.eventId || crypto.createHash('sha256')
+    .update(`${machine.id}\n${index}\n${JSON.stringify(e)}`).digest('hex');
+  return {
+    org: (machine && machine.org) || CD.org,
+    event_id: String(stableId),
+    ts: Number(e.ts) || 0,
+    machine_id: machine.id,
+    machine_name: machine.name,
+    task_id: String(e.jobId || ''),
+    event_kind: e.kind,
+    task_type: safeRunText(e.type),
+    task_label: safeRunText(e.label),
+    batch_no: safeRunText(e.batch),
+    brand_id: String(e.brandId || ''),
+    brand_name: safeRunText(e.brandName),
+    user_id: String(e.userId || ''),
+    username: safeRunText(e.username),
+    display_name: safeRunText(e.displayName),
+    ok: e.kind === 'end' ? !!e.ok : null,
+    cancelled: e.kind === 'end' ? !!e.cancelled : false,
+    elapsed_sec: e.kind === 'end' ? Number(e.elapsedSec) || 0 : null,
+    error_summary: e.kind === 'end' && !e.ok ? safeRunText(e.error) : ''
+  };
 }
 
 /**
@@ -299,8 +356,8 @@ function isDupErr(e) {
 }
 
 /** 单次 POST（一次调用 = 一批）。非 2xx 抛错，错误上带 status/detail 供上层分辨。 */
-async function insertRows(url, key, rows) {
-  const res = await fetch(url + '/rest/v1/publish_log?on_conflict=' + CONFLICT_COLS, {
+async function insertRows(url, key, table, conflictCols, rows) {
+  const res = await fetch(url + '/rest/v1/' + table + '?on_conflict=' + conflictCols, {
     method: 'POST',
     headers: {
       apikey: key,
@@ -332,15 +389,15 @@ async function insertRows(url, key, rows) {
  *    ⇒ 每一轮都在同一批上重撞 ⇒ **同步永久卡死**（v1.0.5 实测故障）。
  *    逐行重发既保住「新的那几行不会丢」，又保证「这一批最终能过」。
  */
-async function postRows(url, key, rows) {
+async function postRows(url, key, table, conflictCols, rows) {
   try {
-    await insertRows(url, key, rows);
+    await insertRows(url, key, table, conflictCols, rows);
     return rows.length;
   } catch (e) {
     if (!isDupErr(e)) throw e;          // 不是唯一冲突 ⇒ 照旧失败（退避、不推进游标）
     let done = 0;
     for (const row of rows) {
-      try { await insertRows(url, key, [row]); }
+      try { await insertRows(url, key, table, conflictCols, [row]); }
       catch (e2) { if (!isDupErr(e2)) throw e2; }   // 单行也撞唯一键 ⇒ 它本来就在云上，算已上行
       done++;
     }
@@ -363,13 +420,24 @@ async function syncOnce(opts = {}) {
   }
 
   syncing = true;
-  // ★ 留一份「这一轮读到的台账」给 catch 用：失败时要如实写「还差几条没上行」，
+  // ★ 留一份「这一轮读到的台账」给 catch 用：失败时要如实写积压数，
   //   而 `pending()` 有 3 秒缓存（那边是给界面轮询用的），在 catch 里取到的是**上一轮的旧值** ——
   //   把旧值当成本次失败时的积压写进证据文件，就是写了一个假数字（宁可写 ? 也不写错的 0）。
   let ledgerRows = null;
+  let taskRows = null;
+  let publishSent = 0;
+  let taskSent = 0;
   try {
     const all = readEntries();
     ledgerRows = all;
+    const allTasks = readRunEntries();
+    taskRows = allTasks;
+    // 首次升级只从当前文件末尾开始，避免把旧版完整运行日志批量补传。
+    if (!Number.isInteger(st.runOffset) || st.runOffset < 0) st.runOffset = allTasks.length;
+    if (st.runOffset > allTasks.length) {
+      st.reset = `运行日志现有 ${allTasks.length} 行，游标停在 ${st.runOffset} —— 已跳到末尾`;
+      st.runOffset = allTasks.length;
+    }
     // ★ 台账被「数据清理」清空 / 换过输出目录后，游标会指到比文件更远的地方。
     //   不重置的话 offset 永远大于行数 ⇒ 之后再也不上行（界面看着像同步正常，云上却一条没有）
     if (st.offset > all.length) {
@@ -378,40 +446,35 @@ async function syncOnce(opts = {}) {
       st.offset = 0;
     }
     const slice = all.slice(st.offset);
-    if (!slice.length) {
-      pendingCache = { at: Date.now(), value: 0 };
-      // ★★ 走到这里 = 台账读到了、且**一行待上行的都没有** ⇒ 上一次失败留下的红色标记此刻已经没有意义。
-      //    不清的话它会一直挂着（例如失败之后台账被「数据清理」清掉：offset 重置为 0、slice 为空，
-      //    从此每次同步都走这条分支，永远不回 catch、也永远不进成功分支 ⇒ 界面上「同步失败」永不消失，
-      //    用户会以为同步坏了，而实际上云上是齐的）。
-      // ★ 只在真有残留时才写盘：没残留就照旧什么都不写，避免每 30 秒无谓写一次文件。
-      if (st.lastError || st.fail || st.nextTryAt) {
-        st.lastError = '';
-        st.fail = 0;
-        st.nextTryAt = 0;
-        writeState(st);
-      }
-      return { ok: true, uploaded: 0, pending: 0, offset: st.offset, lastSyncAt: st.lastSyncAt };
-    }
     const machine = machineOf();
-    const rows = slice.map(e => toRow(e, machine));
-    let sent = 0;
+    const rows = slice.slice(0, BATCH * MAX_BATCHES).map(e => toRow(e, machine));
     for (let i = 0; i < rows.length; i += BATCH) {
       if ((i / BATCH) >= MAX_BATCHES) break;      // 剩下的下一轮再推，不卡住界面
       const chunk = rows.slice(i, i + BATCH);
       // ★ 用返回的「可前进行数」而不是 chunk.length：唯一冲突走逐行兜底时，两者含义相同（都全过），
       //   但让计数走同一个来源，将来加别的容错才不会被悄悄绕过。
-      sent += await postRows(cfg.url, cfg.anonKey, chunk);
+      publishSent += await postRows(cfg.url, cfg.anonKey, 'publish_log', CONFLICT_COLS, chunk);
     }
-    st.offset += sent;
-    st.uploaded += sent;
+    st.offset += publishSent;
+    st.uploaded += publishSent;
+
+    // 每轮最多处理 1000 条事件；start/end 上传，过程 log 留在本机。
+    const taskSlice = allTasks.slice(st.runOffset, st.runOffset + BATCH * MAX_BATCHES);
+    const taskPayload = taskSlice.map((e, i) => toRunRow(e, machine, st.runOffset + i)).filter(Boolean);
+    for (let i = 0; i < taskPayload.length; i += BATCH) {
+      taskSent += await postRows(cfg.url, cfg.anonKey, 'run_log', 'machine_id,event_id', taskPayload.slice(i, i + BATCH));
+    }
+    st.runOffset += taskSlice.length;
+    st.runUploaded = (st.runUploaded || 0) + taskSent;
     st.lastSyncAt = Date.now();
     st.lastError = '';
     st.fail = 0;
     st.nextTryAt = 0;
     writeState(st);
     pendingCache = { at: Date.now(), value: Math.max(0, all.length - st.offset) };
-    return { ok: true, uploaded: sent, pending: Math.max(0, all.length - st.offset), offset: st.offset, lastSyncAt: st.lastSyncAt };
+    return { ok: true, uploaded: publishSent, runUploaded: taskSent,
+      pending: Math.max(0, all.length - st.offset), pendingRun: Math.max(0, allTasks.length - st.runOffset),
+      offset: st.offset, runOffset: st.runOffset, lastSyncAt: st.lastSyncAt };
   } catch (e) {
     st.fail = (st.fail || 0) + 1;
     // 退避：30s → 60s → 120s … 最多 5 分钟。失败不该一直重试着刷云端
@@ -426,8 +489,10 @@ async function syncOnce(opts = {}) {
     } catch (_) { /* 没日志总线就算了 */ }
     // 同时落一条盘：`logbus` 只进内存，而下次成功会把 lastError 清空 —— 不落盘就永远无法复盘
     const pend = ledgerRows ? Math.max(0, ledgerRows.length - (st.offset || 0)) : '?';
-    appendErrorLog(`fail=${st.fail} backoff=${Math.round(backoff / 1000)}s offset=${st.offset} pending=${pend} err=${st.lastError}`);
-    return { ok: false, uploaded: 0, error: st.lastError, pending: pending() };
+    const taskPend = taskRows ? Math.max(0, taskRows.length - (st.runOffset || 0)) : '?';
+    appendErrorLog(`fail=${st.fail} backoff=${Math.round(backoff / 1000)}s offset=${st.offset} pending=${pend} runOffset=${st.runOffset || 0} pendingRun=${taskPend} err=${st.lastError}`);
+    return { ok: false, uploaded: publishSent, runUploaded: taskSent, error: st.lastError, pending: pending(),
+      pendingRun: taskRows ? Math.max(0, taskRows.length - (st.runOffset || 0)) : 0 };
   } finally {
     syncing = false;
   }
@@ -440,6 +505,12 @@ function pending() {
   const n = Math.max(0, readEntries().length - (st.offset || 0));
   pendingCache = { at: Date.now(), value: n };
   return n;
+}
+
+function pendingRun() {
+  const st = readState();
+  if (!Number.isInteger(st.runOffset)) return 0;
+  return Math.max(0, readRunEntries().length - st.runOffset);
 }
 
 /** 给界面的状态。**不含 key** —— 密钥只留在主进程配置里，不往渲染层传 */
@@ -467,7 +538,10 @@ function status() {
     nextTryAt: st.nextTryAt || 0,
     reset: st.reset || '',
     syncing,
-    pending: pending()
+    pending: pending(),
+    runOffset: st.runOffset || 0,
+    runUploaded: st.runUploaded || 0,
+    pendingRun: pendingRun()
   };
 }
 
@@ -495,6 +569,19 @@ async function test() {
       }
       return { ok: false, error: `HTTP ${res.status}${detail ? ' · ' + detail : ''}` };
     }
+    const taskRes = await fetch(cfg.url + '/rest/v1/run_log?select=event_id&limit=1', {
+      method: 'GET',
+      headers: { apikey: cfg.anonKey, Authorization: 'Bearer ' + cfg.anonKey },
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    });
+    if (!taskRes.ok) {
+      let detail = '';
+      try { detail = (await taskRes.text()).slice(0, 180); } catch (e) { /* 忽略 */ }
+      if (/PGRST205|Could not find the table|does not exist/i.test(detail)) {
+        return { ok: false, error: '发布结果表正常，但任务日志表还没建：请在 Supabase SQL Editor 运行 docs/supabase-runlog-migration.sql' };
+      }
+      return { ok: false, error: `任务日志表检查失败：HTTP ${taskRes.status}${detail ? ' · ' + detail : ''}` };
+    }
     return { ok: true, machineId: machineOf().id };
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
@@ -505,6 +592,12 @@ function start() {
   stop();
   const cfg = cfgOf();
   if (!cfg.enabled) return;
+  const st = readState();
+  if (!Number.isInteger(st.runOffset)) {
+    // 升级后的首次同步从当前日志末尾开始，旧历史不自动补传。
+    st.runOffset = readRunEntries().length;
+    writeState(st);
+  }
   const ms = Math.max(10, cfg.intervalSec) * 1000;
   timer = setInterval(() => { syncOnce().catch(() => {}); }, ms);
   if (timer && typeof timer.unref === 'function') timer.unref();
@@ -520,7 +613,7 @@ function configure() {
   start();
 }
 
-module.exports = { status, syncOnce, test, start, stop, configure, toRow, readEntries, pending, exportConfig, importConfig, explicitOf, stateFile, logFile, dataDir,
+module.exports = { status, syncOnce, test, start, stop, configure, toRow, toRunRow, safeRunText, readEntries, readRunEntries, pending, pendingRun, exportConfig, importConfig, explicitOf, stateFile, logFile, runLogFile, dataDir,
   // 机器标识：idFromFingerprint 是纯函数（断言直接打它）；machineFingerprint 只读不写
   idFromFingerprint, machineFingerprint,
   // 失败可诊断性：describeErr 是纯函数（断言直接打它）；errorLogFile/appendErrorLog 给测试读落盘台账

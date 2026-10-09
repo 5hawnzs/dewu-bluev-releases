@@ -20,6 +20,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const store = require('../store');
 const wp = require('../util/winpath');
 
@@ -30,7 +31,7 @@ function append(entry) {
   try {
     const f = file();
     fs.mkdirSync(wp.toLong(path.dirname(f)), { recursive: true });
-    fs.appendFileSync(wp.toLong(f), JSON.stringify(Object.assign({ ts: Date.now() }, entry)) + '\n', 'utf8');
+    fs.appendFileSync(wp.toLong(f), JSON.stringify(Object.assign({ eventId: crypto.randomUUID(), ts: Date.now() }, entry)) + '\n', 'utf8');
     return true;
   } catch (e) {
     // 写日志失败不能反过来把任务搞挂（和 sheet.appendLog 一个口径）

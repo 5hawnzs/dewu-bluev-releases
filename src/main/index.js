@@ -124,11 +124,11 @@ if (!app.requestSingleInstanceLock()) {
       ? (st.user ? `已登录：${st.user.displayName}（${st.user.role === 'admin' ? '管理员' : '成员'}）` : '登录校验已开启，请输入账号密码')
       : '登录校验已关闭（BLUEV_NO_LOGIN=1）');
 
-    // 云端协作（可选，默认关）：只把本机新增的发布结果推给网页看板，**发布本身不依赖它**。
+    // 云端协作：只推新增发布结果与任务起止摘要，**发布本身不依赖它**。
     // 没启用就一次都不联网；启用了也是本机主动往外推，不开端口、不接收指令。
     cloudsync.start();
     if (store.get('cloud.enabled')) {
-      logbus.info(`云端同步已开启 · 每 ${store.get('cloud.intervalSec') || 30} 秒推一次新增的发布结果`);
+      logbus.info(`云端同步已开启 · 每 ${store.get('cloud.intervalSec') || 30} 秒推一次发布结果与任务摘要`);
     }
 
     w.once('ready-to-show', () => { if (DEV) w.webContents.openDevTools({ mode: 'detach' }); });

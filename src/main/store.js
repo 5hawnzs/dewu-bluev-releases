@@ -115,7 +115,7 @@ function defaults() {
     // src/main/updater.js 文件头铁律 2）；通道名只决定读源上哪个清单文件：正式版 latest.yml / 测试版 beta.yml。
     // 存 stable|beta；非法值由 updater.init() 忽略并落回 stable。
     update: { channel: 'stable' },
-    // 云端协作（只上行发布结果给网页看板做聚合，**不参与发布**）。
+    // 云端协作（只上行发布结果与任务级运行摘要给网页看板，**不参与发布**）。
     // ★★ 出厂这三个键**必须留空**：留空 = 跟随 `clouddefaults.js` 里的内置组织值
     //    （在 cfgOf() 读取时兜底，**不写回**）。装上就能连，各台机器不用手填。
     // ★★ **绝不能在这里写 `CD.url`** —— 那会把内置值**固化进 config.json**，而 config.json

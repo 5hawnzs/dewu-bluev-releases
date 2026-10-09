@@ -77,6 +77,9 @@ const DUP_BODY = '{"code":"23505","details":null,"hint":null,"message":"duplicat
 const NO_CONSTRAINT_BODY = '{"code":"42P10","details":null,"hint":null,"message":"there is no unique or exclusion constraint matching the ON CONFLICT specification"}';
 globalThis.fetch = async (url, opts) => {
   calls.push({ url, opts });
+  if (mode === 'tableMissingRun' && String(url).includes('/run_log?')) return {
+    ok: false, status: 404, text: async () => '{"code":"PGRST205","message":"Could not find the table public.run_log in the schema cache"}'
+  };
   if (mode === 'throw') throw new Error('ECONNREFUSED 连不上');
   // 真实形状：Node 的 fetch 在网络层失败时抛的是 TypeError('fetch failed')，真因挂在 cause 上
   // （照抄 2026-10-08 实测回包：DNS 失败 ⇒ cause.code = ENOTFOUND）
@@ -137,10 +140,13 @@ let r = null;
 
   console.log('\nB. 增量 + 幂等头 + 分批\n');
   setCfg({});
+  fs.writeFileSync(path.join(dir, 'run-log.jsonl'), JSON.stringify({
+    eventId: 'historic-event', ts: 1750000000000, kind: 'end', ok: false, error: '旧版历史任务'
+  }) + '\n', 'utf8');
   seed(0, 3);
   calls = [];
   r = await cs.syncOnce();
-  ok('首次同步推 3 条', r.ok && r.uploaded === 3, JSON.stringify(r));
+  ok('首次同步推 3 条发布结果，旧运行日志不回填', r.ok && r.uploaded === 3 && r.runUploaded === 0 && r.pendingRun === 0, JSON.stringify(r));
   ok('★ 幂等头必须在（撞唯一键跳过，重试才不会长出重行）',
     /resolution=ignore-duplicates/.test(calls[0].opts.headers.Prefer || ''), calls[0].opts.headers.Prefer);
   // ★★ 这行断言在 2026-10-02 改过，理由要留档：原来只查到 /rest/v1/publish_log 为止，
@@ -157,6 +163,55 @@ let r = null;
   r = await cs.syncOnce();
   ok('★ 第二次只推新增的 2 条（不是整本重推 5 条）', r.ok && r.uploaded === 2 && lastBody.length === 2, JSON.stringify(r));
   ok('推完 pending 归零', r.pending === 0, r.pending);
+
+  // 只同步新写入的任务起止事件，不上传过程明细；错误摘要必须过滤路径与凭据。
+  const appendRun = e => fs.appendFileSync(path.join(dir, 'run-log.jsonl'), JSON.stringify(e) + '\n', 'utf8');
+  appendRun({ eventId: 'task-start-1', ts: 1760000000100, kind: 'start', jobId: 'j1', type: 'publish.run', label: '批次甲', batch: 'B1',
+    brandId: 'brd_1', brandName: '示例品牌', userId: 'u1', username: 'zhangsan', displayName: '张三' });
+  appendRun({ eventId: 'task-detail-1', ts: 1760000000200, kind: 'log', msg: '内部路径 C:\\Users\\Alice\\private\\content.txt' });
+  appendRun({ eventId: 'task-end-1', ts: 1760000000300, kind: 'end', ok: false, jobId: 'j1', type: 'publish.run', label: '批次甲', batch: 'B1',
+    brandId: 'brd_1', brandName: '示例品牌', userId: 'u1', username: 'zhangsan', displayName: '张三', elapsedSec: 18.4,
+    error: '打不开 C:\\Users\\Alice\\private\\content.txt Bearer abc.def.secret' });
+  calls = [];
+  r = await cs.syncOnce();
+  const runCall = calls.find(c => /\/run_log\?/.test(c.url));
+  const uploadedTasks = runCall ? JSON.parse(runCall.opts.body) : [];
+  ok('发布结果无新增时仍会独立同步任务日志', r.ok && r.uploaded === 0 && r.runUploaded === 2 && r.pendingRun === 0, JSON.stringify(r));
+  ok('运行日志走独立表与幂等键', !!runCall && runCall.url.endsWith('/run_log?on_conflict=machine_id,event_id')
+    && /resolution=ignore-duplicates/.test(runCall.opts.headers.Prefer || ''), runCall && runCall.url);
+  ok('只上传 start/end，不上传逐步过程 log', uploadedTasks.length === 2
+    && uploadedTasks.every(x => x.event_kind === 'start' || x.event_kind === 'end'), JSON.stringify(uploadedTasks.map(x => x.event_kind)));
+  ok('错误摘要已过滤绝对路径与 bearer 凭据并保留定位信息',
+    uploadedTasks[1].error_summary.includes('[本机路径]') && uploadedTasks[1].error_summary.includes('Bearer [已隐藏]')
+      && !uploadedTasks[1].error_summary.includes('C:\\Users\\Alice') && uploadedTasks[1].username === 'zhangsan'
+      && uploadedTasks[1].machine_name === '测试机', uploadedTasks[1].error_summary);
+  const spacedPathError = cs.safeRunText("打开失败 'C:\\Users\\Alice Smith\\private file.txt'");
+  ok('含空格且被引号包住的 Windows 路径也会整体脱敏',
+    spacedPathError.includes('[本机路径]') && !spacedPathError.includes('Alice Smith'), spacedPathError);
+  ok('任务上行字段只含已授权白名单',
+    Object.keys(uploadedTasks[0]).join(',') === 'org,event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_id,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary',
+    Object.keys(uploadedTasks[0]).join(','));
+
+  fs.rmSync(cs.stateFile(), { force: true });
+  fs.writeFileSync(path.join(dir, 'publish-log.jsonl'), '', 'utf8');
+  fs.writeFileSync(path.join(dir, 'run-log.jsonl'), '', 'utf8');
+  fs.writeFileSync(cs.stateFile(), JSON.stringify({ offset: 0, uploaded: 0, runOffset: 0, runUploaded: 0,
+    lastSyncAt: 0, lastError: '', fail: 0, nextTryAt: 0 }), 'utf8');
+  seed(0, 1);
+  const pendingTask = { eventId: 'needs-migration', ts: 1760000000400, kind: 'end', ok: false, error: '任务失败', jobId: 'j2' };
+  fs.appendFileSync(path.join(dir, 'run-log.jsonl'), JSON.stringify(pendingTask) + '\n', 'utf8');
+  setCfg({});
+  calls = []; mode = 'tableMissingRun';
+  r = await cs.syncOnce({ force: true });
+  ok('run_log 表缺失时报出同步失败，但已成功的发布结果游标仍前进',
+    !r.ok && /PGRST205|run_log/.test(r.error || '') && cs.status().offset === 1,
+    JSON.stringify({error:r.error, offset:cs.status().offset, runOffset:cs.status().runOffset}));
+  ok('run_log 表缺失时保留运行日志游标，迁移完成后可补传',
+    cs.status().runOffset === 0 && cs.status().pendingRun === 1, JSON.stringify(cs.status()));
+  mode = 'ok';
+  fs.writeFileSync(path.join(dir, 'run-log.jsonl'), '', 'utf8');
+  fs.writeFileSync(path.join(dir, 'publish-log.jsonl'), '', 'utf8');
+  fs.rmSync(cs.stateFile(), { force: true });
 
   seed(5, 210);                     // 一次积压 210 条
   calls = [];
@@ -397,7 +452,10 @@ let r = null;
   ok('status() 里不含 key（密钥不往渲染层传）', !JSON.stringify(cs.status()).includes('anon-test-key'));
 
   const t = await cs.test();
-  ok('test() 只查不改（GET + limit=1）', /select=machine_id&limit=1/.test(calls[calls.length - 1].url) && calls[calls.length - 1].opts.method === 'GET', calls[calls.length - 1].url);
+  ok('test() 对两张表都只查不改（GET + limit=1）',
+    calls.filter(c => /\/(publish_log|run_log)\?select=/.test(c.url)).length === 2
+      && calls.filter(c => /\/(publish_log|run_log)\?select=/.test(c.url)).every(c => c.opts.method === 'GET' && /limit=1/.test(c.url)),
+    calls.filter(c => /\/(publish_log|run_log)\?select=/.test(c.url)).map(c => c.url).join('\n'));
   ok('test() 返回 ok', t.ok === true, JSON.stringify(t));
   // ★★ 每个人第一次用必然走这条路：凭据已内置、项目能连通，但**表还没建**。
   //    这时候必须把「去控制台跑一次建表 SQL」说清楚 —— 甩一段 PGRST205 的英文 JSON 等于没说。
@@ -520,6 +578,17 @@ let r = null;
     /new Set\(list\.map\(mkey\)\)\.size/.test(boardSrc) && !/new Set\(list\.map\(r\s*=>\s*r\.machine_id\)\)/.test(boardSrc));
   ok('★★ 看板取数后必须先去重（rows = dedupe(raw)），否则重复行会直接进统计',
     /rows\s*=\s*dedupe\(raw\)/.test(boardSrc));
+
+  // 正式部署看板是知识库归档的 board-site/index.html，不是上方兼容旧版的 web/board.html。
+  const deployedBoard = fs.readFileSync(path.join(ROOT, 'docs', 'knowledge', 'deployed-sites', 'board-site', 'index.html'), 'utf8');
+  const deployedModule = deployedBoard.match(/<script\s+type="module">([\s\S]*?)<\/script>/i);
+  let deployedSyntaxError = '';
+  try { if (!deployedModule) throw new Error('缺少 module 脚本'); new Function(deployedModule[1]); }
+  catch (e) { deployedSyntaxError = String(e.message || e); }
+  ok('正式部署看板模块脚本可解析', !deployedSyntaxError, deployedSyntaxError);
+  ok('正式部署看板会查询任务日志并与设备/账号/品牌/时间筛选联动',
+    /\.from\('run_log'\)/.test(deployedBoard) && /function\s+filteredTasks\s*\(/.test(deployedBoard)
+      && /id="tTasks"/.test(deployedBoard) && /id="runLogNotice"/.test(deployedBoard));
 
   // ---- App 侧：机器标识不许再随机漂移 ----
   ok('★★ App：没有 machineId 时由机器指纹派生 ⇒ 同一台机永远得到同一个 id',
