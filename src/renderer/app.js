@@ -1234,7 +1234,7 @@ TABS[8] = {
     // 「导出 xlsx」是整套统计（4 张表）；「导出执行日志」只要这一份日志，且**条数完整**
     // （xlsx 里那张执行日志表过去只导最近 100 条，界面上一句不提 → 对账会对不上）
     { act: 'stats:export', label: '导出 xlsx', disabled: !statsFiltersCurrent() },
-    { act: 'stats:exportLog', label: '导出执行日志', disabled: !statsFiltersCurrent() },
+    ...((state.auth && state.auth.isAdmin) ? [{ act: 'stats:exportLog', label: '导出执行日志', disabled: !statsFiltersCurrent() }] : []),
     // 日志是「追加写、失败不报错」的：输出目录指向共享盘时，盘掉线会**静默少数据**，
     // 所以给一颗按钮让管理员当场问一句「这台机器现在写得进去吗」
     { act: 'stats:checkPath', label: '检测输出目录' }
@@ -1354,8 +1354,8 @@ TABS[8] = {
         <div class="stat good"><b>${t.ok}</b><span>成功</span></div>
         <div class="stat bad"><b>${t.fail}</b><span>失败</span></div>
         <div class="stat"><b>${t.batches}</b><span>批次数</span></div>
-        <div class="stat"><b>${t.runs}</b><span>任务次数</span></div>
-        <div class="stat ${t.runFails ? 'bad' : ''}"><b>${t.runFails}</b><span>任务失败</span></div>
+        ${m.isAdmin ? `<div class="stat"><b>${t.runs}</b><span>任务次数</span></div>
+        <div class="stat ${t.runFails ? 'bad' : ''}"><b>${t.runFails}</b><span>任务失败</span></div>` : ''}
         <div class="stat"><b>${s.brands.length}</b><span>品牌数</span></div>
       </div>
       <div class="box">
@@ -1368,7 +1368,7 @@ TABS[8] = {
       ${notes}
       <div class="box"><h3>品牌汇总（${esc(s.range.label)}）</h3>${summary}</div>
       ${dailyBox}
-      <div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>`;
+      ${m.isAdmin ? `<div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>` : ''}`;
   }
 };
 
@@ -1973,6 +1973,10 @@ async function doLogout() {
   await appApi.authLogout();
   state.auth = await appApi.authStatus();
   state.users = null;
+  state.logs = [];
+  state.logFilter = { level: '', q: '' };
+  state.logExport = null;
+  renderLogs();
   state.jobs = [];
   state.batchDetail = null;
   // 品牌与统计是「这个账号看得见的东西」，退出必须清掉 ——

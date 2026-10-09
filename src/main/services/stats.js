@@ -218,9 +218,10 @@ function query(opts = {}) {
   // ---- 任务执行日志 ----
   // 'start' 也要带上：一条「开始」后面没有对应的「结束」，就说明任务是被中断的
   // （程序被关、进程被杀）—— 这正是管理员事后要查的东西，不能只看完成的
-  const runRaw = runlog.read();
-  const runRows = runlog.query({ days, fromTs: customRange ? fromTs : undefined, toTs: customRange ? toTs : undefined,
-    brandId: wantBrand, userId: wantUser, scopeIds: scope, preloaded: runRaw });
+  const includeRunLogs = opts.includeRunLogs !== false;
+  const runRaw = includeRunLogs ? runlog.read() : [];
+  const runRows = includeRunLogs ? runlog.query({ days, fromTs: customRange ? fromTs : undefined, toTs: customRange ? toTs : undefined,
+    brandId: wantBrand, userId: wantUser, scopeIds: scope, preloaded: runRaw }) : [];
   const ends = runRows.filter(e => e.kind === 'end');
   // 界面与导出**共用这一套映射**（口径只写一遍，免得导出和屏幕上的说明对不上）
   const logRows = runRows
@@ -250,7 +251,7 @@ function query(opts = {}) {
     },
     sources: {
       publishLog: { file: sheet.logFile(), entries: raw.length, entriesInRange: entries.length, size: fileSize(sheet.logFile()) },
-      runLog: { file: runlog.file(), entries: runRaw.length, size: runlog.size() }
+      runLog: includeRunLogs ? { file: runlog.file(), entries: runRaw.length, size: runlog.size() } : null
     },
     totals: {
       rows: totals.rows, ok: totals.ok, fail: totals.fail, other: totals.other,
@@ -357,6 +358,7 @@ async function exportXlsx(opts = {}) {
     }
   }
 
+  if (opts.includeRunLogs !== false) {
   const ws4 = wb.addWorksheet('执行日志');
   ws4.columns = [
     { header: '时间', key: 'time', width: 20 },
@@ -380,6 +382,7 @@ async function exportXlsx(opts = {}) {
     });
   }
 
+  }
   const outDir = opts.dir || store.get('paths.output');
   if (!outDir) throw new Error('没有配置输出目录：先到「设置 → 路径」里选一个输出目录');
   await wp.mkdirp(outDir);

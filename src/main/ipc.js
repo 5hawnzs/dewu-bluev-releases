@@ -1,6 +1,7 @@
 'use strict';
 const { ipcMain, dialog, shell, app, BrowserWindow, nativeTheme } = require('electron');
 const path = require('path');
+const fileIO = require('fs').promises;
 const store = require('./store');
 const project = require('./project');
 const logbus = require('./logbus');
@@ -31,7 +32,7 @@ function guard(fn) {
   return async (e, ...args) => {
     if (!auth.enabled()) return fn(e, ...args);
     if (!auth.current()) return { ok: false, error: '未登录或登录已过期，请重新登录' };
-    return fn(e, ...args);
+    return logbus.withActor(auth.current(), () => fn(e, ...args));
   };
 }
 
@@ -45,7 +46,7 @@ function guardAdmin(fn) {
 }
 
 /**
- * 统计/日志能看多大范围：管理员=全部（null），普通成员=自己名下的品牌。
+ * 发布统计能看多大范围：管理员=全部（null），普通成员=自己名下的品牌。
  * 这个范围**在主进程算**，不信渲染层传上来的 scopeIds —— 否则改一下前端就能看别家的账。
  */
 function scopeOf() {
@@ -56,6 +57,12 @@ function scopeOf() {
   if (!u) return null;
   const a = brands.allowed(u);
   return a.all ? null : a.ids;
+}
+
+// 历史执行台账仅管理员可读；前端传入的权限字段不生效。
+function statsOptions(opts) {
+  return Object.assign({}, opts || {}, { scopeIds: scopeOf(),
+    includeRunLogs: !auth.enabled() || !!(auth.current() && auth.current().role === 'admin') });
 }
 
 /**
@@ -163,22 +170,22 @@ function register() {
   ipcMain.handle('stats:query', guard((_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;                       // 范围只认主进程算出来的，不认前端传的
-    return Object.assign({ ok: true }, stats.query(Object.assign(o, { scopeIds: scopeOf() })));
+    return Object.assign({ ok: true }, stats.query(statsOptions(o)));
   }));
   ipcMain.handle('stats:export', guard(async (_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;
-    const r = await stats.exportXlsx(Object.assign(o, { scopeIds: scopeOf() }));
+    const r = await stats.exportXlsx(statsOptions(o));
     logbus.ok(`品牌统计已导出：${path.basename(r.file)}（${r.brands.length} 个品牌 · ${r.totals.rows} 条记录）`);
     return { ok: true, file: r.file, totals: r.totals, brandCount: r.brands.length };
   }));
   // 单独导出「执行日志」（run-log.jsonl，任务级）—— .log 给人看 + .csv 给 Excel，
   // **不截断**（xlsx 那张执行日志表过去只导最近 100 条、界面上一句不提）。
   // ★ 同样删掉前端传来的 scopeIds：可见范围只认主进程算出来的
-  ipcMain.handle('stats:exportLog', guard(async (_e, opts) => {
+  ipcMain.handle('stats:exportLog', guardAdmin(async (_e, opts) => {
     const o = Object.assign({}, opts || {});
     delete o.scopeIds;
-    const r = await stats.exportRunLog(Object.assign(o, { scopeIds: scopeOf() }));
+    const r = await stats.exportRunLog(statsOptions(o));
     logbus.ok(`执行日志已导出：${path.basename(r.file)}（本次 ${r.entries} 条 · 日志文件里共 ${r.entriesInFile} 条）`);
     return { ok: true, file: r.file, csvFile: r.csvFile, entries: r.entries, entriesInFile: r.entriesInFile };
   }));
@@ -293,24 +300,25 @@ function register() {
   //     tools/cloudtest.js 直接调它们做服务级断言（不走 IPC），删了会红一片。
 
   ipcMain.handle('project:get', guard(() => project.get()));
-  ipcMain.handle('log:history', guard(() => logbus.history()));
+  ipcMain.handle('log:history', guard(() => logbus.visibleHistory()));
   // 运行日志导出：写成一个 .log（给人看）+ 一个 .jsonl（给脚本看），落到输出目录。
-  // ★ 筛选在渲染层做完再传上来（就是界面右侧那一页显示的那些），主进程不重新筛 ——
-  //   但「筛选条件」与「内存缓冲区一共多少条」要一并写进文件头，
-  //   否则事后没人说得清「怎么只有 3 条」（见 logexport.js 的口径 2）。
-  // ★ 不设 guardAdmin：这是本机的运行情况，谁跑的谁该能导出来对账。
+  // 主进程按当前账号与筛选条件生成导出内容；普通成员只能导出本人日志。
   ipcMain.handle('log:export', guard((_e, payload) => {
     const p = payload || {};
-    const filter = p.filter || {};
+    const filter = Object.assign({}, p.filter || {}, { q: String((p.filter || {}).q || '').trim() });
+    // 从主进程缓存重新筛选，拒绝前端夹带其他账号的日志或伪造总条数。
+    const visible = logbus.visibleHistory().filter(e => e.tier !== 'detail');
+    const entries = visible.filter(e => (!filter.level || e.level === filter.level)
+      && (!filter.q || String(e.msg || '').toLowerCase().includes(String(filter.q).toLowerCase())));
     try {
       const r = logexport.writeFiles({
         outputDir: store.get('paths.output'),
-        entries: Array.isArray(p.entries) ? p.entries : [],
+        entries,
         meta: {
           exportedAt: Date.now(),
           appVersion: app.getVersion(),
           filter,
-          bufferTotal: Number(p.bufferTotal) || 0
+          bufferTotal: visible.length
         }
       });
       const byFilter = !!(filter.level || filter.q);

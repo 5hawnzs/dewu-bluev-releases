@@ -1,6 +1,18 @@
 'use strict';
 /** 运行日志总线：环形缓存 + 实时推送到渲染层 */
 const { EventEmitter } = require('events');
+const { AsyncLocalStorage } = require('async_hooks');
+const auth = require('./auth');
+const actors = new AsyncLocalStorage();
+
+function viewer() {
+  return auth.enabled() ? auth.current() : { role: 'admin' };
+}
+function visibleTo(entry, user) {
+  return !!user && (user.role === 'admin' || !!user.id && String((entry.meta || {}).userId || '') === String(user.id));
+}
+function visibleHistory() { return history.filter(e => visibleTo(e, viewer())); }
+function withActor(actor, fn) { return actors.run(actor || {}, fn); }
 
 const bus = new EventEmitter();
 const history = [];
@@ -24,12 +36,14 @@ function attach(w) { win = w; }
  * 这条默认值刻意的 —— 万一哪里漏标了，症状是「多显示一条」，而不是「结论被吞掉」。
  */
 function push(level, msg, meta, opts) {
-  const entry = { t: Date.now(), level, msg, meta: meta || null };
+  // 任务保留发起人的身份；切换账号不会把旧任务的后续日志归给新账号。
+  const actor = actors.getStore() || viewer() || {};
+  const entry = { t: Date.now(), level, msg, meta: Object.assign({ userId: actor.id || '', username: actor.username || '' }, meta || {}) };
   if (opts && opts.tier === 'detail') entry.tier = 'detail';
   history.push(entry);
   if (history.length > MAX) history.shift();
   bus.emit('log', entry);
-  if (win && !win.isDestroyed()) win.webContents.send('log:entry', entry);
+  if (win && !win.isDestroyed() && visibleTo(entry, viewer())) win.webContents.send('log:entry', entry);
   return entry;
 }
 
@@ -54,6 +68,9 @@ function tierOf(level, opts) {
 module.exports = {
   attach,
   history: () => history.slice(),
+  visibleHistory,
+  visibleTo,
+  withActor,
   info: (m, meta, opts) => push('info', m, meta, opts),
   ok: (m, meta, opts) => push('ok', m, meta, opts),
   warn: (m, meta, opts) => push('warn', m, meta, opts),

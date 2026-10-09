@@ -503,8 +503,46 @@ app.whenReady().then(async () => {
 
   // ⑦b 里成员被停用过，这里先启用（不然他连登录都进不来）
   await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { disabled: false, brands: [${JSON.stringify(brandId)}] })`);
+  const privacyAdmin = auth.current();
+  logbus.info('PRIVACY-ADMIN-HISTORY');
+  require(path.join(ROOT, 'src/main/services/runlog.js')).append({ kind: 'log', userId: privacyAdmin.id,
+    brandId, brandName: '品牌甲 2026', level: 'info', msg: 'PRIVACY-ADMIN-AUDIT' });
   const memberIn = await js(`__t.login(${JSON.stringify(MEMBER)}, 'Member@456', false)`);
   ok('⑦e 成员重新启用后能登录（下面用成员会话测提示词权限）', memberIn.locked === false, memberIn.err || '');
+
+  logbus.info('PRIVACY-MEMBER-OWN');
+  await logbus.withActor(privacyAdmin, async () => {
+    await new Promise(r => setTimeout(r, 40));
+    logbus.info('PRIVACY-ADMIN-LATE');
+  });
+  await new Promise(r => setTimeout(r, 120));
+  const privacy = await js(`(async () => {
+    const history = await window.api.logHistory();
+    const stats = await window.api.statsQuery({ days: 0, includeRunLogs: true, scopeIds: null });
+    state.stats = stats; state.tab = 8; renderAll();
+    return { history, live: state.logs, stats,
+      auditUi: /执行日志/.test(document.querySelector('#pane').textContent),
+      exportUi: !!document.querySelector('[data-act="stats:exportLog"]'),
+      exportDenied: await window.api.statsExportLog({ days: 0 }) };
+  })()`);
+  ok('同品牌成员拿不到管理员的历史执行日志，伪造权限参数也无效',
+    privacy.stats.ok && privacy.stats.logs.length === 0 && privacy.stats.logsTotal === 0 && privacy.stats.sources.runLog === null);
+  ok('成员的品牌统计不显示执行日志及导出入口，后台也拒绝单独导出',
+    !privacy.auditUi && !privacy.exportUi && privacy.exportDenied.ok === false);
+  ok('成员实时推送与历史查询只包含本人日志，管理员异步任务不会串入',
+    [privacy.history, privacy.live].every(es => es.some(e => e.msg === 'PRIVACY-MEMBER-OWN')
+      && !es.some(e => /^PRIVACY-ADMIN/.test(e.msg))));
+  const privacyOutput = store.get('paths.output');
+  store.set({ paths: { output: path.join(TMP, 'privacy-export') } });
+  const forgedExport = await js(`window.api.logExport({ entries: [{t:1, level:'info',msg:'PRIVACY-ADMIN-FORGED',meta:{}}], bufferTotal:999, filter:{q:'PRIVACY-'} })`);
+  const privateText = forgedExport.ok ? fs.readFileSync(forgedExport.file, 'utf8') : '';
+  ok('运行日志导出由主进程筛选，不能夹带其他账号记录',
+    forgedExport.ok && privateText.includes('PRIVACY-MEMBER-OWN') && !privateText.includes('PRIVACY-ADMIN'));
+  const privateBook = await js(`window.api.statsExport({ days:0, includeRunLogs:true })`);
+  const privacyWorkbook = new (require('exceljs').Workbook)();
+  await privacyWorkbook.xlsx.readFile(privateBook.file);
+  ok('成员导出的品牌统计工作簿不包含历史执行台账', !privacyWorkbook.getWorksheet('执行日志'));
+  store.set({ paths: { output: privacyOutput } });
 
   const mList = await js(`window.api.brandList()`);
   const mineRow = (mList.brands || []).find(b => b.id === brandId);
