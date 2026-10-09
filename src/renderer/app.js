@@ -962,8 +962,7 @@ TABS[7] = {
       //     · 装进模拟器   —— 用内置的 adb 直接装；**已经装过就不动它**（登录状态与草稿都在设备上）
       //   ★ 两个按钮都能点的时候才给，内置那份缺失/不完整时一律 disabled ——
       //     按钮点下去才发现装不了，比一开始就灰着更让人火大。
-      ['得物 App 安装包（模拟器商店里搜不到得物时用）', apkDesc(info.dewuApk), apkBadge(info.dewuApk), apkBtns(info.dewuApk, state.dewuAlready)],
-      ['得物商品池', info.pool ? `${info.pool.size} 个货号 · ${info.pool.source}` : '—', info.pool && info.pool.size ? ['ok', '已导入'] : ['warn', '待同步']]
+      ['得物 App 安装包（模拟器商店里搜不到得物时用）', apkDesc(info.dewuApk), apkBadge(info.dewuApk), apkBtns(info.dewuApk, state.dewuAlready)]
     ];
     return `
       <!-- ★★ 2026-10-04 用户要求：整块「路径」（输出目录 / 隔离目录 + 两个「修改」按钮）
