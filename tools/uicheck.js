@@ -2103,6 +2103,13 @@ app.whenReady().then(async () => {
     ok('★ 账号管理表每行右侧是「配置权限 / 重置密码」两个按钮',
       /data-act="up:perm"/.test(adminFn) && /data-act="up:pwd"/.test(adminFn));
 
+    // 新成员必须能在创建时直接选择启用品牌；云端 create_user 的首个约束就是至少一个品牌。
+    const createAction = A2.slice(A2.indexOf("'auth:create': async () =>"), A2.indexOf("'auth:toggle': async"));
+    ok('★ 新建成员表单可勾选启用品牌，创建前校验并把品牌 ID 一并提交',
+      /data-new-brand=/.test(adminFn) && /filter\(b => b\.enabled !== false\)/.test(adminFn)
+      && /普通成员至少选择一个启用品牌/.test(createAction)
+      && /brands: role === 'user' \? brands : \[\]/.test(createAction));
+
     // ③ 旧的两条下拉工具栏连元素带动作一起删（只删控件、留着读取点 = 行为没变）
     ok('★ 旧的下拉工具栏整条删除（#pbUser / #rsUser / #rsPwd / auth:brands / >保存品牌权限< / permUserId 一个都不剩）',
       !/id="pbUser"/.test(A2) && !/id="rsUser"/.test(A2) && !/id="rsPwd"/.test(A2)

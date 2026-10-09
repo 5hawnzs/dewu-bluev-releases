@@ -2512,8 +2512,14 @@ function adminUsersHtml() {
         <select class="inp" id="nuRole"><option value="user">普通成员</option><option value="admin">管理员</option></select>
         <input class="inp mono" id="nuPwd" type="password" placeholder="初始密码 ≥6 位" style="min-width:150px">
         <button class="btn sm primary" data-act="auth:create">新建账号</button>
+        <div class="perm-list" aria-label="新账号品牌权限">
+          <b>分配品牌：</b>${all.filter(b => b.enabled !== false).length
+            ? all.filter(b => b.enabled !== false).map(b => `<label class="perm"><input type="checkbox" data-new-brand="${esc(b.id)}"> ${esc(b.name)}</label>`).join('')
+            : '<span class="hint">暂无启用品牌，请先到上方品牌管理新增或启用品牌。</span>'}
+        </div>
       </div>
-      <p class="hint">行里的「<b>配置权限</b>」勾上的品牌，这个人才能在标题栏选到、才能起文案生成 / 发布单 / 发布这类产出任务；
+      <p class="hint">普通成员创建时至少勾选一个启用品牌；创建后也可用行里的「<b>配置权限</b>」调整。管理员自动拥有全部品牌。
+        勾上的品牌决定成员能在标题栏选到哪些品牌、能起哪些文案生成 / 发布单 / 发布任务；
         一个都没勾，他起任务会被直接拦下（不会悄悄发出去）。管理员那一行显示「全部品牌」—— 管理员本来就是全部，不必逐个分配。</p>
       <p class="hint">正式版账号和品牌授权存在 Supabase 私有 schema，密码只保存加盐哈希；本机 <code>auth.json</code> 只在勾选「记住登录」时保存会话令牌。
         停用/删除账号<b>不影响</b>已产出的素材、发布单与商品池。连续输错 6 次会锁定 5 分钟。</p>
@@ -3058,15 +3064,23 @@ const ACTS = {
     renderAll();
   },
   'auth:create': async () => {
+    const role = $('#nuRole').value;
+    const brands = [...document.querySelectorAll('[data-new-brand]:checked')].map(el => el.dataset.newBrand);
+    if (role === 'user' && brands.length === 0) {
+      toast('普通成员至少选择一个启用品牌', 'err');
+      return;
+    }
     const input = {
       username: $('#nuUser').value.trim(),
       displayName: $('#nuName').value.trim(),
-      role: $('#nuRole').value,
-      password: $('#nuPwd').value
+      role,
+      password: $('#nuPwd').value,
+      brands: role === 'user' ? brands : []
     };
     const r = await appApi.authCreateUser(input);
     if (!r.ok) { toast(r.error, 'err'); return; }
     $('#nuUser').value = ''; $('#nuName').value = ''; $('#nuPwd').value = '';
+    document.querySelectorAll('[data-new-brand]').forEach(el => { el.checked = false; });
     await refreshUsers();
     toast(`已创建账号 ${input.username}`, 'ok');
     renderAll();
