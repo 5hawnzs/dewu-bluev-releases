@@ -281,7 +281,7 @@ app.whenReady().then(async () => {
   ok('★ 普通成员就算硬点第 11 个页签也进不去（会被拉回«素材整理»）',
     !!advHide && advHide['11'].title === '素材整理', advHide && advHide['11'].title);
 
-  // ---- ⑦a-3「热词库」：所有人都能**看**，但改只有管理员能做（而且拦在主进程，不是前端藏按钮）----
+  // ---- ⑦a-3「热词库」：所有登录成员均可编辑本机词库，仍受红线约束----
   const lexMem = await js(`(async () => {
     const btn = document.querySelector('.nav[data-tab="12"]');
     const visible = !!btn && btn.hidden !== true && getComputedStyle(btn).display !== 'none';
@@ -296,21 +296,21 @@ app.whenReady().then(async () => {
       inputs: pane.querySelectorAll('[data-lx-in]').length,
       delBtns: pane.querySelectorAll('[data-lx-del]').length,
       saveDisabled: !!saveBtn && saveBtn.disabled === true,
-      readonlyChip: /只读/.test(pane.textContent)
+      localChip: /本机词库/.test(pane.textContent)
     };
   })()`);
   ok('★ 普通成员**看得见**「热词库」（不是管理员专属 —— 标题从哪些词里挑，谁都能看）',
     lexMem.visible === true && lexMem.title === '热词库', lexMem.title);
-  ok('★ 但普通成员进来是只读：没有加词框、没有删词按钮、保存是灰的',
-    lexMem.groupsShown && lexMem.inputs === 0 && lexMem.delBtns === 0 && lexMem.saveDisabled === true,
+  ok('★ 普通成员可编辑本机词库：七组加词框、删词按钮、保存可用',
+    lexMem.groupsShown && lexMem.inputs === 7 && lexMem.delBtns > 0 && lexMem.saveDisabled === false,
     JSON.stringify(lexMem));
-  ok('★ 只读时把原因写在页面上（改词库要管理员）', lexMem.readonlyChip === true);
+  ok('★ 页面明确本机词库的生效范围', lexMem.localChip === true);
   const memLexSave = await js(`window.api.hotwordsSave([{ key: '风格', words: ['简约百搭'] }])`);
-  ok('★ 普通成员绕过界面直接调通道也改不了（主进程 guardAdmin 拦下）',
-    memLexSave.ok === false && /只有管理员/.test(memLexSave.error), memLexSave.error);
+  ok('★ 普通成员可保存本机词库，主进程回传真实保存结果',
+    memLexSave.ok === true && memLexSave.library.groups.some(g => g.key === '风格' && g.words.includes('简约百搭')), JSON.stringify(memLexSave));
   const memLexReset = await js(`window.api.hotwordsReset()`);
-  ok('★ 普通成员也不能「恢复内置」（同样主进程侧拦下）',
-    memLexReset.ok === false && /只有管理员/.test(memLexReset.error), memLexReset.error);
+  ok('★ 普通成员可恢复本机内置词库',
+    memLexReset.ok === true && memLexReset.library.isCustom === false, JSON.stringify(memLexReset));
 
 
   // ---- ⑦b 品牌是管理员专属：普通成员连注册表都改不了 ----

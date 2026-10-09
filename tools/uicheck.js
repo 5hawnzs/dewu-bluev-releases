@@ -340,8 +340,8 @@ app.whenReady().then(async () => {
     `渲染 ${sh.back.rendered}/10 · 异常 ${sh.back.threw.length}`);
 
   // ---- 页签 12「热词库」：真读 DOM 断言（不是看源码里有没有那行字）----
-  // ★ BLUEV_NO_LOGIN 下没有账号 ⇒ isAdmin=false ⇒ 这一页应当是**只读**的。
-  //   「可编辑」那一支由 logintest 用管理员会话覆盖 —— 两边合起来才算把两个分支都测到。
+  // ★ 开发免登录状态也可编辑本机词库。
+  //   管理员与普通成员的保存权限由 logintest 用真实会话覆盖。
   const lexPage = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="12"]').click();
     const pane = document.querySelector('#pane');
@@ -368,11 +368,11 @@ app.whenReady().then(async () => {
   ok('★ 「收尾」组在页面上、且明确标着「已锁定，不可编辑」',
     lexPage.lockedBox >= 0, '第 ' + (lexPage.lockedBox + 1) + ' 个 box');
   ok('★ T01~T15 句式骨架照实列出来（只读展示）', lexPage.hasStyles === true);
-  ok('★ 免登录态（没有账号 ＝ 不是管理员）这一页是只读：没有任何加词框、增删按钮',
-    lexPage.inputs === 0 && lexPage.addBtns === 0 && lexPage.delBtns === 0,
+  ok('★ 开发免登录态可以编辑本机词库',
+    lexPage.inputs === 7 && lexPage.addBtns === 7 && lexPage.delBtns > 0,
     `inputs=${lexPage.inputs} add=${lexPage.addBtns} del=${lexPage.delBtns}`);
-  ok('★ 只读时把原因写在页面上（不是默默少几个按钮，让人以为坏了）',
-    /只读/.test(lexPage.statusText), lexPage.statusText.slice(0, 70));
+  ok('★ 词库页明确标出仅在本机生效',
+    /本机词库/.test(lexPage.statusText), lexPage.statusText.slice(0, 70));
 
 
   // ---- 界面里不许再出现「别人家的品牌名」 ----
