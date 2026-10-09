@@ -60,19 +60,31 @@ function parseName(dir) {
   if (leaf.includes('+')) {
     const parts = leaf.split('+').map(s => s.trim()).filter(Boolean);
     let color = parts[1] || '';
-    let seq = parts[2] || '1';
-    // 只有「货号+颜色」两段时，颜色那段末尾可能挂着扁平副本的序号（`冠军白_1`）——那边不是颜色
+    // 旧式三段名仍把第 3 段当序号；多好物名按「货号+颜色」成对读取。
+    let seq = parts.length === 3 ? (parts[2] || '1') : '1';
+    const goods = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      goods.push({ sku: parts[i], color: parts[i + 1] });
+    }
     if (parts.length <= 2 && color) {
       const st = stripTail(color);
-      if (st.seq) { color = st.head; seq = st.seq; }
+      if (st.seq) {
+        color = st.head;
+        seq = st.seq;
+        if (goods[0]) goods[0].color = color;
+      }
     }
-    return { sku: parts[0] || '', color, seq, how: 'plus' };
+    return { sku: parts[0] || '', color, goods, seq, how: 'plus' };
   }
   if (NUMERIC.test(leaf)) {
     // …/26FW-YB160+冠军白/1/ —— 上一层就是「货号+颜色」，同样算 'plus'
     if (parent.includes('+')) {
       const parts = parent.split('+').map(s => s.trim()).filter(Boolean);
-      return { sku: parts[0] || '', color: parts[1] || '', seq: leaf, how: 'plus' };
+      const goods = [];
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        goods.push({ sku: parts[i], color: parts[i + 1] });
+      }
+      return { sku: parts[0] || '', color: parts[1] || '', goods, seq: leaf, how: 'plus' };
     }
     // ★★ 「批次目录 / 货号 / 序号」三层、颜色**没填**：…/0901_2/3261163003/1/
     //   真机实测（2026-10-03，E:\bluev_beta\0901_2）：老逻辑走的是下面那行 'split'，
@@ -133,9 +145,22 @@ function refineItem(it) {
   const color = p.how === 'plus'
     ? (hasCJK(p.color) ? String(p.color).trim() : '')
     : (hasCJK(it.color) ? String(it.color).trim() : '');
+  const goods = p.how === 'plus' && (p.goods.length > 1 || Array.isArray(it.goods))
+    ? p.goods.map(g => ({
+      sku: String(g.sku || '').trim(),
+      color: hasCJK(g.color) ? String(g.color).trim() : ''
+    }))
+    : (Array.isArray(it.goods) ? it.goods : null);
+  const sameGoods = goods == null
+    ? !Array.isArray(it.goods)
+    : Array.isArray(it.goods) && it.goods.length === goods.length
+      && goods.every((g, i) => it.goods[i] && it.goods[i].sku === g.sku && it.goods[i].color === g.color);
   if (String(it.sku == null ? '' : it.sku).trim() === sku
-    && String(it.color == null ? '' : it.color).trim() === color) return it;   // 没变就原样返回（引用不变）
-  return Object.assign({}, it, { sku, color });
+    && String(it.color == null ? '' : it.color).trim() === color
+    && sameGoods) return it;
+  const patch = { sku, color };
+  if (goods != null) patch.goods = goods;
+  return Object.assign({}, it, patch);
 }
 
 /** 目标目录已存在（同分钟重跑）时自动加序号，绝不覆盖 */
@@ -190,7 +215,11 @@ async function plan(sourceDir, ctx = {}) {
       seen.set(name, n);
       name = `${name}-${n}`;
     } else seen.set(name, 1);
-    return { from: l.dir, name, sku: p.sku, color: p.color, seq, how: p.how, files: l.files, fileCount: l.mediaCount };
+    return {
+      from: l.dir, name, sku: p.sku, color: p.color,
+      goods: p.goods || (p.sku ? [{ sku: p.sku, color: p.color }] : []),
+      seq, how: p.how, files: l.files, fileCount: l.mediaCount
+    };
   });
 
   const longRisk = rows.filter(r => wp.pathRisk(path.join(sourceDir, r.name)) === 'long').length;
@@ -235,7 +264,8 @@ async function run(sourceDir, opts, ctx = {}) {
     }
     done++;
     items.push({
-      id: row.name, dir: row.name, absDir: target, sku: row.sku, color: row.color, seq: row.seq,
+      id: row.name, dir: row.name, absDir: target, sku: row.sku, color: row.color,
+      goods: row.goods || (row.sku ? [{ sku: row.sku, color: row.color }] : []), seq: row.seq,
       files, fileCount: files.length, bytes
     });
     progress({ done, total: p.total, label: row.name, links, copies });

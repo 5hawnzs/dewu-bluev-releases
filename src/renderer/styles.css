@@ -152,6 +152,14 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
 .nav .st.bad{color:var(--red)}
 .nav.on{background:var(--panel);color:var(--tx);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .nav.on .ic{opacity:1}
+.folder-tool-link{
+  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;
+  margin-top:auto;font-size:13px;color:var(--tx2);cursor:pointer;user-select:none;
+  width:100%;text-align:left;border:0;background:transparent;font-family:var(--font);
+}
+.folder-tool-link:hover{background:rgba(128,128,110,.12)}
+.folder-tool-link .ic{width:16px;height:16px;flex:0 0 16px;display:block;opacity:.75}
+.folder-tool-link .ic svg{display:block;width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 
 /* ---------- main ---------- */
 .main{flex:1;min-width:0;display:flex;flex-direction:column}

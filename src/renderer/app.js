@@ -2590,6 +2590,7 @@ function upPwdHtml(id) {
 
 /* ---------------- 交互 ---------------- */
 const ACTS = {
+  'folderTool:open': async el => { await appApi.openExternal(el.dataset.url); },
   // ★ 顶栏主题 Dock（日间 / 夜间 / 玻璃，三个图标）。点哪个图标就直接切哪一档。
   //   落盘仍在主进程做（theme:set），所以下次启动还是这个。
   //   返回值是完整的主题对象 ⇒ 直接把 applyTheme 的结果喂给它，别自己再拼 { shouldUseDarkColors }。

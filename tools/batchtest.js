@@ -230,6 +230,18 @@ const ok = (label, cond, extra) => {
     ok('⑦ ★★ 批次目录/货号/序号：货号=真货号、颜色留空（不许 货号=0901_2 / 颜色=3261163003）',
       swap.sku === '3261163003' && swap.color === '' && swap.how === 'sku',
       JSON.stringify(swap));
+    const multi = flatten.parseName(p('素材', 'TW男装', '26FW-YB160+冠军白+UWG760094+雾霾蓝'));
+    ok('⑦ 双好物文件夹名按「货号+颜色」成对解析',
+      multi.goods.length === 2 && multi.goods[0].sku === '26FW-YB160' && multi.goods[0].color === '冠军白'
+      && multi.goods[1].sku === 'UWG760094' && multi.goods[1].color === '雾霾蓝',
+      JSON.stringify(multi.goods));
+    const multiHealed = flatten.refineItem({
+      absDir: p('素材', 'flat_20261008', '26FW-YB160+冠军白+UWG760094+雾霾蓝'),
+      sku: '26FW-YB160', color: '冠军白', goods: [{ sku: '26FW-YB160', color: '冠军白' }]
+    });
+    ok('⑦ 已保存的双好物工程条目会按叶子名补回第二个好物',
+      multiHealed.goods.length === 2 && multiHealed.goods[1].sku === 'UWG760094',
+      JSON.stringify(multiHealed.goods));
     ok('⑦ 色名里本来就带数字的不会被误伤（米白2 / 黑色条纹）',
       flatten.parseName(p('a', '26FW-YB160+米白2')).color === '米白2'
       && flatten.parseName(p('a', '26FW-YB160+黑色条纹')).color === '黑色条纹');

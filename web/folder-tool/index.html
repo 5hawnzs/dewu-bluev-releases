@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>蓝 V 素材文件夹生成器</title>
+<style>
+:root{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;color:#18233d;background:#f5f7fb;font-synthesis:none}
+*{box-sizing:border-box}
+body{margin:0;background:#f5f7fb;color:#18233d}
+button,input{font:inherit}
+.shell{max-width:1180px;margin:auto;padding:34px 28px 56px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:27px}
+.brand{font-size:27px;font-weight:700;letter-spacing:-.03em}
+.badge{border:1px solid #dce4f2;border-radius:99px;background:#fff;padding:9px 13px;font-size:12px;color:#52617b;white-space:nowrap}
+.layout{display:grid;grid-template-columns:350px 1fr;gap:18px;align-items:start}
+.card{background:#fff;border:1px solid #e5eaf2;border-radius:15px;box-shadow:0 4px 18px #14285008}
+.config{padding:22px;align-self:start;position:sticky;top:18px}
+.main{padding:21px 22px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+h1,h2,h3,p{margin:0}
+h1{font-size:15px;font-weight:700}
+h2{font-size:16px;font-weight:700}
+h3{font-size:13px}
+.btn{border:1px solid #dce2eb;border-radius:8px;padding:9px 12px;background:#fff;color:#52617b;cursor:pointer;font-size:12px}
+.btn:hover{background:#f7f8fb}
+.btn:disabled{opacity:.45;cursor:default}
+.btn-light{background:#526bd1;color:#fff;border-color:#526bd1;font-weight:650}
+.btn-light:hover{background:#455dbd}
+.wide{width:100%;margin-top:13px}
+.pair{background:#f8f9fc;border:1px solid #e8ecf3;border-radius:11px;padding:12px 13px 14px;margin-top:13px}
+.field{display:block;margin-top:10px}
+.field-label{display:block;margin-bottom:6px;color:#54617a;font-size:12px;font-weight:650}
+.input{width:100%;height:40px;padding:0 11px;border:1px solid #dce2eb;border-radius:8px;outline:none;background:#fff;color:#202c45;font-size:13px}
+.input:focus{border-color:#718eea;box-shadow:0 0 0 3px #718eea20}
+.combo-list{display:grid;gap:4px;margin-top:12px}
+.combo{width:100%;display:flex;align-items:center;text-align:left;gap:10px;padding:11px 12px;border:0;border-radius:10px;color:#34415a;background:transparent;cursor:pointer}
+.combo:hover{background:#f4f6fb}
+.combo.active{background:#edf1ff;color:#243a8a}
+.combo-icon{width:15px;height:15px;flex:none;stroke:#657bd3;fill:none;stroke-width:1.6}
+.combo-text{min-width:0;flex:1}
+.combo-name{display:block;font-size:12px;font-weight:650;overflow-wrap:anywhere}
+.combo-meta{display:block;margin-top:3px;color:#8791a3;font-size:11px}
+.check{font-size:16px}
+.empty{padding:22px 8px;text-align:center;color:#919bad;font-size:12px}
+.rule{height:1px;background:#edf0f5;margin:18px 0}
+.current{margin:0 0 12px}
+.current-label{font-size:12px;font-weight:700}
+.current-name{margin-top:5px;color:#707b90;font-size:12px;overflow-wrap:anywhere}
+.drop{min-height:156px;border:1.5px dashed #cbd5e6;border-radius:13px;background:#fafbfe;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;cursor:pointer;transition:background .14s,border-color .14s}
+.drop:hover,.drop.drag{border-color:#7288dc;background:#f5f7ff}
+.drop svg{width:24px;height:24px;stroke:#657bd3;fill:none;stroke-width:1.7;margin-bottom:7px}
+.drop-title{font-size:13px;font-weight:700}
+.drop-note{margin-top:7px;color:#8a94a6;font-size:11px}
+.file-input{display:none}
+.toolbar{display:flex;align-items:center;justify-content:space-between;margin:20px 0 7px}
+.toolbar span{font-size:11px;color:#929bad}
+.groups{display:grid;gap:2px}
+.group-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #f0f2f6}
+.group-icon{width:15px;height:15px;flex:none;stroke:#73809a;fill:none;stroke-width:1.6}
+.group-info{min-width:0;flex:1}
+.group-name{font-size:12px;font-weight:650}
+.group-count{margin-top:3px;font-size:11px;color:#8791a3}
+.icon-btn{padding:5px;border:0;background:transparent;color:#9ba4b4;cursor:pointer}
+.icon-btn:hover{color:#526bd1}
+.icon-btn svg{display:block;width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.6}
+.thumbs{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 9px 25px}
+.thumb{position:relative;width:72px}
+.thumb img{display:block;width:72px;height:60px;object-fit:cover;border-radius:7px;background:#eef1f6}
+.thumb.video{width:160px}.thumb video{display:block;width:160px;height:100px;object-fit:contain;border-radius:7px;background:#eef1f6}
+.thumb-label{margin-top:4px;font-size:10px;color:#68748a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thumb-action{display:block;margin-top:3px;padding:2px 4px;border:1px solid #dce2eb;border-radius:5px;background:#fff;color:#68748a;font-size:9px;cursor:pointer}
+.thumb-action.on{color:#9a6800;background:#fff4d9;border-color:#f0d58f}
+.footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid #edf0f5}
+.privacy{font-size:11px;color:#8993a3}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);padding:10px 15px;border-radius:8px;background:#202b42;color:#fff;font-size:12px;opacity:0;pointer-events:none;transition:opacity .18s}
+.toast.show{opacity:1}
+.hint{font-size:12px;color:#7d8799;line-height:1.65}
+.save-state{margin-top:9px;color:#52617b;font-size:12px}.save-state.error{color:#b64646}
+.work-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.archive-list{display:grid;gap:10px;margin-top:10px}
+#archivePanel{padding:15px 22px;margin-bottom:18px}
+#archivePanel summary{font-size:15px;font-weight:700;cursor:pointer;color:#18233d}
+#archiveCount{margin-left:6px;font-size:11px;font-weight:400;color:#929bad}
+.archive-item strong{display:block;font-size:12px;font-weight:650;overflow-wrap:anywhere}
+.archive-item{padding:12px;border:1px solid #e5eaf2;border-radius:10px}.archive-item .btn{margin-top:8px}
+.pager{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:11px;color:#8791a3}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.config{position:static}.shell{padding:24px 15px}.top{gap:12px}.badge{display:none}}
+@media(max-width:520px){.shell{width:100%;padding:18px 14px}.pair{grid-template-columns:1fr}.drop{min-height:140px}.footer{align-items:flex-start;flex-direction:column}.footer .btn{width:100%}}
+</style>
+</head>
+<body>
+<div class="shell">
+ <header class="top">
+  <div><div class="hint">BLUE V · 素材整理</div><div class="brand">素材文件夹生成器</div><div class="hint">支持图片和视频。先选择商品组合，再连续加入多批素材；每批自动生成一个素材组。</div></div>
+  <span class="badge">本地处理 · 素材不上传</span>
+ </header>
+ <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><div class="archive-list" id="archiveList"></div></details>
+ <div class="layout">
+  <aside class="card config">
+   <div class="section-head"><h1>① 设置商品组合</h1></div>
+   <div class="hint" style="margin-top:6px">名称按“款号 1 + 颜色 1 + 款号 2 + 颜色 2”生成。款号 2 可不填。</div>
+   <form id="comboForm">
+    <div class="pair"><label class="field"><span class="field-label">款号 1</span><input class="input" id="sku1" placeholder="例如：A001" maxlength="80" required></label><label class="field"><span class="field-label">款号 1 颜色</span><input class="input" id="color1" placeholder="例如：白色" maxlength="40" required></label></div>
+    <div class="pair"><label class="field"><span class="field-label">款号 2 <span style="color:#98a1b1;font-weight:400">（可选）</span></span><input class="input" id="sku2" placeholder="例如：B002" maxlength="80"></label><label class="field"><span class="field-label">款号 2 颜色</span><input class="input" id="color2" placeholder="填写款号 2 时必填" maxlength="40"></label></div>
+    <button class="btn btn-light wide" type="submit">＋ 新建组合</button>
+   </form>
+   <div class="rule"></div>
+   <div class="section-head"><h1>商品组合列表</h1></div>
+   <div class="combo-list" id="comboList"><div class="empty">填写组合信息后，点击“新建组合”</div></div>
+   <div class="rule"></div>
+   <div id="saveState" class="save-state" role="status" aria-live="polite">正在恢复本地工作…</div>
+   <div id="storageUsage" class="hint"></div>
+   <div class="work-tools"><button class="btn" id="backup" disabled>导出工作备份</button><button class="btn" id="importBackup" disabled>恢复工作备份</button></div>
+   <input class="file-input" id="backupFile" type="file" accept=".bluev">
+  </aside>
+  <main class="card main">
+   <div id="workspace"><div class="empty">创建并选择一个组合后，开始整理素材</div></div>
+   <footer class="footer"><span class="privacy" id="status">图片和视频只在当前浏览器本地处理，下载时打包为 ZIP。</span><button class="btn btn-light" id="download" disabled>下载全部并归档</button></footer>
+  </main>
+ </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+const $=id=>document.getElementById(id);
+let combos=[],selectedId=null,nextId=1,toastTimer;
+let archives=[],db=null,ready=false,readOnly=false,busy=false,groupPage=0,archivePage=0,saveQueue=Promise.resolve(),saveVersion=0,savedVersion=0,saveFailed=false;
+const pendingFiles=new Map(),thumbPages=new Map(),ARCHIVE_TTL=3*24*60*60*1000;
+function saveMessage(message,error=false){$('saveState').textContent=message;$('saveState').classList.toggle('error',error)}
+function canEdit(){if(!ready||readOnly||busy){notify(readOnly?'另一个标签页正在整理，请关闭另一页后重新打开':busy?'正在处理文件，请稍候':'正在恢复本地工作，请稍候');return false}return true}
+function metaCombo(combo){return {id:combo.id,name:combo.name,nextGroup:combo.nextGroup,groups:combo.groups.map(group=>({id:group.id,name:group.name,primaryId:group.primaryId,files:group.files.map(item=>({id:item.id}))}))}}
+function snapshot(){return {version:1,combos:combos.map(metaCombo),archives:structuredClone(archives),selectedId,nextId,draft:Object.fromEntries(['sku1','color1','sku2','color2'].map(id=>[id,$(id).value]))}}
+function referencedFiles(state){const ids=new Set();for(const combo of [...state.combos,...state.archives.flatMap(archive=>archive.combos)])for(const group of combo.groups)for(const item of group.files)ids.add(item.id);return ids}
+function transactionDone(tx){return new Promise((resolve,reject)=>{tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error||new Error('本地保存被中断'));tx.onerror=()=>{}})}
+function requestResult(request){return new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)})}
+function openDatabase(){return new Promise((resolve,reject)=>{const request=indexedDB.open('bluev-folder-tool',1);request.onupgradeneeded=()=>{request.result.createObjectStore('state');request.result.createObjectStore('files',{keyPath:'id'})};request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);request.onblocked=()=>saveMessage('请关闭其他旧版本页面后重试',true)})}
+function persistState(){
+ if(!ready||readOnly)return Promise.reject(new Error('本地工作区尚未就绪'));
+ const state=snapshot(),blobs=[...pendingFiles.values()],version=++saveVersion;
+ saveMessage('保存中，请等待“已保存”后再关闭页面');
+ const operation=saveQueue.catch(()=>{}).then(async()=>{
+  const tx=db.transaction(['state','files'],'readwrite'),done=transactionDone(tx),store=tx.objectStore('files'),ids=referencedFiles(state);
+  for(const record of blobs)if(ids.has(record.id))store.put(record);
+  tx.objectStore('state').put(state,'workspace');
+  const cursor=store.openKeyCursor();cursor.onsuccess=()=>{const item=cursor.result;if(item){if(!ids.has(item.key))store.delete(item.key);item.continue()}};
+  await done;
+  for(const record of blobs)if(pendingFiles.get(record.id)===record)pendingFiles.delete(record.id);
+  savedVersion=version;if(version===saveVersion){saveFailed=false;saveMessage('已保存到此浏览器 · '+new Date().toLocaleTimeString('zh-CN'));updateUsage()}
+ });
+ saveQueue=operation;operation.catch(error=>{saveFailed=true;saveMessage(error.name==='QuotaExceededError'?'保存失败：本地空间不足，请先导出备份并清理空间':'本地保存失败，请导出工作备份后重试',true)});return operation;
+}
+function changed(){persistState().catch(()=>{})}
+async function updateUsage(){try{const info=await navigator.storage?.estimate();if(info?.usage!==undefined)$('storageUsage').textContent='本地已用约 '+(info.usage/1024/1024).toFixed(1)+' MB'}catch(_){}}
+async function hydrate(meta){
+ const tx=db.transaction('files','readonly'),done=transactionDone(tx),store=tx.objectStore('files');
+ const requests=meta.map(combo=>({...combo,groups:combo.groups.map(group=>({...group,files:group.files.map(item=>({id:item.id,request:requestResult(store.get(item.id))}))}))}));
+ const result=await Promise.all(requests.map(async combo=>({...combo,groups:await Promise.all(combo.groups.map(async group=>({...group,files:await Promise.all(group.files.map(async item=>{const record=await item.request;if(!record?.file)throw new Error('部分素材无法恢复，请使用工作备份');return {id:item.id,file:record.file,previewUrl:''}}))})))})));
+ await done;return result;
+}
+function expireArchives(now=Date.now()){const previous=archives.length;archives=archives.filter(archive=>archive.expiresAt>now);return previous!==archives.length}
+async function initializeWorkspace(){
+ try{
+  db=await openDatabase();const state=await requestResult(db.transaction('state','readonly').objectStore('state').get('workspace'));
+  if(state){archives=state.archives||[];expireArchives();combos=await hydrate(state.combos||[]);selectedId=state.selectedId;nextId=state.nextId||1;for(const id of ['sku1','color1','sku2','color2'])$(id).value=state.draft?.[id]||''}
+  ready=true;render();renderArchives();syncControls();await persistState();
+  setInterval(()=>{if(ready&&!busy&&!readOnly&&expireArchives()){renderArchives();changed()}},60000);
+ }catch(error){saveFailed=true;saveMessage('本地工作无法恢复：'+error.message+'。请保留此浏览器数据。',true);syncControls()}
+}
+function startWorkspace(){
+ if(navigator.locks){navigator.locks.request('bluev-folder-tool-workspace',{ifAvailable:true},async lock=>{if(!lock){readOnly=true;saveMessage('另一个标签页正在使用此工作区，请关闭另一页后刷新',true);syncControls();return}await initializeWorkspace();await new Promise(()=>{})}).catch(error=>saveMessage('无法打开工作区：'+error.message,true))}
+ else{saveMessage('请使用最新版 Chrome 或 Edge，以保护本地工作区',true);syncControls()}
+}
+function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled}
+function renderArchives(){
+ $('archiveCount').textContent=archives.length;
+ const pages=Math.max(1,Math.ceil(archives.length/20));archivePage=Math.min(archivePage,pages-1);
+ $('archiveList').innerHTML=archives.length?archives.slice().reverse().slice(archivePage*20,archivePage*20+20).map(archive=>'<div class="archive-item"><strong>'+esc(archive.filename)+'</strong><div class="hint">'+archive.combos.reduce((n,combo)=>n+combo.groups.length,0)+' 组 · '+new Date(archive.archivedAt).toLocaleString('zh-CN')+'<br>到期时间：'+new Date(archive.expiresAt).toLocaleString('zh-CN')+'<br>'+(archive.delivery==='saved'?'已写入所选文件':'已发起下载，请确认浏览器下载完成；可恢复后重试')+'</div><button class="btn" data-restore="'+archive.id+'">恢复到整理区</button></div>').join('')+(pages>1?'<div class="pager"><button class="btn" data-archive-page="'+Math.max(0,archivePage-1)+'">上一页归档</button><span>'+(archivePage+1)+' / '+pages+'</span><button class="btn" data-archive-page="'+Math.min(pages-1,archivePage+1)+'">下一页归档</button></div>':''):'<div class="hint">暂无归档记录</div>';
+ syncControls();
+}
+async function restoreArchive(id){
+ if(!canEdit())return;const archive=archives.find(item=>item.id===Number(id));if(!archive)return;
+ if(archive.expiresAt<=Date.now()){expireArchives();renderArchives();changed();return notify('该归档已到期')}
+ busy=true;syncControls();const previous={combos,archives,selectedId};
+ try{const restored=await hydrate(archive.combos);combos=combos.map(combo=>({...combo,groups:combo.groups.slice()}));for(const combo of restored){let target=combos.find(item=>item.name.toLocaleLowerCase()===combo.name.toLocaleLowerCase());if(!target){target={...combo,groups:[]};combos.push(target)}target.groups.push(...combo.groups);target.nextGroup=Math.max(target.nextGroup,combo.nextGroup);selectedId=target.id}archives=archives.filter(item=>item.id!==archive.id);await persistState();groupPage=0;render();renderArchives();notify('已恢复，可继续整理或重新下载')}catch(error){combos=previous.combos;archives=previous.archives;selectedId=previous.selectedId;render();renderArchives();notify('恢复失败：'+error.message)}finally{busy=false;syncControls()}
+}
+window.addEventListener('beforeunload',event=>{if(saveVersion!==savedVersion||saveFailed||busy){event.preventDefault();event.returnValue=''}});
+function cleanName(value){return String(value||'').trim().replace(/[\\/:*?"<>|]/g,'_').replace(/[. ]+$/,'').replace(/^\.+$/,'')}
+function esc(value){return String(value).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
+function hasChinese(value){return /[\u3400-\u9fff\uf900-\ufaff]/.test(value)}
+function notify(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2300)}
+function selected(){return combos.find(item=>item.id===selectedId)||null}
+function countFiles(combo){return combo.groups.reduce((n,group)=>n+group.files.length,0)}
+function allFiles(){return combos.reduce((n,combo)=>n+countFiles(combo),0)}
+function revoke(files){files.forEach(item=>{if(item.previewUrl)URL.revokeObjectURL(item.previewUrl)})}
+function comboName(values){return [values.sku1,values.color1,values.sku2,values.color2].filter(Boolean).map(cleanName).join('+')}
+function releasePreviews(){for(const combo of combos)for(const group of combo.groups)for(const item of group.files)if(item.previewUrl){URL.revokeObjectURL(item.previewUrl);item.previewUrl=''}}
+function isVideo(file){return file.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|avi|mkv|wmv|mpeg|mpg|3gp)$/i.test(file.name)}
+function mediaCount(files){const videos=files.filter(item=>isVideo(item.file)).length,images=files.length-videos;return [images?images+'张图片':'',videos?videos+'个视频':''].filter(Boolean).join(' · ')||'0个文件'}
+function thumbMarkup(group,item){
+ const video=isVideo(item.file),url=item.previewUrl||(item.previewUrl=URL.createObjectURL(item.file));
+ const preview=video?'<video controls preload="none" playsinline src="'+url+'" aria-label="'+esc(item.file.name)+'">浏览器无法预览此视频，原文件仍可打包下载。</video>':'<img loading="lazy" src="'+url+'" alt="'+esc(item.file.name)+'">';
+ const primary=video?'':'<button class="thumb-action '+(group.primaryId===item.id?'on':'')+'" type="button" data-primary="'+group.id+'" data-file="'+item.id+'">'+(group.primaryId===item.id?'★ 主图':'设为主图')+'</button>';
+ return '<div class="thumb'+(video?' video':'')+'">'+preview+'<div class="thumb-label" title="'+esc(item.file.name)+'">'+esc(item.file.name)+'</div>'+primary+'<button class="icon-btn" type="button" data-remove-file="'+group.id+'" data-file="'+item.id+'">移除</button></div>';
+}
+function groupMarkup(group){
+ const pages=Math.max(1,Math.ceil(group.files.length/12)),page=Math.min(thumbPages.get(group.id)||0,pages-1),files=group.files.slice(page*12,page*12+12);
+ return '<section><div class="group-row"><div class="group-info"><div class="group-name">'+esc(group.name)+'</div><div class="group-count">'+mediaCount(group.files)+'</div></div><button class="btn" type="button" data-download-group="'+group.id+'">下载并归档</button><button class="icon-btn" type="button" data-remove-group="'+group.id+'">移除素材组</button></div><div class="thumbs">'+files.map(item=>thumbMarkup(group,item)).join('')+'</div>'+(pages>1?'<div class="pager"><button class="btn" data-thumb-group="'+group.id+'" data-page="'+Math.max(0,page-1)+'">上一页素材</button><span>'+(page+1)+' / '+pages+'</span><button class="btn" data-thumb-group="'+group.id+'" data-page="'+Math.min(pages-1,page+1)+'">下一页素材</button></div>':'')+'</section>';
+}
+function render(){
+ releasePreviews();
+ const list=$('comboList');
+ if(!combos.length)list.innerHTML='<div class="empty">还没有组合，先创建一个商品组合</div>';
+ else list.innerHTML=combos.map(combo=>'<button type="button" class="combo '+(combo.id===selectedId?'active':'')+'" data-select="'+combo.id+'"><svg class="combo-icon" viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M3 7V6a2 2 0 0 1 2-2h4l2 2"/></svg><span class="combo-text"><span class="combo-name">'+esc(combo.name)+'</span><span class="combo-meta">'+combo.groups.length+'组素材 · '+mediaCount(combo.groups.flatMap(group=>group.files))+'</span></span>'+(combo.id===selectedId?'<span class="check">✓</span>':'')+'</button>').join('');
+ const combo=selected(),root=$('workspace');if(combo)groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));
+ if(!combo){root.innerHTML='<div class="empty">创建并选择一个组合后，开始整理素材</div>';syncControls();return}
+ root.innerHTML='<div class="current"><div class="current-label">当前正在整理</div><div class="current-name">'+esc(combo.name)+'</div></div>'+
+  '<label class="drop" data-drop="1"><input class="file-input" type="file" accept="image/*,video/*,.mp4,.mov,.m4v,.webm,.avi,.mkv,.wmv,.mpeg,.mpg,.3gp" multiple><span><svg viewBox="0 0 24 24"><rect x="4" y="6" width="15" height="14" rx="2"/><path d="M8 4h11a2 2 0 0 1 2 2v10M7 16l3-3 2 2 2-2 3 3M9 10h.01"/></svg><div class="drop-title">将一批图片或视频拖到这里</div><div class="drop-note">图片和视频可一起加入，每批自动生成一个素材组<br>图片可设为主图；视频保留原格式，预览播放取决于浏览器支持。</div><button class="btn btn-light" type="button" data-pick="1" style="margin-top:10px">＋ 选择图片或视频</button></span></label>'+
+  '<div class="toolbar"><h2>已整理素材</h2><span>'+combo.groups.length+'组</span></div>'+
+  '<div class="groups">'+(combo.groups.length?combo.groups.slice(groupPage*20,groupPage*20+20).map(groupMarkup).join(''):'<div class="empty">还没有素材，拖入第一批图片或视频开始整理</div>')+'</div>'+
+  (combo.groups.length>20?'<div class="pager"><button class="btn" data-group-page="'+Math.max(0,groupPage-1)+'">上一页素材组</button><span>'+(groupPage+1)+' / '+Math.ceil(combo.groups.length/20)+'</span><button class="btn" data-group-page="'+Math.min(Math.ceil(combo.groups.length/20)-1,groupPage+1)+'">下一页素材组</button></div>':'');
+ syncControls();
+}
+function addCombo(event){
+ event.preventDefault();if(!canEdit())return;
+ const values={sku1:cleanName($('sku1').value),color1:cleanName($('color1').value),sku2:cleanName($('sku2').value),color2:cleanName($('color2').value)};
+ if(!values.sku1||!values.color1)return notify('请填写款号 1 和款号 1 颜色');
+ if(!hasChinese(values.color1))return notify('款号 1 颜色请包含中文，便于蓝V识别');
+ if(values.sku2&&!values.color2)return notify('填写款号 2 后，请填写款号 2 颜色');
+ if(values.color2&&!values.sku2)return notify('填写款号 2 颜色时，也请填写款号 2');
+ if(values.sku2&&!hasChinese(values.color2))return notify('款号 2 颜色请包含中文，便于蓝V识别');
+ const name=comboName(values);
+ const existing=combos.find(item=>item.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+ if(existing){
+  selectedId=existing.id;groupPage=0;
+  render();changed();
+  $('workspace').scrollIntoView({behavior:'smooth',block:'start'});
+  notify('这个商品组合已存在，已自动跳转');
+  return;
+ }
+ const combo={id:nextId++,name,groups:[],nextGroup:1};
+ combos.push(combo);selectedId=combo.id;groupPage=0;$('comboForm').reset();render();changed();notify('组合已创建并选中');
+}
+function addFiles(fileList){
+ if(!canEdit())return;
+ const combo=selected();if(!combo)return notify('请先选择商品组合');
+ const files=Array.from(fileList||[]).filter(file=>file.type.startsWith('image/')||isVideo(file));
+ if(!files.length)return notify('请选择图片或视频文件');
+ const number=String(combo.nextGroup++).padStart(2,'0');
+ const group={id:nextId++,name:'素材组'+number,primaryId:null,files:files.map(file=>({id:nextId++,file,previewUrl:''}))};
+ for(const item of group.files)pendingFiles.set(item.id,{id:item.id,file:item.file});
+ combo.groups.push(group);groupPage=Math.floor((combo.groups.length-1)/20);render();changed();navigator.storage?.persist?.().catch(()=>{});notify('已自动创建'+group.name+'，加入'+mediaCount(group.files));
+}
+function removeGroup(groupId){if(!canEdit())return;const combo=selected();if(!combo)return;const index=combo.groups.findIndex(group=>group.id===Number(groupId));if(index<0)return;revoke(combo.groups[index].files);combo.groups.splice(index,1);groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));render();changed()}
+function removeFile(groupId,fileId){if(!canEdit())return;const combo=selected();const group=combo?.groups.find(item=>item.id===Number(groupId));if(!group)return;const index=group.files.findIndex(item=>item.id===Number(fileId));if(index<0)return;revoke([group.files[index]]);group.files.splice(index,1);if(group.primaryId===Number(fileId))group.primaryId=null;if(!group.files.length)combo.groups=combo.groups.filter(item=>item.id!==group.id);groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));render();changed()}
+function setPrimary(groupId,fileId){if(!canEdit())return;const group=selected()?.groups.find(item=>item.id===Number(groupId));if(!group)return;if(isVideo(group.files.find(item=>item.id===Number(fileId))?.file||{type:'',name:''}))return;group.primaryId=group.primaryId===Number(fileId)?null:Number(fileId);render();changed()}
+function onListClick(event){if(!canEdit())return;const button=event.target.closest('[data-select]');if(!button)return;selectedId=Number(button.dataset.select);groupPage=0;render();changed()}
+$('comboForm').addEventListener('submit',addCombo);
+$('comboList').addEventListener('click',onListClick);
+$('workspace').addEventListener('click',event=>{
+ if(!canEdit())return;
+ const groupDownload=event.target.closest('[data-download-group]');if(groupDownload){downloadZip(Number(groupDownload.dataset.downloadGroup));return}
+ const thumbs=event.target.closest('[data-thumb-group]');if(thumbs){thumbPages.set(Number(thumbs.dataset.thumbGroup),Number(thumbs.dataset.page));render();return}
+ const pages=event.target.closest('[data-group-page]');if(pages){groupPage=Number(pages.dataset.groupPage);render();return}
+ const picker=event.target.closest('[data-pick]');if(picker){event.preventDefault();event.stopPropagation();$('workspace').querySelector('.file-input')?.click();return}
+ const remove=event.target.closest('[data-remove-group]');if(remove){removeGroup(remove.dataset.removeGroup);return}
+ const removeOne=event.target.closest('[data-remove-file]');if(removeOne){removeFile(removeOne.dataset.removeFile,removeOne.dataset.file);return}
+ const primary=event.target.closest('[data-primary]');if(primary){setPrimary(primary.dataset.primary,primary.dataset.file)}
+});
+$('workspace').addEventListener('change',event=>{if(event.target.matches('.file-input')){addFiles(event.target.files);event.target.value=''}});
+$('workspace').addEventListener('dragover',event=>{const drop=event.target.closest('[data-drop]');if(drop){event.preventDefault();drop.classList.add('drag')}});
+$('workspace').addEventListener('dragleave',event=>{const drop=event.target.closest('[data-drop]');if(drop&&!drop.contains(event.relatedTarget))drop.classList.remove('drag')});
+$('workspace').addEventListener('drop',event=>{const drop=event.target.closest('[data-drop]');if(drop){event.preventDefault();drop.classList.remove('drag');addFiles(event.dataTransfer.files)}});
+$('download').addEventListener('click',()=>downloadZip());
+$('comboForm').addEventListener('input',()=>{if(ready&&!busy&&!readOnly)changed()});
+$('archiveList').addEventListener('click',event=>{const pages=event.target.closest('[data-archive-page]');if(pages&&canEdit()){archivePage=Number(pages.dataset.archivePage);renderArchives();return}const button=event.target.closest('[data-restore]');if(button)restoreArchive(button.dataset.restore)});
+$('backup').addEventListener('click',exportBackup);
+$('importBackup').addEventListener('click',()=>{if(canEdit())$('backupFile').click()});
+$('backupFile').addEventListener('change',event=>{const file=event.target.files[0];event.target.value='';if(file)importBackup(file)});
+
+function crcTable(){const table=new Uint32Array(256);for(let n=0;n<256;n++){let value=n;for(let k=0;k<8;k++)value=value&1?(0xedb88320^(value>>>1)):(value>>>1);table[n]=value>>>0}return table}
+const CRC=crcTable();
+async function crc32(file){let crc=0xffffffff;const reader=file.stream().getReader();while(true){const {done,value}=await reader.read();if(done)break;for(let i=0;i<value.length;i++)crc=CRC[(crc^value[i])&255]^(crc>>>8)}return (crc^0xffffffff)>>>0}
+function dosTime(){const date=new Date();return {time:(date.getHours()<<11)|(date.getMinutes()<<5)|Math.floor(date.getSeconds()/2),date:((date.getFullYear()-1980)<<9)|((date.getMonth()+1)<<5)|date.getDate()}}
+function zipParts(pathName,crc,size,offset,directory,dt){const name=new TextEncoder().encode(pathName),local=new Uint8Array(30+name.length),lv=new DataView(local.buffer);lv.setUint32(0,0x04034b50,true);lv.setUint16(4,20,true);lv.setUint16(6,0x0800,true);lv.setUint16(8,0,true);lv.setUint16(10,dt.time,true);lv.setUint16(12,dt.date,true);lv.setUint32(14,crc,true);lv.setUint32(18,size,true);lv.setUint32(22,size,true);lv.setUint16(26,name.length,true);local.set(name,30);const central=new Uint8Array(46+name.length),cv=new DataView(central.buffer);cv.setUint32(0,0x02014b50,true);cv.setUint16(4,20,true);cv.setUint16(6,20,true);cv.setUint16(8,0x0800,true);cv.setUint16(10,0,true);cv.setUint16(12,dt.time,true);cv.setUint16(14,dt.date,true);cv.setUint32(16,crc,true);cv.setUint32(20,size,true);cv.setUint32(24,size,true);cv.setUint16(28,name.length,true);cv.setUint32(38,directory?0x10<<16:0,true);cv.setUint32(42,offset,true);central.set(name,46);return {local,central}}
+function endRecord(count,size,offset){const end=new Uint8Array(22),view=new DataView(end.buffer);view.setUint32(0,0x06054b50,true);view.setUint16(8,count,true);view.setUint16(10,count,true);view.setUint32(12,size,true);view.setUint32(16,offset,true);return end}
+function uniqueName(raw,used){const dot=raw.lastIndexOf('.'),stem=dot>0?raw.slice(0,dot):raw,ext=dot>0?raw.slice(dot):'';let name=raw,index=2;while(used.has(name.toLocaleLowerCase()))name=stem+' ('+(index++)+')'+ext;used.add(name.toLocaleLowerCase());return name}
+
+function downloadName(extension){const date=new Date(),stamp=[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0'),String(date.getHours()).padStart(2,'0'),String(date.getMinutes()).padStart(2,'0'),String(date.getSeconds()).padStart(2,'0')].join('');return '蓝V素材_'+stamp+extension}
+async function chooseDestination(filename){return window.showSaveFilePicker?window.showSaveFilePicker({suggestedName:filename}):null}
+async function deliverBlob(blob,filename,handle){
+ if(handle){const writer=await handle.createWritable();try{await writer.write(blob);await writer.close()}catch(error){await writer.abort().catch(()=>{});throw error}return 'saved'}
+ const link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);return 'started';
+}
+async function buildZip(downloadCombos){
+ const local=[],central=[],dt=dosTime();let offset=0,totalEntries=0;
+ for(const combo of downloadCombos){
+  const comboPath=cleanName(combo.name)+'/';const dir=zipParts(comboPath,0,0,offset,true,dt);local.push(dir.local);central.push(dir.central);offset+=dir.local.length;totalEntries++;
+  for(const group of combo.groups){
+   const groupPath=comboPath+cleanName(group.name)+'/';const gdir=zipParts(groupPath,0,0,offset,true,dt);local.push(gdir.local);central.push(gdir.central);offset+=gdir.local.length;totalEntries++;
+   const used=new Set(),files=group.files.slice().sort((a,b)=>Number(b.id===group.primaryId)-Number(a.id===group.primaryId));
+   for(const item of files){
+    const raw=cleanName(item.file.name)||'image';let request=raw;
+    if(item.id===group.primaryId){const dot=raw.lastIndexOf('.');request='1'+(dot>0?raw.slice(dot):'')}
+    const filename=uniqueName(request,used),size=item.file.size;
+    if(size>0xffffffff||offset>0xffffffff)throw new Error('文件过大，请拆分为多个压缩包');
+    const parts=zipParts(groupPath+filename,await crc32(item.file),size,offset,false,dt);local.push(parts.local,item.file);central.push(parts.central);offset+=parts.local.length+size;totalEntries++;
+    if(totalEntries%8===0)$('status').textContent='正在打包 '+totalEntries+' 个文件…';
+   }
+  }
+ }
+ if(totalEntries>65535||offset>0xffffffff)throw new Error('内容太多，请拆分为多个压缩包');
+ const centralSize=central.reduce((sum,part)=>sum+part.length,0);if(offset+centralSize>0xffffffff)throw new Error('ZIP 文件超过 4 GB，请拆分下载');
+ return new Blob([...local,...central,endRecord(totalEntries,centralSize,offset)],{type:'application/zip'});
+}
+async function archiveDownloaded(downloadCombos,filename,delivery){
+ const previousCombos=combos,previousArchives=archives,ids=new Set(downloadCombos.flatMap(combo=>combo.groups.map(group=>group.id))),now=Date.now();
+ releasePreviews();
+ combos=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>!ids.has(group.id))}));
+ archives=[...archives,{id:nextId++,archivedAt:now,expiresAt:now+ARCHIVE_TTL,filename,delivery,combos:downloadCombos.map(metaCombo)}];
+ try{await persistState()}catch(error){combos=previousCombos;archives=previousArchives;render();renderArchives();throw new Error('文件已发起保存，但归档保存失败；素材仍保留在整理区')}
+ groupPage=0;archivePage=0;render();renderArchives();
+}
+async function downloadZip(groupId=null){
+ if(!canEdit()||!allFiles())return;
+ const downloadCombos=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>groupId===null||group.id===groupId)})).filter(combo=>combo.groups.length);
+ if(!downloadCombos.length)return;
+ const size=downloadCombos.reduce((sum,combo)=>sum+combo.groups.reduce((n,group)=>n+group.files.reduce((m,item)=>m+item.file.size,0),0),0);
+ if(size>1024*1024*1024)return notify('本次素材超过 1 GB，请按素材组分批下载，避免浏览器内存不足');
+ busy=true;syncControls();const filename=downloadName('.zip');
+ try{
+  const handle=await chooseDestination(filename);
+  await persistState();$('status').textContent='正在打包文件夹…';
+  const blob=await buildZip(downloadCombos),delivery=await deliverBlob(blob,filename,handle);
+  await archiveDownloaded(downloadCombos,filename,delivery);
+  $('status').textContent=delivery==='saved'?'文件已保存，素材已归档 3 天。':'已发起下载并归档 3 天；请确认浏览器下载完成，必要时可恢复重试。';
+  notify(delivery==='saved'?'已保存并归档，保留 3 天':'已发起下载并归档，可从归档区恢复');
+ }catch(error){if(error.name==='AbortError')$('status').textContent='已取消保存，素材仍在整理区。';else{$('status').textContent='下载或归档未完成，素材仍在整理区。';notify(error.message||'下载失败，请重试')}}
+ finally{busy=false;syncControls()}
+}
+const BACKUP_MAGIC='BLUEVB01';
+async function exportBackup(){
+ if(!canEdit())return;busy=true;syncControls();
+ try{
+  const filename=downloadName('.bluev'),handle=await chooseDestination(filename);
+  await saveQueue.catch(()=>{});const state=snapshot(),ids=[...referencedFiles(state)],tx=db.transaction('files','readonly'),done=transactionDone(tx);
+  const requests=ids.map(id=>({id,request:requestResult(tx.objectStore('files').get(id))}));
+  const records=await Promise.all(requests.map(async item=>{const stored=await item.request,record=pendingFiles.get(item.id)||stored;if(!record?.file)throw new Error('备份缺少素材，请保留当前页面');return record}));await done;
+  const manifest={format:BACKUP_MAGIC,state,files:records.map(record=>({id:record.id,name:record.file.name||'image',type:record.file.type,lastModified:record.file.lastModified||Date.now(),size:record.file.size}))};
+  const bytes=new TextEncoder().encode(JSON.stringify(manifest)),length=new Uint8Array(4);if(bytes.length>8*1024*1024)throw new Error('备份记录太多，请分批整理');new DataView(length.buffer).setUint32(0,bytes.length,true);
+  const blob=new Blob([BACKUP_MAGIC,length,bytes,...records.map(record=>record.file)],{type:'application/octet-stream'});
+  await deliverBlob(blob,filename,handle);notify('工作备份已导出，包含图片、视频和组合，可用于恢复');
+ }catch(error){if(error.name!=='AbortError')notify('备份失败：'+error.message)}finally{busy=false;syncControls()}
+}
+async function parseBackup(file){
+ const header=new Uint8Array(await file.slice(0,12).arrayBuffer());if(header.length!==12||new TextDecoder().decode(header.slice(0,8))!==BACKUP_MAGIC)throw new Error('不是有效的蓝V工作备份');
+ const length=new DataView(header.buffer).getUint32(8,true);if(length>8*1024*1024||12+length>file.size)throw new Error('备份头部已损坏');
+ const manifest=JSON.parse(await file.slice(12,12+length).text()),state=manifest.state;
+ if(manifest.format!==BACKUP_MAGIC||state?.version!==1||!Array.isArray(state.combos)||!Array.isArray(state.archives)||!Array.isArray(manifest.files))throw new Error('备份版本或结构无效');
+ const records=new Map();let offset=12+length,maxId=0;const entityIds=new Set(),comboIds=new Set(),fileIds=new Set();
+ function checkId(id){if(!Number.isSafeInteger(id)||id<1||entityIds.has(id)||comboIds.has(id))throw new Error('备份编号无效');entityIds.add(id);maxId=Math.max(maxId,id)}
+ for(const record of manifest.files){
+  checkId(record.id);if(!Number.isSafeInteger(record.size)||record.size<0||offset+record.size>file.size||typeof record.name!=='string'||typeof record.type!=='string')throw new Error('备份素材已损坏');
+  records.set(record.id,{id:record.id,file:new File([file.slice(offset,offset+record.size)],record.name,{type:record.type,lastModified:record.lastModified})});offset+=record.size;
+ }
+ if(offset!==file.size)throw new Error('备份长度不匹配');
+ function checkCombos(list){
+  for(const combo of list){
+   if(!Number.isSafeInteger(combo.id)||combo.id<1||entityIds.has(combo.id))throw new Error('备份组合编号无效');
+   maxId=Math.max(maxId,combo.id);comboIds.add(combo.id);
+   if(typeof combo.name!=='string'||!cleanName(combo.name)||!Array.isArray(combo.groups)||!Number.isSafeInteger(combo.nextGroup)||combo.nextGroup<1)throw new Error('备份组合无效');
+   for(const group of combo.groups){checkId(group.id);if(typeof group.name!=='string'||!cleanName(group.name)||!Array.isArray(group.files)||!group.files.length)throw new Error('备份素材组无效');for(const item of group.files){if(!records.has(item.id)||fileIds.has(item.id))throw new Error('备份素材引用无效');fileIds.add(item.id)}if(group.primaryId!==null&&!group.files.some(item=>item.id===group.primaryId))throw new Error('备份主图无效')}
+  }
+ }
+ checkCombos(state.combos);
+ for(const archive of state.archives){checkId(archive.id);if(!Array.isArray(archive.combos)||!Number.isFinite(archive.archivedAt)||!Number.isFinite(archive.expiresAt)||typeof archive.filename!=='string')throw new Error('备份归档无效');archive.expiresAt=Math.min(archive.expiresAt,archive.archivedAt+ARCHIVE_TTL,Date.now()+ARCHIVE_TTL);checkCombos(archive.combos)}
+ if(!Number.isSafeInteger(state.nextId)||state.nextId<=maxId)throw new Error('备份编号顺序无效');
+ if(new Set(state.combos.map(combo=>combo.id)).size!==state.combos.length)throw new Error('备份组合重复');
+ if(fileIds.size!==records.size||!(state.selectedId===null||state.combos.some(combo=>combo.id===state.selectedId)))throw new Error('备份工作区引用无效');
+ const loaded=state.combos.map(combo=>({...combo,groups:combo.groups.map(group=>({...group,files:group.files.map(item=>({id:item.id,file:records.get(item.id).file,previewUrl:''}))}))}));
+ return {state,records,loaded};
+}
+async function importBackup(file){
+ if(!canEdit())return;busy=true;syncControls();
+ try{
+  const parsed=await parseBackup(file);
+  if(!confirm('恢复备份会替换当前工作区。建议先导出当前工作备份。确定恢复？'))return;
+  await saveQueue.catch(()=>{});
+  const previous={combos,archives,selectedId,nextId,pending:new Map(pendingFiles),draft:Object.fromEntries(['sku1','color1','sku2','color2'].map(id=>[id,$(id).value]))};
+  releasePreviews();combos=parsed.loaded;archives=parsed.state.archives;selectedId=parsed.state.selectedId;nextId=parsed.state.nextId;expireArchives();pendingFiles.clear();
+  for(const record of parsed.records.values())pendingFiles.set(record.id,record);
+  for(const id of ['sku1','color1','sku2','color2'])$(id).value=String(parsed.state.draft?.[id]||'');
+  try{await persistState()}catch(error){combos=previous.combos;archives=previous.archives;selectedId=previous.selectedId;nextId=previous.nextId;pendingFiles.clear();for(const record of previous.pending.values())pendingFiles.set(record.id,record);for(const id of Object.keys(previous.draft))$(id).value=previous.draft[id];throw error}
+  groupPage=0;render();renderArchives();notify('工作备份已恢复');
+ }catch(error){notify('恢复失败：'+error.message)}finally{busy=false;render();renderArchives();syncControls()}
+}
+
+render();startWorkspace();
+</script>
+</body>
+</html>

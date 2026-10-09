@@ -187,6 +187,7 @@ async function leavesOf(absDir) {
         files: files.filter(f => f.type !== 'junk'),
         sku: r.sku,
         color: r.color,
+        goods: r.goods || (r.sku ? [{ sku: r.sku, color: r.color }] : []),
         how: r.how            // 货号/颜色是怎么解析出来的；只有 'plus' 才是「货号+颜色」命名
       };
     })
@@ -203,37 +204,34 @@ async function leavesOf(absDir) {
  *   ③ 叶子名里没有 `+`（解析不出货号/颜色）时不猜，记进 noParse，由界面点名。
  */
 function fillGoodsFromLeaf(row, leaf, goods, fills, filled) {
-  // ★ 能拿来补的只有两种 how：
-  //   'plus' —— 叶子名确实是「货号+颜色」⇒ **货号、颜色都可信**；
-  //   'sku'  —— 只解析出货号（`…/批次目录/货号/序号/` 颜色没填，或扁平副本的 `货号_序号`）
-  //             ⇒ **只补货号，颜色一律留空**，并记一条 noColor 让界面点名（不静默、也不瞎猜颜色）。
-  //   其余（老式三层 / 随手命名）解析出来的东西**不能当货号**：实测
-  //   `…/品牌甲/20260904/IMG_5253/1/` 会被读成 货号=20260904 / 颜色=IMG_5253。
-  //   宁可空着让人去补，也不往运营的账上写一个假货号。
+  // 只认明确的「货号+颜色」或无颜色货号；多好物目录按两段一组补入对应位置。
   const ok = leaf.how === 'plus' || leaf.how === 'sku';
-  const leafSku = ok ? String(leaf.sku || '').trim() : '';
-  const leafColor = leaf.how === 'plus' ? String(leaf.color || '').trim() : '';
-  if (!goods.length) {
-    if (!leafSku) { filled.noParse.push({ rowNo: row.rowNo, name: leaf.name }); return; }
-    goods.push({ sku: leafSku, color: leafColor });
-    filled.sku++;
-    if (leafColor) filled.color++;
-    else if (leaf.how === 'sku') filled.noColor.push({ rowNo: row.rowNo, name: leaf.name, sku: leafSku });
-    fills.push({ rowNo: row.rowNo, sku: leafSku, color: leafColor });
+  const parsed = ok
+    ? ((leaf.how === 'plus' && Array.isArray(leaf.goods) && leaf.goods.length)
+      ? leaf.goods
+      : [{ sku: leaf.sku || '', color: leaf.how === 'plus' ? leaf.color || '' : '' }])
+    : [];
+  if (!parsed.length || !parsed.some(g => String(g.sku || '').trim())) {
+    if (!goods.length || !goods[0].color) filled.noParse.push({ rowNo: row.rowNo, name: leaf.name });
     return;
   }
-  const g0 = goods[0];
-  let touched = false;
-  if (!g0.sku && leafSku) { g0.sku = leafSku; filled.sku++; touched = true; }
-  if (!g0.color && leafColor) {
-    if (!g0.sku || g0.sku === leafSku) { g0.color = leafColor; filled.color++; touched = true; }
-    else filled.mismatch.push({ rowNo: row.rowNo, report: g0.sku, leaf: leafSku });
+  for (let i = 0; i < parsed.length; i++) {
+    const source = parsed[i] || {};
+    const leafSku = String(source.sku || '').trim();
+    const leafColor = leaf.how === 'plus' ? String(source.color || '').trim() : '';
+    if (!leafSku) continue;
+    const g = goods[i] || (goods[i] = {});
+    let touched = false;
+    if (!g.sku) { g.sku = leafSku; filled.sku++; touched = true; }
+    else if (g.sku !== leafSku) {
+      if (!g.color && leafColor) filled.mismatch.push({ rowNo: row.rowNo, no: i + 1, report: g.sku, leaf: leafSku });
+      continue;
+    }
+    if (!g.color && leafColor) { g.color = leafColor; filled.color++; touched = true; }
+    if (!g.color && leaf.how === 'sku') filled.noColor.push({ rowNo: row.rowNo, name: leaf.name, sku: g.sku || '' });
+    if (touched) fills.push({ rowNo: row.rowNo, no: i + 1, sku: g.sku || '', color: g.color || '' });
   }
-  if (!g0.color && leaf.how === 'sku') filled.noColor.push({ rowNo: row.rowNo, name: leaf.name, sku: g0.sku || '' });
-  else if (!g0.color && !ok) filled.noParse.push({ rowNo: row.rowNo, name: leaf.name });
-  if (touched) fills.push({ rowNo: row.rowNo, sku: g0.sku || '', color: g0.color || '' });
 }
-
 /**
  * 组装 items / copyRows / publishRows
  * opts: { generateCopy: async (items) => [{id,title,body,topics}], batch }
@@ -423,28 +421,36 @@ async function fillGoods(file, fills, meta = {}) {
     await wb.xlsx.readFile(wp.toLong(file));
     const ws = wb.getWorksheet(meta.sheetName) || wb.worksheets.find(w => /报告/.test(w.name)) || wb.worksheets[0];
     const { goods } = mapHeader(ws.getRow(1));
-    const g1 = goods[1] || {};
-    if (g1.sku == null && g1.color == null) {
-      return { updated: 0, skipped: list.length, error: '报告表头里没有「好物1_货号 / 好物1_颜色」列，补不了' };
+    const missingNo = list.find(f => {
+      const g = goods[Math.max(1, Number(f.no) || 1)] || {};
+      return g.sku == null && g.color == null;
+    });
+    if (missingNo) {
+      return { updated: 0, skipped: list.length, error: '报告表头里没有好物' + (missingNo.no || 1) + '的货号/颜色列，补不了' };
     }
     let updated = 0;
+    let written = 0;
     const rows = [];
+    const updatedRows = new Set();
     for (const f of list) {
       const row = ws.getRow(Number(f.rowNo));
+      const g = goods[Math.max(1, Number(f.no) || 1)] || {};
       let did = false;
-      if (g1.sku != null && f.sku && !cellText(row.getCell(g1.sku))) { row.getCell(g1.sku).value = f.sku; did = true; }
-      if (g1.color != null && f.color && !cellText(row.getCell(g1.color))) { row.getCell(g1.color).value = f.color; did = true; }
-      if (did) { updated++; rows.push(f.rowNo); }
+      if (g.sku != null && f.sku && !cellText(row.getCell(g.sku))) { row.getCell(g.sku).value = f.sku; did = true; }
+      if (g.color != null && f.color && !cellText(row.getCell(g.color))) { row.getCell(g.color).value = f.color; did = true; }
+      if (did) {
+        written++;
+        if (!updatedRows.has(f.rowNo)) { updated++; rows.push(f.rowNo); updatedRows.add(f.rowNo); }
+      }
     }
-    if (!updated) return { updated: 0, skipped: list.length };
+    if (!written) return { updated: 0, skipped: list.length };
     await wb.xlsx.writeFile(wp.toLong(file));
-    return { updated, rows, skipped: list.length - updated };
+    return { updated, rows, skipped: list.length - written };
   } catch (e) {
     if (wp.isFileLockError(e)) return { updated: 0, skipped: list.length, busy: true, error: e.message };
     return { updated: 0, skipped: list.length, error: e.message };
   }
 }
-
 /* ---------------- 回写：实际执行时间 / 执行结果 ---------------- */
 
 function resultText(r) {

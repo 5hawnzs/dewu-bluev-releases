@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('api', {
   pickDir: opts => ipcRenderer.invoke('dialog:dir', opts),
   pickFile: opts => ipcRenderer.invoke('dialog:file', opts),
   openPath: p => ipcRenderer.invoke('shell:open', p),
+  openExternal: url => ipcRenderer.invoke('shell:openExternal', url),
   reveal: p => ipcRenderer.invoke('shell:reveal', p),
   // 把**内置**的得物安装包另存到本机（弹「另存为」；装进模拟器那条路见 run('publish.installDewuApk')）
   apkSaveDewu: () => ipcRenderer.invoke('apk:saveDewu'),

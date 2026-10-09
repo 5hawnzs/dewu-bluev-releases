@@ -290,6 +290,28 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   ok('⑫ 补了几条会写进说明（不静默补）',
     /按叶子文件夹名（货号\+颜色）补上了 2 条/.test(plusBuilt.notes.join('')), plusBuilt.notes.join(' | '));
 
+  const multiDir = makeBatch(path.join(TMP, '品牌甲', '20261009'), {
+    '26FW-YB160+冠军白+UWG760094+雾霾蓝': ['1.jpg']
+  });
+  const multiFile = await writeReport(path.join(TMP, '双好物自动补齐.xlsx'), COLS.concat(['好物2_颜色']), [
+    { 素材路径: multiDir, 标题: '双好物', 文案: '两款关联' }
+  ]);
+  const multiReport = await report.readReport(multiFile);
+  const multiBuilt = await report.build(multiReport, {});
+  ok('⑫ 双好物目录按成对货号/颜色补入两个好物位',
+    multiBuilt.fills.length === 2
+    && multiBuilt.publishRows[0].goodsList.length === 2
+    && multiBuilt.publishRows[0].goodsList[0].sku === '26FW-YB160'
+    && multiBuilt.publishRows[0].goodsList[1].sku === 'UWG760094'
+    && multiBuilt.publishRows[0].goodsList[1].color === '雾霾蓝',
+    JSON.stringify(multiBuilt.publishRows[0].goodsList));
+  const multiWrite = await report.fillGoods(multiFile, multiBuilt.fills, { sheetName: multiReport.sheetName });
+  const multiBack = await readBack(multiFile);
+  ok('⑫ 双好物自动补齐会分别写回好物1和好物2列',
+    multiWrite.updated === 1 && multiBack[0]['好物1_货号'] === '26FW-YB160'
+    && multiBack[0]['好物2_货号'] === 'UWG760094' && multiBack[0]['好物2_颜色'] === '雾霾蓝',
+    JSON.stringify({ write: multiWrite, row: multiBack[0] }));
+
   // ⑫d ★★ 2026-10-03 真机实测（E:\bluev_beta\0901_2）：「批次目录 / 货号 / 序号」三层、**颜色没填**。
   //     老逻辑把批次目录名当货号、真货号当颜色。正确行为：只补货号、颜色留空，并点名。
   const skuOnlyDir = makeBatch(path.join(TMP, '品牌乙'), {

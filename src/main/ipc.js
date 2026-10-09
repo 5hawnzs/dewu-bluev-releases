@@ -379,6 +379,16 @@ function register() {
     const err = await shell.openPath(p);
     return err === '' ? true : err;
   }));
+  ipcMain.handle('shell:openExternal', guard(async (_e, value) => {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.protocol !== 'https:' || url.username || url.password) return false;
+      await shell.openExternal(url.href);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }));
   ipcMain.handle('shell:reveal', guard((_e, p) => { if (p) shell.showItemInFolder(p); return true; }));
 
   /**
