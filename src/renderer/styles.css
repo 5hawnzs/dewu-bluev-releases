@@ -153,11 +153,29 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
 .nav.on{background:var(--panel);color:var(--tx);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .nav.on .ic{opacity:1}
 .folder-tool-link{
-  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;
+  position:relative;isolation:isolate;display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:999px;
   margin-top:auto;font-size:13px;color:var(--tx2);cursor:pointer;user-select:none;
   width:100%;text-align:left;border:0;background:transparent;font-family:var(--font);
+  box-shadow:inset 0 -8px 10px #8fdfff1f;transition:box-shadow .3s ease;
 }
-.folder-tool-link:hover{background:rgba(128,128,110,.12)}
+.folder-tool-link::before{
+  content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:linear-gradient(90deg,#ffaa4080,#9c40ff80,#ffaa4080);background-size:300% 100%;
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;animation:folder-tool-gradient 8s linear infinite;
+}
+.folder-tool-link:hover{box-shadow:inset 0 -5px 10px #8fdfff3f}
+.folder-tool-link:focus-visible{outline:2px solid #9c40ff;outline-offset:3px}
+.folder-tool-text{
+  flex:1;font-weight:500;color:#7c3aed;background:linear-gradient(90deg,#b97100,#7c3aed,#b97100);
+  background-size:300% 100%;background-clip:text;-webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;animation:folder-tool-gradient 8s linear infinite;
+}
+html.dark .folder-tool-text{background-image:linear-gradient(90deg,#ffaa40,#b877ff,#ffaa40)}
+.folder-tool-arrow{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;transition:transform .3s ease}
+.folder-tool-link:hover .folder-tool-arrow{transform:translateX(2px)}
+@keyframes folder-tool-gradient{0%{background-position:0% 50%}100%{background-position:150% 50%}}
+@media(prefers-reduced-motion:reduce){.folder-tool-link::before,.folder-tool-text{animation:none}.folder-tool-link,.folder-tool-arrow{transition:none}}
 .folder-tool-link .ic{width:16px;height:16px;flex:0 0 16px;display:block;opacity:.75}
 .folder-tool-link .ic svg{display:block;width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 
