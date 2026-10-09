@@ -260,6 +260,14 @@ app.whenReady().then(async () => {
   const selfPwd = await js(`window.api.authChangePwd(${JSON.stringify(MEMBER_PASS)}, 'Member@456')`);
   ok('普通成员能改自己的密码', selfPwd.ok === true, selfPwd.error || '');
 
+  // 文案模型配置写入本机共用 copy.llm；所有登录账号均可编辑，不限管理员。
+  const oldLlm = store.get('copy.llm');
+  const memberLlmSet = await js(`window.api.configSet({ copy: { llm: { model: '__member_model_edit__' } } })`);
+  ok('普通成员可通过真实 config:set 保存文案模型配置',
+    !!memberLlmSet && store.get('copy.llm.model') === '__member_model_edit__',
+    store.get('copy.llm.model'));
+  store.set({ copy: { llm: oldLlm || {} } });
+
   // ---- ⑦a-2 管理员专属页签：「高级设置」11 ----
   // ★ 这条必须真跑一遍（而不是看源码里有没有 syncAdminNav）：页签是 index.html 里的静态按钮，
   //   藏它的逻辑在渲染层，只有登录成普通成员再看 DOM 才算数。

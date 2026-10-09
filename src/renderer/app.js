@@ -629,9 +629,8 @@ TABS[3] = {
   actions: () => [
     // ★ 2026-10-08 用户要求：模型配置搬到**这一页**，做成弹窗，并且是**唯一**入口
     //   （原来在「高级设置 → 文案模型」的折叠框已删）。位置按用户指定，放在「提示词配置」左边。
-    // ★ 只给管理员看：它原来就住在**仅管理员可见**的「高级设置」里，搬过来不能顺手把它开放给所有人
-    //   （改的是全公司共用的接口地址与 Key）。与「高级设置」那套 canAdmin() 是同一个口径。
-    ...(canAdmin() ? [{ act: 'copy:model', label: '模型配置' }] : []),
+    // ★ 所有已登录账号都能修改本机模型配置；高级设置仍保持管理员专属。
+    { act: 'copy:model', label: '模型配置' },
     { act: 'copy:prompt', label: '提示词配置' },
     // ★ 2026-10-08 用户要求删掉「按当前素材生成」：用户原话「一般没点目录的时候不会有当前素材，
     //   所以这两个功能重复了」。文案生成只剩按批次这一条路（下面 ACTS 里的 'copy:run' 与
@@ -2051,7 +2050,6 @@ function closeHelpModal() { state.helpModal = null; renderHelpModal(); }
  *   必须有**唯一的可见出口**，否则用户只看到空框，不知道实际在用哪个模型 —— 那界面就是在骗人。
  */
 function openModelModal() {
-  if (!canAdmin()) { toast('模型配置只有管理员能改', 'warn'); return; }
   state.modelModal = { eff: null, models: [], listErr: '', busy: false };
   renderModelModal();
   refreshLmEff();
@@ -2711,8 +2709,8 @@ const ACTS = {
   },
   // 「保存」：表单 → copy.llm.*。★ 空串要**显式写下去**（＝回到「跟随内置」），
   //   不能靠「不写这个键」来留空 —— store.set 是 mergeDeep，不写就等于保留旧值，清不掉上一次填的。
+  // 所有已登录账号均可保存；config:set 主进程门禁负责要求有效登录。
   'lm:save': async () => {
-    if (!canAdmin()) { toast('模型配置只有管理员能改', 'err'); return; }
     const val = sel => { const e = $(sel); return e ? e.value.trim() : ''; };
     const llm = {
       enabled: val('#lmEnabled') === 'true',

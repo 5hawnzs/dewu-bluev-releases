@@ -1600,10 +1600,10 @@ app.whenReady().then(async () => {
   ok('★ 旧口径「标题格式轮换」不再出现在这一页（F01~F10 已降级为离线模板专用）',
     copyUi.oldFmt === false, JSON.stringify(copyUi));
 
-  // ★★ 2026-10-08 用户要求：模型配置搬到「文案生成」页（做成弹窗），并且成为**唯一**模型入口。
+  // ★★ 模型配置在「文案生成」页，是**所有已登录账号都能编辑**的唯一入口。
   //   原话：「后续模型调用都通过这个口子来，设置里的模型直接删了」「可设置默认模型，
   //   第一次填写后，后续默认选用这个」。逐条钉住：
-  //     ① 按钮在「提示词配置」**左边**（用户指定位置）；② 点它是**开弹窗**，不是跳设置页；
+  //     ① 普通成员也能看见按钮，且在「提示词配置」**左边**；② 点它是**开弹窗**，不是跳设置页；
   //     ③ 弹窗里配得全（启用 / 地址 / Key / 默认模型 / 拉清单 / 自检 / 保存）；
   //     ④ 「实际在用」显示真值，且**不带明文 key**；
   //     ⑤ 改完点「保存」真落进 copy.llm.model —— 这就是「后续默认选用这个」的落点。
@@ -1612,6 +1612,9 @@ app.whenReady().then(async () => {
   //     需要比对就看子串，不做空白归一。
   {
     const lmUi = await win.webContents.executeJavaScript(`(async () => {
+      const savedAuth = state.auth;
+      state.auth = { requireLogin: true, isAdmin: false, user: { username: 'member1', displayName: '普通成员', role: 'user' } };
+      renderAll();
       document.querySelector('.nav[data-tab="3"]').click();
       await new Promise(r => setTimeout(r, 250));
       // ★ 动作按钮在 #head 的 .act 里（不是 #pane —— #pane 是页面正文）
@@ -1632,8 +1635,11 @@ app.whenReady().then(async () => {
       const box = document.getElementById('lmBox');
       const has = s => !!(box && box.querySelector(s));
       const eff = await window.api.llmEffective();
+      const memberCanAdmin = canAdmin();
+      state.auth = savedAuth;
       return {
         modelBtn: !!modelBtn, sameRow, beforePrompt,
+        memberCanAdmin,
         open: !!mask && mask.hidden === false,
         fEnabled: has('#lmEnabled'), fEndpoint: has('#lmEndpoint'), fKey: has('#lmKey'), fModel: has('#lmModel'),
         listBtn: has('[data-act="lm:list"]'), testBtn: has('[data-act="lm:test"]'), saveBtn: has('[data-act="lm:save"]'),
@@ -1645,6 +1651,9 @@ app.whenReady().then(async () => {
     ok('★ 「模型配置」按钮在「文案生成」页，紧挨在「提示词配置」**左边**（用户指定位置）',
       lmUi.modelBtn && lmUi.sameRow && lmUi.beforePrompt,
       JSON.stringify({ btn: lmUi.modelBtn, sameRow: lmUi.sameRow, before: lmUi.beforePrompt }));
+    ok('普通成员不是管理员，但仍能看到并打开「模型配置」',
+      lmUi.memberCanAdmin === false && lmUi.modelBtn === true && lmUi.open === true,
+      JSON.stringify({ canAdmin: lmUi.memberCanAdmin, button: lmUi.modelBtn, open: lmUi.open }));
     ok('★ 点它**开弹窗**（不是跳到设置页）：启用 / 接口地址 / API Key / 默认模型 / 拉清单 / 自检 / 保存 一个不缺',
       lmUi.open && lmUi.fEnabled && lmUi.fEndpoint && lmUi.fKey && lmUi.fModel
         && lmUi.listBtn && lmUi.testBtn && lmUi.saveBtn, JSON.stringify(lmUi));
