@@ -33,6 +33,10 @@ function dayOf(ts) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 function dayLabel(days) { return days > 0 ? `最近 ${days} 天` : '全部时间'; }
+function dateTimeOf(ts) {
+  const d = new Date(ts);
+  return `${dayOf(ts)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
 function blankAcc() {
   return { rows: 0, ok: 0, fail: 0, other: 0, batches: new Set(), dayMap: new Map(), userMap: new Map(), lastAt: 0 };
@@ -100,8 +104,18 @@ function mapRunLog(e) {
  *   allLogs   true = 执行日志**不截断**（导出用）。★ 导出只给 100 条却不说，就是假账
  */
 function query(opts = {}) {
-  const days = opts.days == null ? 30 : (Number(opts.days) || 0);
-  const fromTs = days > 0 ? Date.now() - days * 86400000 : 0;
+  const customRange = opts.rangeMode === 'custom';
+  const days = customRange ? 0 : (opts.days == null ? 30 : (Number(opts.days) || 0));
+  let fromTs = days > 0 ? Date.now() - days * 86400000 : 0;
+  let toTs = Date.now();
+  let rangeLabel = dayLabel(days);
+  if (customRange) {
+    fromTs = new Date(String(opts.fromAt || '')).getTime();
+    toTs = new Date(String(opts.toAt || '')).getTime();
+    if (!Number.isFinite(fromTs) || !Number.isFinite(toTs)) throw new Error('请选择开始时间和结束时间');
+    if (toTs < fromTs) throw new Error('结束时间不能早于开始时间');
+    rangeLabel = '自定义时间';
+  }
   const scope = Array.isArray(opts.scopeIds) ? opts.scopeIds.map(String) : null;
   const wantBrand = String(opts.brandId || '');
   const onlyUntagged = wantBrand === UNTAGGED_FILTER;
@@ -113,7 +127,8 @@ function query(opts = {}) {
   const notes = [];
 
   const raw = sheet.readLog();
-  const entries = raw.filter(e => !fromTs || Number(e.ts) >= fromTs);
+  const entries = raw.filter(e => ((!customRange && !fromTs) || Number(e.ts) >= fromTs)
+    && (!customRange || Number(e.ts) <= toTs));
 
   const accs = new Map();          // key: brandId / '' / 未知 id
   let considered = 0;
@@ -153,7 +168,8 @@ function query(opts = {}) {
 
   // ---- 按天（密集：从起始日到今天的每一天都要有行，缺口是 0 而不是「没有这一天」）----
   const daily = [];
-  const denseDays = days > 0 ? Math.min(days, 120) : 0;
+  let denseDays = days > 0 ? Math.min(days, 120) : 0;
+  let dailyTruncated = false;
   if (denseDays > 0) {
     const all = new Map();
     for (const acc of accs.values()) for (const d of acc.dayMap.values()) {
@@ -166,6 +182,26 @@ function query(opts = {}) {
       const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
       const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
       daily.push(all.get(key) || { date: key, rows: 0, ok: 0, fail: 0, other: 0 });
+    }
+  } else if (customRange) {
+    const all = new Map();
+    for (const acc of accs.values()) for (const d of acc.dayMap.values()) {
+      const cur = all.get(d.date) || { date: d.date, rows: 0, ok: 0, fail: 0, other: 0 };
+      cur.rows += d.rows; cur.ok += d.ok; cur.fail += d.fail; cur.other += d.other;
+      all.set(d.date, cur);
+    }
+    const first = new Date(fromTs); first.setHours(0, 0, 0, 0);
+    const last = new Date(toTs); last.setHours(0, 0, 0, 0);
+    const span = Math.max(1, Math.floor((Date.UTC(last.getFullYear(), last.getMonth(), last.getDate())
+      - Date.UTC(first.getFullYear(), first.getMonth(), first.getDate())) / 86400000) + 1);
+    dailyTruncated = span > 120;
+    denseDays = Math.min(span, 120);
+    const cursor = new Date(last);
+    cursor.setDate(cursor.getDate() - denseDays + 1);
+    for (let i = 0; i < denseDays; i++) {
+      const key = `${cursor.getFullYear()}-${pad2(cursor.getMonth() + 1)}-${pad2(cursor.getDate())}`;
+      daily.push(all.get(key) || { date: key, rows: 0, ok: 0, fail: 0, other: 0 });
+      cursor.setDate(cursor.getDate() + 1);
     }
   }
 
@@ -183,7 +219,8 @@ function query(opts = {}) {
   // 'start' 也要带上：一条「开始」后面没有对应的「结束」，就说明任务是被中断的
   // （程序被关、进程被杀）—— 这正是管理员事后要查的东西，不能只看完成的
   const runRaw = runlog.read();
-  const runRows = runlog.query({ days, brandId: wantBrand, userId: wantUser, scopeIds: scope, preloaded: runRaw });
+  const runRows = runlog.query({ days, fromTs: customRange ? fromTs : undefined, toTs: customRange ? toTs : undefined,
+    brandId: wantBrand, userId: wantUser, scopeIds: scope, preloaded: runRaw });
   const ends = runRows.filter(e => e.kind === 'end');
   // 界面与导出**共用这一套映射**（口径只写一遍，免得导出和屏幕上的说明对不上）
   const logRows = runRows
@@ -207,9 +244,9 @@ function query(opts = {}) {
   return {
     generatedAt: Date.now(),
     range: {
-      days, label: dayLabel(days), fromTs,
-      from: fromTs ? dayOf(fromTs) : '（全部）',
-      to: dayOf(Date.now())
+      days, label: rangeLabel, fromTs, toTs, dailyTruncated,
+      from: customRange ? dateTimeOf(fromTs) : (fromTs ? dayOf(fromTs) : '（全部）'),
+      to: customRange ? dateTimeOf(toTs) : dayOf(Date.now())
     },
     sources: {
       publishLog: { file: sheet.logFile(), entries: raw.length, entriesInRange: entries.length, size: fileSize(sheet.logFile()) },
@@ -371,6 +408,7 @@ function csvCell(v) {
 
 function filterText(o, r) {
   const parts = [`范围=${r.range.label}`];
+  if (o.rangeMode === 'custom') parts[0] += `（${r.range.from} → ${r.range.to}）`;
   if (o.brandId === UNTAGGED_FILTER) parts.push('品牌=（只看未标品牌）');
   else if (o.brandId) parts.push(`品牌=${brands.labelOf(o.brandId)}（${o.brandId}）`);
   else parts.push('品牌=（全部）');

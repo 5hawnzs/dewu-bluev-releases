@@ -382,20 +382,17 @@ function topicCombos(count, brand) {
 /** 本地先定好每篇的「选择」，模型只填空 */
 function buildPlan(items, brand) {
   const { combos, warning } = topicCombos(items.length, brand);
-  const rotate = store.get('copy.rotateStrategy') || 'F01-F10 轮换';
-  const random = rotate === '随机';
   return {
     warning,
     rows: items.map((it, i) => {
-      const fi = random ? Math.floor(Math.random() * FORMATS.length) : i % FORMATS.length;
-      const ai = random ? Math.floor(Math.random() * ANGLES.length) : (i * 3) % ANGLES.length;
+      const fi = i % FORMATS.length;
+      const ai = (i * 3) % ANGLES.length;
       // ★★ 标题的「词包格式」（T01~T15）与本地模板的 F01~F10 是**两套**东西：
       //   F 只在「关掉模型 / 离线」时用；T 是给模型的**标题形状**（单品+热词 怎么拼）。
       //   同一个轮换下标 ⇒ 整批不会只出一种格式（用户明确要求「禁止单一格式重复」）。
       //   ★ 但「重复」的**判定口径**在 2026-10-03 被用户放宽：只看**相邻两条**是否一字不差
       //     （换了 emoji 就算不同；跨品牌、隔开几条再撞句都没关系）—— 见 copycheck.checkBatch。
-      const ti = random ? Math.floor(Math.random() * hotwords.STYLES.length) : i;
-      const ts = hotwords.styleOf(ti);
+      const ts = hotwords.styleOf(i);
       return {
         id: it.id,
         format: FORMATS[fi].code,

@@ -83,18 +83,9 @@
         <span class="ic"><svg viewBox="0 0 24 24"><path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg></span>
         <span>文案生成</span><span class="st" data-st="3">—</span>
       </button>
-      <!-- 货号颜色校验：2026-10-05 按用户要求**对非管理员隐藏**（只有管理员看得见这个页签）。
-           data-admin="1" ⇒ syncAdminNav() 直接把按钮 hidden 掉，并且当前正停在这一页时兜回第 1 页；
-           app.js 里 TABS[4].admin=true 是第二条线（Ctrl+4 / 老配置里的 tab=4 同样进不来）。
-           编号仍是 4 不重排（同上：重排要动一串编号、跳页写法与测试断言）。 -->
-      <button class="nav" data-tab="4" data-admin="1">
-        <span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><path d="M14 17.5a3.5 3.5 0 1 0 7 0 3.5 3.5 0 0 0-7 0z"/></svg></span>
-        <span>货号颜色校验</span><span class="st" data-st="4">—</span>
-      </button>
       <!-- 热词库：标题「产品词 + 热门词」用的那份词库，**单开一屏** ——
            它是低频维护、生成是高频动作，混一屏既容易误触生成、跑生成时又被词表挡路。
-           2026-10-03 按用户要求从「其他」组末尾挪到「货号颜色校验」正下方
-           （两页是一类事：都是「喂给生成的原料」在动，放一起好找）。
+           2026-10-03 按用户要求从「其他」组末尾移到生成相关内容旁边。
            ★ 只挪 DOM 位置、**编号仍是 12 不重排** —— 重排要把 6~12 全改号，
              连带 Ctrl+1..9、跳页写法与测试断言都得动，为一个位置改动不划算。
            非管理员可见但**只读**（标题从哪些词里挑，谁都能看）；能改的只有管理员 ——
@@ -167,7 +158,6 @@
       <!-- 条数：与左侧「运行日志」页同一个口径（内存缓冲区，上限 500 条）。
            2026-10-03 用户：右边不显示有多少条 -->
       <span class="chip" id="logBarCount" title="内存缓冲区里的条数（上限 500 条），不是磁盘上历史日志的总数">—</span>
-      <button id="logClear" type="button">清空</button>
     </div>
     <div class="lines" id="log"></div>
   </div>

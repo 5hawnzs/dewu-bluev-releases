@@ -18,7 +18,8 @@ const state = {
   brandsMeta: null,   // { isAdmin, brands:[{id,name,enabled}], mine:[id], defaultBrandId }
   brandId: '',        // 标题栏那个「当前品牌」的值；产出类任务都带上它，主进程还会再校验一次权限
   stats: null,        // 品牌统计查询结果
-  statsOpts: { days: 30, brandId: '', userId: '' },
+  statsOpts: { days: 30, brandId: '', userId: '', rangeMode: 'preset', fromAt: '', toAt: '' },
+  statsQueryOpts: null,
   statsBusy: false,
   statsPath: null,    // 输出目录可写性自检结果（{ ok, dir, checks[], error }）
   brandEdit: null,    // 正在改名的品牌 { id, name }
@@ -293,14 +294,6 @@ function renderLogPaneLines() {
   box.scrollTop = box.scrollHeight;
   const cnt = $('#logPaneCount');
   if (cnt) cnt.textContent = logCountText();
-}
-/** 清空：底部与页面一起清（只清一边 = 「同步」当场破功） */
-function clearLogs() {
-  state.logs = [];
-  const bar = $('#log');
-  if (bar) bar.innerHTML = '';
-  renderLogPaneLines();
-  updateLogBadge();
 }
 /** 条数：只更新底部日志栏右上角那个 chip（★ 2026-10-05 用户：左侧「运行日志」模块上不要显示条数
  *  —— 侧栏那个角标（`[data-st="10"]`）已整个去掉，连元素都没了）。
@@ -654,8 +647,7 @@ TABS[3] = {
       <div class="box">
         <h3>批次设置</h3>
         <div class="row">
-          <span class="lbl">轮换策略</span>
-          <select class="inp" data-cfg="copy.rotateStrategy">${['F01-F10 轮换', '随机'].map(v => `<option ${cfg.rotateStrategy === v ? 'selected' : ''}>${v}</option>`).join('')}</select>
+          <div class="hint">标题句式由系统按行自动轮换 T01–T15，无需手动选择。</div>
           <span class="lbl">必带话题</span>
           <input class="inp" style="min-width:210px;flex:0 0 auto" value="${esc(cfg.requiredTopic)}" data-cfg="copy.requiredTopic"
             placeholder="如 #品牌话题，#品类词" title="要多个就用空格 / 逗号 / 顿号隔开，没写 # 会自动补上">
@@ -706,20 +698,13 @@ TABS[3] = {
   }
 };
 
-/* ---------------- 页签 4：货号颜色校验（仅管理员可见） ----------------
- * ★ 2026-10-05 用户要求：这一页「对除了管理员的用户隐藏」。
- *   两条线一起上，缺一条就漏：
- *     ① index.html 那个按钮带 data-admin="1" ⇒ syncAdminNav() 把按钮 hidden 掉；
- *     ② 这里 admin:true ⇒ 即使当前正停在这一页（老配置里存过 tab=4、或按了 Ctrl+4），
- *        renderAll 开头的 syncAdminNav() 也会把 state.tab 兜回第 1 页。
- *   ★ 与「高级设置」是同一个机制（canAdmin()：免登录/开发模式算有权限，否则看 role）。
- *   ★ 注意这是**界面隐藏**：主进程那道「只有管理员能做」的口径没跟着加 ——
- *     校验本身是只读比对、不写别人的数据，所以按用户这次的要求只做隐藏。
+/* ---------------- 页签 4：货号颜色校验（对所有用户隐藏） ----------------
+ * 用户要求该页面不向任何账号展示。保留编号与实现，避免扰动后续页签编号，但关闭导航和快捷键入口。
  */
 TABS[4] = {
   title: '货号颜色校验',
-  admin: true,
-  desc: '比对得物商品池 · 多颜色货号必须填对应颜色 · 附图片取色反查（仅管理员可见）',
+  hidden: true,
+  desc: '对照商品池检查货号与颜色',
   actions: () => [
     { act: 'verify:pool', label: '同步商品池' },
     { act: 'verify:run', label: '开始校验', primary: true }
@@ -853,7 +838,7 @@ TABS[6] = {
       <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
       发布时按你填的<b>货号</b>在「关联好物」里搜出结果，<b>默认选第一件商品</b>发出去（这条做法已实测可行）。
       ${canAdmin()
-        ? `要精确到某个颜色，就到「货号颜色校验」页把颜色核对准。要让机器真按这条做，需要在 UI 定位表里、
+        ? `要精确到某个颜色，需要在 UI 定位表里、
       「搜索货号」后面补一步「点第一件商品」（「设置 → 高级设置 → 抓取页面结构」生成的候选表里改）。`
         : `要精确到某个颜色，请联系管理员核对颜色校验（这一页只对管理员开放）。`}</p>
       <p class="hint"><b>内容主图</b>：默认用这个叶子里<b>排在最前面那张</b>（你实拍一般就是先拍的正面照）。
@@ -1191,6 +1176,12 @@ function updateUpdateBar(u) {
 /* ---------------- ⑧ 品牌统计 ---------------- */
 function daysLabel(d) { return Number(d) > 0 ? `最近 ${d} 天` : '全部时间'; }
 
+function localDateTimeInput(ts) {
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function fmtTs(ts) {
   if (!ts) return '';
   const d = new Date(ts);
@@ -1205,11 +1196,24 @@ async function loadStats() {
   try {
     const r = await appApi.statsQuery(state.statsOpts);
     state.stats = r && r.ok ? r : { error: (r && r.error) || '查询失败' };
+    state.statsQueryOpts = state.stats.error ? null : JSON.parse(JSON.stringify(state.statsOpts));
   } catch (e) {
     state.stats = { error: (e && e.message) || '查询失败' };
+    state.statsQueryOpts = null;
   }
   state.statsBusy = false;
   renderAll();
+}
+
+function statsFiltersCurrent() {
+  return !!(state.stats && !state.stats.error && state.statsQueryOpts
+    && JSON.stringify(state.statsQueryOpts) === JSON.stringify(state.statsOpts));
+}
+
+function syncStatsExportButtons() {
+  const disabled = !statsFiltersCurrent();
+  document.querySelectorAll('.act [data-act="stats:export"], .act [data-act="stats:exportLog"]')
+    .forEach(el => { el.disabled = disabled; });
 }
 
 /** 频次柱：一天一根，高度按最大值归一。0 的那天画成细灰线（表示「这天真的没有」，不是漏画） */
@@ -1225,13 +1229,12 @@ function sparkHtml(byDay, max) {
 
 TABS[8] = {
   title: '品牌统计',
-  desc: '按品牌看发布频次、数量与执行日志 · 未标品牌的历史记录单独列出，不并入任何品牌',
+  desc: '查看品牌发布情况，可筛选时间并导出',
   actions: () => [
-    { act: 'stats:refresh', label: '查询', primary: true },
     // 「导出 xlsx」是整套统计（4 张表）；「导出执行日志」只要这一份日志，且**条数完整**
     // （xlsx 里那张执行日志表过去只导最近 100 条，界面上一句不提 → 对账会对不上）
-    { act: 'stats:export', label: '导出 xlsx', disabled: !(state.stats && !state.stats.error) },
-    { act: 'stats:exportLog', label: '导出执行日志', disabled: !(state.stats && !state.stats.error) },
+    { act: 'stats:export', label: '导出 xlsx', disabled: !statsFiltersCurrent() },
+    { act: 'stats:exportLog', label: '导出执行日志', disabled: !statsFiltersCurrent() },
     // 日志是「追加写、失败不报错」的：输出目录指向共享盘时，盘掉线会**静默少数据**，
     // 所以给一颗按钮让管理员当场问一句「这台机器现在写得进去吗」
     { act: 'stats:checkPath', label: '检测输出目录' }
@@ -1243,8 +1246,14 @@ TABS[8] = {
     const head = `
       <div class="box">
         <div class="acct-toolbar" style="margin-top:0">
-          <span class="lbl">时间范围</span>
-          <select class="inp" id="stDays">${[[7, '最近 7 天'], [30, '最近 30 天'], [90, '最近 90 天'], [0, '全部时间']].map(([v, t]) => `<option value="${v}" ${Number(state.statsOpts.days) === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+          <select class="inp" id="stDays" aria-label="时间范围">
+            ${[[7, '最近 7 天'], [30, '最近 30 天'], [90, '最近 90 天'], [0, '全部时间']].map(([v, t]) => `<option value="${v}" ${state.statsOpts.rangeMode !== 'custom' && Number(state.statsOpts.days) === v ? 'selected' : ''}>${t}</option>`).join('')}
+            <option value="custom" ${state.statsOpts.rangeMode === 'custom' ? 'selected' : ''}>自定义时间</option>
+          </select>
+          ${state.statsOpts.rangeMode === 'custom' ? `<label class="lbl" for="stFrom">从</label>
+          <input class="inp" id="stFrom" type="datetime-local" step="60" value="${esc(state.statsOpts.fromAt)}" aria-label="开始时间">
+          <label class="lbl" for="stTo">到</label>
+          <input class="inp" id="stTo" type="datetime-local" step="60" value="${esc(state.statsOpts.toAt)}" aria-label="结束时间">` : ''}
           <span class="lbl">品牌</span>
           <select class="inp" id="stBrand">
             <option value="">全部品牌</option>
@@ -1254,7 +1263,7 @@ TABS[8] = {
           ${m.isAdmin ? `<span class="lbl">执行人</span>
           <select class="inp" id="stUser"><option value="">全部执行人</option>${((s && s.users) || []).map(u => `<option value="${esc(u.userId)}" ${state.statsOpts.userId === u.userId ? 'selected' : ''}>${esc(u.displayName || u.username || '未记录')}（${u.rows}）</option>`).join('')}</select>` : ''}
           <button class="btn sm primary" data-act="stats:refresh">查询</button>
-          <span class="chip ${m.isAdmin ? 'chip-user' : ''}">${m.isAdmin ? '管理员：全部品牌' : `你名下 ${usable.length} 个品牌`}</span>
+          <span class="chip">${m.isAdmin ? '全部品牌' : `我的品牌 ${usable.length} 个`}</span>
         </div>
       </div>`;
     if (!s) return head + '<div class="empty">正在读取发布日志…（若一直停在这里，说明输出目录不可读）</div>';
@@ -1285,8 +1294,7 @@ TABS[8] = {
         ${rowOf(s.untagged, 'brandrow-flag', `<b>${esc(s.untagged.name)}</b><div style="font-size:11px;opacity:.75">历史记录 / 发布时没选品牌</div>`)}
         ${s.orphans.map(o => rowOf(o, 'brandrow-dead')).join('')}
       </tbody></table></div>
-      <p class="hint">「频次」是按天画的柱：柱高 = 当天条数，细灰线 = 当天 0 条（是「真的没有」，不是没画）。
-      条数按 <code>publish-log.jsonl</code> 逐条统计；「执行日志」按 <code>run-log.jsonl</code> 的<b>任务级</b>记录。</p>`;
+      `;
 
     // 按天明细：只列「有数据的那些天」。时间范围=全部时没有密集序列，就从各品牌的 byDay 合并出来
     const dayMap = new Map();
@@ -1309,6 +1317,7 @@ TABS[8] = {
         return s.daily.map(d => `<i class="${d.rows ? '' : 'zero'}" style="width:auto;flex:1;height:${d.rows ? Math.max(4, Math.round(d.rows / mx * 64)) : 2}px" title="${esc(d.date)}：${d.rows} 条"></i>`).join('');
       })()}</div>
       <p class="hint">${esc(s.daily[0] ? s.daily[0].date : '')} → ${esc(s.daily[s.daily.length - 1] ? s.daily[s.daily.length - 1].date : '')}</p>` : ''}
+      ${s.range.dailyTruncated ? '<p class="hint">图表仅显示该范围内最近 120 天。</p>' : ''}
       ${daysWith.length ? `<div class="tw" style="margin-top:10px"><table>
         <thead><tr><th>日期</th><th>条数</th><th>成功</th><th>失败</th><th>其他</th></tr></thead>
         <tbody>${daysWith.slice(0, 60).map(d => `<tr><td class="mono">${esc(d.date)}</td><td class="num">${d.rows}</td><td class="num">${d.ok}</td><td class="num">${d.fail}</td><td class="num">${d.other}</td></tr>`).join('')}</tbody>
@@ -1336,8 +1345,8 @@ TABS[8] = {
     const shownLogs = (s.logs || []).length;
     const totalLogs = Number(s.logsTotal == null ? shownLogs : s.logsTotal);
     const logHint = totalLogs > shownLogs
-      ? `屏幕上只列最近 <b>${shownLogs}</b> 条（一屏放不下）；按当前筛选条件<b>一共 ${totalLogs} 条</b>。「导出执行日志」会把 <b>${totalLogs} 条全部</b>导出。`
-      : `「导出执行日志」会把符合当前筛选条件的这 <b>${totalLogs}</b> 条导成 <code>.log</code>（给人看）+ <code>.csv</code>（给 Excel），条数与筛选条件会写进文件头。`;
+      ? `共 ${totalLogs} 条，页面显示最近 ${shownLogs} 条；导出包含全部记录。`
+      : `共 ${totalLogs} 条；导出包含全部记录。`;
 
     return head + `
       <div class="stats">
@@ -1351,25 +1360,13 @@ TABS[8] = {
       </div>
       <div class="box">
         <div class="tagline">
-          <span class="chip">范围：${esc(s.range.label)}（${esc(s.range.from)} → ${esc(s.range.to)}）</span>
-          <span class="chip">发布日志 ${t.totalInLog} 条 / 命中 ${t.consideredInRange}</span>
-          <span class="chip">运行日志 ${s.sources.runLog.entries} 条 · ${kb(s.sources.runLog.size)}</span>
+          <span class="chip">${esc(s.range.label)}：${esc(s.range.from)} → ${esc(s.range.to)}</span>
           ${t.filtered ? '<span class="chip warn">已按条件筛选</span>' : ''}
         </div>
-        <p class="hint" style="margin-top:8px">数据文件：<code>${esc((s.sources.publishLog.file || '').replace(/^\\\\\?\\/, ''))}</code> ·
-          <code>${esc((s.sources.runLog.file || '').replace(/^\\\\\?\\/, ''))}</code> —— 只追加、不自动裁剪，要清理由你自己决定。</p>
-        <p class="hint" style="margin-top:4px">⚠️ 这一页统计的是<b>本机这个输出目录</b>里的记录：别的电脑各写各的目录，这里看不到。
-          要让管理员的统计收齐所有电脑，就得把各台的「输出目录」都指到<b>同一个共享位置</b>（局域网共享 / 映射盘）；
-          但日志是「写失败也不报错」的，共享盘一掉就会悄悄少数据 —— 所以改完先点<b>「检测输出目录」</b>确认写得进去。</p>
-        ${state.statsPath ? `<div class="tagline" style="margin-top:6px">
-          <span class="chip ${state.statsPath.ok ? '' : 'warn'}">输出目录自检：${state.statsPath.ok ? '正常' : '有问题'}</span>
-          ${(state.statsPath.checks || []).map(c => `<span class="chip ${c.ok ? '' : 'warn'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}</span>`).join('')}
-        </div>
-        ${state.statsPath.ok ? '' : `<p class="hint" style="color:var(--red)">${esc(state.statsPath.error || '自检未通过')}</p>`}
-        <p class="hint">目录：<code>${esc(state.statsPath.dir || '')}</code>${(state.statsPath.checks || []).map(c => ` · ${esc(c.name)}：${esc(c.detail || '')}`).join('')}</p>` : ''}
+        ${state.statsPath ? `<p class="hint" style="margin:6px 0 0;color:${state.statsPath.ok ? 'var(--tx3)' : 'var(--red)'}">输出目录：${state.statsPath.ok ? '可写' : esc(state.statsPath.error || '不可写')}</p>` : ''}
       </div>
       ${notes}
-      <div class="box"><h3>按品牌汇总（${esc(daysLabel(state.statsOpts.days))}）</h3>${summary}</div>
+      <div class="box"><h3>品牌汇总（${esc(s.range.label)}）</h3>${summary}</div>
       ${dailyBox}
       <div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>`;
   }
@@ -1700,7 +1697,6 @@ function logPaneHtml() {
     <div class="row" style="margin-top:9px">
       <select class="inp" id="logLv">${opts}</select>
       <input class="inp" id="logQ" style="flex:1;min-width:180px" placeholder="按关键字筛（标题 / 批次 / 文件路径…）" value="${esc(f.q)}" spellcheck="false">
-      <button class="btn sm" data-act="log:clear"${uiLogs().length ? '' : ' disabled'}>清空日志</button>
       <button class="btn sm primary" data-act="log:export"${uiLogs().length ? '' : ' disabled'}>导出日志</button>
     </div>
   </div>
@@ -1730,7 +1726,6 @@ TABS[10] = {
   title: '运行日志',
   desc: '与底部日志栏同一份内容 · 可按级别/关键字筛 · 可导出成 .log 与 .jsonl',
   actions: () => [
-    { act: 'log:clear', label: '清空', disabled: !uiLogs().length },
     { act: 'log:export', label: '导出日志', primary: true, disabled: !uiLogs().length }
   ],
   render() {
@@ -1783,7 +1778,7 @@ function renderAll() {
   syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 编号在 5 处留了空位。老配置里存过 tab=5、
   //   或按 Ctrl+5 按到空位时，必须兜回第 1 页 —— 否则 t 是 undefined，下面读 t.title 直接崩（整页白屏）。
-  if (!TABS[state.tab]) state.tab = 1;
+  if (!TABS[state.tab] || TABS[state.tab].hidden) state.tab = 1;
   const t = TABS[state.tab];
   const g = stateGate();
   // 掉线（拒绝对象）不是「这一页没数据」，是「你已经不在登录状态」⇒ 回登录页，把原因原样带过去。
@@ -2261,16 +2256,16 @@ function advBox(title, open, body, hint) {
 }
 
 /**
- * 管理员专属页签（「高级设置」与「货号颜色校验」）：非管理员整个按钮都不显示。
+ * 管理员专属页签（「品牌与权限」「高级设置」）：非管理员整个按钮都不显示。
  * ★ 这只是「不给人添乱」—— 真正拦住的是主进程那几道 guard。但这条不能省：
  *   否则普通成员能点进一个自己改不动、也不该动的页面，只会一头雾水。
  * ★ 两条线都在这里收口：① 按钮 hidden；② 当前 `state.tab` 若正落在一个自己看不到的页签上，
- *   兜回第 1 页（退出登录 / 换账号 / 老配置里存过 tab=4 或 tab=11 时会遇到）。
+ *   兜回第 1 页（退出登录 / 换账号 / 老配置里存过隐藏页签时会遇到）。
  */
 function syncAdminNav() {
   const ok = canAdmin();
   document.querySelectorAll('.nav[data-admin]').forEach(el => { el.hidden = !ok; });
-  if (!ok && TABS[state.tab] && TABS[state.tab].admin) state.tab = 1;
+  if (TABS[state.tab] && (TABS[state.tab].hidden || (!ok && TABS[state.tab].admin))) state.tab = 1;
 }
 
 /** 这个人能编辑哪些品牌：管理员=全部；成员=名下的（含已停用的，否则停用一个他连看都看不到） */
@@ -2872,19 +2867,7 @@ const ACTS = {
   'batch:detail': (el) => { state.batchDetail = el.dataset.batch; renderAll(); },
   'batch:detailClose': () => { state.batchDetail = null; renderAll(); },
 
-  // ---- 运行日志（左侧「执行」组那一页）----
-  // ★ 清空走统一的 clearLogs()：底部日志栏与页面必须一起清。
-  //   说清「清的是什么」—— 主进程那份还在，重新登录会再拉回来；不写清就会被当成"清了个假的"。
-  'log:clear': () => {
-    // ★ 报「清了多少条」要按**界面上看的那些**（大结论）算：明细本来就不在界面上，
-    //   把它算进去会报出一个用户从没见过的数字（屏幕上 12 行、提示「已清空 300 条」）。
-    const before = uiLogs().length;
-    clearLogs();
-    toast(before
-      ? `已清空 ${before} 条运行日志（清的是界面这份缓存；主进程还留着最近 500 条，重新登录会再拉回来）`
-      : '本来就没有日志', '');
-    renderAll();
-  },
+  // ---- 运行日志：只允许筛选和导出，任何用户都没有清除入口 ----
   'log:export': async () => {
     const r = await appApi.logExport(logExportPayload());
     if (!r || !r.ok) {
@@ -3204,17 +3187,25 @@ const ACTS = {
 
   // ---- 品牌统计 ----
   'stats:refresh': async () => {
+    if (state.statsOpts.rangeMode === 'custom') {
+      const from = new Date(state.statsOpts.fromAt || '').getTime();
+      const to = new Date(state.statsOpts.toAt || '').getTime();
+      if (!Number.isFinite(from) || !Number.isFinite(to)) { toast('请选择开始时间和结束时间', 'err'); return; }
+      if (to < from) { toast('结束时间不能早于开始时间', 'err'); return; }
+    }
     state.stats = null;
     state.statsTried = false;
     await loadStats();
   },
   'stats:export': async () => {
+    if (!statsFiltersCurrent()) { toast('筛选条件已更改，请先查询', 'err'); return; }
     const r = await appApi.statsExport(state.statsOpts);
     if (!r.ok) { toast(r.error || '导出失败', 'err'); return; }
     toast(`已导出：${(r.file || '').split(/[\\/]/).pop()}（${r.brandCount} 个品牌 · ${r.totals.rows} 条记录）`, 'ok');
     if (r.file) await appApi.reveal(r.file);
   },
   'stats:exportLog': async () => {
+    if (!statsFiltersCurrent()) { toast('筛选条件已更改，请先查询', 'err'); return; }
     const r = await appApi.statsExportLog(state.statsOpts);
     if (!r.ok) { toast(r.error || '导出失败', 'err'); return; }
     // 两个条数都报：本次导了几条、日志文件里一共几条（差多少一眼看得出）
@@ -3331,14 +3322,29 @@ function bindStats() {
   const wire = (id, key) => {
     const el = $(id);
     if (!el) return;
-    el.onchange = () => { state.statsOpts[key] = el.value; };
+    el.onchange = () => { state.statsOpts[key] = el.value; syncStatsExportButtons(); };
   };
-  wire('#stDays', 'days');
+  const range = $('#stDays');
+  if (range) range.onchange = () => {
+    if (range.value === 'custom') {
+      state.statsOpts.rangeMode = 'custom';
+      const now = Date.now();
+      if (!state.statsOpts.fromAt) state.statsOpts.fromAt = localDateTimeInput(now - 30 * 86400000);
+      if (!state.statsOpts.toAt) state.statsOpts.toAt = localDateTimeInput(now);
+    } else {
+      state.statsOpts.rangeMode = 'preset';
+      state.statsOpts.days = Number(range.value);
+    }
+    renderAll();
+  };
+  const from = $('#stFrom'), to = $('#stTo');
+  if (from) from.onchange = () => { state.statsOpts.fromAt = from.value; syncStatsExportButtons(); };
+  if (to) to.onchange = () => { state.statsOpts.toAt = to.value; syncStatsExportButtons(); };
   wire('#stBrand', 'brandId');
   // 换了筛选条件，执行人下拉的候选也会变，所以清掉防止选到一个当前范围内不存在的人
   const ub = $('#stUser');
   if (ub) {
-    ub.onchange = () => { state.statsOpts.userId = ub.value; };
+    ub.onchange = () => { state.statsOpts.userId = ub.value; syncStatsExportButtons(); };
   } else {
     state.statsOpts.userId = '';
   }
@@ -3390,9 +3396,6 @@ function bind() {
   $('#capMax').onclick = () => appApi.toggleMax();
   $('#capClose').onclick = () => appApi.close();
   $('.titlebar').ondblclick = e => { if (!e.target.closest('.cap')) appApi.toggleMax(); };
-  // 清空必须走 clearLogs()：底部日志栏与「运行日志」页要一起清（只清一边就不是「同步」了）
-  $('#logClear').onclick = () => { clearLogs(); if (state.tab === 10) renderAll(); };
-
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && state.brandModal) { closeBrandModal(); e.preventDefault(); return; }
     if (e.key === 'Escape' && state.userModal) { closeUserModal(); e.preventDefault(); return; }
@@ -3401,7 +3404,7 @@ function bind() {
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       const k = Number(e.key);
       // ★ TABS[k] 必须存在：页签 5 已删，Ctrl+5 落到空位的话原来是整页崩（读 undefined.title）
-      if (k >= 1 && k <= 9 && TABS[k]) { state.tab = k; renderAll(); e.preventDefault(); }
+      if (k >= 1 && k <= 9 && TABS[k] && !TABS[k].hidden) { state.tab = k; renderAll(); e.preventDefault(); }
     }
   });
 

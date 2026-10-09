@@ -21,7 +21,7 @@ app.commandLine.appendSwitch('disable-gpu');
 
 // ★ 下标 = 页签编号 - 1。页签 5「发布单」2026-10-03 已按用户要求删除，编号**不重排**
 //   ⇒ 第 5 位留 null 占位（否则 6~12 的标题会整体错位一格）。
-const TABS = ['素材整理', '合规检查', '文案生成', '货号颜色校验', null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '热词库'];
+const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '热词库'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -191,7 +191,7 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
 
-  ok('左侧导航是 11 个页签（「发布单」2026-10-03 已删；「高级设置」「热词库」排在最后）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 11,
+  ok('左侧导航是 10 个页签（货号颜色校验与「发布单」已隐藏/删除）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 10,
     await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
   ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
     await win.webContents.executeJavaScript(`(() => {
@@ -240,7 +240,7 @@ app.whenReady().then(async () => {
   // 页签 9 前面单独测过（品牌与权限）；10 是新增的「运行日志」。
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 从遍历名单里去掉（编号不重排，5 是空位）。
   const phs = [];        // 收集各页签真实渲染出来的 placeholder（见下方守卫断言）
-  for (const i of [1, 2, 3, 4, 6, 7, 8, 10, 12]) {
+  for (const i of [1, 2, 3, 6, 7, 8, 10, 12]) {
     await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('.nav[data-tab="${i}"]'); if (b) b.click(); return true; })()`);
     await new Promise(r => setTimeout(r, 150));
     const info = await win.webContents.executeJavaScript(`(() => {
@@ -267,7 +267,7 @@ app.whenReady().then(async () => {
   //   ③ 坏形状下每页都得有交代（写清原因的壳 或 登录页），不许留白。
   const shield = await win.webContents.executeJavaScript(`(() => {
     const DENY = { ok: false, error: '未登录或登录已过期，请重新登录' };
-    const ALL = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12];
+    const ALL = [1, 2, 3, 6, 7, 8, 9, 10, 11, 12];
     const good = { project: JSON.parse(JSON.stringify(state.project)), config: JSON.parse(JSON.stringify(state.config)) };
     const clone = o => JSON.parse(JSON.stringify(o));
     const run = (proj, cfg) => {
@@ -301,22 +301,22 @@ app.whenReady().then(async () => {
   })()`);
   const sh = JSON.parse(shield);
   const bads = [['project=null', sh.pNull], ['config=null', sh.cNull], ['project=拒绝对象', sh.pDeny], ['config=拒绝对象', sh.cDeny]];
-  ok('★ 正向对照：真值下 11 页**每页都真渲染**、一条异常都没有（证明下面那圈遍历真在跑，不是空==空）',
-    sh.good.threw.length === 0 && sh.good.rendered === 11,
-    `渲染 ${sh.good.rendered}/11 · 异常 ${sh.good.threw.length}${sh.good.threw.length ? ' → ' + sh.good.threw.join(',') : ''}`);
+  ok('★ 正向对照：真值下 10 页**每页都真渲染**、一条异常都没有（证明下面那圈遍历真在跑，不是空==空）',
+    sh.good.threw.length === 0 && sh.good.rendered === 10,
+    `渲染 ${sh.good.rendered}/10 · 异常 ${sh.good.threw.length}${sh.good.threw.length ? ' → ' + sh.good.threw.join(',') : ''}`);
   ok('★★ 工程状态/配置「不是数据」时，renderAll 一页都不许抛（原来 project=null 崩 6 页、config=null 崩 5 页）',
     bads.every(([, r]) => r.threw.length === 0),
     bads.map(([n, r]) => `${n}:${r.threw.length ? '崩' + r.threw.length + '(' + r.threw[0] + ')' : '0'}`).join(' · '));
   ok('★★ 每种坏形状下每一页都要有交代（说清原因的壳 或 登录页）—— 不许留白',
-    bads.every(([, r]) => r.shell + r.gate === 11),
+    bads.every(([, r]) => r.shell + r.gate === 10),
     bads.map(([n, r]) => `${n}:壳${r.shell}+登录${r.gate}`).join(' · '));
   ok('★ 壳里把**原因**写出来了（拒绝的要说"未登录/已过期"，没读到的要说"还没读到"），不是一句"暂无数据"糊弄',
     sh.pDeny.said.indexOf('未登录') >= 0 && sh.cDeny.said.indexOf('未登录') >= 0
       && /还没读到/.test(sh.pNull.said) && /还没读到/.test(sh.cNull.said),
     JSON.stringify(bads.map(([n, r]) => [n, r.said])));
-  ok('★ 自证还原：把真值放回去后 11 页照常渲染、零异常（这套探针自己没把界面弄坏）',
-    sh.back.threw.length === 0 && sh.back.rendered === 11,
-    `渲染 ${sh.back.rendered}/11 · 异常 ${sh.back.threw.length}`);
+  ok('★ 自证还原：把真值放回去后 10 页照常渲染、零异常（这套探针自己没把界面弄坏）',
+    sh.back.threw.length === 0 && sh.back.rendered === 10,
+    `渲染 ${sh.back.rendered}/10 · 异常 ${sh.back.threw.length}`);
 
   // ---- 页签 12「热词库」：真读 DOM 断言（不是看源码里有没有那行字）----
   // ★ BLUEV_NO_LOGIN 下没有账号 ⇒ isAdmin=false ⇒ 这一页应当是**只读**的。
@@ -814,6 +814,38 @@ app.whenReady().then(async () => {
 
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
 
+  const statsRangeUi = await win.webContents.executeJavaScript(`(async () => {
+    const saved = { opts: JSON.parse(JSON.stringify(state.statsOpts)), stats: state.stats,
+      query: state.statsQueryOpts && JSON.parse(JSON.stringify(state.statsQueryOpts)) };
+    const nav = document.querySelector('.nav[data-tab="8"]'); nav.click();
+    await new Promise(r => setTimeout(r, 120));
+    const range = document.querySelector('#stDays');
+    range.value = 'custom'; range.dispatchEvent(new Event('change'));
+    const from = document.querySelector('#stFrom'), to = document.querySelector('#stTo');
+    const local = ts => { const d = new Date(ts), p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()); };
+    if (from && to) {
+      from.value = local(Date.now() - 3600000); from.dispatchEvent(new Event('change'));
+      to.value = local(Date.now() + 60000); to.dispatchEvent(new Event('change'));
+      document.querySelector('#pane [data-act="stats:refresh"]').click();
+      for (let i = 0; i < 30 && state.statsBusy; i++) await new Promise(r => setTimeout(r, 100));
+      from.value = local(Date.now() - 7200000); from.dispatchEvent(new Event('change'));
+    }
+    const result = { fields: !!from && !!to, types: from && to ? [from.type, to.type] : [],
+      label: state.stats && state.stats.range && state.stats.range.label,
+      exportsDisabled: [...document.querySelectorAll('.act [data-act^="stats:export"]')].every(x => x.disabled),
+      text: document.querySelector('#pane').textContent };
+    state.statsOpts = saved.opts; state.stats = saved.stats; state.statsQueryOpts = saved.query;
+    renderAll();
+    return result;
+  })()`);
+  ok('品牌统计支持自定义起止日期和时间，并按自定义区间查询',
+    statsRangeUi.fields && statsRangeUi.types.every(x => x === 'datetime-local') && statsRangeUi.label === '自定义时间',
+    JSON.stringify({ fields: statsRangeUi.fields, types: statsRangeUi.types, label: statsRangeUi.label }));
+  ok('筛选条件改动后必须重新查询才能导出，统计页已精简多余说明',
+    statsRangeUi.exportsDisabled && !/共享位置|数据文件：|只追加、不自动裁剪/.test(statsRangeUi.text),
+    `exportDisabled=${statsRangeUi.exportsDisabled} verbose=${/共享位置|数据文件：|只追加、不自动裁剪/.test(statsRangeUi.text)}`);
+
   // ---- 左侧「运行日志」页：与底部日志栏**同一份内容**、能筛、能真导出 ----
   // 用户原话是「同步 app 下端的日志」⇒ 必须验两处**内容逐行一致**。
   // 只验「多了一个页签」证明不了同步 —— 那恰恰是最容易做成两套数据的地方。
@@ -843,7 +875,8 @@ app.whenReady().then(async () => {
         barCount: (document.querySelector('#logBarCount') || {}).textContent || '',
         countOnTitleRow: (function () { var c = document.querySelector('#logPaneCount'); var r = c && c.closest ? c.closest('.row') : null; return !!(r && r.querySelector('h3')); })(),
         acts: [...document.querySelectorAll('#pane [data-act]')].map(e => e.dataset.act),
-        hasLv: !!document.querySelector('#logLv'), hasQ: !!document.querySelector('#logQ')
+        hasLv: !!document.querySelector('#logLv'), hasQ: !!document.querySelector('#logQ'),
+        hasClear: !!document.querySelector('#logClear') || !!document.querySelector('[data-act="log:clear"]')
       };
     })()`);
     ok('★ 左侧「运行日志」页与底部日志栏是同一份内容（逐行一致）',
@@ -866,8 +899,8 @@ app.whenReady().then(async () => {
       /共 (\d+) 条/.test(ui0.barCount) && /共 (\d+) 条/.test(ui0.count)
         && ui0.barCount.match(/共 (\d+) 条/)[1] === ui0.count.match(/共 (\d+) 条/)[1],
       JSON.stringify({ barCount: ui0.barCount, paneCount: ui0.count, barLines: ui0.bar.length }));
-    ok('页上有「级别下拉 + 关键字 + 清空 + 导出」四件东西',
-      ui0.hasLv && ui0.hasQ && ui0.acts.includes('log:clear') && ui0.acts.includes('log:export'),
+    ok('页上有「级别下拉 + 关键字 + 导出」，没有清除入口',
+      ui0.hasLv && ui0.hasQ && !ui0.hasClear && !ui0.acts.includes('log:clear') && ui0.acts.includes('log:export'),
       JSON.stringify(ui0.acts));
 
     // 级别筛选：只该影响这一页；底部日志栏不许跟着变（它就是「刚才发生了什么」）
@@ -934,39 +967,27 @@ app.whenReady().then(async () => {
     ok('页面上写的是「上次导出」的真实文件名（不是一句含糊的"导出成功"）',
       !!logName && ui3.text.includes(logName), ui3.text.replace(/\s+/g, ' ').slice(-100));
 
-    // 清空：两处一起清（只清一边，「同步」当场破功）
-    const cleared = await win.webContents.executeJavaScript(`(async () => {
-      const lv = document.querySelector('#logLv'); lv.value = ''; lv.dispatchEvent(new Event('change'));
-      const q = document.querySelector('#logQ'); q.value = ''; q.dispatchEvent(new Event('input'));
-      await new Promise(r => setTimeout(r, 150));
-      document.querySelector('[data-act="log:clear"]').click();
-      await new Promise(r => setTimeout(r, 400));
-      return {
-        bar: document.querySelectorAll('#log > div').length,
-        pane: document.querySelectorAll('#logPaneLines > div').length,
-        hasLogBadge: !!document.querySelector('[data-st="10"]'),
-        count: (document.querySelector('#logPaneCount') || {}).textContent || ''
-      };
+    // 日志不可清除：先恢复全量筛选，再验证新日志到来时两处继续保留历史并同步更新。
+    await win.webContents.executeJavaScript(`(() => {
+      const lv = document.querySelector('#logLv'), q = document.querySelector('#logQ');
+      lv.value = ''; lv.dispatchEvent(new Event('change'));
+      q.value = ''; q.dispatchEvent(new Event('input'));
     })()`);
-    ok('★「清空」把底部日志栏与页内**一起**清掉（只清一边就不叫同步了）',
-      cleared.bar === 0 && cleared.pane === 0, JSON.stringify(cleared));
-    ok('清空后条数回到「共 0 条」，且左侧仍无角标（界面不许还留着旧数字）',
-      cleared.hasLogBadge === false && /共 0 条/.test(cleared.count), `${cleared.hasLogBadge} / ${cleared.count}`);
-
-    // 清空后再来一条：两处必须**同时**长出来（推送这个方向最容易漏）
-    // ★ 这一条才是「同步」的真正守门人：上面那条「逐行一致」是切页时比对的，
-    //   而切页会触发一次整体重绘 —— 就算 pushLog 忘了同步页内，切过去也看着是对的。
-    //   只有「页面开着的时候新来的日志」才会暴露出来。（定点破坏 L1 已证）
-    logbus.warn('ENG-WARN 自检：清空之后再来一条');
-    await new Promise(r => setTimeout(r, 250));
-    const afterClear = await win.webContents.executeJavaScript(`(() => ({
+    await new Promise(r => setTimeout(r, 200));
+    const beforePush = await win.webContents.executeJavaScript(`(() => ({
       bar: [...document.querySelectorAll('#log > div')].map(e => e.textContent),
       pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent)
     }))()`);
-    ok('★ 清空之后新来的日志两处都长出来了（推送方向也是同步的）',
-      afterClear.bar.length === 1 && afterClear.pane.length === 1
-        && /ENG-WARN/.test(afterClear.bar[0]) && /ENG-WARN/.test(afterClear.pane[0]),
-      JSON.stringify(afterClear).slice(0, 150));
+    logbus.warn('ENG-WARN 自检：检查日志不可清除且持续同步');
+    await new Promise(r => setTimeout(r, 250));
+    const afterPush = await win.webContents.executeJavaScript(`(() => ({
+      bar: [...document.querySelectorAll('#log > div')].map(e => e.textContent),
+      pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent)
+    }))()`);
+    ok('★ 新日志推送后两处都保留历史并同步显示（无清除入口）',
+      afterPush.bar.length >= beforePush.bar.length && afterPush.pane.length >= beforePush.pane.length
+        && afterPush.bar.some(x => /ENG-WARN/.test(x)) && afterPush.pane.some(x => /ENG-WARN/.test(x)),
+      JSON.stringify(afterPush).slice(0, 150));
 
     // 源码锚点：两处不许各写一套渲染逻辑（那正是「两份数据」的前兆）
     // ★ 2026-10-05：先剥掉整行注释再匹配、窗口放宽到 1200 —— 原来的 400/500 字符窗口是
@@ -1184,76 +1205,34 @@ app.whenReady().then(async () => {
       gated && !bare, 'gated=' + gated + ' bare=' + bare);
   }
 
-  // ---- 2026-10-05 用户要求：**货号颜色校验**（页签 4）对非管理员隐藏 ----
-  // ★ 与「高级设置」是同一套机制，但这一页是**新加**的门控 ⇒ 断言要能抓住「只藏了按钮、
-  //   Ctrl+4 却还能进去」这种半拉子改法。所以三条线都验，缺一条就是假绿：
-  //   ① 按钮 hidden；② 当前正停在 4 会被兜回第 1 页（老配置里存过 tab=4）；
-  //   ③ 真按 Ctrl+4（走 document 上的 keydown 处理器，不是直接改 state）也进不去。
+  // 货号颜色校验对所有账号隐藏，包括管理员；旧 tab=4 与 Ctrl+4 都不能进入。
   {
     const t4 = await win.webContents.executeJavaScript(`(async () => {
-      const nav4 = () => document.querySelector('.nav[data-tab="4"]');
       const saved = state.auth, savedTab = state.tab;
-      const out = {};
-      // ① 管理员视角（当下就是这一支）：按钮在、点得进、这一页真渲染 —— 下面「消失」的对照基线
-      nav4().click();
-      await new Promise(r => setTimeout(r, 200));
-      out.admin = {
-        navHidden: !!nav4().hidden,
-        tab: state.tab,
-        title: (document.querySelector('#head h2') || {}).textContent || '',
-        size: (document.querySelector('#pane') || { innerHTML: '' }).innerHTML.length,
-        tabsAdmin: !!(TABS[4] && TABS[4].admin)
-      };
-      // ② 切成普通成员：按钮收起 + 当前页兜回第 1 页
-      state.auth = { requireLogin: true, isAdmin: false, user: { username: 'u1', displayName: '普通成员', role: 'user' } };
+      const title = () => (document.querySelector('#head h2') || {}).textContent || '';
+      const out = { navPresent: !!document.querySelector('.nav[data-tab="4"]'), hidden: !!(TABS[4] && TABS[4].hidden) };
+      // 管理员强行设置旧 tab=4 也必须回到首页
       state.tab = 4;
       renderAll();
-      out.nonadmin = {
-        canAdmin: canAdmin(),
-        navHidden: !!nav4().hidden,
-        tabAfterRender: state.tab,
-        title: (document.querySelector('#head h2') || {}).textContent || '',
-        nav11Hidden: !!document.querySelector('.nav[data-tab="11"]').hidden
-      };
-      // ③ 真按 Ctrl+4：keydown 处理器这条线也得堵上
+      out.adminOldTab = { tab: state.tab, title: title() };
+      // 普通成员同样不能通过直接 tab 状态或快捷键进入
+      state.auth = { requireLogin: true, isAdmin: false, user: { username: 'u1', displayName: '普通成员', role: 'user' } };
+      state.tab = 4; renderAll();
+      out.memberOldTab = { tab: state.tab, title: title() };
       document.dispatchEvent(new KeyboardEvent('keydown', { key: '4', ctrlKey: true, bubbles: true }));
       await new Promise(r => setTimeout(r, 200));
-      out.ctrl4 = { tab: state.tab, title: (document.querySelector('#head h2') || {}).textContent || '' };
-      // ④ 还原登录态与所在页（别污染后面的套件）
+      out.ctrl4 = { tab: state.tab, title: title() };
       state.auth = saved; state.tab = savedTab;
       renderAll();
-      out.restored = { canAdmin: canAdmin(), navHidden: !!nav4().hidden };
       return out;
     })()`);
-    ok('★ 货号颜色校验页（管理员视角）：页签在、点得进、这一页真渲染出内容 —— 下面非管理员那一支的对照基线',
-      !!t4 && t4.admin.navHidden === false && t4.admin.tab === 4 && t4.admin.title === '货号颜色校验' && t4.admin.size > 20,
-      t4 ? JSON.stringify(t4.admin) : 'null');
-    ok('★ TABS[4] 自己也声明了 admin:true（机制自证，免得断言建在「只改了 HTML 按钮」的空地基上）',
-      !!t4 && t4.admin.tabsAdmin === true, JSON.stringify(t4 && t4.admin.tabsAdmin));
-    ok('★ 切到普通成员后 renderAll：canAdmin() 真的变 false（机制先自证）',
-      !!t4 && t4.nonadmin.canAdmin === false, JSON.stringify(t4 && t4.nonadmin.canAdmin));
-    ok('★★ 非管理员：左侧「货号颜色校验」按钮收起（hidden，不是靠肉眼看不见）',
-      !!t4 && t4.nonadmin.navHidden === true, t4 ? 'navHidden=' + t4.nonadmin.navHidden : 'null');
-    ok('★★ 非管理员：正停在这一页时被兜回第 1 页（老配置里存过 tab=4 也进不来）',
-      !!t4 && t4.nonadmin.tabAfterRender === 1 && t4.nonadmin.title === '素材整理',
-      t4 ? 'tab=' + t4.nonadmin.tabAfterRender + ' title=' + JSON.stringify(t4.nonadmin.title) : 'null');
-    ok('★★ 非管理员：真按 Ctrl+4 也回不到这一页（keydown 处理器这条线同样堵上）',
-      !!t4 && t4.ctrl4.tab === 1 && t4.ctrl4.title !== '货号颜色校验',
-      t4 ? JSON.stringify(t4.ctrl4) : 'null');
-    ok('★ 同一时刻「高级设置」对非管理员也是收起的（两页走的是同一套口径，不是各写各的）',
-      !!t4 && t4.nonadmin.nav11Hidden === true, t4 ? 'nav11Hidden=' + t4.nonadmin.nav11Hidden : 'null');
-    ok('测试自己收尾：还原登录态后按钮又回来了（证明上面的消失是权限造成的，不是渲染坏了）',
-      !!t4 && t4.restored.canAdmin === true && t4.restored.navHidden === false,
-      JSON.stringify(t4 && t4.restored));
+    ok('★ 货号颜色校验对管理员也没有导航入口', !!t4 && !t4.navPresent && t4.hidden, JSON.stringify(t4));
+    ok('★ 管理员旧 tab=4 会跳回首页', !!t4 && t4.adminOldTab.tab === 1 && t4.adminOldTab.title === '素材整理', JSON.stringify(t4 && t4.adminOldTab));
+    ok('★ 普通成员旧 tab=4 与 Ctrl+4 都无法进入', !!t4 && t4.memberOldTab.tab === 1 && t4.ctrl4.tab === 1, JSON.stringify(t4 && { member: t4.memberOldTab, key: t4.ctrl4 }));
 
-    // 源码级两条：① 按钮真的带 data-admin（DOM 层的门控不靠运气）；② 只有该藏的页签带它（数量可数）
+    // 源码级守卫：页面按钮必须完全不存在，不能只依赖登录角色隐藏。
     const html4 = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
-    const nav4tag = (html4.match(/<button class="nav" data-tab="4"([^>]*)>/) || [])[1] || '';
-    ok('★ 源码级：index.html 里页签 4 的按钮带 data-admin="1"',
-      /data-admin="1"/.test(nav4tag), JSON.stringify(nav4tag.trim()));
-    const admNavs = [...html4.matchAll(/<button class="nav" data-tab="(\d+)"[^>]*data-admin="1"/g)].map(m => m[1]);
-    ok('★ 源码级：带 data-admin 的页签恰好是 4 与 11 两个（哪几页仅管理员可见，一眼可数）',
-      admNavs.length === 2 && admNavs.includes('4') && admNavs.includes('11'), JSON.stringify(admNavs));
+    ok('★ 源码级：导航 HTML 不再包含货号颜色校验 tab', !/data-tab="4"/.test(html4));
   }
 
   // ---- 发布间隔的「连续发布」档（0 秒）----
@@ -1429,21 +1408,15 @@ app.whenReady().then(async () => {
     edView.boxH <= edView.winH + 1, `mbox ${edView.boxH}px / 窗口高 ${edView.winH}px`);
 
   // ---- 设置项要在**每一页**都能存 ----
-  // 「文案生成」和「模拟器发布」两页里也有设置项（轮换策略 / 发布间隔 / adb 路径），
+  // 「文案生成」和「模拟器发布」两页里也有设置项（发布间隔 / adb 路径），
   // 以前只有「设置」页绑了保存 —— 那两页改了其实从没存过，而且界面上一点提示都没有，看着像生效了。
   const cfgSaved = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="3"]').click();
     await new Promise(r => setTimeout(r, 150));
-    const sel = document.querySelector('[data-cfg="copy.rotateStrategy"]');
-    const before = ((await window.api.configGet()).copy || {}).rotateStrategy;
-    sel.value = before === '随机' ? 'F01-F10 轮换' : '随机';
-    sel.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 400));
-    const after = ((await window.api.configGet()).copy || {}).rotateStrategy;
-    return { before, picked: sel.value, after };
+    return !document.querySelector('[data-cfg="copy.rotateStrategy"]')
+      && /T01–T15/.test(document.body.innerText);
   })()`);
-  ok('★ 文案生成页的批次设置改了就存（以前只绑了设置页，这页改了没保存）',
-    cfgSaved.after === cfgSaved.picked && cfgSaved.after !== cfgSaved.before, JSON.stringify(cfgSaved));
+  ok('★ 文案生成页不提供轮换选项，并说明系统自动轮换 T01–T15', cfgSaved === true, String(cfgSaved));
 
   // ★ 2026-10-02：adb 路径输入框已从「模拟器发布」页删掉（内置即用，摆着只是干扰），
   //   手填入口挪到「设置 → 高级设置」（仅管理员）。所以这里**两件事都要验**：
@@ -1862,18 +1835,17 @@ app.whenReady().then(async () => {
     '#cmodal 仍在 index.html');
 
   // ★ 2026-10-02（第二轮）：用户点名「并发路数」也挪进高级设置 —— 它是运行参数（撞接口限流的旋钮），
-  //   和「必带话题 / 轮换策略」那种**改产出**的业务内容不是一回事。两件事都要验：
+  //   和「必带话题」那种**改产出**的业务内容不是一回事。两件事都要验：
   //   ① 文案生成页真的没了（负向）；② 高级设置里能改、且真的存进了配置（测完还原，别污染后面的套件）。
   const concUi = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="3"]').click();
     await new Promise(r => setTimeout(r, 150));
     const q = () => document.querySelector('[data-cfg="copy.concurrency"]');
     const daily = !!q();
-    const rotateKept = !!document.querySelector('[data-cfg="copy.rotateStrategy"]');
     document.querySelector('.nav[data-tab="11"]').click();
     await new Promise(r => setTimeout(r, 150));
     const el = q();
-    if (!el) return { daily, rotateKept, found: false };
+    if (!el) return { daily, found: false };
     const before = ((await window.api.configGet()).copy || {}).concurrency;
     const target = before === 5 ? 6 : 5;
     el.value = String(target);
@@ -1890,14 +1862,12 @@ app.whenReady().then(async () => {
     el2.dispatchEvent(new Event('change'));
     await new Promise(r => setTimeout(r, 400));
     const restored = ((await window.api.configGet()).copy || {}).concurrency;
-    return { daily, rotateKept, found: true, before, target, after, stale, restored };
+    return { daily, found: true, before, target, after, stale, restored };
   })()`);
   ok('★ 文案生成页不再摆「并发路数」（它是撞限流的旋钮，不是业务参数）',
     concUi.daily === false, JSON.stringify(concUi));
   ok('★「高级设置」里能改并发路数，且真的存进了配置（测完已还原成原值）',
     concUi.found && concUi.after === concUi.target && concUi.restored === concUi.before, JSON.stringify(concUi));
-  ok('★ 但「轮换策略」还留在文案生成页（它改的是产出，用户得看得见）',
-    concUi.rotateKept === true, JSON.stringify(concUi));
   // ★ 存 ffmpeg 路径要真的走得通：主进程 ipc.js 里那段是 `video.setFfmpegPath(...)`，
   //   曾经漏了 `require('./services/video')` ⇒ 一改就 ReferenceError（这条断言就是为它加的）
   const ffSaved = await win.webContents.executeJavaScript(`(async () => {
@@ -2438,6 +2408,6 @@ app.whenReady().then(async () => {
   console.log('\nuserData(临时): ' + TMP);
   app.exit(errors.length ? 1 : 0);
 }).catch(e => {
-  console.error('UI CHECK ERROR', e);
+  console.error('UI CHECK ERROR', e && e.stack || e, '\nCaptured renderer errors:', errors.join(' | '));
   app.exit(1);
 });

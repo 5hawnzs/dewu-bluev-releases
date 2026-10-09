@@ -173,8 +173,8 @@ app.whenReady().then(async () => {
     }
     return titles;
   })()`);
-  ok('登录后 11 个页签都能渲染（页签数与标题都是从 DOM 上数出来的）',
-    tabs.length === 11 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+  ok('登录后 10 个可见页签都能渲染（货号颜色校验不向任何用户展示）',
+    tabs.length === 10 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
   // ★ 一律用「有没有这一页」判，**不按第几个** —— 页签编号从 2026-10-03 起在 5 处留了空位，
   //   写死下标会在每次增删页签时失效（上一次就是这么被漏掉的）。
   ok('页签里有「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
@@ -183,8 +183,8 @@ app.whenReady().then(async () => {
     tabs.includes('运行日志'), tabs.join(' / '));
   ok('页签里有「高级设置」（管理员可见；装一次就不再动的配置都在这里）',
     tabs.includes('高级设置'), tabs.join(' / '));
-  ok('页签里有「货号颜色校验」（2026-10-05 起为管理员专属 —— 管理员视角仍要看得见）',
-    tabs.includes('货号颜色校验'), tabs.join(' / '));
+  ok('页签里不包含「货号颜色校验」（所有账号均不可见）',
+    !tabs.includes('货号颜色校验'), tabs.join(' / '));
   ok('页签里有「热词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
     tabs.includes('热词库'), tabs.join(' / '));
   // ★ 负向断言：删掉的页签必须**真的不在**（否则以后有人加回来，整套回归照样全绿）
@@ -260,14 +260,13 @@ app.whenReady().then(async () => {
   const selfPwd = await js(`window.api.authChangePwd(${JSON.stringify(MEMBER_PASS)}, 'Member@456')`);
   ok('普通成员能改自己的密码', selfPwd.ok === true, selfPwd.error || '');
 
-  // ---- ⑦a-2 管理员专属页签（「高级设置」11 /「货号颜色校验」4）：普通成员**看不见**，硬点也进不去 ----
+  // ---- ⑦a-2 管理员专属页签：「高级设置」11 ----
   // ★ 这条必须真跑一遍（而不是看源码里有没有 syncAdminNav）：页签是 index.html 里的静态按钮，
   //   藏它的逻辑在渲染层，只有登录成普通成员再看 DOM 才算数。
-  // ★ 2026-10-05：用户要求「货号颜色校验」也收成管理员专属 ⇒ 两页同一个循环验，判据同一套，
-  //   免得以后有人只给新页签补了 data-admin、忘了 TABS[n].admin（那 Ctrl+4 还能进去）。
+  // 货号颜色校验已经从导航彻底移除；测试在 uicheck 中覆盖管理员和成员的旧链接/快捷键退回行为。
   const advHide = await js(`(async () => {
     const out = {};
-    for (const t of ['11', '4']) {
+    for (const t of ['11']) {
       const btn = document.querySelector('.nav[data-tab="' + t + '"]');
       if (!btn) { out[t] = { err: '页签 ' + t + ' 不存在' }; continue; }
       const hidden = btn.hidden === true && getComputedStyle(btn).display === 'none';
@@ -281,10 +280,6 @@ app.whenReady().then(async () => {
     !!advHide && advHide['11'].hidden === true, JSON.stringify(advHide && advHide['11']));
   ok('★ 普通成员就算硬点第 11 个页签也进不去（会被拉回«素材整理»）',
     !!advHide && advHide['11'].title === '素材整理', advHide && advHide['11'].title);
-  ok('★ 普通成员看不到「货号颜色校验」页签（2026-10-05 起收成管理员专属）',
-    !!advHide && advHide['4'].hidden === true, JSON.stringify(advHide && advHide['4']));
-  ok('★ 普通成员就算硬点第 4 个页签也进不去（会被拉回«素材整理»）',
-    !!advHide && advHide['4'].title === '素材整理', advHide && advHide['4'].title);
 
   // ---- ⑦a-3「热词库」：所有人都能**看**，但改只有管理员能做（而且拦在主进程，不是前端藏按钮）----
   const lexMem = await js(`(async () => {

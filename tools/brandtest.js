@@ -52,6 +52,11 @@ const ok = (label, cond, extra) => {
   if (!cond) fail++;
 };
 const day = n => Date.now() - n * 86400000;
+const localInput = ts => {
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+};
 
 (async () => {
   // ---- ① 注册表 ----
@@ -143,6 +148,17 @@ const day = n => Date.now() - n * 86400000;
   ok('④ 没有一条记录的品牌是空的却被算进某个品牌（总数对得上）',
     all.totals.rows === 7, `total=${all.totals.rows}`);
 
+  const pivot = day(1);
+  const custom = stats.query({ rangeMode: 'custom', fromAt: localInput(pivot - 5000), toAt: localInput(pivot + 5000) });
+  ok('④ 自定义起止时间按精确区间筛选发布记录，跨品牌按天汇总不丢数',
+    custom.totals.rows === 4 && custom.daily.reduce((n, d) => n + d.rows, 0) === 4
+      && custom.range.label === '自定义时间',
+    `rows=${custom.totals.rows} daily=${custom.daily.reduce((n, d) => n + d.rows, 0)}`);
+  let badRange = '';
+  try { stats.query({ rangeMode: 'custom', fromAt: localInput(pivot), toAt: localInput(pivot - 1) }); }
+  catch (e) { badRange = e.message; }
+  ok('④ 自定义结束时间早于开始时间会明确报错', /结束时间不能早于开始时间/.test(badRange), badRange);
+
   const st = stats.query({ days: 0, brandId: '__none__' });
   ok('④ 「只看未标品牌」筛选命中 2 条且品牌列表为空',
     st.untagged.rows === 2 && st.brands.length === 0, `untagged=${st.untagged.rows} brands=${st.brands.length}`);
@@ -208,6 +224,8 @@ const day = n => Date.now() - n * 86400000;
   ok('⑤ 非管理员范围下只拿得到自己品牌的日志',
     runlog.query({ days: 0, scopeIds: [B.brand.id] }).every(e => e.brandId === B.brand.id)
     && runlog.query({ days: 0, scopeIds: [B.brand.id] }).length === 1);
+  const customRun = stats.query({ rangeMode: 'custom', fromAt: localInput(Date.now() - 120000), toAt: localInput(Date.now() + 120000) });
+  ok('⑤ 自定义时间筛选也同时作用于执行日志', customRun.logsTotal === 4, `logs=${customRun.logsTotal}`);
   ok('⑤ 品牌名是写入时的快照（日后改名也不影响旧日志）',
     runlog.read().find(e => e.jobId === 'j1').brandName === '品牌甲');
 

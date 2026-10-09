@@ -312,15 +312,19 @@ function startServer() {
     PT.join(' '));
   ok('①d 提示词里没写 # 就抽不到（不会瞎编话题）',
     copywriter.topicsFromPrompt('没有任何话题的提示词').length === 0);
-  const cfgB = { requiredTopic: store.get('copy.requiredTopic'), extraTopics: store.get('copy.extraTopics'), pool: store.get('copy.pool') };
+  const cfgB = { requiredTopic: store.get('copy.requiredTopic'), extraTopics: store.get('copy.extraTopics'), pool: store.get('copy.pool'), rotateStrategy: store.get('copy.rotateStrategy') };
   try {
     store.set({
       copy: {
-        requiredTopic: '#Cabbeen卡宾, #卡宾老钱风穿搭', extraTopics: 3,
+        requiredTopic: '#Cabbeen卡宾, #卡宾老钱风穿搭', extraTopics: 3, rotateStrategy: '随机',
         pool: { 品类: ['#内置词A', '#内置词B', '#内置词C', '#内置词D', '#内置词E'] }
       }
     });
     const pd = copywriter.buildPlan(Array.from({ length: 8 }, (_, i) => ({ id: 'd' + i, color: '黑' })), { promptWrite: BRANDP });
+    const pd15 = copywriter.buildPlan(Array.from({ length: 15 }, (_, i) => ({ id: 's' + i, color: '黑' })), { promptWrite: BRANDP });
+    ok('①d ★ 旧配置即使保存“随机”，15 行仍按序覆盖 T01–T15',
+      pd15.rows.map(r => r.titleStyle).join(',') === hotwords.STYLES.map(s => s.code).join(','),
+      pd15.rows.map(r => r.titleStyle).join(','));
     // ★ 这一条**只查顺序**（必带来自 copy.requiredTopic，跟池子来源无关）——
     //   上一版把它写成了「品牌提示词里的 #话题 真进了话题组合」，其实池子改坏它也照样绿
     //   （定点破坏 N6/N8 各只命中一半，才发现这一条查错了东西）。

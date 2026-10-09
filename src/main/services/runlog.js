@@ -58,7 +58,8 @@ function size() {
  */
 function query(opts = {}) {
   const days = opts.days == null ? 0 : Number(opts.days) || 0;
-  const fromTs = days > 0 ? Date.now() - days * 86400000 : 0;
+  const fromTs = Number.isFinite(Number(opts.fromTs)) ? Number(opts.fromTs) : (days > 0 ? Date.now() - days * 86400000 : 0);
+  const toTs = Number.isFinite(Number(opts.toTs)) ? Number(opts.toTs) : Date.now();
   const scope = Array.isArray(opts.scopeIds) ? opts.scopeIds.map(String) : null;
   const rawBrand = String(opts.brandId == null ? '' : opts.brandId);
   const onlyUntagged = rawBrand === '__none__';            // 与 stats.UNTAGGED_FILTER 同一个哨兵值
@@ -67,7 +68,7 @@ function query(opts = {}) {
   const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 0;
 
   let all = Array.isArray(opts.preloaded) ? opts.preloaded : read();
-  if (fromTs) all = all.filter(e => Number(e.ts) >= fromTs);
+  all = all.filter(e => (!fromTs || Number(e.ts) >= fromTs) && Number(e.ts) <= toTs);
   if (onlyUntagged) all = all.filter(e => !e.brandId);
   else if (wantBrand) all = all.filter(e => String(e.brandId || '') === wantBrand);
   if (wantUser) all = all.filter(e => String(e.userId || '') === wantUser);
