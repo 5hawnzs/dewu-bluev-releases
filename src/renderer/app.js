@@ -1158,7 +1158,7 @@ TABS[8] = {
           <select class="inp" id="stBrand">
             <option value="">全部品牌</option>
             ${usable.map(b => `<option value="${b.id}" ${state.statsOpts.brandId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
-            ${m.isAdmin ? '<option value="__none__" ' + (state.statsOpts.brandId === '__none__' ? 'selected' : '') + '>未标品牌</option>' : ''}
+            ${m.isAdmin && s && s.untagged && s.untagged.rows > 0 ? '<option value="__none__" ' + (state.statsOpts.brandId === '__none__' ? 'selected' : '') + '>历史无品牌记录</option>' : ''}
           </select>
           ${m.isAdmin ? `<span class="lbl">执行人</span>
           <select class="inp" id="stUser"><option value="">全部执行人</option>${((s && s.users) || []).map(u => `<option value="${esc(u.userId)}" ${state.statsOpts.userId === u.userId ? 'selected' : ''}>${esc(u.displayName || u.username || '未记录')}（${u.rows}）</option>`).join('')}</select>` : ''}
@@ -1191,7 +1191,7 @@ TABS[8] = {
       <thead><tr><th>品牌</th><th>状态</th><th>条数</th><th>成功</th><th>失败</th><th>批次</th><th>最近发布</th><th>频次</th><th>执行人（条数）</th></tr></thead>
       <tbody>
         ${s.brands.map(b => rowOf(b)).join('')}
-        ${rowOf(s.untagged, 'brandrow-flag', `<b>${esc(s.untagged.name)}</b><div style="font-size:11px;opacity:.75">历史记录 / 发布时没选品牌</div>`)}
+        ${s.untagged.rows > 0 ? rowOf(s.untagged, 'brandrow-flag', `<b>${esc(s.untagged.name)}</b><div style="font-size:11px;opacity:.75">历史记录（旧版本未记录品牌）</div>`) : ''}
         ${s.orphans.map(o => rowOf(o, 'brandrow-dead')).join('')}
       </tbody></table></div>
       `;

@@ -216,11 +216,17 @@ function resolveFor(user, wantedId, opts = {}) {
   const required = !!opts.required;
   const wanted = String(wantedId == null ? '' : wantedId);
 
-  // 没登录：免登录开发模式 / 测试里直接调 jobs。权限层已经不适用，有就给、没有就留空
+  // 没登录：免登录开发模式 / 测试里直接调 jobs。权限层不适用，但产出类任务仍必须归属品牌。
   if (!user) {
-    if (!wanted) return { ok: true, brand: null };
-    const b = byId(wanted);
-    return b ? { ok: true, brand: b } : { ok: false, error: `品牌不存在：${wanted}` };
+    if (wanted) {
+      const b = byId(wanted);
+      return b ? { ok: true, brand: b } : { ok: false, error: `品牌不存在：${wanted}` };
+    }
+    if (!required) return { ok: true, brand: null };
+    const available = enabledList();
+    if (available.length === 1) return { ok: true, brand: available[0], auto: true };
+    if (!available.length) return { ok: false, error: '还没有启用的品牌可归属：先添加并启用一个品牌' };
+    return { ok: false, error: `请先选择品牌（可选：${available.map(b => b.name).join('、')}）` };
   }
 
   const a = allowed(user);

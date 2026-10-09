@@ -317,7 +317,7 @@ async function exportXlsx(opts = {}) {
   head(ws1);
   const rowsAll = [
     ...r.brands.map(b => ({ name: b.name, state: b.enabled ? '启用' : '已停用', b, flag: false })),
-    { name: r.untagged.name, state: '未标品牌', b: r.untagged, flag: true },
+    ...(r.untagged.rows > 0 ? [{ name: r.untagged.name, state: '历史无品牌记录', b: r.untagged, flag: true }] : []),
     ...r.orphans.map(o => ({ name: o.name, state: '品牌已删除', b: o, flag: true }))
   ];
   for (const x of rowsAll) {
