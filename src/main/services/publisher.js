@@ -729,7 +729,7 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
   return { ok: !!left, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: last, left, seen };
 }
 
-async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = false) {
+async function runReal(row, item, copyRow, serial, map, ctx) {
   // 每条素材独立，上一条中断时遗留的输入状态不能带到新页面。
   ctx.topicNeedsEnd = false;
   const log = ctx.log || (() => {});
@@ -837,18 +837,17 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
   //   得物停在发布页/相册页时**自己拿着这批 mp4 的硬解码句柄**，此时 rm/find/mv 全报
   //   `Text file busy`，而 `am force-stop com.shizhuang.duapp` 之后同一句立刻成功。
   //   ⇒ 允许 clearMediaDir 在"清不掉"时把得物强停掉再重试（能过就不去造 trash 残骸）。
+  const clearStarted = Date.now();
   const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera', { forceStopPkg: uimap.DEWU.pkg });
   if (!clRoot.ok) {
     throw new Error('没能清干净设备相册目录（/sdcard/DCIM/Camera）：' + (clRoot.error || '未知原因')
       + ' —— 不清干净的话相册里会混着其他素材，选素材那一步会点到别的图。');
   }
-  await adb.shell(serial, 'mkdir -p ' + remoteDir);
-  const cl = await adb.clearMediaDir(serial, remoteDir, { forceStopPkg: uimap.DEWU.pkg });
-  if (!cl.ok) {
-    throw new Error(`没能清干净设备上的专属相册（${remoteDir}）：${cl.error || '未知原因'}`
-      + ' —— 不清干净的话上一条的素材会留在相册里，选素材那一步会点到上一条的图。'
-      + '（这一步不许跳过：跳过的表现是「内容看着发成功了，配图却是上一条的」，最难查。）');
-  }
+  // 根目录已经递归清理并核实无文件，子目录不再重复查询四张媒体表。
+  const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir);
+  if (!mk.ok) throw new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
+  log(`${row.dir}：目录清理 ${(Date.now() - clearStarted) / 1000}s`, 'info');
+  const albumStarted = Date.now();
   // ★★★ 2026-10-04（真机实测新增）**清全盘相册** —— 上面两步只清了目录，
   //   而得物相册顶部那个「所有照片」是**全盘聚合视图**：把一条 mp4 放进 /sdcard/Movies
   //   （不在 DCIM/Camera 下），它照样出现在得物相册里、和专属目录里的并排显示（已截图对照）。
@@ -865,27 +864,41 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
   }
 
   // ★★ 强停过得物 ⇒ 它现在是**死的**，必须重新拉起来并确认回到首页（否则后面全是点空气）。
-  if (clRoot.forceStopped || cl.forceStopped || clAll.forceStopped) {
+  log(`${row.dir}：全盘媒体库清理 ${(Date.now() - albumStarted) / 1000}s`, 'info');
+  if (clRoot.forceStopped || clAll.forceStopped) {
     log(`${row.dir}：清相册时得物正占着素材文件（Text file busy），已强制停掉它腾出句柄 —— 现在重新拉回首页`, 'warn');
     await pullHome('清相册时强停过得物');
   }
   // ★★ 2026-10-04（第四十轮）：空目录残骸（stale 句柄锁着、删不掉也不含任何素材）**不阻断发布**，
   //   但要**如实记一笔**让人知道（否则用户看到相册目录里一堆怪名字，不知道是什么）。
-  if (clRoot.note || cl.note) {
+  if (clRoot.note) {
     log(`${row.dir}：相册目录里有清不掉的空目录残骸（不含任何素材，不影响发布；需要彻底清掉要重启模拟器）：`
-      + (clRoot.note || '') + (cl.note ? '；' + cl.note : ''), 'info');
+      + clRoot.note, 'info');
   }
-  if (cl.removed) log(`${row.dir}：专属相册已清空，删掉上一条留下的 ${cl.removed} 个素材`, 'info');
+  if (clRoot.removed) log(`${row.dir}：相册目录已清空，删除 ${clRoot.removed} 条记录`, 'info');
 
-  for (const f of media) {
+  const pushStarted = Date.now();
+  let needsVolumeScan = false;
+  for (const [index, f] of media.entries()) {
+    row.status = `推送素材 ${index + 1}/${media.length}`;
+    if (ctx.onRow) ctx.onRow(row);
     const abs = path.join(item.absDir || item.dir, f.name);
     const remote = `${remoteDir}/${String(f.name).replace(/[^\w.\-+]/g, '_')}`;
     const r = await adb.push(serial, abs, remote);
     if (!r.ok) throw new Error(`推${mediaWord}片失败 ${f.name}：${(r.stderr || '').trim()}`);
-    const sc = await adb.mediaScan(serial, remote);
-    if (!sc.ok) log(`${row.dir}：${f.name} 的媒体扫描没做成功（试了 ${sc.how}）——下面用「进库确认」兜底`, 'warn');
+    row.status = `索引素材 ${index + 1}/${media.length}`;
+    if (ctx.onRow) ctx.onRow(row);
+    const sc = await adb.mediaScan(serial, remote, { fallbackVolume: false });
+    if (!sc.ok) needsVolumeScan = true;
     remotes.push(remote);
   }
+  if (needsVolumeScan) {
+    row.status = '索引素材';
+    if (ctx.onRow) ctx.onRow(row);
+    const sc = await adb.mediaScan(serial, '');
+    if (!sc.ok) log(`${row.dir}：批量扫描返回异常，下面仍须核实全部素材入库`, 'warn');
+  }
+  log(`${row.dir}：素材推送及索引 ${(Date.now() - pushStarted) / 1000}s`, 'info');
 
   // ★★★ 2026-10-05（第四十一轮）**主图排序** —— 这里是「哪张当内容主图」的唯一开关。
   //   得物取**相册第 1 格**作内容主图（用户口径）；而第 1 格 = 设备上文件时间（MediaStore
@@ -1103,20 +1116,7 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
         : '★ 想强制关掉得物清草稿但没停掉（' + (fsr.error || '未知原因') + '）—— 请手动去得物「草稿箱」检查并删掉那条草稿。'));
   }
   log(`${row.dir}：提交发布后已确认离开发布流程（前台 ${vr.seen.join(' → ')}，用时 ${vr.waited}s）`, 'info');
-  // ★★ 2026-10-04（用户口径）：得物发布完成后会在主页停留一下（用户原话「大概 5 秒后完成发布，
-  //   在主页停留 10 秒左右，你就需要开始准备发布第二条素材」）。这里给一个**可配的**主页停留，
-  //   默认 10s —— 目的是让得物把这条内容在服务端落定（上传/审核排队），再把相册清空去发下一条。
-  //   ★ 配 0 = 不停留（连续发布档）；读取点只在这里，方便回归里把它调 0 跑快。
-  // 最后一条后面没有下一次清相册，跳过这段停留；中间条仍保留服务端落定缓冲。
-  const configuredDwell = secOr(c.homeDwellSec, c.postPublishDwellSec, 10);
-  const dwell = isLastRunnable ? 0 : configuredDwell;
-  if (isLastRunnable && configuredDwell > 0) {
-    log(`${row.dir}：本批最后一条，跳过额外主页停留`, 'info');
-  }
-  if (dwell > 0) {
-    log(`${row.dir}：发布完成，按设置在主页停留 ${dwell}s 再准备下一条`, 'info');
-    await sleep(dwell * 1000, cancelled);
-  }
+  // 用户要求取消主页停留。发布确认通过后立即返回，间隔仅由页面上的发布间隔控制。
   return true;
 }
 
@@ -1219,11 +1219,6 @@ async function run(state, ctx = {}) {
   let done = 0;
   const results = [];
 
-  // 校验拦截行不进入 runReal；只跳过最后一个实际执行行后的主页停留。
-  const lastRunnableRow = [...todo].reverse().find(candidate => {
-    const v = (state.verify && state.verify.rows || []).find(x => x.id === candidate.id);
-    return !(v && verifySvc.isBlocked(v));
-  });
   for (const row of todo) {
     if (cancelled()) break;
     const item = state.items.find(it => it.id === row.id) || {};
@@ -1269,7 +1264,7 @@ async function run(state, ctx = {}) {
     row.startAt = new Date().toTimeString().slice(0, 8);
     try {
       if (mode === 'adb') {
-        success = await runReal(row, item, copyById.get(row.id), serial, map, ctx, row === lastRunnableRow);
+        success = await runReal(row, item, copyById.get(row.id), serial, map, ctx);
       } else {
         const r = await runMock(row, ctx);
         if (r === 'cancelled') break;   // 取消：不标失败，直接跳出整批

@@ -208,7 +208,7 @@ function toMediaPath(p) {
  *
  * 返回 { ok, how, raw }；ok=false 时把两种方式的原始输出都带回去 —— 不假装扫成功。
  */
-async function mediaScan(serial, remoteFile) {
+async function mediaScan(serial, remoteFile, { fallbackVolume = true } = {}) {
   const abs = toMediaPath(remoteFile);
   let raw = '';
   const detail = r => {
@@ -222,6 +222,8 @@ async function mediaScan(serial, remoteFile) {
     raw = `scan_file ${detail(r)}`;
     if (r.ok && /content:\/\/media\//.test(`${r.stdout || ''}${r.stderr || ''}`)) return { ok: true, how: 'scan_file', raw };
   }
+  // 批量推送时由调用方在所有文件扫描后统一兜底，避免每张图都整卷重扫。
+  if (abs && !fallbackVolume) return { ok: false, how: 'scan_file', raw };
   const r2 = await shell(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 60000 });
   raw += `${raw ? '；' : ''}scan_volume ${detail(r2)}`;
   return { ok: r2.ok, how: abs ? 'scan_file→scan_volume' : 'scan_volume', raw };
@@ -417,8 +419,11 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
   let error = '';
   // ★ 表名放宽：video / images / audio / files 全扫一遍（老代码只扫前两张，漏掉的表里
   //   若挂着指向该目录的记录，得物相册照样能看见它）。
-  for (const t of ['video', 'images', 'audio', 'files']) {
-    const queried = await queryMediaTable(serial, t);
+  // 四张媒体表互不依赖，只并行读取；删除与最终复查仍按原顺序执行。
+  const tables = ['video', 'images', 'audio', 'files'];
+  const queries = await Promise.all(tables.map(t => queryMediaTable(serial, t)));
+  for (let i = 0; i < tables.length; i++) {
+    const t = tables[i], queried = queries[i];
     const r = queried.result;
     if (queried.error) {
       const e = queried.error;
@@ -782,8 +787,9 @@ async function clearAlbum(serial, opts = {}) {
 
   const scanAll = async () => {
     const hit = []; let error = '';
-    for (const t of TABLES) {
-      const queried = await queryMediaTable(serial, t);
+    const queries = await Promise.all(TABLES.map(t => queryMediaTable(serial, t)));
+    for (let i = 0; i < TABLES.length; i++) {
+      const t = TABLES[i], queried = queries[i];
       const r = queried.result;
       if (queried.error) {
         const e = queried.error;
@@ -948,8 +954,10 @@ async function mediaVisible(serial, remoteFiles, { timeoutMs = 20000, pollMs = 8
   let lastErr = '';
   for (;;) {
     // 分别校验两张表，避免其中一条查询失败被另一条的成功退出码掩盖。
-    const video = await queryMediaTable(serial, 'video', shell, '_data');
-    const images = await queryMediaTable(serial, 'images', shell, '_data');
+    const [video, images] = await Promise.all([
+      queryMediaTable(serial, 'video', shell, '_data'),
+      queryMediaTable(serial, 'images', shell, '_data')
+    ]);
     rows = [video, images].filter(q => !q.error).map(q => String(q.result.stdout || '')).join('\n');
     lastErr = [video.error, images.error].filter(Boolean).join('；');
     const visible = new Set(rows.split(/\r?\n/).map(line => {

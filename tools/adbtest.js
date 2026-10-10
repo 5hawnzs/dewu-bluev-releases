@@ -1908,15 +1908,27 @@ const state = {
     //    mediaVisible 会立刻看到那条旧记录，这条用例就成假绿了（第一版就是这么写错的）。
     const SCANFAIL = path.join(FDB, 'SCAN_FAIL');
     const bakFiles24 = videoItem.files;
-    videoItem.files = [{ name: '短片2.mp4', type: 'video' }];
+    videoItem.files = [{ name: '短片2.mp4', type: 'video' }, { name: '短片3.mp4', type: 'video' }];
     fs.writeFileSync(path.join(itemDir2, '短片2.mp4'), Buffer.from('fake video bytes'));
+    fs.writeFileSync(path.join(itemDir2, '短片3.mp4'), Buffer.from('fake video bytes'));
     fs.writeFileSync(SCANFAIL, '1');
+    clearCalls();
+    const deferredScan = await adbM.mediaScan('127.0.0.1:5555', PROBE_MEDIA, { fallbackVolume: false });
+    ok('批量扫描模式单文件失败不假装成功，也不立即整卷扫描',
+      !deferredScan.ok && /scan_file/.test(calls()) && !/scan_volume/.test(calls()));
+    clearCalls();
+    await adbM.mediaScan('127.0.0.1:5555', PROBE_MEDIA);
+    ok('独立扫描默认仍保留整卷兜底', /scan_volume/.test(calls()));
     store.set({ publish: { uiMap: videoMap, videoIndexTimeoutSec: 1 } });
     videoState.publish.rows[0].result = '';
     videoState.publish.rows[0].status = '排队';
     clearCalls();
     const r24c = await publisher.run(videoState, vctx);
     const c24c = calls();
+    ok('多个素材扫描失败仅统一整卷兜底一次，仍拦截未入库素材',
+      (c24c.match(/--method scan_file/g) || []).length === 2
+      && (c24c.match(/--method scan_volume/g) || []).length === 1
+      && r24c.rows[0].result === '失败');
     fs.unlinkSync(SCANFAIL);
     ok('㉔ ★ 扫不进库 ⇒ 如实失败（不许硬点界面，硬点只会点空）',
       r24c.rows[0].result === '失败' && /没能写进媒体库/.test(r24c.rows[0].reason), r24c.rows[0].reason);
@@ -2020,7 +2032,8 @@ const state = {
       }
     });
     const run2 = async (sec) => {
-      store.set({ publish: { uiMap, intervalSec: sec } });
+      // 旧配置里的主页停留也不能让连续发布额外等待。
+      store.set({ publish: { uiMap, intervalSec: sec, homeDwellSec: 3, postPublishDwellSec: 3 } });
       clearCalls();
       const lg = [];
       const t0 = Date.now();
@@ -2032,6 +2045,9 @@ const state = {
     const fixed = await run2(1);
     const waitedCont = cont.lg.filter(l => /按 \d+ 秒间隔/.test(l));
     const waitedFixed = fixed.lg.filter(l => /按 \d+ 秒间隔/.test(l));
+    ok('连续发布不再执行旧配置中的主页停留，两条均正常发出',
+      cont.r.okCount === 2 && !cont.lg.some(l => /在主页停留/.test(l)), cont.ms + 'ms');
+    store.set({ publish: { homeDwellSec: null, postPublishDwellSec: null } });
     ok('㉖ 端到端：连续档两条都发出来了', cont.r.okCount === 2, cont.r.okCount + '/' + cont.r.total);
     ok('㉖ ★ 连续档：日志里不许出现「按 N 秒间隔」', waitedCont.length === 0, waitedCont.join(' | ') || '（一条都没有）');
     ok('㉖ 连续档：日志要写明「连续发布：不等间隔」（免得看着像卡住）',
@@ -2552,6 +2568,11 @@ const state = {
         progress: () => {}, cancelled: () => false, onRow: () => {}
       });
       const logE = calls();
+      ok('根目录递归清理后不再重复清理 bluev 子目录',
+        rE.okCount === 1 && !/find .*Camera\/bluev\/? -mindepth/.test(logE),
+        (logE.match(/.*find .*mindepth.*/g) || []).join(' | '));
+      ok('清理过程分别记录目录和全盘媒体库实际耗时',
+        lgE.some(l => /目录清理 [\d.]+s/.test(l)) && lgE.some(l => /全盘媒体库清理 [\d.]+s/.test(l)));
       // ★ 断言要看**语义**：真的调了 `am start -n <得物>/<启动页>`。
       //   第一版把正则写成 `com\.shizhuang\.duapp\/\.modules`（带点）⇒ 命令里是斜杠后直接跟
       //   包内路径（`duapp/modules.home...`，不带点）⇒ 匹配 0 次，是**假红**（测试写法错，不是产品错）。
