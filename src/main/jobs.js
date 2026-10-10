@@ -75,6 +75,18 @@ function itemsDir(items, fallback) {
 
 function typeIds(type) { return byType.get(type) || new Set(); }
 
+/** 发布器会把单条素材失败作为批次结果返回（而非 throw）。任务云日志需要沿用逐条结果，避免整批有失败仍记成成功。 */
+function publishRunOutcome(type, result) {
+  if (!['publish.run', 'publish.rerun'].includes(type)) return { ok: true, error: '' };
+  const failCount = Math.max(0, Number(result && result.failCount) || 0);
+  if (!failCount) return { ok: true, error: '' };
+  const detail = String(result && result.failureSummary || '').trim();
+  return {
+    ok: false,
+    error: (detail || `发布失败 ${failCount} 条`) + (failCount > 1 && detail ? `（共 ${failCount} 条失败）` : '')
+  };
+}
+
 function send(channel, payload) {
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w || w.isDestroyed()) continue;
@@ -636,7 +648,9 @@ async function dispatch(type, args, ctx) {
         ctx.conclude(`发布成功【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 0 条】`
           + '· 发完 ≠ 发出去了，记得回查审核状态', 'ok');
       }
-      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch };
+      const failed = (r.rows || []).filter(row => row && row.result === '失败');
+      const failureSummary = failed.slice(0, 5).map(row => `第${row.seq}条：${row.reason || '未知原因'}`).join('；');
+      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary };
     }
     case 'publish.exportLog': {
       // 「重导出日志」：按批次把 publish-log.jsonl 导成可读的 .log + .csv
@@ -658,7 +672,8 @@ async function dispatch(type, args, ctx) {
       ctx.conclude(r.okCount >= 1
         ? `重跑成功【目标 1 条，成功 1 条，失败 0 条】`
         : `重跑结束（失败）【目标 1 条，成功 0 条，失败 1 条】`, r.okCount >= 1 ? 'ok' : 'warn');
-      return { okCount: r.okCount, total: 1 };
+      const failed = (r.rows || []).find(row => row && row.result === '失败');
+      return { okCount: r.okCount, total: 1, failCount: r.failCount, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
     }
     case 'pool.import': {
       const r = pool.importFile(args.file);
@@ -757,9 +772,10 @@ async function run(type, args = {}) {
   if (picked.auto) logbus.info(`[${label}] 你的品牌权限只有一个，本次归属「${who}」`, Object.assign({ jobId: id, type, label }, brandInfo, actorInfo));
   try {
     const res = await dispatch(type, args, ctx);
+    const runOutcome = publishRunOutcome(type, res);
     const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
     send('job:done', { id, type, label, batch: job.batch, ok: true, busy: false, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
-    runlog.append(Object.assign({ kind: 'end', ok: true, jobId: id, label, type, batch: job.batch, elapsedSec }, brandInfo, actorInfo));
+    runlog.append(Object.assign({ kind: 'end', ok: runOutcome.ok, error: runOutcome.error, jobId: id, label, type, batch: job.batch, elapsedSec }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
     return { ok: true, result: res, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } catch (e) {
@@ -811,4 +827,4 @@ function list() {
   }));
 }
 
-module.exports = { run, cancel, busy, list, TYPE_LABEL, itemsDir };
+module.exports = { run, cancel, busy, list, TYPE_LABEL, itemsDir, publishRunOutcome };

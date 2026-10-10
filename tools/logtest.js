@@ -220,6 +220,11 @@ console.log('\nK. ★ 端到端：真跑一次任务，验证「流水走明细�
   try {
     const LB = require(path.join(ROOT, 'src/main/logbus.js'));
     const jobs = require(path.join(ROOT, 'src/main/jobs.js'));
+    const partialPublish = jobs.publishRunOutcome('publish.run', { failCount: 1, failureSummary: '第2条：content query(video) 重试后仍失败' });
+    ok('★ 发布器返回逐条失败时，云端任务结束状态不能误记成功', !partialPublish.ok, JSON.stringify(partialPublish));
+    ok('★ 云端任务错误摘要保留相册查询原因', /content query\(video\)/.test(partialPublish.error), partialPublish.error);
+    ok('发布全成功时仍按成功记账', jobs.publishRunOutcome('publish.run', { failCount: 0 }).ok);
+    ok('其他类型任务不受发布失败口径影响', jobs.publishRunOutcome('compliance.scan', { failCount: 2 }).ok);
     // 日志套件需要真实发布任务，显式创建隔离品牌，避免被前置归属校验拦下。
     require(path.join(ROOT, 'src/main/brands.js')).add({ name: '日志测试品牌' });
 
