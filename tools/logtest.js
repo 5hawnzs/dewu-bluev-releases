@@ -26,6 +26,12 @@ const ok = (label, cond, extra) => {
 };
 
 const T = ts => new Date(ts).getTime();
+ok('日志最近七天范围由主进程计算', L.timeRange({ days: 7 }, 10 * 86400000).from === 3 * 86400000);
+ok('日志全部时间不限制开始时间', L.timeRange({ days: 0 }).from === 0);
+ok('日志自定义时间保留准确边界', L.timeRange({ rangeMode: 'custom', fromAt: '2026-10-01T00:00', toAt: '2026-10-02T00:00' }).from === T('2026-10-01T00:00'));
+let invalidRange = false;
+try { L.timeRange({ rangeMode: 'custom', fromAt: '2026-10-02', toAt: '2026-10-01' }); } catch (_) { invalidRange = true; }
+ok('日志逆序时间被主进程拒绝', invalidRange);
 const e = (level, msg, t, meta) => ({ level, msg, t, meta: meta || null });
 const list = [
   e('info', '开始整理素材', T('2026-10-02T14:03:04')),

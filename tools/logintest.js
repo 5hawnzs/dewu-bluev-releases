@@ -236,7 +236,7 @@ app.whenReady().then(async () => {
     const saveBtn = document.querySelector('[data-act="lex:save"]');
     const resetBtn = document.querySelector('[data-act="lex:reset"]');
     return {
-      editable: h3.filter(t => /^(风格|氛围|色感|场景|人群|季节|情绪)（/.test(t)).length,
+      editable: h3.filter(t => /^(风格|氛围|色感|场景|人群|季节|情绪|收尾)（/.test(t)).length,
       lockBox: h3.findIndex(t => t.indexOf('收尾') >= 0 && t.indexOf('锁定') >= 0),
       inputs: pane.querySelectorAll('[data-lx-in]').length,
       delBtns: pane.querySelectorAll('[data-lx-del]').length,
@@ -246,11 +246,11 @@ app.whenReady().then(async () => {
       redlines: /三条红线/.test(pane.textContent)
     };
   })()`);
-  ok('★ 管理员进「本地词库」：7 个可编辑组，每组一个加词框、每个词一个删词按钮',
-    lexAdm.editable === 7 && lexAdm.inputs === 7 && lexAdm.delBtns === 52,
+  ok('★ 管理员进「本地词库」：8 个可编辑组，每组一个加词框、每个词一个删词按钮',
+    lexAdm.editable === 8 && lexAdm.inputs === 8 && lexAdm.delBtns === 64,
     `组=${lexAdm.editable} 加词框=${lexAdm.inputs} 删词按钮=${lexAdm.delBtns}`);
-  ok('★ 「收尾」组确实锁着：那一块里一个输入框 / 按钮都没有（7 组之外就它）',
-    lexAdm.lockBox >= 0 && lexAdm.lockedCtrls === 0, `锁定块控件数=${lexAdm.lockedCtrls}`);
+  ok('★ 收尾没有锁定块，编辑控件与其他组一致',
+    lexAdm.lockBox === -1 && lexAdm.lockedCtrls === -1, `锁定块控件数=${lexAdm.lockedCtrls}`);
   ok('★ 管理员看到的是**可用**的「保存 / 恢复内置」（不是灰的）',
     lexAdm.saveDisabled === false && lexAdm.resetDisabled === false,
     JSON.stringify({ save: lexAdm.saveDisabled, reset: lexAdm.resetDisabled }));
@@ -366,13 +366,13 @@ app.whenReady().then(async () => {
   })()`);
   ok('★ 普通成员**看得见**「本地词库」（不是管理员专属 —— 标题从哪些词里挑，谁都能看）',
     lexMem.visible === true && lexMem.title === '本地词库', lexMem.title);
-  ok('★ 普通成员可编辑本机词库：七组加词框、删词按钮、保存可用',
-    lexMem.groupsShown && lexMem.inputs === 7 && lexMem.delBtns > 0 && lexMem.saveDisabled === false,
+  ok('★ 普通成员可编辑本机词库：八组加词框、删词按钮、保存可用',
+    lexMem.groupsShown && lexMem.inputs === 8 && lexMem.delBtns > 0 && lexMem.saveDisabled === false,
     JSON.stringify(lexMem));
   ok('★ 页面明确本机词库的生效范围', lexMem.localChip === true);
-  const memLexSave = await js(`window.api.hotwordsSave([{ key: '风格', words: ['简约百搭'] }])`);
+  const memLexSave = await js(`window.api.hotwordsSave([{ key: '风格', words: ['简约百搭'] }, { key: '收尾', words: ['越看越喜欢'] }])`);
   ok('★ 普通成员可保存本机词库，主进程回传真实保存结果',
-    memLexSave.ok === true && memLexSave.library.groups.some(g => g.key === '风格' && g.words.includes('简约百搭')), JSON.stringify(memLexSave));
+    memLexSave.ok === true && memLexSave.library.groups.some(g => g.key === '风格' && g.words.includes('简约百搭')) && memLexSave.library.groups.some(g => g.key === '收尾' && g.words.includes('越看越喜欢')), JSON.stringify(memLexSave));
   const memLexReset = await js(`window.api.hotwordsReset()`);
   ok('★ 普通成员可恢复本机内置词库',
     memLexReset.ok === true && memLexReset.library.isCustom === false, JSON.stringify(memLexReset));

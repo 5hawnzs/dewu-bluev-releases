@@ -85,7 +85,8 @@ const SUITES = [
   ['cloudtest', 'node', ['tools/cloudtest.js']],
   ['defaultstest', 'node', ['tools/defaultstest.js']],
   ['hotwordsexceltest', 'node', ['tools/hotwordsexceltest.js']],
-  ['hotwordstransfertest', 'electron', ['tools/hotwordstransfertest.js']]
+  ['hotwordstransfertest', 'electron', ['tools/hotwordstransfertest.js']],
+  ['heictest', 'node', ['tools/heictest.js']]
 ];
 
 /** macOS 上本机 Electron 二进制会因签名问题被 SIGKILL，先自签一遍（幂等） */

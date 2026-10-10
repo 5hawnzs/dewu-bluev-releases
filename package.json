@@ -23,6 +23,7 @@
   "dependencies": {
     "electron-updater": "^6.8.9",
     "exceljs": "^4.4.0",
+    "heic-decode": "^2.1.0",
     "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0"
   },

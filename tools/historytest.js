@@ -63,17 +63,32 @@ function fakeDb(records, cap = 1000, failAfter = -1) {
   };
   const synced = await cs.syncOnce({ force: true });
   ok('统计先清零后同步也重置游标，不跳过新记录', synced.ok && uploaded.length === 2 && uploaded.every(e => e.ts >= before));
-  const own = [{ id: 1, ts: before - 1, result: '发布成功' }, { id: 2, ts: before, result: '发布成功' }, { id: 3, ts: before + 1, result: '失败' }, { id: 4, ts: before + 2, result: '模拟成功' }];
-  let accountFilter = true;
+  const own = [{ id: 1, ts: before - 1, result: '发布成功', brand_id: 'brand-a' }, { id: 2, ts: before, result: '发布成功', brand_id: 'brand-a' }, { id: 3, ts: before + 1, result: '失败', brand_id: 'brand-b' }, { id: 4, ts: before + 2, result: '模拟成功', brand_id: 'brand-a' }];
+  const requests = [];
   global.fetch = async url => {
-    const q = new URL(url).searchParams;
-    accountFilter = accountFilter && q.get('user_id') === 'eq.my-account';
+    const q = new URL(url).searchParams; requests.push(q);
     const cursor = q.getAll('id').find(v => v.startsWith('gt.'));
-    return { ok: true, json: async () => cursor ? own.filter(e => e.id > Number(cursor.slice(3))).slice(0, 1) : [{ id: 4 }] };
+    const filtered = own.filter(e => q.getAll('ts').every(v => v.startsWith('gte.') ? e.ts >= Number(v.slice(4)) : e.ts <= Number(v.slice(4)))
+      && (!q.has('brand_id') || (q.get('brand_id').startsWith('eq.') ? q.get('brand_id') === 'eq.' + e.brand_id
+        : JSON.parse('[' + q.get('brand_id').slice(4,-1) + ']').includes(e.brand_id))));
+    return { ok: true, json: async () => cursor ? filtered.filter(e => e.id > Number(cursor.slice(3))).slice(0, 1)
+      : (filtered.length ? [{ id: filtered[filtered.length - 1].id }] : []) };
   };
-  const ownResult = await history.account('my-account');
-  ok('跨设备本账号汇总只统计清零后的真实结果', ownResult.available && ownResult.rows === 2 && ownResult.ok === 1 && ownResult.fail === 1);
-  ok('账号查询每一页均固定本账号 ID', accountFilter);
+  const allTime = await history.account('my-account', { days:0 });
+  ok('跨设备本账号汇总只统计清零后的真实结果', allTime.available && allTime.rows === 2 && allTime.ok === 1 && allTime.fail === 1);
+  requests.length = 0;
+  const ownResult = await history.account('my-account', { rangeMode:'custom', fromAt:new Date(before).toISOString(), toAt:new Date(before+1).toISOString(), brandId:'brand-b' });
+  ok('自定义时间和品牌过滤传到每一页且只统计匹配结果', requests.length === 2 && requests.every(q => q.get('ts') === `gte.${before}` && q.getAll('ts').includes(`lte.${before+1}`)
+    && q.get('brand_id') === 'eq.brand-b') && ownResult.rows === 1 && ownResult.fail === 1);
+  ok('账号查询每一页均固定本账号 ID', requests.every(q => q.get('user_id') === 'eq.my-account'));
+  const scoped = await history.account('my-account', { days:0, scopeIds:['brand-b'] });
+  ok('未筛品牌时账号汇总仍只计算获授权品牌', scoped.rows === 1 && scoped.fail === 1);
+  requests.length = 0;
+  const denied = await history.account('my-account', { scopeIds:['brand-a'], brandId:'brand-b' });
+  const otherUser = await history.account('my-account', { userId:'someone-else' });
+  ok('无权品牌和不匹配执行人均返回筛选空结果，不借筛选切换身份', denied.available && denied.rows === 0 && otherUser.rows === 0 && !requests.length);
+  await history.account('my-account', { days:7 });
+  ok('预设最近七天也向云端发送时间范围', requests.length > 0 && requests.every(q => Math.abs(Number(q.get('ts').slice(4)) - (Date.now()-7*86400000)) < 5000));
   global.fetch = async () => { throw Error('断网'); };
   ok('账号云端读取失败显示不可用，绝不显示假零', !(await history.account('my-account')).available);
   const { PGlite } = require('@electric-sql/pglite');

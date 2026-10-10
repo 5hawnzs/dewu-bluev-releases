@@ -983,12 +983,12 @@ function startServer() {
     store.defaults().copy.hotwords === null);
   ok('⑬ 没改过时 isCustom()=false，全库不含测试词',
     hotwords.isCustom() === false && hotwords.allWords().indexOf(NEWW) < 0);
-  ok('⑬ 收尾组在库里、标了 locked（照样参与生成，只是不给编辑）', (() => {
+  ok('⑬ 收尾组可编辑，保留十二个内置词', (() => {
     const g = hotwords.currentGroups().find(x => x.key === '收尾');
-    return !!g && g.locked === true && g.words.length === 12;
+    return !!g && g.locked === false && g.words.length === 12;
   })(), JSON.stringify((hotwords.currentGroups().find(x => x.key === '收尾') || {}).words || []).slice(0, 40));
-  ok('⑬ 可编辑组正好 7 组，且不含收尾',
-    hotwords.EDITABLE_GROUPS.length === 7 && hotwords.EDITABLE_GROUPS.indexOf('收尾') < 0,
+  ok('⑬ 八组词均可编辑，包含收尾',
+    hotwords.EDITABLE_GROUPS.length === 8 && hotwords.EDITABLE_GROUPS.includes('收尾'),
     hotwords.EDITABLE_GROUPS.join('/'));
   ok('⑬ T01~T15 骨架一个不少、都是有 code 的对象（骨架不许被做成可编辑）',
     hotwords.STYLES.length === 15 && hotwords.STYLES.every(s => !!s.code && !!s.sample));
@@ -1018,8 +1018,11 @@ function startServer() {
     JSON.stringify(lexRej.rejected.map(x => x.word)));
   ok('⑬ ★ 缺失的组＝沿用基线（渲染层少传一个组，不许把那组词悄悄清掉）',
     hotwords.sanitizeLibrary([{ key: '风格', words: ['简约百搭'] }]).groups.find(g => g.key === '氛围').words.length === 8);
-  ok('⑬ ★ 收尾组与 T01~T15 骨架**不落盘**（保存下来的东西里连「收尾」都不该出现）',
-    JSON.stringify(store.get('copy.hotwords')).indexOf('收尾') < 0);
+  const endings = hotwords.currentGroups().map(g => ({ key: g.key, words: g.words.slice() }));
+  endings.find(g => g.key === '收尾').words.push('越看越喜欢');
+  hotwords.saveLibrary(endings);
+  ok('⑬ 收尾保存后立即进入提示词与本机存储',
+    hotwords.promptBlock().includes('越看越喜欢') && store.get('copy.hotwords').groups.find(g => g.key === '收尾').words.includes('越看越喜欢'));
   ok('⑬ {色} 占位被删光时给出告警（那时颜色就不会跟着本行颜色走了）',
     hotwords.sanitizeLibrary([{ key: '色感', words: ['高级感'] }]).warnings.some(s => s.indexOf('{色}') >= 0));
 

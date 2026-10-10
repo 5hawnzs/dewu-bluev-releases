@@ -364,7 +364,7 @@ app.whenReady().then(async () => {
       size: pane.innerHTML.length,
       title: document.querySelector('#head h2').textContent,
       hasRedlines: /三条红线/.test(txt),
-      editableBoxes: h3.filter(t => /^(风格|氛围|色感|场景|人群|季节|情绪)（/.test(t)).length,
+      editableBoxes: h3.filter(t => /^(风格|氛围|色感|场景|人群|季节|情绪|收尾)（/.test(t)).length,
       lockedBox: h3.findIndex(t => t.indexOf('收尾') >= 0 && t.indexOf('锁定') >= 0),
       hasStyles: /T01/.test(txt) && /T15/.test(txt),
       inputs: pane.querySelectorAll('[data-lx-in]').length,
@@ -378,13 +378,13 @@ app.whenReady().then(async () => {
   })()`);
   ok('★ 页签 12「本地词库」能渲染出来', lexPage.size > 200 && lexPage.title === '本地词库', `${lexPage.title} · ${lexPage.size} 字节`);
   ok('★ 本地词库页常驻「三条红线」提示（材质/极限/别的平台名）', lexPage.hasRedlines === true);
-  ok('★ 7 个可编辑组都在页面上（风格/氛围/色感/场景/人群/季节/情绪）',
-    lexPage.editableBoxes === 7, String(lexPage.editableBoxes));
-  ok('★ 「收尾」组在页面上、且明确标着「已锁定，不可编辑」',
-    lexPage.lockedBox >= 0, '第 ' + (lexPage.lockedBox + 1) + ' 个 box');
+  ok('★ 8 个可编辑组都在页面上（风格/氛围/色感/场景/人群/季节/情绪）',
+    lexPage.editableBoxes === 8, String(lexPage.editableBoxes));
+  ok('★ 收尾显示为可编辑词组，没有锁定块',
+    lexPage.lockedBox === -1, '第 ' + (lexPage.lockedBox + 1) + ' 个 box');
   ok('★ T01~T15 句式骨架照实列出来（只读展示）', lexPage.hasStyles === true);
   ok('★ 开发免登录态可以编辑本机词库',
-    lexPage.inputs === 7 && lexPage.addBtns === 7 && lexPage.delBtns > 0,
+    lexPage.inputs === 8 && lexPage.addBtns === 8 && lexPage.delBtns > 0,
     `inputs=${lexPage.inputs} add=${lexPage.addBtns} del=${lexPage.delBtns}`);
   ok('★ 词库页明确标出仅在本机生效',
     /本机词库/.test(lexPage.statusText), lexPage.statusText.slice(0, 70));
@@ -570,7 +570,7 @@ app.whenReady().then(async () => {
 
   const themeDom = await win.webContents.executeJavaScript(`(() => {
     const dock = document.getElementById('themeDock');
-    const proj = document.getElementById('chipProj');
+    const proj = document.getElementById('brandSel');
     return {
       found: !!dock && !!proj,
       sameParent: !!(dock && proj && dock.parentElement === proj.parentElement),
@@ -586,7 +586,7 @@ app.whenReady().then(async () => {
       glass: document.documentElement.classList.contains('glass')
     };
   })()`);
-  ok('★ 主题 Dock 在标题栏、紧挨在「项目」左边（用户指定的位置）',
+  ok('★ 主题 Dock 在标题栏、位于品牌选择左边',
     themeDom.found && themeDom.sameParent && themeDom.beforeProj && themeDom.inTitlebar,
     JSON.stringify(themeDom));
   ok('★ Dock 正好三档、顺序是 日间→夜间→玻璃，且每个图标都画得出来（没有空按钮）',
@@ -915,7 +915,7 @@ app.whenReady().then(async () => {
         barCount: (document.querySelector('#logBarCount') || {}).textContent || '',
         countOnTitleRow: (function () { var c = document.querySelector('#logPaneCount'); var r = c && c.closest ? c.closest('.row') : null; return !!(r && r.querySelector('h3')); })(),
         acts: [...document.querySelectorAll('#pane [data-act]')].map(e => e.dataset.act),
-        hasLv: !!document.querySelector('#logLv'), hasQ: !!document.querySelector('#logQ'),
+        hasLv: !!document.querySelector('#logLv'), hasQ: !!document.querySelector('#logQ'), hasDays: !!document.querySelector('#logDays'),
         hasClear: !!document.querySelector('#logClear') || !!document.querySelector('[data-act="log:clear"]')
       };
     })()`);
@@ -932,48 +932,28 @@ app.whenReady().then(async () => {
       ui0.detailInState >= 1, `${ui0.detailInState} 条明细在内存里`);
     ok('★ 左侧「运行日志」模块上**不再有角标**（2026-10-05 用户：不要显示有多少条）',
       ui0.hasLogBadge === false, String(ui0.hasLogBadge));
-    ok('★ 运行日志页的条数在标题那一行的右边（2026-10-03 用户：右边不显示有多少条）',
-      ui0.countOnTitleRow && /共 \d+ 条|显示 \d+ \/ 共 \d+ 条/.test(ui0.count),
-      JSON.stringify({ onTitleRow: ui0.countOnTitleRow, count: ui0.count }));
-    ok('★ 底部日志栏右边也显示条数，且与页里的「共 N 条」是同一个数',
-      /共 (\d+) 条/.test(ui0.barCount) && /共 (\d+) 条/.test(ui0.count)
-        && ui0.barCount.match(/共 (\d+) 条/)[1] === ui0.count.match(/共 (\d+) 条/)[1],
-      JSON.stringify({ barCount: ui0.barCount, paneCount: ui0.count, barLines: ui0.bar.length }));
-    ok('页上有「级别下拉 + 关键字 + 导出」，没有清除入口',
-      ui0.hasLv && ui0.hasQ && !ui0.hasClear && !ui0.acts.includes('log:clear') && ui0.acts.includes('log:export'),
-      JSON.stringify(ui0.acts));
-
-    // 级别筛选：只该影响这一页；底部日志栏不许跟着变（它就是「刚才发生了什么」）
-    const ui1 = await win.webContents.executeJavaScript(`(async () => {
-      const sel = document.querySelector('#logLv');
-      sel.value = 'error'; sel.dispatchEvent(new Event('change'));
-      await new Promise(r => setTimeout(r, 200));
-      return {
-        pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent),
-        barCount: document.querySelectorAll('#log > div').length,
-        count: document.querySelector('#logPaneCount').textContent
-      };
+    ok('运行日志页和底部均不显示总条数', !ui0.count && !ui0.barCount && !ui0.countOnTitleRow);
+    ok('只保留时间筛选器，移除级别和搜索', ui0.hasDays && !ui0.hasLv && !ui0.hasQ);
+    const rangeUi = await win.webContents.executeJavaScript(`(async () => {
+      const sel = document.querySelector('#logDays');
+      sel.value = 'custom'; sel.dispatchEvent(new Event('change'));
+      state.logFilter.fromAt = localDateTimeInput(Date.now()+86400000);
+      state.logFilter.toAt = localDateTimeInput(Date.now()+172800000);
+      renderAll();
+      const empty = document.querySelectorAll('#logPaneLines > div').length;
+      const bar = document.querySelectorAll('#log > div').length;
+      state.logFilter.toAt = state.logFilter.fromAt;
+      state.logFilter.fromAt = '';
+      renderAll();
+      const invalid = !document.querySelector('#logRangeError').hidden && document.querySelector('[data-act="log:export"]').disabled;
+      state.logFilter.fromAt = localDateTimeInput(Date.now()-86400000);
+      state.logFilter.toAt = localDateTimeInput(Date.now()+60000);
+      renderAll();
+      return {empty,bar,invalid, restored:document.querySelectorAll('#logPaneLines > div').length};
     })()`);
-    ok('★ 级别筛「错误」后页内只剩错误那条（info 那条被筛掉）',
-      ui1.pane.some(l => /ENG-ERR/.test(l)) && !ui1.pane.some(l => /ENG-INFO/.test(l)),
-      ui1.pane.join(' | ').slice(0, 100));
-    ok('★ 筛选时把「显示 N / 共 M 条」两个数都写出来（只写一个会被当成日志丢了）',
-      /显示 \d+ \/ 共 \d+ 条/.test(ui1.count), ui1.count);
-    ok('★ 筛选只作用于这一页：底部日志栏一行都没少',
-      ui1.barCount === ui0.bar.length, `筛选后 ${ui1.barCount} vs 筛选前 ${ui0.bar.length}`);
-
-    // 关键字筛选（级别调回「全部」，单独验关键字这一路）
-    const ui2 = await win.webContents.executeJavaScript(`(async () => {
-      const lv = document.querySelector('#logLv');
-      lv.value = ''; lv.dispatchEvent(new Event('change'));
-      const q = document.querySelector('#logQ');
-      q.value = 'ENG-ERR'; q.dispatchEvent(new Event('input'));
-      await new Promise(r => setTimeout(r, 200));
-      return { pane: [...document.querySelectorAll('#logPaneLines > div')].map(e => e.textContent), count: document.querySelector('#logPaneCount').textContent };
-    })()`);
-    ok('按关键字筛之后只剩命中的那条（且两个数都写出来）',
-      ui2.pane.length === 1 && /ENG-ERR/.test(ui2.pane[0]) && /显示 1 \/ 共 \d+ 条/.test(ui2.count),
-      `${JSON.stringify(ui2.count)} ${ui2.pane.join(' | ').slice(0, 60)}`);
+    ok('未来时间没有日志，底部不受筛选影响', rangeUi.empty===0 && rangeUi.bar===ui0.bar.length);
+    ok('无效时间范围提示错误并禁止导出', rangeUi.invalid);
+    ok('恢复有效时间后日志重新出现', rangeUi.restored>0);
 
     // ★ 导出（**在筛选状态下点**）：这一条才是「导出的就是屏幕上这些」的硬证据，
     //   只验「文件存在」是不够的 —— 那样把「永远导出全量」放过去也看不出来
@@ -988,12 +968,8 @@ app.whenReady().then(async () => {
     ok('★ 点「导出日志」后输出目录里真的出现了 .log 与 .jsonl（文件名带时间戳到秒）',
       !!logName && !!jsonName, files.join(' ') || '(目录是空的)');
     const logTxt = logName ? fs.readFileSync(path.join(outDir, logName), 'utf8') : '';
-    ok('★ 导出的是**筛选后**的那些：关键字写进文件头，条数也对得上（1 条）',
-      /关键字=ENG-ERR/.test(logTxt) && /本次导出：1 条/.test(logTxt),
-      `${(logTxt.match(/筛选条件：[^\n]*/) || [''])[0]} | ${(logTxt.match(/本次导出：[^\n]*/) || [''])[0]}`);
-    ok('★ 文件头同时写出「内存缓冲区共 N 条」，且比导出的多（一眼看出这是筛过的）',
-      (() => { const m = /内存缓冲区：共 (\d+) 条/.exec(logTxt); return !!m && Number(m[1]) > 1; })(),
-      (logTxt.match(/内存缓冲区：[^\n]*/) || [''])[0]);
+    const exportedRows = jsonName ? fs.readFileSync(path.join(outDir,jsonName),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+    ok('导出遵循自定义时间范围且与界面一致', /时间=/.test(logTxt) && exportedRows.length===rangeUi.restored && exportedRows.every(e=>e.t >= Date.now()-86400000 && e.t <= Date.now()+60000));
     ok('导出的是给人看的那份：每行带完整日期时间 + 中文等级',
       /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[错误\] ENG-ERR/.test(logTxt),
       (logTxt.split('\n').filter(l => /ENG-ERR/.test(l))[0] || '').slice(0, 70));
@@ -1009,9 +985,8 @@ app.whenReady().then(async () => {
 
     // 日志不可清除：先恢复全量筛选，再验证新日志到来时两处继续保留历史并同步更新。
     await win.webContents.executeJavaScript(`(() => {
-      const lv = document.querySelector('#logLv'), q = document.querySelector('#logQ');
-      lv.value = ''; lv.dispatchEvent(new Event('change'));
-      q.value = ''; q.dispatchEvent(new Event('input'));
+      state.logFilter = {days:0,rangeMode:'preset',fromAt:'',toAt:''};
+      renderAll();
     })()`);
     await new Promise(r => setTimeout(r, 200));
     const beforePush = await win.webContents.executeJavaScript(`(() => ({
@@ -1950,6 +1925,7 @@ app.whenReady().then(async () => {
   // ---- 待办①端到端：真起一个批次，看「运行中的批次」出现取消按钮、跑完又消失 ----
   const batchSrc = path.join(TMP, '自检素材', '自检批次源');
   const jpeg = require(path.join(ROOT, 'node_modules', 'jpeg-js'));
+  store.set({ copy: { llm: { enabled: false } } }); // 本套件验界面任务状态，不能调用收费接口。
   const px = Buffer.alloc(120 * 120 * 4);
   for (let i = 0; i < px.length; i += 4) { px[i] = 240; px[i + 1] = 240; px[i + 2] = 242; px[i + 3] = 255; }
   const shot = jpeg.encode({ data: px, width: 120, height: 120 }, 90).data;
@@ -2311,8 +2287,8 @@ app.whenReady().then(async () => {
     const MIN = winMod.MAIN_MIN;
     ok('★ window.js 导出了主窗口最小尺寸（自检拿真值，不在测试里另写一份数字）',
       !!(MIN && MIN.w > 0 && MIN.h > 0), JSON.stringify(MIN));
-    ok('★ 最小宽度留得下侧栏(186) + 内容区左右边距(88)',
-      !!MIN && MIN.w > 274, MIN ? (MIN.w + ' > 274') : '缺');
+    ok('★ 最小宽度留得下侧栏(156) + 内容区左右边距(88)',
+      !!MIN && MIN.w > 244, MIN ? (MIN.w + ' > 244') : '缺');
 
     // ① 源码级：不许再存在「把侧栏改成横排」的媒体查询
     const C5 = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
@@ -2373,7 +2349,8 @@ app.whenReady().then(async () => {
       const escaped = !document.querySelector('#umBox img');
       closeUserModal();
       const centered = [...document.querySelectorAll('.stats-page th,.stats-page td')].every(e => getComputedStyle(e).textAlign === 'center');
-      const account = document.querySelector('#pane').textContent.includes('本账号汇总') && document.querySelector('#pane').textContent.includes('已发布篇数');
+      const account = document.querySelector('#pane').textContent.includes('账号汇总') && document.querySelector('#pane').textContent.includes('已发布篇数')
+        && !document.querySelector('#pane').textContent.includes('全部时间（跨设备）');
       b.users = b.users.slice(0,2); renderAll();
       const inline = !document.querySelector('[data-act="stats:users"]') && document.querySelector('#pane').textContent.includes('执行人1');
       b.users = oldUsers; delete state.stats.account; state.tab = oldTab; renderAll();
@@ -2410,7 +2387,7 @@ app.whenReady().then(async () => {
       //   ① 「主区比侧栏高」—— 并排时两者本来就等高（实测 sideH=mainH=429）；
       //   ② 「主区顶到 y=0」—— 上面还有自绘标题栏，实测 mainY=38 就是它。
       ok('★ 缩到最小尺寸后侧栏仍在**左侧**、内容区在它右边（不是上下堆叠）',
-        geo.sideX === 0 && geo.mainX >= geo.sideW - 1 && geo.sideW >= 180
+        geo.sideX === 0 && geo.mainX >= geo.sideW - 1 && geo.sideW === 156
         && Math.abs(geo.sideY - geo.mainY) <= 1,
         `sideX=${geo.sideX} sideY=${geo.sideY} sideW=${geo.sideW} mainX=${geo.mainX} mainY=${geo.mainY}`);
 
@@ -2432,7 +2409,7 @@ app.whenReady().then(async () => {
       }
       ok('★ 最小尺寸下没有页签横向溢出（内容不会被裁掉）',
         worstOver === 0, `最大 ${worstOver}px @ ${worstTab}（切了 ${navs5.length} 个页签）`);
-      ok('★ 最小尺寸下表格都不横向滚动 ——「960」这个数的来源（品牌统计页那张表要 660px）',
+      ok('★ 最小尺寸930px下品牌统计表格不横向滚动',
         worstTbl === 0, `最大表横滚 ${worstTbl}px @ ${tblTab}`);
     } finally {
       // ★ 还原：窗口尺寸 + 假 stats + 回到第 1 页。不还原 ⇒ 后面的断言全建在被改过的界面上。
@@ -2467,19 +2444,52 @@ app.whenReady().then(async () => {
     const acts = [...document.querySelectorAll('#head [data-act]')].map(b => b.dataset.act);
     const text = document.querySelector('#pane').textContent;
     const keep = state.probe;
-    state.probe = { device:{serial:'test-device'}, fix:[{level:'bad',title:'模拟器里没找到得物',how:'请先安装',act:{act:'go:dewu',label:'去设置下载得物'}}] };
+    state.probe = { device:{serial:'test-device'}, appPackage:null, adbKeyboard:false, adbKeyboardActive:false, fix:[
+      {level:'bad',title:'模拟器里没找到得物',how:'请先安装',act:{act:'go:dewu',label:'去设置下载得物'}},
+      {level:'bad',title:'中文标题和正文发不出去（没装中文输入法）',how:'需配置输入法'}
+    ] };
     renderAll();
+    const beforeClickCards = document.querySelectorAll('#pane .box > div[style*="border-left:3px solid"]').length;
+    const onlyDewu = beforeClickCards === 1 && document.querySelector('#pane').textContent.includes('去设置下载得物')
+      && !document.querySelector('#pane').textContent.includes('中文标题和正文发不出去');
+    const imeRow = [...document.querySelectorAll('#pane details tr')].find(tr => tr.textContent.includes('中文输入 ADBKeyboard'));
+    const imePending = !!imeRow && imeRow.textContent.includes('未检查') && !imeRow.textContent.includes('不满足');
     const jump = document.querySelector('[data-act="go:dewu"]');
     jump.click();
     const routed = state.tab === 7 && !!document.querySelector('[data-act="apk:save"]') && !!document.querySelector('[data-act="apk:install"]');
     state.probe = keep; state.tab = 1; renderAll();
-    return { acts, noInternals: !/模拟通道|定位表.*步|视频.*步/.test(text), routed,
+    return { acts, noInternals: !/模拟通道|定位表.*步|视频.*步/.test(text), routed, onlyDewu, imePending,
       names: [...document.querySelectorAll('.name,#loginForm .gname')].every(e => e.textContent === '得物蓝V素材发布工具') };
   })()`);
   ok('发布页顶部只保留导入、停止、开始三个入口', simplified.acts.join(',') === 'sheet:importReport,pub:stop,pub:run');
   ok('发布页不显示模拟通道和定位步骤等内部信息', simplified.noInternals);
   ok('缺少得物时可一键跳到设置的下载及安装入口', simplified.routed);
+  ok('得物未安装且输入法也不可用时只显示一条红色引导', simplified.onlyDewu);
+  ok('未安装得物时输入法标为未检查，不误报第二个红色故障', simplified.imePending);
   ok('登录页和正式页面标题统一删除蓝V后的空格', simplified.names);
+  const regressionUi = await win.webContents.executeJavaScript(`(() => {
+    const previousProbe = state.probe, previousCompliance = state.project.compliance;
+    try {
+      state.probe = {device:null,appPackage:null,fix:[{level:'bad',title:'设备离线',how:'请重新连接'}]};
+      const offline = probeHtml().includes('设备离线') && !probeHtml().includes('一切就绪');
+      state.probe = {device:{serial:'online'},appPackage:'com.shizhuang.duapp',fix:[{level:'bad',title:'输入法不可用',how:'请重新连接'}]};
+      const installed = probeHtml().includes('输入法不可用');
+      state.project.compliance = {stats:{ok:0,todo:65,manual:28,total:93},rows:[
+        ...Array.from({length:65},(_,i)=>({file:'auto'+i,type:'视频',status:'todo',issue:'转码',action:'转 MP4'})),
+        ...Array.from({length:28},(_,i)=>({file:'manual'+i,type:'视频',status:'manual',issue:'无法读取视频时长',action:'人工确认'}))
+      ]};
+      const container = document.createElement('div'); container.innerHTML = TABS[2].render();
+      const rows = [...container.querySelectorAll('tbody tr')];
+      return {offline,installed,complete:rows.length===93 && rows.filter(r=>r.textContent.includes('manual')).length===28,
+        first:rows[0].textContent.includes('manual0'),noProject:!document.querySelector('#chipProj'),
+        noCounts:!document.querySelector('#side .st,#side [data-st]')};
+    } finally {state.probe=previousProbe;state.project.compliance=previousCompliance;}
+  })()`);
+  ok('设备离线时连接故障仍显示，不被误报为就绪', regressionUi.offline);
+  ok('已安装得物时输入法错误仍显示', regressionUi.installed);
+  ok('合规结果超过60条时28项未自动处理仍完整可见且优先显示', regressionUi.complete && regressionUi.first);
+  ok('主工作页移除顶部项目标识', regressionUi.noProject);
+  ok('左侧所有模块移除数字和状态角标', regressionUi.noCounts);
   const { dialog } = require('electron');
   const originalDirDialog = dialog.showOpenDialog;
   let dirOptions = null;

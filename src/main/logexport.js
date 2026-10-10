@@ -58,9 +58,23 @@ function fullTime(ts) {
 /** 筛选条件写成一行人话：级别=全部 · 关键字=（无） */
 function filterText(filter) {
   const f = filter || {};
+  if (f.rangeMode === 'custom') return `时间=${fullTime(Date.parse(f.fromAt))} 至 ${fullTime(Date.parse(f.toAt))}`;
+  if (f.days != null) return Number(f.days) > 0 ? `时间=最近 ${Number(f.days)} 天` : '时间=全部';
   const lv = f.level && LEVEL_LABEL[f.level] ? LEVEL_LABEL[f.level] : '全部';
   const q = f.q == null || String(f.q) === '' ? '（无）' : String(f.q);
   return `级别=${lv} · 关键字=${q}`;
+}
+
+/** 导出在主进程重新验证时间，不能相信前端传入的日志数组。 */
+function timeRange(filter = {}, now = Date.now()) {
+  if (filter.rangeMode === 'custom') {
+    const from = Date.parse(filter.fromAt), to = Date.parse(filter.toAt);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) throw new Error('请选择有效的开始和结束时间');
+    return { from, to };
+  }
+  const days = filter.days == null ? 0 : Number(filter.days);
+  if (![0, 7, 30, 90].includes(days)) throw new Error('不支持的日志时间范围');
+  return { from: days ? now - days * 86400000 : 0, to: Infinity };
 }
 
 function formatText(entries, meta) {
@@ -128,5 +142,5 @@ function writeFiles(opts) {
 
 module.exports = {
   LEVELS, LEVEL_LABEL, levelLabel, countByLevel, fileBase, fullTime, filterText,
-  formatText, formatJsonl, paths, writeFiles
+  formatText, formatJsonl, paths, writeFiles, timeRange
 };

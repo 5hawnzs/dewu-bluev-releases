@@ -181,8 +181,12 @@ function register() {
     delete o.scopeIds;                       // 范围只认主进程算出来的，不认前端传的
     const history = require('./services/publishhistory');
     if (auth.cloudMode()) await history.refresh(require('./services/sheet').logFile());
-    const account = auth.cloudMode() ? await history.account(auth.current() && auth.current().id) : null;
-    return Object.assign({ ok: true, account }, stats.query(statsOptions(o)));
+    const queryOpts = statsOptions(o);
+    const current = auth.current();
+    const queried = stats.query(queryOpts);
+    // 本账号身份只认登录会话；时间、品牌及执行人筛选与页面共用。
+    const account = auth.cloudMode() ? await history.account(current && current.id, queryOpts) : null;
+    return Object.assign({ ok: true, account }, queried);
   }));
   handle('stats:export', guard(async (_e, opts) => {
     const o = Object.assign({}, opts || {});
@@ -322,12 +326,12 @@ function register() {
   // 主进程按当前账号与筛选条件生成导出内容；普通成员只能导出本人日志。
   handle('log:export', guard((_e, payload) => {
     const p = payload || {};
-    const filter = Object.assign({}, p.filter || {}, { q: String((p.filter || {}).q || '').trim() });
+    const filter = Object.assign({}, p.filter || {});
     // 从主进程缓存重新筛选，拒绝前端夹带其他账号的日志或伪造总条数。
     const visible = logbus.visibleHistory().filter(e => e.tier !== 'detail');
-    const entries = visible.filter(e => (!filter.level || e.level === filter.level)
-      && (!filter.q || String(e.msg || '').toLowerCase().includes(String(filter.q).toLowerCase())));
     try {
+      const range = logexport.timeRange(filter);
+      const entries = visible.filter(e => Number(e.t) >= range.from && Number(e.t) <= range.to);
       const r = logexport.writeFiles({
         outputDir: store.get('paths.output'),
         entries,
@@ -338,8 +342,7 @@ function register() {
           bufferTotal: visible.length
         }
       });
-      const byFilter = !!(filter.level || filter.q);
-      logbus.ok(`运行日志已导出：${path.basename(r.text)}（${r.count} 条${byFilter ? '，已按当前筛选' : ''}）`);
+      logbus.ok(`运行日志已导出：${path.basename(r.text)}`);
       return { ok: true, file: r.text, jsonFile: r.json, count: r.count };
     } catch (e) {
       // ★ 绝不吞：导出失败就说失败。说一句「已导出」然后磁盘上没文件，是最坏的那种假成功

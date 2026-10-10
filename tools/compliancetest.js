@@ -123,6 +123,9 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
   // ---- ② 处理：好图必须原地不动 ----
   const fx = await compliance.fix(items, sc.rows, ctx());
   ok('② 只处理该处理的（1 转 JPG + 1 隔离）', fx.converted === 1 && fx.isolated === 1 && fx.failed === 0, JSON.stringify({ converted: fx.converted, isolated: fx.isolated, failed: fx.failed }));
+  const currentStats = compliance.summarize(fx.rows);
+  ok('处理完成后按实际结果重新统计，不再保留旧的待处理与隔离数量',
+    currentStats.todo === 0 && currentStats.isolate === 0 && currentStats.total === fx.rows.length);
   ok('② 合格 JPG 仍在原位', fs.existsSync(path.join(leaf, '1.jpg')));
   ok('② 合格 JPG 没被搬进 _rejected', !fs.existsSync(path.join(rejectedDir, '26FW-YB160+冠军白+1', '1.jpg')));
   ok('② 垃圾文件确实进了 _rejected', fs.existsSync(path.join(rejectedDir, '26FW-YB160+冠军白+1', '.DS_Store')));
@@ -156,6 +159,22 @@ const rejectedDir = path.join(TMP, '素材', '_rejected');
   const vmod = require(path.join(base, 'src/main/services/video.js'));
   const VENDOR_FF = path.join(base, 'vendor', 'ffmpeg');
   vmod.setBundledFfmpegDir(VENDOR_FF);
+  // 父目录必须沿真实嵌套路径检查，不能把扁平目录名拼回原目录。
+  const parent = path.join(TMP, '嵌套母目录');
+  const leaf28 = path.join(parent, '批次', '分类', 'SKU+象牙白+1');
+  fs.mkdirSync(leaf28, { recursive: true });
+  const sample28 = path.join(leaf28, 'video0.mp4');
+  execFileSync(path.join(VENDOR_FF, 'ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=white:s=320x240:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', sample28], { windowsHide: true });
+  for (let i = 1; i < 28; i++) fs.copyFileSync(sample28, path.join(leaf28, `video${i}.mp4`));
+  const scan28 = await compliance.scanParent(parent);
+  ok('嵌套母目录内 28 个正常视频全部通过，不得批量误报时长未知',
+    scan28.rows.length === 28 && scan28.stats.ok === 28 && scan28.stats.manual === 0,
+    JSON.stringify(scan28.stats));
+  let missingError = '';
+  try { await compliance.scan([{ id: 'missing', absDir: leaf28, files: [{ name: '不存在.mp4', type: 'video' }] }]); }
+  catch (e) { missingError = e.message; }
+  ok('目录访问错误单独报错，不得变成素材问题', /无法访问待检查文件/.test(missingError), missingError);
   ok('⑤ 前置：内置 ffmpeg 可用（否则本段只能验「需手动」那条路）', vmod.status().usable === true, JSON.stringify(vmod.status()));
 
   const vleaf = path.join(TMP, 'flat', 'MOV-001+黑+1');

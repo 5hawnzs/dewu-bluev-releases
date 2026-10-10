@@ -48,26 +48,48 @@ async function refresh(file) {
     return apply(cutoff(), file);
   }
 }
-async function account(userId) {
+async function account(userId, filters = {}) {
   if (!userId) return { available: false, error: '当前账号未登录' };
   try {
     const result = { available: true, rows: 0, ok: 0, fail: 0, other: 0 };
+    const scope = Array.isArray(filters.scopeIds) ? filters.scopeIds.map(String) : null;
+    const wantBrand = String(filters.brandId || '');
+    if ((filters.userId && String(filters.userId) !== String(userId))
+      || (scope && (!scope.length || (wantBrand && !scope.includes(wantBrand))))) return result;
     const before = cutoff();
     const seen = new Set();
     // 按不可变主键翻页，避免同步新增记录造成 offset 跳页重复。
     let cursor = 0;
-    const top = await request('publish_log?select=id&org=eq.' + encodeURIComponent(cfg().org)
-      + '&user_id=eq.' + encodeURIComponent(userId) + '&order=id.desc&limit=1');
+    const clauses = ['org=eq.' + encodeURIComponent(cfg().org)];
+    if (userId) clauses.push('user_id=eq.' + encodeURIComponent(userId));
+    const customRange = filters.rangeMode === 'custom';
+    const days = filters.days == null ? 30 : (Number(filters.days) || 0);
+    const fromTs = customRange ? new Date(String(filters.fromAt || '')).getTime()
+      : (days > 0 ? Date.now() - days * 86400000 : 0);
+    const toTs = customRange ? new Date(String(filters.toAt || '')).getTime() : Date.now();
+    if (customRange && (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || toTs < fromTs)) {
+      throw Error('统计时间范围无效');
+    }
+    if (fromTs) clauses.push('ts=gte.' + Math.floor(fromTs));
+    if (customRange) clauses.push('ts=lte.' + Math.floor(toTs));
+    const brandId = String(filters.brandId || '');
+    if (brandId === '__none__') clauses.push('or=' + encodeURIComponent('(brand_id.is.null,brand_id.eq."")'));
+    else if (brandId) clauses.push('brand_id=eq.' + encodeURIComponent(brandId));
+    else if (scope) clauses.push('brand_id=in.' + encodeURIComponent('(' + scope.map(id => JSON.stringify(id)).join(',') + ')'));
+    const filterQuery = clauses.join('&');
+    const top = await request('publish_log?select=id&' + filterQuery
+      + '&order=id.desc&limit=1');
     if (!Array.isArray(top)) throw Error('云端返回格式错误');
     const max = top[0] ? Number(top[0].id) : 0;
     if (!max) return result;
     for (;;) {
-      const page = await request('publish_log?select=id,result,ts,machine_id,machine_name,seq,batch_no,dir_name,brand_id&org=eq.' + encodeURIComponent(cfg().org)
-        + '&user_id=eq.' + encodeURIComponent(userId) + '&id=gt.' + cursor + '&id=lte.' + max + '&order=id.asc&limit=1000');
+      const page = await request('publish_log?select=id,result,ts,machine_id,machine_name,seq,batch_no,dir_name,brand_id&' + filterQuery
+        + '&id=gt.' + cursor + '&id=lte.' + max + '&order=id.asc&limit=1000');
       if (!Array.isArray(page)) throw Error('云端返回格式错误');
       if (!page.length) break;
       for (const e of page) {
-        if ((before && Number(e.ts) < before) || !['发布成功', '失败'].includes(e.result)
+        if ((before && Number(e.ts) < before) || (scope && !scope.includes(String(e.brand_id || '')))
+          || !['发布成功', '失败'].includes(e.result)
           || e.machine_id === '__probe__conn__' || /探针/.test(e.machine_name || '')) continue;
         const key = JSON.stringify([e.machine_name || e.machine_id || '', e.ts, e.seq, e.batch_no || '', e.dir_name || '', e.result, e.brand_id || '']);
         if (seen.has(key)) continue;

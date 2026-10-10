@@ -158,25 +158,32 @@ async function dispatch(type, args, ctx) {
     }
     case 'compliance.scan': {
       if (!st().items.length) throw new Error('请先做素材整理');
+      project.patch({ compliance: { rows: [], stats: null, groups: [], scannedAt: 0 } });
       const { rows, stats } = await compliance.scan(st().items, ctx);
       project.patch({ compliance: { rows, stats, scannedAt: Date.now() } });
       // 大结论（2026-10-05）：逐条的判定过程在明细里，这里只给用户几个数
-      ctx.conclude(`合规检查完成【检查 ${stats.total} 个文件 · 通过 ${stats.ok} · 待处理 ${stats.todo} · 需人工 ${stats.manual}】`,
+      ctx.conclude(`合规检查完成【检查 ${stats.total} 个文件 · 通过 ${stats.ok} · 待处理 ${stats.todo} · 未自动处理 ${stats.manual}】`,
         stats.manual ? 'warn' : 'ok');
       return { rows, stats };
     }
     case 'compliance.scanParent': {
       const dir = needSourceDir(args.dir || st().sourceDir);
+      project.patch({ compliance: { rows: [], stats: null, groups: [], scannedAt: 0 } });
       const r = await compliance.scanParent(dir, ctx);
       project.patch({ compliance: { rows: r.rows, stats: r.stats, groups: r.groups, scannedAt: Date.now() } });
-      ctx.conclude(`父目录检查完成【${r.groups.length} 个批次 · ${r.stats.total} 个文件 · 可自动处理 ${r.stats.todo} · 需人工 ${r.stats.manual}】`,
+      ctx.conclude(`父目录检查完成【${r.groups.length} 个批次 · ${r.stats.total} 个文件 · 可自动处理 ${r.stats.todo} · 未自动处理 ${r.stats.manual}】`,
         r.stats.manual ? 'warn' : 'ok');
       return { groups: r.groups.map(g => ({ name: g.name, stats: g.stats })), stats: r.stats };
     }
     case 'compliance.fix': {
       const s = st();
       const r = await compliance.fix(s.items, s.compliance.rows, ctx);
-      project.patch({ compliance: { rows: r.rows, stats: s.compliance.stats, scannedAt: s.compliance.scannedAt } });
+      const stats = compliance.summarize(r.rows);
+      const groups = (s.compliance.groups || []).map(g => Object.assign({}, g, {
+        rows: r.rows.filter(row => row.group === g.name),
+        stats: compliance.summarize(r.rows.filter(row => row.group === g.name))
+      }));
+      project.patch({ compliance: { rows: r.rows, stats, groups, scannedAt: s.compliance.scannedAt } });
       ctx.conclude(`合规处理完成【转换 ${r.converted} · 隔离 ${r.isolated} · 失败 ${r.failed}】`, r.failed ? 'warn' : 'ok');
       return r;
     }
@@ -319,7 +326,7 @@ async function dispatch(type, args, ctx) {
       const r = await verify.check(st().items, ctx);
       project.patch({ verify: { rows: r.rows, stats: r.stats, checkedAt: Date.now() } });
       // 大结论（2026-10-05）：只有「会被拦下不发」才是用户要立刻知道的
-      ctx.conclude(`货号颜色校验完成【${r.rows.length} 条 · 通过 ${r.stats.pass} · 需人工 ${r.stats.manual}`
+      ctx.conclude(`货号颜色校验完成【${r.rows.length} 条 · 通过 ${r.stats.pass} · 未自动处理 ${r.stats.manual}`
         + ` · 会被拦下不发 ${r.stats.blocked}】`, r.stats.blocked ? 'warn' : 'ok');
       return r;
     }

@@ -69,7 +69,7 @@ app.whenReady().then(async () => {
   lockedSheet.addRow(['收尾', '覆盖锁定词']);
   fs.writeFileSync(filename, Buffer.from(await lockedWorkbook.xlsx.writeBuffer()));
   const lockedImport = await handlers['hotwords:import']({});
-  check('导入仍拒绝锁定分组', !lockedImport.ok && /不存在或不可编辑/.test(lockedImport.error));
+  check('收尾可通过 Excel 导入编辑', lockedImport.ok && lockedImport.groups.find(g => g.key === '收尾').words.includes('覆盖锁定词'));
 
   fs.writeFileSync(filename, Buffer.alloc(2 * 1024 * 1024 + 1));
   const oversized = await handlers['hotwords:import']({});

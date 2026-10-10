@@ -34,7 +34,7 @@ const state = {
   //   models=拉回来的清单，picked=刚点中的那个模型 id（保存才落盘）。
   modelModal: null,
   logs: [],           // ★ 运行日志只有这一份数据：底部日志栏与左侧「运行日志」页都读它
-  logFilter: { level: '', q: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
+  logFilter: { days: 30, rangeMode: 'preset', fromAt: '', toAt: '' },   // 「运行日志」页的筛选（只影响这一页，不动底部日志栏）
   logExport: null,    // 上一次导出结果 { file, jsonFile, count }，用来给「打开 / 定位」按钮指路
   logExportErr: '',   // 上一次导出的失败原因（失败要说出来，不能只在 toast 里一闪而过）
   devStatus: null,    // 「扫描设备」逐台结果 { serial: {...} }，null = 还没扫过
@@ -220,42 +220,22 @@ function logLineHtml(e) {
 function isDetailLog(e) { return !!(e && e.tier === 'detail'); }
 /** 面向用户的日志（大结论）：底部日志栏、运行日志页、导出、条数统计，一律以它为准 */
 function uiLogs() { return (state.logs || []).filter(e => !isDetailLog(e)); }
-function logFilterOn() {
+function logTimeRange() {
   const f = state.logFilter || {};
-  return !!(f.level || String(f.q || '').trim());
+  if (f.rangeMode === 'custom') {
+    const from = Date.parse(f.fromAt), to = Date.parse(f.toAt);
+    return { from, to, valid: Number.isFinite(from) && Number.isFinite(to) && from <= to };
+  }
+  return { from: Number(f.days) > 0 ? Date.now() - Number(f.days) * 86400000 : 0, to: Infinity, valid: true };
 }
-/** 当前筛选下该出现在「运行日志」页里的那些（无筛选 = 全部大结论） */
 function filteredLogs() {
-  const f = state.logFilter || { level: '', q: '' };
-  const q = String(f.q || '').trim().toLowerCase();
-  return uiLogs().filter(e => {
-    if (f.level && e.level !== f.level) return false;
-    if (q && !String(e.msg || '').toLowerCase().includes(q)) return false;
-    return true;
-  });
-}
-/** 命中条数文案。★ 筛选时两个数都要写出来 —— 只写「3 条」会让人以为日志丢了 */
-function logCountText() {
-  const hit = filteredLogs().length;
-  const total = uiLogs().length;
-  return logFilterOn() ? `显示 ${hit} / 共 ${total} 条` : `共 ${total} 条`;
+  const r = logTimeRange();
+  return r.valid ? uiLogs().filter(e => Number(e.t) >= r.from && Number(e.t) <= r.to) : [];
 }
 /** 一条日志追加到「运行日志」页（只在该页开着时才动 DOM，且要过一遍当前筛选） */
 function appendToLogPane(e) {
-  if (isDetailLog(e)) return;
-  const box = $('#logPaneLines');
-  if (!box) return;
-  const f = state.logFilter || { level: '', q: '' };
-  const q = String(f.q || '').trim().toLowerCase();
-  if (f.level && e.level !== f.level) return;
-  if (q && !String(e.msg || '').toLowerCase().includes(q)) return;
-  const div = document.createElement('div');
-  div.innerHTML = logLineHtml(e);
-  box.appendChild(div);
-  while (box.children.length > LOG_KEEP) box.removeChild(box.firstChild);
-  box.scrollTop = box.scrollHeight;
-  const cnt = $('#logPaneCount');
-  if (cnt) cnt.textContent = logCountText();
+  if (isDetailLog(e) || !$('#logPaneLines')) return;
+  renderLogPaneLines();
 }
 function pushLog(e) {
   state.logs.push(e);
@@ -270,7 +250,6 @@ function pushLog(e) {
     box.scrollTop = box.scrollHeight;
   }
   appendToLogPane(e);
-  updateLogBadge();
 }
 function renderLogs() {
   const box = $('#log');
@@ -284,7 +263,6 @@ function renderLogs() {
     box.scrollTop = box.scrollHeight;
   }
   renderLogPaneLines();
-  updateLogBadge();
 }
 /** 「运行日志」页只重画行本身：整页重排会把筛选框里正在输入的光标顶掉 */
 function renderLogPaneLines() {
@@ -292,28 +270,13 @@ function renderLogPaneLines() {
   if (!box) return;
   box.innerHTML = filteredLogs().map(e => `<div>${logLineHtml(e)}</div>`).join('');
   box.scrollTop = box.scrollHeight;
-  const cnt = $('#logPaneCount');
-  if (cnt) cnt.textContent = logCountText();
-}
-/** 条数：只更新底部日志栏右上角那个 chip（★ 2026-10-05 用户：左侧「运行日志」模块上不要显示条数
- *  —— 侧栏那个角标（`[data-st="10"]`）已整个去掉，连元素都没了）。
- *  口径与「运行日志」页里那个 chip 一致：同一个 state.logs 缓冲区（上限 500），**都只数大结论**
- *  （明细不算进去，否则用户会看到「共 3 条」而屏幕上只有 1 行）。 */
-function updateLogBadge() {
-  const total = uiLogs().length;
-  const errs = uiLogs().filter(e => e.level === 'error').length;
-  const bar = $('#logBarCount');
-  if (bar) {
-    bar.textContent = total ? `共 ${total} 条${errs ? ` · ${errs} 错` : ''}` : '还没有日志';
-    bar.className = 'chip' + (errs ? ' warn' : '');
-  }
 }
 /** 需要导出给主进程的那些：**当前筛选下来的**，外加上下文（筛选条件 + 缓冲区总数 + 明细条数） */
 function logExportPayload() {
   const ui = uiLogs();
   return {
     entries: filteredLogs(),
-    filter: { level: state.logFilter.level, q: state.logFilter.q },
+    filter: { ...state.logFilter },
     bufferTotal: ui.length,
     // ★ 明细也要报个数：界面上看不见它们，导出文件里得说清「还有 N 条流水在 run-log.jsonl」
     bufferDetail: Math.max(0, (state.logs || []).length - ui.length)
@@ -493,31 +456,6 @@ function batchDetailHtml() {
   </div>`;
 }
 
-/* ---------------- 侧栏 ---------------- */
-function sideStatus() {
-  const p = state.project || {};
-  const set = (i, txt, cls) => {
-    const el = document.querySelector(`[data-st="${i}"]`);
-    if (!el) return;
-    el.textContent = txt;
-    el.className = 'st' + (cls ? ' ' + cls : '');
-  };
-  set(1, p.items && p.items.length ? String(p.items.length) : '待', p.items && p.items.length ? 'ok' : 'warn');
-  const cs = p.compliance && p.compliance.stats;
-  set(2, cs ? (cs.manual ? `${cs.todo + cs.manual} 待` : '通过') : '—', cs ? (cs.manual ? 'warn' : 'ok') : '');
-  set(3, p.copyRows && p.copyRows.length ? `${p.copyRows.length}/${p.items.length}` : (p.items ? `0/${p.items.length}` : '—'),
-    p.copyRows && p.copyRows.length ? 'ok' : '');
-  const vs = p.verify && p.verify.stats;
-  set(4, vs ? (vs.manual + vs.missing + vs.noColor ? `${vs.manual + vs.missing + vs.noColor}` : '通过') : '—', vs ? (vs.manual + vs.missing + vs.noColor ? 'warn' : 'ok') : '');
-  set(5, p.sheet && p.sheet.rowCount ? String(p.sheet.rowCount) : '—', p.sheet && p.sheet.rowCount ? 'ok' : '');
-  const rows = (p.publish && p.publish.rows) || [];
-  const ok = rows.filter(r => r.result === '发布成功').length;
-  set(6, rows.length ? `${ok}/${rows.length}` : '—', rows.length ? (ok === rows.length ? 'ok' : '') : '');
-  // 8 品牌统计：显示「能用几个品牌」。一个都没有是黄灯 —— 那样什么产出任务都起不来，得先说清
-  const mine = state.brandsMeta ? state.brandsMeta.mine : null;
-  set(8, mine ? `${mine.length} 个` : '—', mine ? (mine.length ? 'ok' : 'warn') : '');
-}
-
 /* ---------------- 各页渲染 ---------------- */
 const TABS = {};
 
@@ -571,13 +509,14 @@ TABS[2] = {
     const s = c.stats;
     const cfg0 = state.config.compliance || {};
     if (!s) return `<div class="empty">素材待检查。点击「开始检查」后才会读取视频时长和图片信息；也可选择「检查父目录」。</div>`;
-    const rows = c.rows.filter(r => r.status !== 'ok').slice(0, 60);
+    const rows = c.rows.filter(r => r.status !== 'ok')
+      .sort((a, b) => Number(b.status === 'manual') - Number(a.status === 'manual'));
     const okRows = c.rows.filter(r => r.status === 'ok').length;
     return `
       <div class="stats">
         <div class="stat good"><b>${n(s.ok)}</b><span>合格</span></div>
         <div class="stat"><b>${n(s.todo)}</b><span>可自动处理</span></div>
-        <div class="stat bad"><b>${n(s.manual)}</b><span>需人工定夺</span></div>
+        <div class="stat bad"><b>${n(s.manual)}</b><span>未自动处理</span></div>
         ${cfg0.enforceMaxSide ? `<div class="stat"><b>${n(s.scaled)}</b><span>等比缩放</span></div>` : ''}
         <div class="stat bad"><b>${n(s.tooSmall)}</b><span>尺寸不足</span></div>
         <div class="stat bad"><b>${n(s.notMp4)}</b><span>非 MP4</span></div>
@@ -586,19 +525,19 @@ TABS[2] = {
       </div>
       <p class="hint">规则（按你的口径，2026-10-05 起）：图片<b>必须为 JPG</b>、≥<b>${cfg0.minPixels}</b> 像素²（约 42×42）、边长 <b>${cfg0.enforceMaxSide ? `${cfg0.minSide}~${cfg0.maxSide}` : `≥${cfg0.minSide}`}</b>${cfg0.enforceMaxSide ? (cfg0.autoScale ? '（超限自动等比缩放）' : '（超限需更换）') : '（<b>超出不限制、不缩放</b>）'}${cfg0.enforceMaxMB ? `、≤${cfg0.maxImageMB}MB` : '、<b>体积不限</b>（不压缩）'}；视频<b>必须 .mp4</b>（<code>.mov</code>/<code>.m4v</code> 等会自动转成 mp4）且 &lt;${cfg0.maxVideoSec} 秒（超时只标红不裁剪）。</p>
       ${(c.groups && c.groups.length) ? `<div class="box"><h3>按子文件夹（${c.groups.length} 个）</h3>
-        <div class="tw"><table><thead><tr><th>子文件夹</th><th>合格</th><th>可自动</th><th>需人工</th></tr></thead><tbody>
+        <div class="tw"><table><thead><tr><th>子文件夹</th><th>合格</th><th>可自动</th><th>未自动处理</th></tr></thead><tbody>
         ${c.groups.map(g => `<tr class="${g.stats.manual ? 'warnrow' : ''}"><td class="mono">${esc(g.name)}</td><td class="num">${n(g.stats.ok)}</td><td class="num">${n(g.stats.todo)}</td><td class="num">${n(g.stats.manual)}</td></tr>`).join('')}
         </tbody></table></div>
         <p class="hint">「导出报告」会把这张分组表 + 全部明细写成 <code>合规报告_时间戳.xlsx</code>（汇总 / 明细两个工作表）和同名 <code>.csv</code>，落到输出目录。</p></div>` : ''}
       ${running('compliance.scan') || running('compliance.fix') ? progHtml(progFor(running('compliance.scan') ? 'compliance.scan' : 'compliance.fix')) : ''}
-      ${rows.length ? `<div class="tw"><table>
+      ${rows.length ? `<p class="hint">共 ${rows.length} 项检查结果，未自动处理项优先显示。</p><div class="tw"><table>
         <thead><tr><th>文件</th><th>类型</th><th>问题</th><th>处置</th><th>状态</th></tr></thead>
         <tbody>${rows.map(r => `<tr class="${r.status === 'manual' ? 'flag' : (r.status === 'isolate' ? 'warnrow' : '')}">
           <td class="mono">${esc(r.file)}</td><td>${esc(r.type)}</td><td>${esc(r.issue)}</td><td>${esc(r.result || r.action)}</td>
-          <td>${badge(r.status === 'done' ? (r.result || '完成') : (r.status === 'manual' ? (r.result || '需人工处理') : (r.status === 'isolate' ? '待隔离' : r.status)), kindOf(r.status === 'done' ? '完成' : (r.status === 'manual' ? '需人工处理' : '待处理')))}</td>
+          <td>${badge(r.status === 'done' ? (r.result || '完成') : (r.status === 'manual' ? (r.result || '未自动处理') : (r.status === 'isolate' ? '待隔离' : r.status)), kindOf(r.status === 'done' ? '完成' : (r.status === 'manual' ? '需人工处理' : '待处理')))}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">全部 ${okRows} 个文件都合规，没有需要处理的项。</div>`}
-      <p class="hint">超 ${state.config.compliance.maxVideoSec} 秒的视频<b>只标红不裁剪</b> —— 裁剪会改变内容，得物那边可能判非原创，交人工决定。</p>`;
+      <p class="hint">未自动处理项会保留原文件。视频超 ${state.config.compliance.maxVideoSec} 秒时只提示，不自动裁剪；此检查不拦截发布。</p>`;
   }
 };
 
@@ -902,16 +841,7 @@ TABS[7] = {
       //   而且不真：实测同一份 libvips 能读写 AVIF(av1)、但解码真 HEVC 必失败。
       //   「图片处理 / 取色」这行讲的是引擎本身，编码能力交给下一行单独交代，这里不再提具体格式。
       ['图片处理 / 取色', info.engine === 'sharp' ? 'sharp + libvips' : 'jpeg-js + pngjs（纯 JS 降级）', info.engine === 'sharp' ? ['ok', '内置'] : ['warn', '降级']],
-      // ★★ 2026-10-08：**写死为「不可用」**。
-      //   原来写的是 `info.hasHeif ? ['ok','可用'] : ...`，而 hasHeif() 只等于
-      //   `engine === 'sharp'`（sharp 原生模块加载成功），**从没探测过能不能解 HEIC**。
-      //   实测（sharp 0.33.5 预编译，包内那份 libvips-42.dll，sha256 92076cb1…）：
-      //     真 HEVC 的 .heic → metadata() 能读（compression=hevc），真解码必报
-      //     「heif: No decoding plugin installed for this compression format」；
-      //     dll 里 libde265 符号命中 0（对照 aom 41 / vips 2387），只有 AV1 解码。
-      //   ⇒ 面板原来那枚「可用」是**假绿**：装到哪台机器都一样解不开。
-      //   因专利原因预编译 libvips 不带 HEVC 解码器，这不是配置问题，所以这里不给它「可能可用」的余地。
-      ['HEIC 解码', '不可用 · HEIC 需先转 JPG', ['warn', '不可用']],
+      ['HEIC 解码', info.hasHeif ? '内置 HEVC 解码器' : '解码器缺失', info.hasHeif ? ['ok', '可用'] : ['warn', '不可用']],
       ['发布单读写', 'exceljs', ['ok', '内置']],
       ['视频时长读取', '纯 JS MP4/MOV 解析（moov → mvhd）', ['ok', '内置']],
       ['视频转 MP4（得物只收 mp4）', ffDesc(info.ffmpeg), ffBadge(info.ffmpeg)],
@@ -1231,7 +1161,13 @@ TABS[8] = {
       : `共 ${totalLogs} 条；导出包含全部记录。`;
 
     const own = s.account;
-    const accountBox = `<div class="box"><h3>本账号汇总 · 全部时间（跨设备）</h3>${own && own.available
+    const queriedOpts = state.statsQueryOpts || state.statsOpts;
+    const brandLabel = queriedOpts.brandId === '__none__' ? '历史无品牌记录'
+      : ((m.brands || []).find(b => b.id === queriedOpts.brandId) || {}).name;
+    const selectedUser = (s.users || []).find(u => u.userId === queriedOpts.userId);
+    const accountLabel = [selectedUser && (selectedUser.displayName || selectedUser.username), brandLabel, s.range.label]
+      .filter(Boolean).join(' · ');
+    const accountBox = `<div class="box"><h3>本账号汇总（跨设备） · ${esc(accountLabel)}</h3>${own && own.available
       ? `<div class="stats"><div class="stat good"><b>${own.ok}</b><span>已发布篇数</span></div><div class="stat"><b>${own.rows}</b><span>尝试发布</span></div><div class="stat bad"><b>${own.fail}</b><span>失败</span></div></div>`
       : `<p class="hint">${esc(own && own.error || '云端账号汇总暂不可用')}，请稍后查询。</p>`}</div>`;
     return '<div class="stats-page">' + head + `
@@ -1262,8 +1198,7 @@ TABS[8] = {
 /* ---------------- ⑫ 热词库（单开一屏） ----------------
  * ★ 为什么单开一屏：它是**低频维护**（想加几个词才来一次），而「生成文案」是**高频动作** ——
  *   混一屏既容易误触生成，跑生成时又被词表挡路。（这条口径 2026-10-03 之前就定了。）
- * ★ 可编辑的是 **7 组词**（风格 / 氛围 / 色感 / 场景 / 人群 / 季节 / 情绪）。
- *   「收尾」组这一版**锁定**（用户拍板：先不放开）；T01~T15 **句式骨架一律不可编辑** ——
+ * ★ 八组词均可编辑，包括收尾。T01~T15 **句式骨架一律不可编辑** ——
  *   骨架是**语法**（连接字在第几位、收尾在末尾），改坏会直接产出病句，而判据只能事后告警、拦不住。
  * ★★ 「改了到底吃不吃得到」：词库的读法已经全部改成**现取**（`hotwords.currentGroups()` /
  *   `copycheck.prefixWords()`），所以**保存完下一次生成就用新词，不用重启**。
@@ -1567,7 +1502,11 @@ const ADB_SRC_TXT = {
 function probeHtml() {
   const p = state.probe || (state.project.publish && state.project.publish.probe);
   if (!p) return '';
-  const fix = Array.isArray(p.fix) ? p.fix : [];
+  const rawFix = Array.isArray(p.fix) ? p.fix : [];
+  // 没装得物时发布流程还没法开始；输入法等其他检查项此时只会叠加红色告警，
+  // 先引导用户安装得物，安装后重新检查再展示其余可处理问题。
+  const dewuMissing = !!p.device && !p.appPackage && rawFix.some(f => f.act && f.act.act === 'go:dewu');
+  const fix = dewuMissing ? rawFix.filter(f => f.act && f.act.act === 'go:dewu') : rawFix;
   const bad = fix.filter(f => f.level === 'bad');
   const warn = fix.filter(f => f.level === 'warn');
   const headline = bad.length ? `还不能真机发布 —— ${bad.length} 项要先处理`
@@ -1575,7 +1514,7 @@ function probeHtml() {
       : '一切就绪，可以真机发布了';
   const kind = bad.length ? 'bad' : warn.length ? 'warn' : 'ok';
   const accent = { bad: 'var(--red)', warn: 'var(--amber)' };
-  const line = (k, v, pass) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v || '—')}</td><td>${badge(pass ? '可用' : '不满足', pass ? 'ok' : 'bad')}</td></tr>`;
+  const line = (k, v, pass) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v || '—')}</td><td>${badge(pass == null ? '未检查' : pass ? '可用' : '不满足', pass == null ? 'wait' : pass ? 'ok' : 'bad')}</td></tr>`;
   const items = bad.concat(warn);
   return `
     <div class="box">
@@ -1595,13 +1534,13 @@ function probeHtml() {
           <tbody>
             ${line('adb 路径', `${p.adbPath || '—'}${ADB_SRC_TXT[p.adbSource] ? '（' + ADB_SRC_TXT[p.adbSource] + '）' : ''}`, !!p.adb)}
             ${line('设备在线', p.device ? p.device.serial + '（' + p.device.state + '）' : '不在线', !!p.device)}
-            ${line('分辨率', p.resolution, !!p.resolution)}
-            ${line('得物包名', p.appPackage, !!p.appPackage)}
-            ${line('界面抓取 uiautomator', (p.tools && p.tools.uiautomator) ? '可用' : '不可用', !!(p.tools && p.tools.uiautomator))}
-            ${line('失败截图 screencap', (p.tools && p.tools.screencap) ? '可用' : '不可用', !!(p.tools && p.tools.screencap))}
+            ${line('分辨率', p.resolution, p.device ? !!p.resolution : null)}
+            ${line('得物包名', p.appPackage, p.device ? !!p.appPackage : null)}
+            ${line('界面抓取 uiautomator', p.tools && p.tools.uiautomator == null ? '—' : ((p.tools && p.tools.uiautomator) ? '可用' : '不可用'), p.tools ? p.tools.uiautomator : null)}
+            ${line('失败截图 screencap', (p.tools && p.tools.screencap) ? '可用' : '—', p.tools ? p.tools.screencap : null)}
             ${line('中文输入 ADBKeyboard',
-              p.adbKeyboard ? (p.adbKeyboardActive ? '已装，且是当前输入法' : '已装，但没设成当前输入法（中文打不进去）') : '未安装',
-              !!(p.adbKeyboard && p.adbKeyboardActive))}
+              !p.appPackage ? '安装得物并连接设备后检查' : p.adbKeyboard ? (p.adbKeyboardActive ? '已装，且是当前输入法' : '已装，但没设成当前输入法（中文打不进去）') : '未安装',
+              p.appPackage ? !!(p.adbKeyboard && p.adbKeyboardActive) : null)}
           </tbody>
         </table></div>
         ${(p.notes && p.notes.length) ? `<p class="hint">${p.notes.map(n => '⚠ ' + esc(n)).join('<br>')}</p>` : ''}
@@ -1616,59 +1555,23 @@ function probeHtml() {
  * ★ 行列表复用底部日志栏的 .logbar/.lines 样式（等宽字体 + 分级配色只有那套里有），只改边框与高度。
  */
 function logPaneHtml() {
-  const f = state.logFilter || { level: '', q: '' };
-  const opts = [['', '全部级别'], ['info', '信息'], ['ok', '成功'], ['warn', '警告'], ['error', '错误']]
-    .map(([v, t]) => `<option value="${v}"${f.level === v ? ' selected' : ''}>${t}</option>`).join('');
-  const errs = uiLogs().filter(e => e.level === 'error').length;
-  const warns = uiLogs().filter(e => e.level === 'warn').length;
+  const f = state.logFilter;
+  const opts = [[7, '最近 7 天'], [30, '最近 30 天'], [90, '最近 90 天'], [0, '全部时间'], ['custom', '自定义时间']]
+    .map(([v, t]) => '<option value="' + v + '"' + ((f.rangeMode === 'custom' ? 'custom' : Number(f.days)) === v ? ' selected' : '') + '>' + t + '</option>').join('');
   const ex = state.logExport;
-  return `
-  <div class="box">
-    <div class="row" style="align-items:baseline">
-      <h3 style="margin:0">运行日志</h3>
-      <span class="grow"></span>
-      <span class="chip" id="logPaneCount">${logCountText()}</span>
-      ${errs ? `<span class="chip warn">${errs} 条错误</span>` : ''}
-      ${warns ? `<span class="chip">${warns} 条警告</span>` : ''}
-    </div>
-    <p class="hint" style="margin:6px 0 0">与最下面的日志栏是同一份内容；这里筛完了再导出，导出的就是屏幕上这些。
-      条数是<b>内存缓冲区里的</b>（上限 500 条），不是磁盘上历史日志的总数。
-      ★ 只有「大结论」进这里（任务开始 / 结束 / 结果【目标·成功·失败】与真出错的告警）；
-      每步耗时、坐标、清相册这类<b>过程明细</b>不在界面上刷，但一条不少地记在输出目录的
-      <code>run-log.jsonl</code> 台账里，任务行的「查看详情」也能按批次回看。</p>
-    <div class="row" style="margin-top:9px">
-      <select class="inp" id="logLv">${opts}</select>
-      <input class="inp" id="logQ" style="flex:1;min-width:180px" placeholder="按关键字筛（标题 / 批次 / 文件路径…）" value="${esc(f.q)}" spellcheck="false">
-      <button class="btn sm primary" data-act="log:export"${uiLogs().length ? '' : ' disabled'}>导出日志</button>
-    </div>
-  </div>
-  <div class="box">
-    <div class="logbar" style="border-top:0;max-height:420px">
-      <div class="lines" id="logPaneLines"></div>
-    </div>
-    ${logFilterOn() ? `<p class="hint">当前只显示筛选结果中的 <b>${filteredLogs().length}</b> 条。要点回全部日志，把级别选回「全部级别」、清空关键字即可。</p>` : ''}
-  </div>
-  <div class="box">
-    <h3>导出</h3>
-    <div class="row">
-      <button class="btn sm" data-act="log:export">导出到输出目录</button>
-      ${ex ? `<button class="btn sm" data-act="log:openFile">打开文件</button>
-        <button class="btn sm" data-act="log:revealFile">打开所在文件夹</button>` : ''}
-    </div>
-    <p class="hint">导出会一次生成两个文件，落在<b>输出目录</b>（和合规报告、品牌统计同一个地方）：
-      <code>运行日志_时间戳.log</code>（给人看的，每行带完整日期时间与等级）
-      与 <code>运行日志_时间戳.jsonl</code>（一行一条 JSON，给脚本或同事再分析）。
-      文件头会写清<b>本次导出了多少条</b>与<b>缓冲区一共多少条</b> —— 筛过之后这两个数不一样，免得事后误会成"日志丢了"。</p>
-    ${ex ? `<p class="hint" style="margin-top:6px">上次导出：<b>${esc(String(ex.file || '').split(/[\\/]/).pop())}</b>（${n(ex.count)} 条）</p>` : ''}
-    ${state.logExportErr ? `<p class="hint" style="margin-top:6px;color:var(--red)">上次导出失败：${esc(state.logExportErr)}</p>` : ''}
-  </div>`;
+  return '<div class="box"><div class="row"><select class="inp" id="logDays">' + opts + '</select>'
+    + (f.rangeMode === 'custom' ? '<input class="inp" id="logFrom" type="datetime-local" aria-label="开始时间" value="' + esc(f.fromAt) + '"><span>至</span><input class="inp" id="logTo" type="datetime-local" aria-label="结束时间" value="' + esc(f.toAt) + '">' : '')
+    + '</div><p class="hint" id="logRangeError" style="color:var(--red)"' + (logTimeRange().valid ? ' hidden' : '') + '>请选择有效的开始和结束时间。</p></div>'
+    + '<div class="box"><div class="logbar" style="border-top:0;max-height:420px"><div class="lines" id="logPaneLines"></div></div></div>'
+    + (ex ? '<div class="box"><div class="row"><span class="grow">' + esc(String(ex.file || '').split(/[\\/]/).pop()) + '</span><button class="btn sm" data-act="log:openFile">打开文件</button><button class="btn sm" data-act="log:revealFile">打开所在文件夹</button></div></div>' : '')
+    + (state.logExportErr ? '<p class="hint" style="color:var(--red)">' + esc(state.logExportErr) + '</p>' : '');
 }
 
 TABS[10] = {
   title: '运行日志',
-  desc: '与底部日志栏同一份内容 · 可按级别/关键字筛 · 可导出成 .log 与 .jsonl',
+  desc: '',
   actions: () => [
-    { act: 'log:export', label: '导出日志', primary: true, disabled: !uiLogs().length }
+    { act: 'log:export', label: '导出日志', primary: true, disabled: !logTimeRange().valid || !filteredLogs().length }
   ],
   render() {
     return logPaneHtml();
@@ -1677,10 +1580,20 @@ TABS[10] = {
 
 /** 进「运行日志」页时把行铺开（renderAll 里 render() 只产出空容器，行交给这里画） */
 function bindLogPane() {
-  const lv = $('#logLv');
-  const q = $('#logQ');
-  if (lv) lv.onchange = () => { state.logFilter.level = lv.value; renderLogPaneLines(); };
-  if (q) q.oninput = () => { state.logFilter.q = q.value; renderLogPaneLines(); };
+  const days = $('#logDays');
+  if (days) days.onchange = () => {
+    const f = state.logFilter;
+    f.rangeMode = days.value === 'custom' ? 'custom' : 'preset';
+    if (f.rangeMode === 'custom') {
+      f.fromAt = f.fromAt || localDateTimeInput(Date.now() - 30 * 86400000);
+      f.toAt = f.toAt || localDateTimeInput(Date.now());
+    } else f.days = Number(days.value);
+    renderAll();
+  };
+  for (const [id, key] of [['#logFrom', 'fromAt'], ['#logTo', 'toAt']]) {
+    const input = $(id);
+    if (input) input.onchange = () => { state.logFilter[key] = input.value; renderAll(); };
+  }
   renderLogPaneLines();
 }
 
@@ -1735,7 +1648,6 @@ function renderAll() {
       各页都要读工程状态 / 配置里的深层字段（比如合规检查要读「扫描统计」、文案生成要读「并发路数」），
       缺字段时硬读会直接白屏、还不说明原因，所以这里先把原因写出来。<br>
       等这一步完成（重新登录 / 重启应用）后，这里会自动恢复。</div>`;
-    sideStatus();
     return;
   }
   $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(typeof t.desc === 'function' ? t.desc() : t.desc)}</p></div>
@@ -1743,13 +1655,11 @@ function renderAll() {
   const scroll = $('#pane').scrollTop;
   $('#pane').innerHTML = t.render();
   $('#pane').scrollTop = scroll;
-  sideStatus();
   const chip = $('#runChip');
   if (state.jobs.length) {
     chip.textContent = state.jobs.length > 1 ? `运行中 ${state.jobs.length}` : '运行中';
     chip.className = 'chip run';
   } else { chip.textContent = '空闲'; chip.className = 'chip'; }
-  $('#chipProj').textContent = '项目：' + ((state.project && state.project.projectName) || '—');
   // 左上角 app 名字后面的版本号：app:info 不受 guardAdmin 限制，人人可读；
   // 取不到就显示 v—（未知 ≠ 0，绝不编一个版本号出来）
   const av = $('#appVer');
@@ -1951,7 +1861,7 @@ async function doLogout() {
   state.auth = await appApi.authStatus();
   state.users = null;
   state.logs = [];
-  state.logFilter = { level: '', q: '' };
+  state.logFilter = { days: 30, rangeMode: 'preset', fromAt: '', toAt: '' };
   state.logExport = null;
   renderLogs();
   state.jobs = [];

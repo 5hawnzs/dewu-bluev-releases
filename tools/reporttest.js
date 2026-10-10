@@ -93,7 +93,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   store.set({ brandsSeeded: true, brands: [{ id: 'brd_regression', name: '品牌甲', enabled: true,
     promptWrite: '请根据素材生成真实自然的种草文案。' }],
     paths: { output: path.join(TMP, '输出'), rejected: path.join(TMP, '_rejected') },
-    copy: { concurrency: 4, requiredTopic: '#品牌甲', extraTopics: 4 },
+    copy: { llm: { enabled: false }, concurrency: 4, requiredTopic: '#品牌甲', extraTopics: 4 },
     publish: { intervalSec: 1, videoIntervalSec: 1 }   // 「演示节奏」开关已删：直接给 1 秒间隔；★ retry 也已删
   });
 

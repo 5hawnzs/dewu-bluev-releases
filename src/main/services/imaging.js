@@ -34,31 +34,12 @@ function init() {
 init();
 
 function engineName() { return engine; }
-/**
- * 能不能解码 HEIC（HEVC 压缩的 .heif）—— **恒 false**。
- *
- * ★★ 2026-10-08 实测后改的，别改回去：
- *   原来写的是 `return engine === 'sharp';`，只证明 sharp 原生模块加载成功，
- *   跟「能不能解 HEIC」没有任何关系 ⇒ 设置页那枚「可用」是**假绿**。
- *   实测（sharp 0.33.5 预编译；源码 / dist / dist-new 三处的 libvips-42.dll 哈希一致
- *   92076cb17f3b11bb，18.1MB）：
- *     ① 真 HEVC 的 .heic（ftyp = mif1 / heic / hevc，1280×854）→ metadata() 能读
- *        （compression=hevc），真解码必报
- *        「heif: No decoding plugin installed for this compression format」；
- *     ② 同一份 dll 里 `de265` 符号命中 0，而正向对照 aom=41、vips=2387 都在，
- *        且自带 `heic/avif load/save with libheif: true`；
- *     ③ 正向对照：同一个 libheif 读写 AVIF(av1) 完全正常（写 302B → 解出 293B jpg）
- *        ⇒ 通路没坏，只是**只带 AV1 解码、不带 HEVC 解码器（libde265）**。
- *   原因：HEVC 有专利，sharp 预编译版不内置 HEVC 解码 —— 官方文档同口径，
- *   不是配置问题、换机器也不会好。要真支持只能自带独立解码器（有分发/授权代价）。
- *
- * ⇒ 保留这个函数名（ipc / compliance / index 都在用），但语义已从
- *   「引擎在不在」改成「HEIC 能不能解」；恒 false 时合规检查会**预判**为人工，
- *   不会再去白试一次转换然后报「处理失败」。
- */
-function hasHeif() { return false; }
-
+/** HEIC 由独立 HEVC 解码器处理，不能以 sharp 加载成功代替解码能力。 */
+const heic = require('./heic');
+function hasHeif() { return heic.available(); }
+function isHeic(src) { return /\.hei[cf]$/i.test(src); }
 async function readImage(src) {
+  if (isHeic(src)) return heic.decode(src);
   if (sharp) {
     const { data, info } = await sharp(src, { failOn: 'none' }).rotate().ensureAlpha().raw()
       .toBuffer({ resolveWithObject: true });
@@ -77,6 +58,11 @@ async function readImage(src) {
     return { width: out.width, height: out.height, data: out.data, channels: 4 };
   }
   throw new Error('当前图片引擎无法解码 ' + e + '（HEIC 需要 sharp / libheif）');
+}
+
+async function heicSharp(src) {
+  const img = await readImage(src);
+  return sharp(img.data, { raw: { width: img.width, height: img.height, channels: 4 } });
 }
 
 async function writeJpeg(rgba, width, height, dst, quality) {
@@ -102,7 +88,7 @@ async function writeJpeg(rgba, width, height, dst, quality) {
 /** 统一转 JPG（PNG 透明通道白底填充） */
 async function convertToJpg(src, dst, { quality = 88 } = {}) {
   await wp.mkdirp(path.dirname(dst));
-  if (sharp) {
+  if (sharp && !isHeic(src)) {
     await sharp(src, { failOn: 'none' }).rotate().flatten({ background: '#ffffff' })
       .jpeg({ quality, mozjpeg: true }).toFile(wp.toLong(dst));
     return (await fs.promises.stat(wp.toLong(dst))).size;
@@ -177,6 +163,7 @@ async function dominantColor(src) {
 
 /** 只读尺寸（不解码整图）：sharp 走 metadata，降级时解析 PNG/JPEG 头 */
 async function sizeOf(src) {
+  if (isHeic(src) && !sharp) { const img = await readImage(src); return { width: img.width, height: img.height }; }
   if (sharp) {
     try {
       const m = await sharp(src, { failOn: 'none' }).metadata();
@@ -212,7 +199,7 @@ async function fitWithin(src, dst, maxSide, quality = 90) {
   if (!dim) throw new Error('读不到图片尺寸');
   const scale = Math.min(1, maxSide / Math.max(dim.width, dim.height));
   if (sharp) {
-    await sharp(src, { failOn: 'none' }).rotate()
+    await (isHeic(src) ? await heicSharp(src) : sharp(src, { failOn: 'none' }).rotate())
       .resize({ width: Math.round(dim.width * scale), height: Math.round(dim.height * scale), fit: 'inside' })
       .flatten({ background: '#ffffff' }).jpeg({ quality, mozjpeg: true }).toFile(wp.toLong(dst));
     return { width: Math.round(dim.width * scale), height: Math.round(dim.height * scale) };
@@ -242,7 +229,7 @@ async function fitWithin(src, dst, maxSide, quality = 90) {
  */
 async function shrinkBase64(src, maxSide = 768, quality = 82) {
   if (sharp) {
-    const buf = await sharp(src, { failOn: 'none' }).rotate()
+    const buf = await (isHeic(src) ? await heicSharp(src) : sharp(src, { failOn: 'none' }).rotate())
       .resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true })
       .flatten({ background: '#ffffff' })
       .jpeg({ quality, mozjpeg: true })

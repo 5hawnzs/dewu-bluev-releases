@@ -130,7 +130,7 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
 
 /* ---------- sidebar ---------- */
 .side{
-  width:186px;flex:0 0 186px;background:var(--side);border-right:1px solid var(--bd);
+  width:156px;flex:0 0 156px;background:var(--side);border-right:1px solid var(--bd);
   padding:10px 8px;display:flex;flex-direction:column;gap:2px;overflow-y:auto;
 }
 .side .grp{font-size:10.5px;color:var(--tx3);letter-spacing:.08em;padding:12px 10px 5px}
@@ -146,10 +146,6 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
 .nav:hover{background:rgba(128,128,110,.12)}
 .nav .ic{width:16px;height:16px;flex:0 0 16px;display:block;opacity:.75}
 .nav .ic svg{display:block;width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.nav .st{margin-left:auto;font-size:10.5px;font-weight:700;color:var(--tx3);white-space:nowrap}
-.nav .st.ok{color:var(--teal)}
-.nav .st.warn{color:var(--amber)}
-.nav .st.bad{color:var(--red)}
 .nav.on{background:var(--panel);color:var(--tx);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .nav.on .ic{opacity:1}
 .folder-tool-link{

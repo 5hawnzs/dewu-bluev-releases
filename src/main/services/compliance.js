@@ -17,6 +17,35 @@ const store = require('../store');
 const MAX_BYTES = () => (store.get('compliance.maxImageMB') || 10) * 1024 * 1024;
 const MAX_SEC = () => store.get('compliance.maxVideoSec') || 600;
 
+function summarize(rows) {
+  const maxSec = MAX_SEC();
+  const stats = {
+    ok: rows.filter(r => (r.status === 'ok' || r.status === 'done')).length,
+    todo: rows.filter(r => r.status === 'todo').length,
+    manual: rows.filter(r => r.status === 'manual').length,
+    isolate: rows.filter(r => r.status === 'isolate').length,
+    oversize: rows.filter(r => r.status !== 'done' && r.action === '压缩').length,
+    scaled: rows.filter(r => r.status !== 'done' && r.action === '等比缩放').length,
+    tooSmall: rows.filter(r => r.status !== 'done' && r.action === '需更换图片').length,
+    // 「非 MP4」按**扩展名**数，不按 action 文案：一个 .mov 无论是被标成「转 MP4」、
+    // 「需手动转 MP4」还是「时长超限」，它都属于非 mp4 素材。
+    notMp4: rows.filter(r => r.status !== 'done' && r.type === '视频' && wp.ext(r.file) !== '.mp4').length,
+    // 「视频超时」只数**真的超了时长**的。以前是「视频 + manual」全算进来，
+    // 加了「没找到 ffmpeg」这条新的 manual 路径之后那样会算错 —— 报表不能撒谎。
+    videoLong: rows.filter(r => r.status !== 'done' && r.type === '视频' && r.duration != null && r.duration > maxSec).length,
+    // ★ 2026-10-04 新增：「扩展名是 .mp4、但里面那个编码得物吃不下」的条数（10-bit HEVC 那一类）。
+    //   与 notMp4 **互斥**，别合并：一个「扩展名不对」、一个「扩展名对但编码吃不下」——
+    //   混成一列的话，用户看到「非 MP4 = 0」会以为视频都没问题，而黑封面正出自这里。
+    codecBad: rows.filter(r => r.status !== 'done' && r.codecBad).length,
+    // ★ 2026-10-04 新增：「视频轨没问题、但**音轨**得物放不出声」的条数（ac-3 / ec-3 / Opus / fLaC / ipcm）。
+    //   与 codecBad / notMp4 三者**互斥**，别合并 —— 混成一列会让用户以为「视频都没问题」，
+    //   而有声缺陷正出在这里（视频能放、没声音，最容易漏过去）。
+    audioBad: rows.filter(r => r.status !== 'done' && r.audioBad).length,
+    total: rows.length
+  };
+  return stats;
+}
+
 async function scan(items, ctx = {}) {
   const log = ctx.log || (() => {});
   const progress = ctx.progress || (() => {});
@@ -37,6 +66,7 @@ async function scan(items, ctx = {}) {
       const e = wp.ext(name);
       const abs = path.join(item.absDir || item.dir, name);
       const st = await wp.statSafe(abs);
+      if (!st || !st.isFile()) throw Error(`无法访问待检查文件「${name}」，请重新选择素材目录后重试`);
       const size = st ? st.size : (f.size || 0);
 
       if (wp.isJunk(name, false)) {
@@ -170,31 +200,8 @@ async function scan(items, ctx = {}) {
     progress({ done: i, total: items.length });
   }
 
-  const stats = {
-    ok: rows.filter(r => r.status === 'ok').length,
-    todo: rows.filter(r => r.status === 'todo').length,
-    manual: rows.filter(r => r.status === 'manual').length,
-    isolate: rows.filter(r => r.status === 'isolate').length,
-    oversize: rows.filter(r => r.action === '压缩').length,
-    scaled: rows.filter(r => r.action === '等比缩放').length,
-    tooSmall: rows.filter(r => r.action === '需更换图片').length,
-    // 「非 MP4」按**扩展名**数，不按 action 文案：一个 .mov 无论是被标成「转 MP4」、
-    // 「需手动转 MP4」还是「时长超限」，它都属于非 mp4 素材。
-    notMp4: rows.filter(r => r.type === '视频' && wp.ext(r.file) !== '.mp4').length,
-    // 「视频超时」只数**真的超了时长**的。以前是「视频 + manual」全算进来，
-    // 加了「没找到 ffmpeg」这条新的 manual 路径之后那样会算错 —— 报表不能撒谎。
-    videoLong: rows.filter(r => r.type === '视频' && r.duration != null && r.duration > maxSec).length,
-    // ★ 2026-10-04 新增：「扩展名是 .mp4、但里面那个编码得物吃不下」的条数（10-bit HEVC 那一类）。
-    //   与 notMp4 **互斥**，别合并：一个「扩展名不对」、一个「扩展名对但编码吃不下」——
-    //   混成一列的话，用户看到「非 MP4 = 0」会以为视频都没问题，而黑封面正出自这里。
-    codecBad: rows.filter(r => r.codecBad).length,
-    // ★ 2026-10-04 新增：「视频轨没问题、但**音轨**得物放不出声」的条数（ac-3 / ec-3 / Opus / fLaC / ipcm）。
-    //   与 codecBad / notMp4 三者**互斥**，别合并 —— 混成一列会让用户以为「视频都没问题」，
-    //   而有声缺陷正出在这里（视频能放、没声音，最容易漏过去）。
-    audioBad: rows.filter(r => r.audioBad).length,
-    total: rows.length
-  };
-  log(`扫描完成：${stats.total} 个文件，${stats.todo} 个待处理，${stats.manual} 个需人工定夺`, stats.manual ? 'warn' : 'ok');
+  const stats = summarize(rows);
+  log(`扫描完成：${stats.total} 个文件，${stats.todo} 个待处理，${stats.manual} 个未自动处理`, stats.manual ? 'warn' : 'ok');
   // ★ 单独点名这一类：它是最难自己发现的问题（扩展名是 .mp4、看着没问题，发出去却是黑封面）。
   if (stats.codecBad) {
     log(`★ 其中 ${stats.codecBad} 个视频是「容器是 mp4、但里面那个编码得物解不开」（10-bit HEVC 这类）：`
@@ -347,12 +354,10 @@ async function scanParent(parentDir, ctx = {}) {
     const plan = await flatten.plan(dir, { cancelled });
     if (!plan.total) continue;
     const items = plan.rows.map(r => ({
-      id: r.name, dir: r.name, absDir: path.join(dir, r.from.replace(dir, '').replace(/^[/\\]/, '')),
+      id: r.name, dir: r.name, absDir: r.from,
       sku: r.sku, color: r.color, seq: r.seq,
       files: r.files.map(f => ({ name: f, size: 0, type: wp.isVideo(f) ? 'video' : (wp.isJunk(f, false) ? 'junk' : 'image') }))
     }));
-    // absDir 直接指向源目录（父目录模式下只检查，不建副本）
-    for (const it of items) it.absDir = path.join(dir, it.dir);
     const r = await scan(items, { cancelled, progress: () => {} });
     for (const row of r.rows) row.group = d;
     groups.push({ name: d, stats: r.stats, rows: r.rows });
@@ -433,7 +438,7 @@ async function exportReport(report, opts = {}) {
     const ws1 = wb.addWorksheet('汇总');
     ws1.columns = [
       { header: '子文件夹', key: 'name', width: 40 }, { header: '合格', key: 'ok', width: 10 },
-      { header: '可自动处理', key: 'todo', width: 12 }, { header: '需人工定夺', key: 'manual', width: 12 },
+      { header: '可自动处理', key: 'todo', width: 12 }, { header: '未自动处理', key: 'manual', width: 12 },
       { header: '隔离', key: 'isolate', width: 10 }, { header: '等比缩放', key: 'scaled', width: 10 },
       { header: '尺寸不足', key: 'tooSmall', width: 10 }, { header: '非 MP4', key: 'notMp4', width: 10 },
       { header: '编码不可解', key: 'codecBad', width: 12 },
@@ -482,4 +487,4 @@ async function exportReport(report, opts = {}) {
   return out;
 }
 
-module.exports = { scan, scanParent, fix, exportReport };
+module.exports = { scan, scanParent, fix, exportReport, summarize };
