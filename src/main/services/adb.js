@@ -442,10 +442,16 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
   if (error) return { ok: false, removed: 0, files: hit.map(h => h.file), error, forceStopped };
 
   let removed = 0;
-  for (const h of hit) {
-    const r = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
-    if (r.ok) removed++;
-    else if (!error) error = String(r.stderr || '').trim() || ('content delete(' + h.id + ') 执行失败');
+  // 媒体记录逐条启动 content 成本较高，最多两个并行；所有删除结束后才清文件和复查。
+  for (let i = 0; i < hit.length; i += 2) {
+    const group = hit.slice(i, i + 2);
+    const results = await Promise.all(group.map(h => shell(serial,
+      'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 })));
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j], h = group[j];
+      if (r.ok) removed++;
+      else if (!error) error = String(r.stderr || '').trim() || ('content delete(' + h.id + ') 执行失败');
+    }
   }
   // ★★ 2026-10-04（第三十五轮）：按用户指令「全部删掉」，把目录**内容**清空到一条不剩。
   //   用户原话：「我跟你说全部删掉，你还考虑误杀什么？……我指令已经非常非常明确了」
@@ -807,7 +813,7 @@ async function clearAlbum(serial, opts = {}) {
 
   const removeAll = async (hit) => {
     let removed = 0;
-    for (const h of hit) {
+    const removeOne = async h => {
       // 只对纯安全字符路径直接删文件，其他路径交给按 ID 删除，避免文件名被当作 shell 指令。
       if (h.file && /^\/[A-Za-z0-9_./+\-]+$/.test(h.file)) {
         await shell(serial, 'rm -f ' + h.file, { timeout: 20000 });
@@ -815,6 +821,9 @@ async function clearAlbum(serial, opts = {}) {
       // ② 按 _id 删记录（`content delete --uri .../<id>` 完全不需要引号）
       const rd = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
       if (rd.ok) removed++;
+    };
+    for (let i = 0; i < hit.length; i += 2) {
+      await Promise.all(hit.slice(i, i + 2).map(removeOne));
     }
     return { removed };
   };

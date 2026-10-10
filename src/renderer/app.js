@@ -786,10 +786,11 @@ TABS[6] = {
       ${reportBoxHtml()}
       ${probeHtml()}
       ${batchesHtml('', '运行中的批次 / 任务')}
-      ${rows.length ? `<div class="tw"><table>
+      ${rows.length ? `<div class="tw publish-rows"><table>
+        <colgroup><col style="width:40px"><col><col style="width:48px"><col style="width:48px"><col style="width:88px"><col style="width:70px"><col style="width:180px"><col style="width:64px"></colgroup>
         <thead><tr><th>#</th><th>素材目录</th><th>好物</th><th>图片</th><th>开始时间</th><th>耗时</th><th>状态</th><th></th></tr></thead>
         <tbody>${rows.map(r => `<tr data-publish-row="${esc(r.id)}" class="${r.result === '失败' || r.result === '校验未通过' ? 'flag' : ''}">
-          <td class="num">${r.seq}</td><td class="mono">${esc(r.dir)}</td><td class="num">${n(r.goods)}</td><td class="num">${n(r.images)}</td>
+          <td class="num">${r.seq}</td><td class="mono" title="${esc(r.dir)}">${esc(r.dir)}</td><td class="num">${n(r.goods)}</td><td class="num">${n(r.images)}</td>
           <td data-publish-start>${esc(r.startAt || '—')}</td><td class="num" data-publish-elapsed>${publishElapsedText(r)}</td>
           <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
           <td data-publish-action>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>

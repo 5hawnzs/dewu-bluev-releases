@@ -2592,12 +2592,17 @@ app.whenReady().then(async () => {
       state.project = Object.assign({}, state.project, { publish: { rows: [{ id: 'live-row', seq: 1, dir: 'live-row', result: '', status: '排队' }] } });
       state.tab = 6; renderAll();
       const before = publishRowElement('live-row');
+      const directoryBefore = before.children[1].getBoundingClientRect();
       updatePublishRow({ id: 'live-row', startAt: '12:34:56', startedAtMs: Date.now() - 4000, elapsed: 0, status: '清相册', result: '' });
       refreshPublishElapsed();
       const started = before.querySelector('[data-publish-start]').textContent === '12:34:56';
       const ticking = parseFloat(before.querySelector('[data-publish-elapsed]').textContent) >= 3.5;
       const phase = before.querySelector('[data-publish-status]').textContent.includes('清相册');
       const stable = before === publishRowElement('live-row');
+      updatePublishRow({ id: 'live-row', status: '写媒体库确认 123456s' });
+      const directoryAfter = before.children[1].getBoundingClientRect();
+      const layoutStable = directoryBefore.x === directoryAfter.x && directoryBefore.width === directoryAfter.width
+        && directoryBefore.height === directoryAfter.height;
       updatePublishRow({ id: 'live-row', result: '发布成功', elapsed: 7.5, reason: '<img id="row-injected" src="x">' });
       refreshPublishElapsed();
       const stopped = before.querySelector('[data-publish-elapsed]').textContent === '7.5s';
@@ -2610,11 +2615,12 @@ app.whenReady().then(async () => {
       updatePublishRow({ id: 'live-row', startAt: '13:00:00' });
       state.tab = 6; renderAll();
       const retained = publishRowElement('live-row').querySelector('[data-publish-start]').textContent === '13:00:00';
-      return { started, ticking, phase, stable, stopped, escaped, retained, retry, retryCleared };
+      return { started, ticking, phase, stable, stopped, escaped, retained, retry, retryCleared, layoutStable };
     } finally { state.project = keep.project; state.tab = keep.tab; renderAll(); }
   })()`);
   ok('发布行开始时间、阶段与实时耗时更新，且不重建该行',
     rowRefresh.started && rowRefresh.ticking && rowRefresh.phase && rowRefresh.stable, JSON.stringify(rowRefresh));
+  ok('发布状态文字增长不会改变素材目录列的位置、宽度和行高', rowRefresh.layoutStable, JSON.stringify(rowRefresh));
   ok('发布结束耗时停止、切换页面数据保留、错误文字安全转义',
     rowRefresh.stopped && rowRefresh.escaped && rowRefresh.retained && rowRefresh.retry && rowRefresh.retryCleared, JSON.stringify(rowRefresh));
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');

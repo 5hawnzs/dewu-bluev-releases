@@ -211,6 +211,11 @@ button.btn.sm{padding:4px 10px;font-size:11.5px}
 .stat.bad b{color:var(--red)} .stat.good b{color:var(--teal)}
 
 .tw{border-radius:8px;overflow-x:auto}
+.publish-rows table{table-layout:fixed;min-width:780px}
+.publish-rows td{height:42px;box-sizing:border-box}
+.publish-rows td:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.publish-rows [data-publish-status] .b{max-width:100%;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.publish-rows [data-publish-status]>div{overflow-wrap:anywhere}
 table{border-collapse:collapse;width:100%;font-size:12.5px;background:var(--panel2)}
 th,td{border-bottom:1px solid var(--bd);padding:7px 10px;text-align:left;vertical-align:middle}
 th{background:var(--panel);font-size:11.5px;font-weight:600;color:var(--tx2);position:sticky;top:0;white-space:nowrap;z-index:1}

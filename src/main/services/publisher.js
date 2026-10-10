@@ -848,6 +848,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   if (!mk.ok) throw new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
   log(`${row.dir}：目录清理 ${(Date.now() - clearStarted) / 1000}s`, 'info');
   const albumStarted = Date.now();
+  row.status = '清媒体库';
+  if (ctx.onRow) ctx.onRow(row);
   // ★★★ 2026-10-04（真机实测新增）**清全盘相册** —— 上面两步只清了目录，
   //   而得物相册顶部那个「所有照片」是**全盘聚合视图**：把一条 mp4 放进 /sdcard/Movies
   //   （不在 DCIM/Camera 下），它照样出现在得物相册里、和专属目录里的并排显示（已截图对照）。
