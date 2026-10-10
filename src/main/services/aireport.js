@@ -269,10 +269,20 @@ async function write(opts = {}) {
   if (!st || !st.size) throw new Error(`报告写完了却读不到文件：${wp.toDisplay(out)}`);
   const verify = await verifyReimport(out);
   const flagged = data.filter(r => r.check && r.check.level !== 'ok').length;
+  // 页面只提示可确定的字段错误；套话、字数、颜色猜测等建议仍留在报告里。
+  const problems = [
+    { text: '缺货号', match: r => !r.goods.some(g => String(g.sku || '').trim()) },
+    { text: '标题为空', match: r => !r.title.trim() },
+    { text: '正文为空', match: r => !r.body.trim() },
+    { text: '货号混入文案', match: r => r.goods.some(g => {
+      const sku = String(g.sku || '').trim();
+      return sku && (r.title + '\n' + r.body).includes(sku);
+    }) }
+  ].map(p => ({ text: p.text, rows: data.filter(p.match).length })).filter(p => p.rows);
   if (fellBack) logbus.warn(note);
   if (!verify.ok) logbus.warn(`报告已生成，但自检没通过（${verify.why}）—— 反向导入可能会对不上，先别拿它当发布单`);
   return {
-    file: out, rows: data.length, bytes: st.size, flagged,
+    file: out, rows: data.length, bytes: st.size, flagged, problems,
     byLevel: {
       bad: data.filter(r => r.check && r.check.level === 'bad').length,
       warn: data.filter(r => r.check && r.check.level === 'warn').length

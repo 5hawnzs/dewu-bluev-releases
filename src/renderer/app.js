@@ -324,7 +324,7 @@ async function afterCopy(r) {
   lastCopyReport = x.reportFile
     ? {
       file: x.reportFile, rows: x.reportRows || 0, flagged: x.reportFlagged || 0,
-      byLevel: x.reportByLevel || {}, gen: x.genSource || '', brand: r.brandName || ''
+      problems: x.reportProblems || [], byLevel: x.reportByLevel || {}, gen: x.genSource || '', brand: r.brandName || ''
     }
     : null;
   renderAll();
@@ -594,9 +594,9 @@ TABS[3] = {
         <p class="hint">生成后核对报告，再导入「模拟器发布」。</p>
         ${lastCopyReport ? `<div class="hint" style="border:1px solid #E3E0D8;border-radius:6px;padding:8px 10px">
           <b>${esc(lastCopyReport.file.split(/[\\/]/).pop())}</b> · ${n(lastCopyReport.rows)} 行
-          ${lastCopyReport.flagged
-            ? ` · <b>${n(lastCopyReport.flagged)} 行待核对</b>`
-            : ' · 自动核对一致'}
+          ${lastCopyReport.problems.length
+            ? ` · <b>${lastCopyReport.problems.map(p => `${esc(p.text)} ${n(p.rows)} 行`).join('；')}</b>，请打开报告修改`
+            : ' · 文案已生成'}
           <button class="btn sm" data-act="copy:openReport" title="打开本次生成的本地 AI 内容报告" aria-label="打开本次生成的本地 AI 内容报告" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>报告</button>
         </div>` : ''}
       </div>
@@ -1960,7 +1960,7 @@ const HELP = {
     html: () => `
       <p class="hint"><b>操作流程</b>：确认模型与品牌提示词，选择素材目录启动任务。标题句式由系统按行自动轮换 <b>T01–T15</b>，无需手动选择。</p>
       <p class="hint"><b>素材与报告位置</b>：当前批次已整理时，选择原目录 A 也会使用处理后的目录 B；B 不存在时停止生成。报告保存在本次实际使用的素材目录，文件名为 <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>，发布引用报告中的素材路径。</p>
-      <p class="hint"><b>打开与核对报告</b>：生成后点击带下载图标的「报告」按钮，直接用本机 Excel/WPS 打开原文件，不走云端、不新建目录。报告按行列出标题、正文、货号、颜色、生成来源和文案核对结果；待核对行应查看具体原因。修改后保存并关闭 Excel/WPS，再到「模拟器发布」导入报告。不要移动或重命名报告引用的素材目录。</p>
+      <p class="hint"><b>打开与核对报告</b>：生成后点击带下载图标的「报告」按钮，直接用本机 Excel/WPS 打开原文件，不走云端、不新建目录。页面仅提示缺货号、空标题、空正文和货号混入文案等明确错误；颜色、字数、行数、emoji、套话和重复等建议保留在报告的「文案核对」列。修改后保存并关闭 Excel/WPS，再到「模拟器发布」导入报告。不要移动或重命名报告引用的素材目录。</p>
       <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
         <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
         每条笔记最多带 <b>5 个话题</b>（原来发布单的「话题1~话题5」五个格子，上限没变）——

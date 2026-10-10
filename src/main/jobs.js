@@ -236,11 +236,8 @@ async function dispatch(type, args, ctx) {
         });
         logbus.ok(`[${batchId}] AI 内容报告（${rep.rows} 行）→ ${wp.toDisplay(rep.file)}`, { batch: batchId });
         if (rep.verify && !rep.verify.ok) logbus.warn(`[${batchId}] 报告自检没通过：${rep.verify.why}`, { batch: batchId });
-        if (rep.flagged) {
-          logbus.warn(`[${batchId}] 报告里 ${rep.flagged} 行的「文案核对」不是「一致」`
-            + `（要人工看 ${rep.byLevel.warn} 行 · 明显有问题 ${rep.byLevel.bad} 行）—— 打开报告按那一列筛一下`, { batch: batchId });
-        } else if (rep.rows) {
-          logbus.ok(`[${batchId}] ${rep.rows} 行的文案/货号/颜色自动核对全部「一致」`, { batch: batchId });
+        if (rep.problems.length) {
+          logbus.warn(`[${batchId}] ${rep.problems.map(p => `${p.text} ${p.rows} 行`).join('；')}，请打开报告修改`, { batch: batchId });
         }
         // 大结论（2026-10-05）：一行说完这批「目标/成功/失败」，并如实标出文案到底是不是 AI 写的
         //   —— 「看起来像 AI、其实是本地模板」正是用户最恼的那种，必须一眼看得见（不许瞒）。
@@ -251,7 +248,7 @@ async function dispatch(type, args, ctx) {
           batchId, count: r.rows.length, file, warning: r.warning, llm: r.llm,
           genSource: r.genSource || '', modelId: r.modelId || '', vision: !!r.vision,
           reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged,
-          reportByLevel: rep.byLevel, reportVerify: rep.verify, reportFallback: rep.fellBack
+          reportByLevel: rep.byLevel, reportProblems: rep.problems, reportVerify: rep.verify, reportFallback: rep.fellBack
         };
       } else {
         // ★ 2026-10-08 用户要求删除页签 3 的「按当前素材生成」按钮（原话：「一般没点目录的时候

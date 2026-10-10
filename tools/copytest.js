@@ -726,6 +726,8 @@ function startServer() {
   const run2 = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '十月第二批', label: '十月第二批' });
   ok('⑤ 第二次批次跑通', run2.ok === true, run2.ok ? '' : run2.error);
   ok('⑤ 有问题的行会被统计出来（不再全部报「一致」）', run2.result.reportFlagged === 3, `flagged=${run2.result.reportFlagged}`);
+  ok('⑤ 页面明确提示货号混入文案，不把套话和颜色建议累计成错误',
+    JSON.stringify(run2.result.reportProblems) === JSON.stringify([{ text: '货号混入文案', rows: 1 }]), JSON.stringify(run2.result.reportProblems));
   const wb2 = new ExcelJS.Workbook();
   await wb2.xlsx.readFile(wp.toLong(run2.result.reportFile));
   const ws2 = wb2.getWorksheet('AI 内容报告');
@@ -749,6 +751,14 @@ function startServer() {
   reply = { title: '燕麦色毛衣太温柔了🌿', body: BODY4 };
   const dupRun = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '重复批', label: '重复批' });
   ok('⑤b 重复批跑通', dupRun.ok === true, dupRun.ok ? '' : dupRun.error);
+  ok('⑤b 重复、字数和颜色建议不变成页面错误',
+    dupRun.result.reportFlagged > 0 && dupRun.result.reportProblems.length === 0, JSON.stringify(dupRun.result.reportProblems));
+  const missingRep = await aireport.write({ dir: batchDir, batch: '缺字段',
+    items: [{ id: '缺字段', goods: [], files: [] }], rows: [{ id: '缺字段', title: '  ', body: '\n ' }] });
+  ok('⑤b 空白字段仍逐项提示，不会被隐藏成生成成功',
+    JSON.stringify(missingRep.problems) === JSON.stringify([
+      { text: '缺货号', rows: 1 }, { text: '标题为空', rows: 1 }, { text: '正文为空', rows: 1 }
+    ]), JSON.stringify(missingRep.problems));
   const wbD = new ExcelJS.Workbook();
   await wbD.xlsx.readFile(wp.toLong(dupRun.result.reportFile));
   const wsD = wbD.getWorksheet('AI 内容报告');

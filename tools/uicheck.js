@@ -2539,11 +2539,20 @@ app.whenReady().then(async () => {
         const container = document.createElement('div'); container.innerHTML = TABS[3].render();
         const button = container.querySelector('[data-act="copy:openReport"]');
         await ACTS['copy:openReport']();
-        return {small:button.classList.contains('sm'), icon:!!button.querySelector('svg'), label:button.getAttribute('aria-label')};
+        const generated = container.textContent;
+        await afterCopy({result:{reportFile:${JSON.stringify(reportFixture)},reportRows:28,reportFlagged:28,reportProblems:[]}});
+        const suggestionsOnly = TABS[3].render();
+        await afterCopy({result:{reportFile:${JSON.stringify(reportFixture)},reportRows:3,reportFlagged:3,
+          reportProblems:[{text:'缺货号',rows:1},{text:'正文为空',rows:2}]}});
+        const actualErrors = TABS[3].render();
+        return {small:button.classList.contains('sm'), icon:!!button.querySelector('svg'), label:button.getAttribute('aria-label'),generated,suggestionsOnly,actualErrors};
       } finally {lastCopyReport=previous;renderAll();}
     })()`);
     ok('生成后提供带下载图标的小报告按钮', buttonState.small && buttonState.icon && /本地/.test(buttonState.label));
     ok('报告按钮直接打开本次本地 Excel，不打开资源管理器', openedReport === reportFixture && revealCount === 0);
+    ok('报告无实际错误时显示文案已生成，不再声称自动核对一致', /文案已生成/.test(buttonState.generated) && !/自动核对一致|待核对/.test(buttonState.generated));
+    ok('28 行风格建议不会被页面报成 28 行待核对', /文案已生成/.test(buttonState.suggestionsOnly) && !/待核对|自动核对一致/.test(buttonState.suggestionsOnly));
+    ok('报告真实字段错误具体显示原因和数量', /缺货号 1 行/.test(buttonState.actualErrors) && /正文为空 2 行/.test(buttonState.actualErrors) && !/文案已生成|待核对/.test(buttonState.actualErrors));
   } finally {shell.openPath = originalOpenPath;shell.showItemInFolder = originalReveal;}
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
