@@ -1064,7 +1064,9 @@ TABS[8] = {
           <select class="inp" id="stUser"><option value="">全部执行人</option>${((s && s.users) || []).map(u => `<option value="${esc(u.userId)}" ${state.statsOpts.userId === u.userId ? 'selected' : ''}>${esc(u.displayName || u.username || '未记录')}（${u.rows}）</option>`).join('')}</select>` : ''}
           <button class="btn sm primary" data-act="stats:refresh">查询</button>
           <span class="chip">${m.isAdmin ? '全部品牌' : `我的品牌 ${usable.length} 个`}</span>
+          ${s && s.range ? `<span class="chip stats-range">${esc(s.range.from)} → ${esc(s.range.to)}</span>` : ''}
         </div>
+        ${state.statsPath ? `<p class="hint" style="margin:6px 0 0;color:${state.statsPath.ok ? 'var(--tx3)' : 'var(--red)'}">输出目录：${state.statsPath.ok ? '可写' : esc(state.statsPath.error || '不可写')}</p>` : ''}
       </div>`;
     if (!s) return head + '<div class="empty">正在读取发布日志…（若一直停在这里，说明输出目录不可读）</div>';
     if (s.error) return head + `<div class="empty">查询失败：${esc(s.error)}</div>`;
@@ -1167,13 +1169,6 @@ TABS[8] = {
         ${m.isAdmin ? `<div class="stat"><b>${t.runs}</b><span>任务次数</span></div>
         <div class="stat ${t.runFails ? 'bad' : ''}"><b>${t.runFails}</b><span>任务失败</span></div>` : ''}
         <div class="stat"><b>${s.brands.length}</b><span>品牌数</span></div>
-      </div>
-      <div class="box">
-        <div class="tagline">
-          <span class="chip">${esc(s.range.label)}：${esc(s.range.from)} → ${esc(s.range.to)}</span>
-          ${t.filtered ? '<span class="chip warn">已按条件筛选</span>' : ''}
-        </div>
-        ${state.statsPath ? `<p class="hint" style="margin:6px 0 0;color:${state.statsPath.ok ? 'var(--tx3)' : 'var(--red)'}">输出目录：${state.statsPath.ok ? '可写' : esc(state.statsPath.error || '不可写')}</p>` : ''}
       </div>
       ${accountBox}
       ${notes}
@@ -2847,6 +2842,9 @@ const ACTS = {
   'sheet:importReport': async () => {
     const f = await appApi.pickFile({
       title: '选择「AI 内容报告」xlsx（一个叶子文件夹 = 一条内容）',
+      // 文件路径让系统打开报告所在文件夹并预选报告；没有报告时回到本批素材目录。
+      defaultPath: (lastCopyReport && lastCopyReport.file) || (state.project.publish || {}).reportFile
+        || state.project.flatDir || state.project.sourceDir || undefined,
       filters: [{ name: 'Excel 报告', extensions: ['xlsx'] }]
     });
     if (!f) return;

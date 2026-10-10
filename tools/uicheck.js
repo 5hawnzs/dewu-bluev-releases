@@ -873,6 +873,12 @@ app.whenReady().then(async () => {
     }
     const result = { fields: !!from && !!to, types: from && to ? [from.type, to.type] : [],
       label: state.stats && state.stats.range && state.stats.range.label,
+      dateInToolbar: (() => {
+        const chip = document.querySelector('#pane .acct-toolbar .stats-range');
+        return !!chip && /我的品牌|全部品牌/.test(chip.previousElementSibling.textContent)
+          && chip.textContent.includes(state.stats.range.from) && chip.textContent.includes(state.stats.range.to)
+          && !document.querySelector('#pane .tagline');
+      })(),
       exportsDisabled: [...document.querySelectorAll('.act [data-act^="stats:export"]')].every(x => x.disabled),
       text: document.querySelector('#pane').textContent };
     state.statsOpts = saved.opts; state.stats = saved.stats; state.statsQueryOpts = saved.query;
@@ -882,6 +888,7 @@ app.whenReady().then(async () => {
   ok('品牌统计支持自定义起止日期和时间，并按自定义区间查询',
     statsRangeUi.fields && statsRangeUi.types.every(x => x === 'datetime-local') && statsRangeUi.label === '自定义时间',
     JSON.stringify({ fields: statsRangeUi.fields, types: statsRangeUi.types, label: statsRangeUi.label }));
+  ok('统计日期移到品牌权限右侧，不再单独占用日期卡片', statsRangeUi.dateInToolbar);
   ok('筛选条件改动后必须重新查询才能导出，统计页已精简多余说明',
     statsRangeUi.exportsDisabled && !/共享位置|数据文件：|只追加、不自动裁剪/.test(statsRangeUi.text),
     `exportDisabled=${statsRangeUi.exportsDisabled} verbose=${/共享位置|数据文件：|只追加、不自动裁剪/.test(statsRangeUi.text)}`);
@@ -2521,6 +2528,31 @@ app.whenReady().then(async () => {
       })()`);
       const expected = path.dirname(fixture.flatDir || fixture.sourceDir);
       ok(`${fixture.name}时合规父目录与文案目录弹窗打开同一母目录`, options.length === 2 && options.every(o => o.defaultPath === expected));
+    }
+    for (const fixture of [
+      { name: '本次刚生成报告', generated: path.join(TMP, '本次报告', 'AI内容报告.xlsx'), imported: path.join(TMP, '旧报告', '旧.xlsx'), flatDir: path.join(TMP, '整理后') },
+      { name: '重启后已有导入报告', generated: '', imported: path.join(TMP, '旧报告', '旧.xlsx'), flatDir: path.join(TMP, '整理后') },
+      { name: '还没有报告但已整理', generated: '', imported: '', flatDir: path.join(TMP, '整理后') },
+      { name: '尚未整理', generated: '', imported: '', flatDir: '' },
+      { name: '没有素材', generated: '', imported: '', flatDir: '', sourceDir: '' }
+    ]) {
+      const sourceDir = fixture.sourceDir === '' ? '' : path.join(TMP, '原素材');
+      const selected = [];
+      dialog.showOpenDialog = async (...args) => { selected.push(args[args.length - 1]); return { canceled:true, filePaths:[] }; };
+      await win.webContents.executeJavaScript(`(async () => {
+        const keep = {report:lastCopyReport,publish:state.project.publish,flat:state.project.flatDir,source:state.project.sourceDir};
+        try {
+          lastCopyReport = ${JSON.stringify(fixture.generated)} ? {file:${JSON.stringify(fixture.generated)}} : null;
+          state.project.publish = {reportFile:${JSON.stringify(fixture.imported)}};
+          state.project.flatDir = ${JSON.stringify(fixture.flatDir)};
+          state.project.sourceDir = ${JSON.stringify(sourceDir)};
+          await ACTS['sheet:importReport']();
+        } finally {lastCopyReport=keep.report;state.project.publish=keep.publish;state.project.flatDir=keep.flat;state.project.sourceDir=keep.source;}
+      })()`);
+      const expected = fixture.generated || fixture.imported || fixture.flatDir || sourceDir || undefined;
+      ok(`${fixture.name}时导入报告定位正确，取消后不继续弹窗`, selected.length === 1
+        && selected[0].defaultPath === expected && selected[0].properties.includes('openFile')
+        && selected[0].filters[0].extensions.join(',') === 'xlsx');
     }
   } finally { dialog.showOpenDialog = originalDirDialog; }
   // 点击小报告按钮只能打开刚生成的本地 Excel，不能打开目录或另存副本。
