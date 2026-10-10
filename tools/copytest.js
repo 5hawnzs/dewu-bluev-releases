@@ -47,6 +47,7 @@ const aireport = require(path.join(base, 'src/main/services/aireport.js'));
 const report = require(path.join(base, 'src/main/services/report.js'));
 const imaging = require(path.join(base, 'src/main/services/imaging.js'));
 const wp = require(path.join(base, 'src/main/util/winpath.js'));
+const runlog = require(path.join(base, 'src/main/services/runlog.js'));
 
 const ok = (label, cond, extra) => {
   console.log((cond ? 'PASS  ' : 'FAIL  ') + label + (extra ? '  → ' + extra : ''));
@@ -119,6 +120,10 @@ function startServer() {
         const content = body && body.messages && body.messages[1] && body.messages[1].content;
         const images = Array.isArray(content) ? content.filter(p => p && p.type === 'image_url') : [];
         seen.push({ url: req.url, model: body.model, messages: body.messages, images, hasImage: images.length > 0 });
+        if (mode === 'balanceEmpty') return send(402, { error: { message: 'Insufficient Balance' } });
+        if (mode === 'invalidContent' || mode === 'invalidJson') return send(200, {
+          choices: [{ message: { content: mode === 'invalidJson' ? '{broken' : '{}' } }], usage: { prompt_tokens: 77, completion_tokens: 9 }
+        });
         // 「网关不收图」：第一次带图的请求回 400，逼程序退回纯文字
         if (mode === 'rejectImageOnce' && images.length && seen.filter(s => s.hasImage).length === 1) {
           return send(400, { error: { message: 'this model does not support image content' } });
@@ -415,6 +420,9 @@ function startServer() {
   };
   const run1 = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '十月第一批', label: '十月第一批' });
   ok('③ 批次跑通', run1.ok === true, run1.ok ? '' : run1.error);
+  ok('③ 模型 usage 按图文计入任务汇总', run1.ok && run1.result.apiUsage.byMedia.image.requests === 3
+    && run1.result.apiUsage.inputTokens === 300 && run1.result.apiUsage.outputTokens === 150,
+    JSON.stringify(run1.result && run1.result.apiUsage));
 
   const gen = seen.filter(s => /chat\/completions/.test(s.url));
   ok('③ 每条素材都发了一次请求（3 条素材 → 3 次）', gen.length === 3, `收到 ${gen.length} 次`);
@@ -435,6 +443,32 @@ function startServer() {
     /看图写/.test(one.messages[0].content) && /货号/.test(one.messages[0].content) && /细节，真的顶/.test(one.messages[0].content));
   ok('③ ★ 模型名被换成了接口清单里真认的 id（配置写的是显示名，实测会 400）',
     one.model === 'deepseek-flash', `发出去的 model = ${one.model}`);
+  seen.length = 0;
+  store.set({ copy: { concurrency: 1, llm: { enabled: true, endpoint: ENDPOINT, apiKey: 'sk-test', model: 'deepseek-flash', vision: true, imageCount: 2, imageMaxSide: 320 } } });
+  mode = 'balanceEmpty';
+  const balanceRun = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '余额不足重试测试', label: '余额不足重试测试' });
+  mode = 'ok';
+  const balanceCalls = seen.filter(s => /chat\/completions/.test(s.url));
+  ok('③ 余额不足时中文明确提示，并停止后续素材请求与单条重试', balanceRun.ok === false
+    && /AI 接口余额不足/.test(balanceRun.error || '') && balanceCalls.length === 1,
+    `${balanceCalls.length} 次请求 · ${balanceRun.error || ''}`);
+
+  mode = 'invalidContent';
+  seen.length = 0;
+  const badReplyDir = makeBatch('接口成功但缺标题', 1);
+  const badReplyRun = await jobs.run('copy.generate', { sourceDir: badReplyDir, batchId: '接口成功但缺标题', label: '接口成功但缺标题' });
+  mode = 'ok';
+  const badReplyLog = runlog.read().find(e => e.kind === 'end' && e.jobId === badReplyRun.jobId);
+  ok('③ HTTP 成功但文案格式无效时，重试的每次已计费 token 都保留在云端汇总',badReplyRun.ok === false
+    && badReplyLog && badReplyLog.apiUsage.requests === 3 && badReplyLog.apiUsage.inputTokens === 231
+    && badReplyLog.apiUsage.outputTokens === 27,
+    JSON.stringify(badReplyLog && badReplyLog.apiUsage));
+  mode = 'invalidJson';
+  const invalidJsonRun = await jobs.run('copy.generate', { sourceDir: badReplyDir, batchId: '接口JSON损坏', label: '接口JSON损坏' });
+  mode = 'ok';
+  const invalidJsonLog = runlog.read().find(e => e.kind === 'end' && e.jobId === invalidJsonRun.jobId);
+  ok('③ 模型返回损坏JSON时仍统计已返回的计费token', !invalidJsonRun.ok && invalidJsonLog
+    && invalidJsonLog.apiUsage.requests === 3 && invalidJsonLog.apiUsage.inputTokens === 231);
 
   /* ---- ③d ★★ 端到端：跑完一批，落盘的文案末尾**真的**带着这条按计划选好的那几个话题 ----
      钉两件事（都是真机踩过的坑）：
@@ -1125,6 +1159,10 @@ function startServer() {
     const iReq = vGen.find(s => /26FW-YB160/.test(userText(s)));
     const bReq = vGen.find(s => /26FW-BOTH1/.test(userText(s)));
     ok('⑯ 三个叶子各发一次请求', vGen.length === 3, vGen.length + ' 次');
+    ok('⑯ 用量按视频抽帧 / 图片分别计数', vRun.ok && vRun.result.apiUsage.byMedia.video.requests === 1
+      && vRun.result.apiUsage.byMedia.image.requests === 2
+      && vRun.result.apiUsage.inputTokens === 300 && vRun.result.apiUsage.outputTokens === 150,
+      JSON.stringify(vRun.result && vRun.result.apiUsage));
     ok('⑯ ★★ 视频素材真的带图了（默认抽 1 帧：不是 0、也不是 2）',
       !!vReq && vReq.images.length === 1, vReq ? vReq.images.length + ' 张' : '没找到视频那条请求');
     ok('⑯ ★ 有实拍图的叶子照旧只送图（2 张），**不抽帧** —— 能抽帧不等于该多花这笔钱',
@@ -1142,6 +1180,17 @@ function startServer() {
     ok('⑯ user 里如实说「给了 1 张」（没说 2 张、也没说没有）',
       !!vReq && /本次给了 1 张/.test(userText(vReq)),
       vReq ? (userText(vReq).match(/"看图":"[^"]*"/) || [''])[0] : '—');
+
+    // 402 是余额状态，不可重试；3 条素材只允许各发 1 次请求，不能乘 3。
+    store.set({ copy: { concurrency: 1 } });
+    seen.length = 0;
+    mode = 'balanceEmpty';
+    const balanceRun = await jobs.run('copy.generate', { sourceDir: vroot, batchId: '余额不足重试测试', label: '余额不足重试测试' });
+    mode = 'ok';
+    const balanceCalls = seen.filter(s => /chat\/completions/.test(s.url));
+    ok('⑯ 余额不足立即停止后续素材请求与单条重试', balanceRun.ok === false
+      && balanceCalls.length === 1 && /AI 接口余额不足/.test(balanceRun.error || ''),
+      `${balanceCalls.length} 次 · ${balanceRun.error || ''}`);
 
     // 报告里逐行如实标来源（这一列是给人核对「到底看没看图」的）
     const wbV = new ExcelJS.Workbook();

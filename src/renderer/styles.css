@@ -176,11 +176,9 @@ html.dark .cap button:hover{background:rgba(255,255,255,.10)}
   -webkit-text-fill-color:transparent;animation:folder-tool-gradient 8s linear infinite;
 }
 html.dark .folder-tool-text{background-image:linear-gradient(90deg,#ffaa40,#b877ff,#ffaa40)}
-.folder-tool-arrow{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;transition:transform .3s ease}
-.folder-tool-link:hover .folder-tool-arrow{transform:translateX(2px)}
 @keyframes folder-tool-gradient{0%{background-position:0% 50%}100%{background-position:150% 50%}}
 @keyframes folder-tool-border-flow{to{--folder-tool-angle:360deg}}
-@media(prefers-reduced-motion:reduce){.folder-tool-link::before,.folder-tool-link::after,.folder-tool-text{animation-duration:18s}.folder-tool-link,.folder-tool-arrow{transition:none}}
+@media(prefers-reduced-motion:reduce){.folder-tool-link::before,.folder-tool-link::after,.folder-tool-text{animation-duration:18s}.folder-tool-link{transition:none}}
 .folder-tool-link .ic{width:16px;height:16px;flex:0 0 16px;display:block;opacity:.75}
 .folder-tool-link .ic svg{display:block;width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 

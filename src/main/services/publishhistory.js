@@ -13,15 +13,33 @@ function stateFile() {
 function cutoff() {
   try { return Number(JSON.parse(fs.readFileSync(stateFile(), 'utf8')).before) || 0; } catch (_) { return 0; }
 }
-function keep(e) { return !cutoff() || Number(e.ts) >= cutoff(); }
-function apply(before, file) {
+function accountCutoffs() {
+  try { return JSON.parse(fs.readFileSync(stateFile(), 'utf8')).accounts || {}; } catch (_) { return {}; }
+}
+function revision() { return JSON.stringify([cutoff(), Object.entries(accountCutoffs()).sort()]); }
+function predicate() {
+  const globalBefore = cutoff(), accounts = accountCutoffs();
+  return e => {
+    const before = Math.max(globalBefore, Number(accounts[String(e.userId || e.user_id || '')]) || 0);
+    return !before || Number(e.ts) >= before;
+  };
+}
+function keep(e) { return predicate()(e); }
+function apply(before, file, accounts = {}) {
   before = Math.max(cutoff(), Number(before) || 0);
-  if (!before) return false;
+  const merged = accountCutoffs();
+  for (const [id, ts] of Object.entries(accounts)) {
+    if (id && Number.isFinite(Number(ts)) && Number(ts) > 0) merged[id] = Math.max(Number(merged[id]) || 0, Number(ts));
+  }
+  if (!before && !Object.keys(merged).length) return false;
   fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
-  fs.writeFileSync(stateFile(), JSON.stringify({ before }));
+  fs.writeFileSync(stateFile(), JSON.stringify({ before, accounts: merged }));
   if (!file || !fs.existsSync(file)) return false;
   const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
-  const retained = lines.filter(line => { try { return Number(JSON.parse(line).ts) >= before; } catch (_) { return false; } });
+  const retained = lines.filter(line => { try {
+    const e = JSON.parse(line);
+    return Number(e.ts) >= Math.max(before, Number(merged[String(e.userId || e.user_id || '')]) || 0);
+  } catch (_) { return false; } });
   if (retained.length === lines.length) return false;
   // 同步中没有 await；原子替换不会跨过发布结果的追加写入。
   fs.writeFileSync(file + '.reset.tmp', retained.length ? retained.join('\n') + '\n' : '');
@@ -40,13 +58,27 @@ async function request(route) {
   return r.json();
 }
 async function refresh(file) {
+  let before = cutoff();
   try {
     const data = await request('publish_history_control?select=before_ts&org=eq.' + encodeURIComponent(cfg().org));
-    return apply(Array.isArray(data) && data[0] ? data[0].before_ts : cutoff(), file);
-  } catch (_) {
-    // 迁移尚未执行或断网时使用上次清零时间，不阻断发布。
-    return apply(cutoff(), file);
-  }
+    if (Array.isArray(data) && data[0]) before = data[0].before_ts;
+  } catch (_) {}
+  const accounts = {};
+  try {
+    let cursor = '';
+    for (;;) {
+      const data = await request('publish_account_history_control?select=user_id,before_ts&org=eq.'
+        + encodeURIComponent(cfg().org) + '&order=user_id.asc&limit=1000'
+        + (cursor ? '&user_id=gt.' + encodeURIComponent(cursor) : ''));
+      if (!Array.isArray(data) || !data.length) break;
+      for (const row of data) if (row.user_id) accounts[row.user_id] = row.before_ts;
+      const next = String(data[data.length - 1].user_id || '');
+      if (!next || next <= cursor) break;
+      cursor = next;
+    }
+  } catch (_) {}
+  // 未迁移或断网时保留已缓存的清理规则。
+  return apply(before, file, accounts);
 }
 async function account(userId, filters = {}) {
   if (!userId) return { available: false, error: '当前账号未登录' };
@@ -56,7 +88,7 @@ async function account(userId, filters = {}) {
     const wantBrand = String(filters.brandId || '');
     if ((filters.userId && String(filters.userId) !== String(userId))
       || (scope && (!scope.length || (wantBrand && !scope.includes(wantBrand))))) return result;
-    const before = cutoff();
+    const before = Math.max(cutoff(), Number(accountCutoffs()[String(userId)]) || 0);
     const seen = new Set();
     // 按不可变主键翻页，避免同步新增记录造成 offset 跳页重复。
     let cursor = 0;
@@ -104,4 +136,4 @@ async function account(userId, filters = {}) {
     return result;
   } catch (e) { return { available: false, error: e.message }; }
 }
-module.exports = { cutoff, keep, apply, refresh, account, stateFile };
+module.exports = { cutoff, revision, predicate, keep, apply, refresh, account, stateFile };

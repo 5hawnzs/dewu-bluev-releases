@@ -123,6 +123,9 @@ function makeFakeAdb(dir) {
   // 现场开关 SCAN_FAIL：假装媒体扫描**没生效**（scan_file 回空 STREAM、scan_volume 不回填）
   //   —— 用来验「扫描失败时必须靠进库确认兜底，且最终如实失败」。
   const SCAN_FAIL = path.join(dir, 'SCAN_FAIL');
+  // 现场开关 SCAN_EXIT_139_AFTER_WRITE：先真实写入夹具 MediaStore，再模拟 content CLI 崩溃退出 139。
+  //   用来验证「命令失败 ≠ 扫描没生效」，主流程必须回读媒体库确认，而不是只看进程退出码。
+  const SCAN_EXIT_139_AFTER_WRITE = path.join(dir, 'SCAN_EXIT_139_AFTER_WRITE');
 
   // ★★ 2026-10-08 新增（得物安装包那条路）：
   //   DEWU_ABSENT       —— `pm list packages` 里**没有**得物（新模拟器的样子）。
@@ -644,12 +647,16 @@ function makeFakeAdb(dir) {
         if (!failScan && asSd && pushed.includes(asSd)) {
           if (!scanned.includes(asSd)) scanned.push(asSd);
           dbTimes.set(mtKey(asSd), mtOf(asSd));     // ★ 进库这一刻才把文件时间抄进库
+          if (fs.existsSync(SCAN_EXIT_139_AFTER_WRITE)) {
+            return { out: `Result: Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/${mediaIdOf(asSd)}}]\n`, code: 139 };
+          }
           return okOut(`Result: Bundle[{android.intent.extra.STREAM=content://media/external_primary/video/media/${mediaIdOf(asSd)}}]\n`);
         }
         return okOut('Result: Bundle[{android.intent.extra.STREAM=null}]\n');
       }
       if (/--method scan_volume/.test(cmd)) {
         if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) { scanned.push(p); mediaIdOf(p); } dbTimes.set(mtKey(p), mtOf(p)); });
+        if (!failScan && fs.existsSync(SCAN_EXIT_139_AFTER_WRITE)) return { out: 'Result: Bundle[{}]\n', code: 139 };
         return okOut('Result: Bundle[{}]\n');
       }
       return okOut('Result: Bundle[{}]\n');
@@ -669,10 +676,14 @@ function makeFakeAdb(dir) {
       //   格式与真机实测一致：`Row: 0 _id=446, _data=/storage/..., date_modified=1791141061`。
       const projM = cmd.match(/--projection\s+(\S+)/);
       const proj = projM ? projM[1] : '';
-      return okOut(list.map((p, i) =>
-        `Row: ${i} _id=${mediaIdOf(p)}, _data=${String(p).replace(/^\/sdcard\//, '/storage/emulated/0/')}`
-        + (/date_modified/.test(proj) ? `, date_modified=${dbTimeOf(p)}` : '')
-      ).join('\n') + (list.length ? '\n' : ''));
+      const out = list.map((p, i) => {
+        const values = { _id: mediaIdOf(p), _data: String(p).replace(/^\/sdcard\//, '/storage/emulated/0/'), date_modified: dbTimeOf(p) };
+        return `Row: ${i} ` + (proj || '_id:_data').split(':').map(k => `${k}=${values[k]}`).join(', ');
+      }).join('\n') + (list.length ? '\n' : '');
+      if (fs.existsSync(path.join(dir, 'QUERY_EXIT_139'))) {
+        return { out: out || 'No result found.\n', code: 139 };
+      }
+      return okOut(out);
     }
     if (/^content delete /.test(cmd)) {
       // ★★ 2026-10-04 新增：按 _id 删库记录（clearMediaDir 用的就是这条）。

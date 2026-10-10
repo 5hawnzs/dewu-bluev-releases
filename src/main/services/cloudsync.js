@@ -34,6 +34,7 @@ const store = require('../store');
 const wp = require('../util/winpath');
 const CD = require('../clouddefaults');   // 内置默认值：界面上没填时用它（只有 anon/publishable key）
 const runlog = require('./runlog');
+const apiusage = require('./apiusage');
 
 const BATCH = 200;          // 单批最多几行（PostgREST 一次插入）
 const MAX_BATCHES = 5;      // 单次同步最多几批：台账积压很多时也要给界面留出响应
@@ -172,6 +173,29 @@ function safeRunText(value) {
     .slice(0, 500);
 }
 
+function safeApiUsage(value) {
+  if (!value || typeof value !== 'object' || Number(value.version) !== 1) return null;
+  const count = n => Math.max(0, Math.min(1000000000, Math.floor(Number(n) || 0)));
+  const byMedia = {};
+  for (const kind of ['image', 'video', 'text']) {
+    const x = value.byMedia && value.byMedia[kind];
+    if (!x || typeof x !== 'object') continue;
+    byMedia[kind] = {
+      requests: count(x.requests), unreportedRequests: count(x.unreportedRequests), inputTokens: count(x.inputTokens), outputTokens: count(x.outputTokens),
+      cachedInputTokens: count(x.cachedInputTokens),
+      estimatedCostCny: x.estimatedCostCny != null && Number.isFinite(Number(x.estimatedCostCny)) ? Math.max(0, Math.min(10000, Number(x.estimatedCostCny))) : null,
+      costKnown: x.costKnown === true
+    };
+  }
+  return {
+    version: 1, requests: count(value.requests), unreportedRequests: count(value.unreportedRequests), inputTokens: count(value.inputTokens),
+    outputTokens: count(value.outputTokens), cachedInputTokens: count(value.cachedInputTokens),
+    estimatedCostCny: value.estimatedCostCny != null && Number.isFinite(Number(value.estimatedCostCny)) ? Math.max(0, Math.min(10000, Number(value.estimatedCostCny))) : null,
+    costKnown: value.costKnown === true, byMedia,
+    models: Array.isArray(value.models) ? value.models.slice(0, 8).map(x => safeRunText(x).slice(0, 80)) : []
+  };
+}
+
 /** 任务运行表只接收开始/结束事件；过程日志可能含路径、商品信息，不上传。 */
 function toRunRow(e, machine, index = 0) {
   if (!e || (e.kind !== 'start' && e.kind !== 'end')) return null;
@@ -196,8 +220,116 @@ function toRunRow(e, machine, index = 0) {
     ok: e.kind === 'end' ? !!e.ok : null,
     cancelled: e.kind === 'end' ? !!e.cancelled : false,
     elapsed_sec: e.kind === 'end' ? Number(e.elapsedSec) || 0 : null,
-    error_summary: e.kind === 'end' && !e.ok ? safeRunText(e.error) : ''
+    error_summary: e.kind === 'end' && !e.ok ? safeRunText(e.error) : '',
+    api_usage: e.kind === 'end' && e.type === 'copy.generate' ? safeApiUsage(e.apiUsage) : null
   };
+}
+
+function sumUsage(a, b) {
+  const out = a || { requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, estimatedCostCny: 0, costKnown: true };
+  out.requests += Number(b.requests) || 0;
+  out.unreportedRequests = (out.unreportedRequests || 0) + (Number(b.unreportedRequests) || 0);
+  out.inputTokens += Number(b.inputTokens) || 0;
+  out.outputTokens += Number(b.outputTokens) || 0;
+  out.cachedInputTokens += Number(b.cachedInputTokens) || 0;
+  if (b.estimatedCostCny != null && Number.isFinite(Number(b.estimatedCostCny))) out.estimatedCostCny += Number(b.estimatedCostCny);
+  else out.costKnown = false;
+  if (b.costKnown !== true) out.costKnown = false;
+  return out;
+}
+
+/** 从云端任务日志汇总 AI token 和按当前已知费率估算的费用；只返回聚合值，不返回原始任务记录。 */
+async function queryApiUsage(opts = {}) {
+  try { return await queryApiUsageImpl(opts); }
+  catch (error) { return { ok: false, error: '云端 AI 用量暂不可用：' + describeErr(error) }; }
+}
+
+async function queryApiUsageImpl(opts = {}) {
+  const cfg = cfgOf();
+  if (!cfg.enabled || !cfg.url || !cfg.anonKey) return { ok: false, error: '云端同步未启用或未配置' };
+  const scope = Array.isArray(opts.scopeIds) ? opts.scopeIds.map(String) : null;
+  if (scope && !scope.length) return { ok: true, available: true, total: apiusage.aggregate([]), rows: [] };
+  const params = new URLSearchParams({
+    select: 'id,api_usage,ts,brand_id,brand_name,user_id,username,display_name',
+    org: `eq.${cfg.org || CD.org}`, event_kind: 'eq.end', task_type: 'eq.copy.generate',
+    api_usage: 'not.is.null'
+  });
+  const fromTs = Number(opts.fromTs) || 0;
+  const toTs = Number(opts.toTs) || Date.now();
+  const dateFilters = [];
+  if (fromTs) dateFilters.push(`ts.gte.${Math.floor(fromTs)}`);
+  if (toTs) dateFilters.push(`ts.lte.${Math.floor(toTs)}`);
+  if (opts.brandId && opts.brandId !== '__none__') params.set('brand_id', `eq.${String(opts.brandId)}`);
+  const selectedUser = String(opts.userId || '');
+  if (selectedUser) params.set('user_id', `eq.${selectedUser}`);
+  const groups = new Map();
+  // 先固定本轮最大主键，再按 id 游标分页；服务端即使把每页限制调小，也不会漏掉后续记录。
+  const topParams = new URLSearchParams(params);
+  topParams.set('select', 'id'); topParams.set('order', 'id.desc'); topParams.set('limit', '1');
+  const topRes = await fetch(`${cfg.url}/rest/v1/run_log?${topParams.toString()}`, {
+    method: 'GET', headers: { apikey: cfg.anonKey, Authorization: 'Bearer ' + cfg.anonKey },
+    signal: AbortSignal.timeout(TIMEOUT_MS)
+  });
+  if (!topRes.ok) {
+    let detail = '';
+    try { detail = (await topRes.text()).slice(0, 240); } catch (_) { /* ignore */ }
+    if (/PGRST204|api_usage.*column|column.*api_usage/i.test(detail)) {
+      return { ok: false, error: '云端表缺少 AI 用量字段：请在 Supabase SQL Editor 运行 docs/supabase-api-usage-migration.sql' };
+    }
+    return { ok: false, error: `云端费用查询失败：HTTP ${topRes.status}${detail ? ' · ' + detail : ''}` };
+  }
+  const topRows = await topRes.json();
+  if (!Array.isArray(topRows)) return { ok: false, error: '云端费用查询返回格式不正确' };
+  const maxId = topRows.length ? Number(topRows[0].id) : 0;
+  if (!Number.isSafeInteger(maxId) || maxId <= 0) return { ok: true, available: true, total: apiusage.aggregate([]), rows: [] };
+  let cursor = 0;
+  const pageSize = 1000;
+  while (cursor < maxId) {
+    const pageParams = new URLSearchParams(params);
+    pageParams.set('select', 'id,api_usage,ts,brand_id,brand_name,user_id,username,display_name');
+    pageParams.set('order', 'id.asc'); pageParams.set('limit', String(pageSize));
+    pageParams.set('and', `(${dateFilters.concat([`id.gt.${cursor}`, `id.lte.${maxId}`]).join(',')})`);
+    const res = await fetch(`${cfg.url}/rest/v1/run_log?${pageParams.toString()}`, {
+      method: 'GET', headers: { apikey: cfg.anonKey, Authorization: 'Bearer ' + cfg.anonKey },
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 240); } catch (_) { /* ignore */ }
+      if (/PGRST204|api_usage.*column|column.*api_usage/i.test(detail)) {
+        return { ok: false, error: '云端表缺少 AI 用量字段：请在 Supabase SQL Editor 运行 docs/supabase-api-usage-migration.sql' };
+      }
+      return { ok: false, error: `云端费用查询失败：HTTP ${res.status}${detail ? ' · ' + detail : ''}` };
+    }
+    const page = await res.json();
+    if (!Array.isArray(page)) return { ok: false, error: '云端费用查询返回格式不正确' };
+    if (!page.length) break;
+    for (const row of page) {
+      if (scope && !scope.includes(String(row.brand_id || ''))) continue;
+      if (opts.brandId === '__none__' && row.brand_id) continue;
+      const key = `${row.user_id || ''}\n${row.brand_id || ''}`;
+      if (!groups.has(key)) groups.set(key, { userId: row.user_id || '', username: row.username || '', displayName: row.display_name || '',
+        brandId: row.brand_id || '', brandName: row.brand_name || '未标品牌', usage: null, media: {} });
+      const group = groups.get(key);
+      const usage = safeApiUsage(row.api_usage);
+      if (!usage) continue;
+      group.usage = sumUsage(group.usage, usage);
+      for (const kind of ['image', 'video', 'text']) {
+        const entry = usage.byMedia && usage.byMedia[kind];
+        if (entry) group.media[kind] = sumUsage(group.media[kind], entry);
+      }
+    }
+    const next = Number(page[page.length - 1].id);
+    if (!Number.isSafeInteger(next) || next <= cursor) return { ok: false, error: '云端费用查询分页游标无效' };
+    cursor = next;
+  }
+  const rows = [...groups.values()].filter(x => x.usage && x.usage.requests > 0).map(x => ({
+    userId: x.userId, username: x.username, displayName: x.displayName, brandId: x.brandId, brandName: x.brandName,
+    usage: Object.assign(x.usage, { estimatedCostCny: Number(x.usage.estimatedCostCny.toFixed(8)) }), media: x.media
+  }));
+  const total = rows.reduce((acc, row) => sumUsage(acc, row.usage), null) || apiusage.aggregate([]);
+  total.estimatedCostCny = Number(total.estimatedCostCny.toFixed(8));
+  return { ok: true, available: true, total, rows };
 }
 
 /**
@@ -429,6 +561,8 @@ async function syncOnce(opts = {}) {
   let taskSent = 0;
   try {
     if (await require('./publishhistory').refresh(wp.toLong(logFile()))) st.offset = 0;
+    const historyRevision = require('./publishhistory').revision();
+    if (st.historyRevision !== historyRevision) { st.offset = 0; st.historyRevision = historyRevision; }
     const historyBefore = require('./publishhistory').cutoff();
     if (historyBefore > (Number(st.historyBefore) || 0)) { st.offset = 0; st.historyBefore = historyBefore; }
     const all = readEntries();
@@ -572,7 +706,7 @@ async function test() {
       }
       return { ok: false, error: `HTTP ${res.status}${detail ? ' · ' + detail : ''}` };
     }
-    const taskRes = await fetch(cfg.url + '/rest/v1/run_log?select=event_id&limit=1', {
+    const taskRes = await fetch(cfg.url + '/rest/v1/run_log?select=event_id,api_usage&limit=1', {
       method: 'GET',
       headers: { apikey: cfg.anonKey, Authorization: 'Bearer ' + cfg.anonKey },
       signal: AbortSignal.timeout(TIMEOUT_MS)
@@ -581,7 +715,10 @@ async function test() {
       let detail = '';
       try { detail = (await taskRes.text()).slice(0, 180); } catch (e) { /* 忽略 */ }
       if (/PGRST205|Could not find the table|does not exist/i.test(detail)) {
-        return { ok: false, error: '发布结果表正常，但任务日志表还没建：请在 Supabase SQL Editor 运行 docs/supabase-runlog-migration.sql' };
+        return { ok: false, error: '运行日志表还没建：请在 Supabase SQL Editor 运行 docs/supabase-runlog-migration.sql' };
+      }
+      if (/PGRST204|api_usage.*column|column.*api_usage/i.test(detail)) {
+        return { ok: false, error: '云端运行日志缺少 AI 用量字段：请在 Supabase SQL Editor 运行 docs/supabase-api-usage-migration.sql' };
       }
       return { ok: false, error: `任务日志表检查失败：HTTP ${taskRes.status}${detail ? ' · ' + detail : ''}` };
     }
@@ -616,7 +753,7 @@ function configure() {
   start();
 }
 
-module.exports = { status, syncOnce, test, start, stop, configure, toRow, toRunRow, safeRunText, readEntries, readRunEntries, pending, pendingRun, exportConfig, importConfig, explicitOf, stateFile, logFile, runLogFile, dataDir,
+module.exports = { status, syncOnce, test, start, stop, configure, toRow, toRunRow, safeRunText, safeApiUsage, queryApiUsage, readEntries, readRunEntries, pending, pendingRun, exportConfig, importConfig, explicitOf, stateFile, logFile, runLogFile, dataDir,
   // 机器标识：idFromFingerprint 是纯函数（断言直接打它）；machineFingerprint 只读不写
   idFromFingerprint, machineFingerprint,
   // 失败可诊断性：describeErr 是纯函数（断言直接打它）；errorLogFile/appendErrorLog 给测试读落盘台账

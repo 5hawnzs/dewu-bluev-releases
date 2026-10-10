@@ -2081,6 +2081,47 @@ const state = {
       !persistentQuery.result.ok && persistentQueries === 2 && /provider unavailable/.test(persistentQuery.error)
         && /退出码 1/.test(persistentQuery.error) && /重试后仍失败/.test(persistentQuery.error),
       persistentQuery.error);
+    let empty139Calls = 0;
+    const empty139 = await adb.queryMediaTable('FAKESERIAL', 'video', async () => {
+      empty139Calls++;
+      return { ok: false, stdout: 'No result found.\n', stderr: '', code: 139 };
+    });
+    ok('新设备空 MediaStore 表即使 content CLI 退出 139，也按明确空结果处理且不重试',
+      empty139.result.ok && empty139.result.stdout === '' && !empty139.error && empty139Calls === 1,
+      `queries=${empty139Calls} error=${empty139.error}`);
+    let rows139Calls = 0;
+    const rows139 = await adb.queryMediaTable('FAKESERIAL', 'video', async () => {
+      rows139Calls++;
+      return { ok: false, stdout: 'Row: 0 _id=19, _data=/sdcard/DCIM/Camera/keep.mp4\n', stderr: '', code: 139 };
+    });
+    ok('content CLI 退出 139 但输出完整媒体行时保留记录供清理（不当成空表）',
+      rows139.result.ok && rows139Calls === 1 && /_id=19/.test(rows139.result.stdout) && !rows139.error,
+      `queries=${rows139Calls} error=${rows139.error}`);
+    let malformed139Calls = 0;
+    const malformed139 = await adb.queryMediaTable('FAKESERIAL', 'video', async () => {
+      malformed139Calls++;
+      return { ok: false, stdout: 'Row: 0 _id=19, _data=/sdcard/DCIM/Camera/partial.mp4\nBROKEN OUTPUT\n', stderr: '', code: 139 };
+    });
+    ok('content CLI 退出 139 且媒体行不完整时继续重试并拒绝清理放行',
+      !malformed139.result.ok && malformed139Calls === 2 && /BROKEN OUTPUT/.test(malformed139.error) && /重试后仍失败/.test(malformed139.error),
+      `queries=${malformed139Calls} error=${malformed139.error}`);
+    for (const projection of ['_data', '_data:date_modified']) {
+      const line = 'Row: 0 _data=/storage/emulated/0/DCIM/Camera/main.jpg'
+        + (projection.includes('date_modified') ? ', date_modified=1791608509' : '') + '\n';
+      const complete = await adb.queryMediaTable('FAKESERIAL', 'images', async () =>
+        ({ ok: false, stdout: line, stderr: '', code: 139 }), projection);
+      ok(`回读 ${projection} 时完整记录后退出 139 仍保留实际数据`,
+        complete.result.ok && complete.result.stdout === line && !complete.error);
+      const denied = await adb.queryMediaTable('FAKESERIAL', 'images', async () =>
+        ({ ok: false, stdout: line, stderr: 'Permission Denial', code: 139 }), projection);
+      ok(`回读 ${projection} 时出现权限错误仍拒绝放行`, !denied.result.ok && /Permission Denial/.test(denied.error));
+    }
+    const brokenTime = await adb.queryMediaTable('FAKESERIAL', 'images', async () =>
+      ({ ok: false, stdout: 'Row: 0 _data=/storage/emulated/0/DCIM/Camera/main.jpg, date_modified=\n', stderr: '', code: 139 }), '_data:date_modified');
+    ok('主图时间回读被截断时不接收半条数据', !brokenTime.result.ok && !!brokenTime.error);
+    const unrelatedExit = await adb.queryMediaTable('FAKESERIAL', 'images', async () =>
+      ({ ok: false, stdout: 'No result found.\n', stderr: '', code: 1 }));
+    ok('其他非零退出不因出现空结果文字就忽略故障', !unrelatedExit.result.ok && !!unrelatedExit.error);
     // 拿到假 adb 挂出来的现场状态（直接读目录内容，不靠解析 calls.log）
     const fakeExec = require('child_process').execFile;
     const dirState = fakeExec.__bluevDir;
@@ -3331,6 +3372,23 @@ const state = {
     ok('㉜ ★★ 而且理由必须点到"主图/媒体库"上（不许只说一句"失败了"让人猜）',
       /主图|媒体库/.test(String((r33.rows[0] || {}).reason || '')),
       String((r33.rows[0] || {}).reason || '').slice(0, 200));
+
+    // ==== D) 扫描命令非 0，但 MediaStore 已经更新 ⇒ 以库内事实为准，不误报失败 ====
+    const SCAN_EXIT_139_AFTER_WRITE = path.join(FDB, 'SCAN_EXIT_139_AFTER_WRITE');
+    const QUERY_EXIT_139 = path.join(FDB, 'QUERY_EXIT_139');
+    const logs4 = [];
+    const ctx4 = Object.assign({}, ctx3, { log: (m, l) => logs4.push((l || 'info') + ': ' + m) });
+    put3(NA);
+    fs.writeFileSync(SCAN_EXIT_139_AFTER_WRITE, '1');
+    fs.writeFileSync(QUERY_EXIT_139, '1');
+    let r34;
+    try { r34 = await publisher.run(await mkState3(), ctx4); }
+    finally { fs.unlinkSync(SCAN_EXIT_139_AFTER_WRITE); fs.unlinkSync(QUERY_EXIT_139); }
+    ok('㉜ ★★★ 全部媒体查询和扫描均退出 139，但完整数据确认主图最新 ⇒ 继续正常发布',
+      r34.okCount === 1 && /发布成功/.test(String((r34.rows[0] || {}).result || ''))
+        && logs4.some(l => /媒体库核实主图时间最新/.test(l)
+          && /scan_file 退出码 139/.test(l) && /scan_volume 退出码 139/.test(l)),
+      String((r34.rows[0] || {}).result || '') + ' / ' + logs4.filter(l => /扫描命令/.test(l)).join(' | '));
   }
 
   console.log('\n--- 日志样例 ---');

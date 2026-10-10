@@ -153,15 +153,34 @@ async function push(serial, local, remote) {
 }
 
 // 新设备刚连入时 MediaProvider 偶发短暂不可用；读取媒体表失败时短暂重试一次。
-async function queryMediaTable(serial, table, run = shell) {
-  const cmd = 'content query --uri content://media/external/' + table + '/media --projection _id:_data';
+async function queryMediaTable(serial, table, run = shell, projection = '_id:_data') {
+  const cmd = 'content query --uri content://media/external/' + table + '/media --projection ' + projection;
+  const isExplicitEmpty = r => {
+    const output = [r && r.stdout, r && r.stderr].map(v => String(v || '').trim()).filter(Boolean).join('\n');
+    // Android 的 content query 在空表时会明确打印这个标记；部分新设备随后会以 139 退出。
+    return Number(r && r.code) === 139 && /^(?:No result found\.?\s*)$/i.test(output);
+  };
+  const isCompleteRows = r => {
+    // 新设备可能已经完整输出 Row 行，随后 content CLI 在关闭游标时以 139 崩溃。
+    // 只接收全由完整记录组成的 stdout；调用方仍会删记录并复查，残留媒体不会被放行。
+    if (Number(r && r.code) !== 139 || String(r && r.stderr || '').trim()) return false;
+    const lines = String(r && r.stdout || '').replace(/\r/g, '').trim().split('\n').filter(Boolean);
+    const fields = projection.split(':').map(field => field + '=' + (field === '_data' ? '.+?' : '\\d+'));
+    const record = new RegExp('^Row:\\s*\\d+\\s+' + fields.join(',\\s*') + '$');
+    return lines.length > 0 && lines.every(line => record.test(line));
+  };
+  const acceptedResult = r => Object.assign({}, r, { ok: true, stderr: '' });
   const detail = r => [String(r.stderr || '').trim(), String(r.stdout || '').trim(),
     r.code == null ? '' : '退出码 ' + r.code].filter(Boolean).join('；') || '无设备错误详情';
   let result = await run(serial, cmd, { timeout: 30000 });
   if (result.ok) return { result, error: '' };
+  if (isExplicitEmpty(result)) return { result: Object.assign(acceptedResult(result), { stdout: '' }), error: '' };
+  if (isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
   const first = detail(result);
   await sleepMs(350);
   result = await run(serial, cmd, { timeout: 30000 });
+  if (!result.ok && isExplicitEmpty(result)) return { result: Object.assign(acceptedResult(result), { stdout: '' }), error: '' };
+  if (!result.ok && isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
   return result.ok
     ? { result, error: '' }
     : { result, error: detail(result) + '（首次：' + first + '；重试后仍失败）' };
@@ -192,13 +211,19 @@ function toMediaPath(p) {
 async function mediaScan(serial, remoteFile) {
   const abs = toMediaPath(remoteFile);
   let raw = '';
+  const detail = r => {
+    const output = `${r && r.stdout || ''} ${r && r.stderr || ''}`
+      .replace(/\/(?:sdcard|storage\/emulated\/0)\/[^\s,)}\]]+/g, '[设备文件]')
+      .replace(/\s+/g, ' ').trim().slice(0, 120) || '无回显';
+    return `退出码 ${r && r.code != null ? r.code : '未知'}：${output}`;
+  };
   if (abs) {
     const r = await shell(serial, `content call --uri content://media/external/file --method scan_file --arg ${shq(abs)}`, { timeout: 30000 });
-    raw = `${r.stdout || ''}${r.stderr || ''}`;
-    if (r.ok && /content:\/\/media\//.test(raw)) return { ok: true, how: 'scan_file', raw };
+    raw = `scan_file ${detail(r)}`;
+    if (r.ok && /content:\/\/media\//.test(`${r.stdout || ''}${r.stderr || ''}`)) return { ok: true, how: 'scan_file', raw };
   }
   const r2 = await shell(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 60000 });
-  raw += `${r2.stdout || ''}${r2.stderr || ''}`;
+  raw += `${raw ? '；' : ''}scan_volume ${detail(r2)}`;
   return { ok: r2.ok, how: abs ? 'scan_file→scan_volume' : 'scan_volume', raw };
 }
 
@@ -279,9 +304,10 @@ async function mediaNewest(serial, remoteFiles) {
     if (m && want.indexOf(m) < 0) want.push(m);
   }
   if (!want.length) return { ok: false, error: '没给要比的文件' };
-  const r = await shell(serial, 'content query --uri content://media/external/images/media --projection _data:date_modified', { timeout: 30000 });
-  if (!r.ok) {
-    return { ok: false, error: `回读媒体库失败：${((r.stderr || '') + (r.stdout || '')).trim() || 'content query 返回非 0'}` };
+  const queried = await queryMediaTable(serial, 'images', shell, '_data:date_modified');
+  const r = queried.result;
+  if (queried.error) {
+    return { ok: false, error: `回读媒体库失败：${queried.error}` };
   }
   const times = {};
   for (const line of String(r.stdout || '').split('\n')) {
@@ -294,6 +320,9 @@ async function mediaNewest(serial, remoteFiles) {
   }
   let best = want[0];
   for (const p of want) if (times[p] > times[best]) best = p;
+  if (want.filter(p => times[p] === times[best]).length > 1) {
+    return { ok: false, error: '媒体库中多张图片的最新时间相同，无法确认主图顺序' };
+  }
   return { ok: true, newest: best, times, want };
 }
 
@@ -692,7 +721,8 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
     const fchk = await shell(serial, 'find ' + dir + ' -type f 2>/dev/null', { timeout: 30000 });
     const filesLeft = String(fchk.stdout || '').trim();
     if (!fchk.ok) {
-      if (!error) error = String(fchk.stderr || '').trim() || 'find -type f 校验失败（读不到目录，不敢判干净）';
+      return { ok: false, removed, files: hit.map(h => h.file), forceStopped,
+        error: String(fchk.stderr || '').trim() || 'find -type f 校验失败（读不到目录，不敢判干净）' };
     } else if (filesLeft) {
       return { ok: false, removed: removed, files: hit.map(h => h.file), forceStopped,
         error: '目录里还有 ' + filesLeft.split(/\r?\n/).length + ' 个文件没删掉（前几个：'
@@ -772,14 +802,9 @@ async function clearAlbum(serial, opts = {}) {
   const removeAll = async (hit) => {
     let removed = 0;
     for (const h of hit) {
-      // ① 物理文件先删：记录删了但文件还在时，scan_volume 会把它重新索引回来。
-      //    路径不含空格时才拼裸路径（不往设备端塞引号 —— 引号会被 `adb shell` 再解析一次吃掉）。
-      if (h.file) {
-        if (/\s/.test(h.file)) {
-          // 含空格的路径没法安全地走 shell ⇒ 交给下面按 _id 删记录，物理文件留给「按目录清」那条路。
-        } else {
-          await shell(serial, 'rm -f ' + h.file, { timeout: 20000 });
-        }
+      // 只对纯安全字符路径直接删文件，其他路径交给按 ID 删除，避免文件名被当作 shell 指令。
+      if (h.file && /^\/[A-Za-z0-9_./+\-]+$/.test(h.file)) {
+        await shell(serial, 'rm -f ' + h.file, { timeout: 20000 });
       }
       // ② 按 _id 删记录（`content delete --uri .../<id>` 完全不需要引号）
       const rd = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
@@ -818,11 +843,11 @@ async function clearAlbum(serial, opts = {}) {
     ? ('还有 ' + left + ' 条清不掉（前几个：' + chk.hit.slice(0, 3).map(h => h.file || (h.table + '/' + h.id)).join('、') + '）')
     : '';
   return {
-    ok: left === 0,
+    ok: left === 0 && !chk.error,
     removed: r.removed,
     files: all.map(h => h.file).filter(Boolean),
     left,
-    error: left ? (forceStopPkg ? '把得物强停之后仍然清不掉：' + note : note) : '',
+    error: chk.error || (left ? (forceStopPkg ? '把得物强停之后仍然清不掉：' + note : note) : ''),
     note, forceStopped
   };
 }
@@ -922,18 +947,21 @@ async function mediaVisible(serial, remoteFiles, { timeoutMs = 20000, pollMs = 8
   let rows = '';
   let lastErr = '';
   for (;;) {
-    // 一条 shell 里查两张表，省一次往返
-    const r = await shell(serial,
-      'content query --uri content://media/external/video/media --projection _data; '
-      + 'content query --uri content://media/external/images/media --projection _data', { timeout: 20000 });
-    rows = String(r.stdout || '');
-    lastErr = String(r.stderr || '').trim();
-    if (r.ok && want.every(p => rows.includes(toMediaPath(p)) || rows.includes(p))) {
+    // 分别校验两张表，避免其中一条查询失败被另一条的成功退出码掩盖。
+    const video = await queryMediaTable(serial, 'video', shell, '_data');
+    const images = await queryMediaTable(serial, 'images', shell, '_data');
+    rows = [video, images].filter(q => !q.error).map(q => String(q.result.stdout || '')).join('\n');
+    lastErr = [video.error, images.error].filter(Boolean).join('；');
+    const visible = new Set(rows.split(/\r?\n/).map(line => {
+      const m = line.match(/^Row:\s*\d+\s+_data=(.+)$/);
+      return m ? toMediaPath(m[1].trim()) : '';
+    }).filter(Boolean));
+    if (!lastErr && want.every(p => visible.has(toMediaPath(p)))) {
       return { ok: true, waited: +((Date.now() - t0) / 1000).toFixed(1), rows };
     }
     const waited = Date.now() - t0;
     if (waited >= timeoutMs) {
-      return { ok: false, waited: +(waited / 1000).toFixed(1), rows, error: r.ok ? '' : (lastErr || 'content query 执行失败') };
+      return { ok: false, waited: +(waited / 1000).toFixed(1), rows, error: lastErr };
     }
     if (onTick) onTick(Math.round(waited / 1000));
     await new Promise(res => setTimeout(res, pollMs));

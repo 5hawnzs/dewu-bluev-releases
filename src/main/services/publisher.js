@@ -913,18 +913,26 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
           + '（实测那就是你说的背面图）。这步靠设备端 touch + 重扫媒体库两步完成。');
       }
       const rescan = await adb.mediaScan(serial, remotes[idx]);
-      if (!rescan.ok) {
-        throw new Error(`主图「${pick.main.name}」的时间戳改了，但没能重扫进媒体库（试了 ${rescan.how}）`
-          + ' —— 得物读的是库里的缓存时间，不重扫的话相册顺序不会变（这条实测过）。');
-      }
+      // 某些新设备的 content CLI 会在扫描动作执行后以非 0/139 退出。
+      // 命令回执不是得物相册使用的事实来源；MediaStore 回读才是。先复核数据库，
+      // 不要因为 CLI 的退出状态把已经正确重扫的主图误判成失败。
       const nw = await adb.mediaNewest(serial, remotes);
       if (!nw.ok) {
-        throw new Error(`排完主图后回读媒体库没读成：${nw.error}`
-          + ' —— 读不到就不算排成（不许按「应该是排上了」往下发）。');
+        const raw = String(rescan.raw || '').replace(/\s+/g, ' ').trim().slice(0, 180) || '无命令回显';
+        throw new Error(`主图「${pick.main.name}」重扫后没能从媒体库核实：${nw.error}`
+          + `；扫描命令=${rescan.how || '未知'}（${raw}）`
+          + ' —— 读不到就不算排成，不会继续发布。');
       }
       if (nw.newest !== adb.toMediaPath(remotes[idx])) {
+        const times = remotes.map(p => `${p.split('/').pop()}=${nw.times && nw.times[adb.toMediaPath(p)]}`).join('，');
+        const raw = String(rescan.raw || '').replace(/\s+/g, ' ').trim().slice(0, 140) || '无命令回显';
         throw new Error(`排完主图后回读媒体库，最新的仍是「${nw.newest.split('/').pop()}」，`
-          + `不是要当主图的「${pick.main.name}」—— 这一条的主图会放错，先不发。`);
+          + `不是要当主图的「${pick.main.name}」（库内时间：${times}；扫描命令=${rescan.how || '未知'}：${raw}）`
+          + ' —— 这一条的主图会放错，先不发。');
+      }
+      if (!rescan.ok) {
+        const raw = String(rescan.raw || '').replace(/\s+/g, ' ').trim().slice(0, 180) || '无命令回显';
+        log(`${row.dir}：扫描命令返回异常（${rescan.how || '未知'}：${raw}），但已从媒体库核实主图时间最新`, 'warn');
       }
       log(`${row.dir}：主图 = ${pick.main.name}（${mainimg.whyText(pick)}），已排到相册第 1 格`, 'info');
       if (pick.why === 'marker-many') {

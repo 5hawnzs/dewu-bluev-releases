@@ -186,7 +186,16 @@ function register() {
     const queried = stats.query(queryOpts);
     // 本账号身份只认登录会话；时间、品牌及执行人筛选与页面共用。
     const account = auth.cloudMode() ? await history.account(current && current.id, queryOpts) : null;
-    return Object.assign({ ok: true, account }, queried);
+    let apiUsage = null;
+    if (auth.cloudMode()) {
+      const isAdmin = !!(current && current.role === 'admin');
+      apiUsage = await cloudsync.queryApiUsage({
+        fromTs: queried.range.fromTs, toTs: queried.range.toTs,
+        brandId: queryOpts.brandId || '', userId: isAdmin ? (queryOpts.userId || '') : (current && current.id || ''),
+        scopeIds: scopeOf()
+      });
+    }
+    return Object.assign({ ok: true, account, apiUsage }, queried);
   }));
   handle('stats:export', guard(async (_e, opts) => {
     const o = Object.assign({}, opts || {});

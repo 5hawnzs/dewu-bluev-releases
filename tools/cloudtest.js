@@ -69,6 +69,7 @@ let calls = [];
 let mode = 'ok';        // ok | http500 | throw | tableMissing | dupAll | dupMixed | other409
 let postSeq = 0;        // 当前 mode 下第几次**写**请求（用来演「整批先 409、逐行时新的那几行能进」）
 let lastBody = null;
+let usageReply = null;
 // PostgREST 的真实回包原文（照抄实测回来的，别自己编）
 const NO_TABLE_BODY = '{"code":"PGRST205","details":null,"hint":"Perhaps you meant the table \'public.app_users\'","message":"Could not find the table \'public.publish_log\' in the schema cache"}';
 // 「撞唯一索引 publish_log_dedup」的真实回包 —— 2026-10-02 对真库重复插入实测所得（HTTP 409）
@@ -77,8 +78,22 @@ const DUP_BODY = '{"code":"23505","details":null,"hint":null,"message":"duplicat
 const NO_CONSTRAINT_BODY = '{"code":"42P10","details":null,"hint":null,"message":"there is no unique or exclusion constraint matching the ON CONFLICT specification"}';
 globalThis.fetch = async (url, opts) => {
   // 本套件统计上传请求；清零策略查询由 historytest 专项覆盖。
-  if (String(url).includes('/publish_history_control?')) return { ok: true, json: async () => [] };
+  if (/\/publish_(?:account_)?history_control\?/.test(String(url))) return { ok: true, json: async () => [] };
   calls.push({ url, opts });
+  if (opts.method === 'GET' && String(url).includes('/run_log?') && usageReply) {
+    const u = new URL(String(url));
+    let data = usageReply.slice();
+    if (u.searchParams.get('select') === 'id') {
+      data.sort((a,b) => Number(b.id)-Number(a.id));
+      data = data.slice(0,1).map(x => ({ id:x.id }));
+    } else {
+      const and = decodeURIComponent(u.searchParams.get('and') || '');
+      const gt = Number((/id\.gt\.(\d+)/.exec(and) || [])[1] || 0);
+      const lte = Number((/id\.lte\.(\d+)/.exec(and) || [])[1] || Number.MAX_SAFE_INTEGER);
+      data = data.filter(x => Number(x.id)>gt && Number(x.id)<=lte).sort((a,b) => Number(a.id)-Number(b.id)).slice(0,1);
+    }
+    return { ok: true, status: 200, json: async () => data };
+  }
   if (mode === 'tableMissingRun' && String(url).includes('/run_log?')) return {
     ok: false, status: 404, text: async () => '{"code":"PGRST205","message":"Could not find the table public.run_log in the schema cache"}'
   };
@@ -174,14 +189,20 @@ let r = null;
   appendRun({ eventId: 'task-end-1', ts: 1760000000300, kind: 'end', ok: false, jobId: 'j1', type: 'publish.run', label: '批次甲', batch: 'B1',
     brandId: 'brd_1', brandName: '示例品牌', userId: 'u1', username: 'zhangsan', displayName: '张三', elapsedSec: 18.4,
     error: '打不开 C:\\Users\\Alice\\private\\content.txt Bearer abc.def.secret' });
+  appendRun({ eventId: 'copy-end-1', ts: 1760000000310, kind: 'end', ok: true, jobId: 'jcopy', type: 'copy.generate',
+    apiUsage: { version: 1, requests: 1, inputTokens: 100, outputTokens: 50, cachedInputTokens: 10,
+      estimatedCostCny: 0.0002, costKnown: true, models: ['deepseek-flash'],
+      byMedia: { image: { requests: 1, inputTokens: 100, outputTokens: 50, cachedInputTokens: 10, estimatedCostCny: 0.0002, costKnown: true } },
+      prompt: 'must not upload', apiKey: 'must-not-upload' },
+    brandId: 'brd_1', brandName: '示例品牌', userId: 'u1', username: 'zhangsan', displayName: '张三' });
   calls = [];
   r = await cs.syncOnce();
   const runCall = calls.find(c => /\/run_log\?/.test(c.url));
   const uploadedTasks = runCall ? JSON.parse(runCall.opts.body) : [];
-  ok('发布结果无新增时仍会独立同步任务日志', r.ok && r.uploaded === 0 && r.runUploaded === 2 && r.pendingRun === 0, JSON.stringify(r));
+  ok('发布结果无新增时仍会独立同步任务日志', r.ok && r.uploaded === 0 && r.runUploaded === 3 && r.pendingRun === 0, JSON.stringify(r));
   ok('运行日志走独立表与幂等键', !!runCall && runCall.url.endsWith('/run_log?on_conflict=machine_id,event_id')
     && /resolution=ignore-duplicates/.test(runCall.opts.headers.Prefer || ''), runCall && runCall.url);
-  ok('只上传 start/end，不上传逐步过程 log', uploadedTasks.length === 2
+  ok('只上传 start/end，不上传逐步过程 log', uploadedTasks.length === 3
     && uploadedTasks.every(x => x.event_kind === 'start' || x.event_kind === 'end'), JSON.stringify(uploadedTasks.map(x => x.event_kind)));
   ok('错误摘要已过滤绝对路径与 bearer 凭据并保留定位信息',
     uploadedTasks[1].error_summary.includes('[本机路径]') && uploadedTasks[1].error_summary.includes('Bearer [已隐藏]')
@@ -191,8 +212,41 @@ let r = null;
   ok('含空格且被引号包住的 Windows 路径也会整体脱敏',
     spacedPathError.includes('[本机路径]') && !spacedPathError.includes('Alice Smith'), spacedPathError);
   ok('任务上行字段只含已授权白名单',
-    Object.keys(uploadedTasks[0]).join(',') === 'org,event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_id,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary',
+    Object.keys(uploadedTasks[0]).join(',') === 'org,event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_id,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary,api_usage',
     Object.keys(uploadedTasks[0]).join(','));
+  const uploadedUsage = uploadedTasks.find(x => x.task_type === 'copy.generate').api_usage;
+  ok('AI 用量只上传模型/token/估算字段，过滤任何额外内容', uploadedUsage.inputTokens === 100
+    && uploadedUsage.byMedia.image.requests === 1 && !JSON.stringify(uploadedUsage).includes('must not upload')
+    && !JSON.stringify(uploadedUsage).includes('must-not-upload'), JSON.stringify(uploadedUsage));
+
+  usageReply = [{ id:1, ts: 1760000000300, brand_id: 'brd_1', brand_name: '示例品牌', user_id: 'u1', username: 'zhangsan',
+    display_name: '张三', api_usage: uploadedUsage }];
+  const costQuery = await cs.queryApiUsage({ fromTs: 1760000000000, toTs: 1760000000400, userId: 'u1', scopeIds: ['brd_1'] });
+  ok('费用查询按账号、品牌和日期过滤并汇总 token 与金额', costQuery.ok && costQuery.rows.length === 1
+    && costQuery.rows[0].userId === 'u1' && costQuery.rows[0].brandId === 'brd_1'
+    && costQuery.total.inputTokens === 100 && costQuery.total.estimatedCostCny === 0.0002,
+    JSON.stringify(costQuery));
+  ok('费用查询 URL 带日期和账号筛选', calls.some(c => c.opts.method === 'GET' && /user_id=eq\.u1/.test(c.url)
+    && /ts\.gte\.1760000000000/.test(decodeURIComponent(c.url)) && /ts\.lte\.1760000000400/.test(decodeURIComponent(c.url))),
+    calls.filter(c => c.opts.method === 'GET').map(c => c.url).join('\n'));
+  calls = [];
+  usageReply = [
+    { id:1, ts:1760000000300, brand_id:'brd_1', brand_name:'示例品牌', user_id:'u1', username:'zhangsan', display_name:'张三', api_usage:uploadedUsage },
+    { id:2, ts:1760000000350, brand_id:'brd_2', brand_name:'另一品牌', user_id:'u2', username:'lisi', display_name:'李四', api_usage:Object.assign({}, uploadedUsage,
+      { inputTokens:200, outputTokens:80, estimatedCostCny:0.0003 }) }
+  ];
+  const pagedCost = await cs.queryApiUsage({ fromTs:1760000000000, toTs:1760000000400 });
+  const usageReads = calls.filter(c => c.opts.method === 'GET' && /\/run_log\?/.test(c.url));
+  ok('费用汇总用主键游标分页；服务器每页只返 1 条也能取全量',pagedCost.ok && pagedCost.rows.length===2
+    && pagedCost.total.inputTokens===300 && pagedCost.total.outputTokens===130 && pagedCost.total.estimatedCostCny===0.0005
+    && usageReads.length===3 && usageReads.slice(1).every(c=>/and=/.test(c.url) && !c.opts.headers?.Range),
+    JSON.stringify({ rows:pagedCost.rows.length, input:pagedCost.total.inputTokens, reads:usageReads.length }));
+  usageReply = null;
+
+  mode = 'throw';
+  const unavailableUsage = await cs.queryApiUsage({});
+  ok('费用查询断网时返回不可用，不抛异常拖垮整页品牌统计', !unavailableUsage.ok && /ECONNREFUSED/.test(unavailableUsage.error || ''));
+  mode = 'ok';
 
   fs.rmSync(cs.stateFile(), { force: true });
   fs.writeFileSync(path.join(dir, 'publish-log.jsonl'), '', 'utf8');

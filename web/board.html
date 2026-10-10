@@ -123,6 +123,13 @@
     <div class="card">
       <h2>品牌汇总</h2><div class="tw"><table id="tBrands"></table></div>
     </div>
+    <div class="card" id="apiUsageCard">
+      <h2>AI 用量（按上方筛选条件）</h2>
+      <div class="kpis" id="apiKpis"></div>
+      <p class="hint" id="apiUsageNotice"></p>
+      <div class="tw"><table id="tApiUsage"></table></div>
+      <p class="hint">Token 数来自模型接口返回；费用是按客户端记录的模型与费率估算，不能替代服务商账单。旧版任务、未返回用量的请求或未知费率不会被当作 0 元。</p>
+    </div>
     <div class="card">
       <h2>发布明细</h2>
       <div><button id="prevRows">上一页</button> <span id="rowsPage"></span> <button id="nextRows">下一页</button></div>
@@ -131,7 +138,7 @@
 
     <div class="card">
       <h2>任务运行记录（最近 200 条）</h2>
-      <p class="hint">显示任务开始、完成/失败、耗时和脱敏后的错误摘要；与上方设备、执行人、品牌、时间筛选联动。看板公开可读。</p>
+      <p class="hint">显示任务开始、完成/失败、耗时和脱敏后的错误摘要；与上方设备、执行人、品牌、时间筛选联动。</p>
       <p class="hint err" id="runLogNotice" hidden></p>
       <div class="tw"><table id="tTasks"></table></div>
     </div>
@@ -263,7 +270,7 @@ async function load(){
   $('#btnRefresh').disabled = true;
   const [{ data, error }, { data: tasks, error: taskError }] = await Promise.all([
     BoardMetrics.readAll(sb, ORG, 'publish_log', 'ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_id,brand_name,user_id,username,display_name'),
-    BoardMetrics.readAll(sb, ORG, 'run_log', 'event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary')
+    BoardMetrics.readAll(sb, ORG, 'run_log', 'event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_id,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary,api_usage')
   ]);
   loading = false;
   $('#btnRefresh').disabled = false;
@@ -289,7 +296,7 @@ function filtered(){
   const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
   return rows.filter(r => (!cut || Number(r.ts) >= cut)
     && (!m || mkey(r) === m) && (!u || ukey(r) === u)
-    && (!b || (r.brand_name || '') === b));
+    && (!b || brandKey(r) === b));
 }
 
 function fillFilters(){
@@ -300,10 +307,13 @@ function fillFilters(){
   };
   const combined = rows.concat(taskRows);
   const accounts = new Map(combined.filter(r => ukey(r)).map(r => [ukey(r), [r.username, r.display_name].filter(Boolean).join(' / ') || ukey(r)]));
-  const b = [...new Set(combined.map(r => (r.brand_name || '').trim()).filter(Boolean))].sort();
+  const b = [...new Map(combined.map(r => [brandKey(r), (r.brand_name || '').trim()]).filter(([id, name]) => id && name))]
+    .sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
   const userSel = $('#fUser'), currentUser = userSel.value;
   userSel.innerHTML = '<option value="">全部</option>' + [...accounts].map(([id, label]) => `<option value="${esc(id)}" ${id === currentUser ? 'selected' : ''}>${esc(label)}</option>`).join('');
-  sel($('#fBrand'), b);
+  const brandSel = $('#fBrand'), currentBrand = brandSel.value;
+  brandSel.innerHTML = '<option value="">全部</option>' + b.map(([id, label]) =>
+    `<option value="${esc(id)}" ${id === currentBrand ? 'selected' : ''}>${esc(label)}</option>`).join('');
   // ★ 机器按**名字**列（不是 machine_id）：同一台电脑换过 id 时只出现一次
   const names = [...new Set(combined.map(mkey))].sort();
   const el = $('#fMachine');
@@ -319,7 +329,69 @@ function filteredTasks(){
   return taskRows.filter(r => (!cut || Number(r.ts) >= cut)
     && (!m || mkey(r) === m)
     && (!u || ukey(r) === u)
-    && (!b || (r.brand_name || '') === b));
+    && (!b || brandKey(r) === b));
+}
+
+const brandKey = r => String(r.brand_id || r.brand_name || '');
+const accountKey = r => String(r.user_id || r.username || r.display_name || '');
+const intVal = n => Math.max(0, Math.floor(Number(n) || 0));
+function emptyUsage(){ return { requests:0, unreportedRequests:0, inputTokens:0, outputTokens:0, cachedInputTokens:0,
+  estimatedCostCny:0, costKnown:true, byMedia:{} }; }
+function mergeUsage(target, source){
+  for(const key of ['requests','unreportedRequests','inputTokens','outputTokens','cachedInputTokens']) target[key] += intVal(source[key]);
+  const cost = Number(source.estimatedCostCny);
+  if(source.estimatedCostCny == null || !Number.isFinite(cost) || cost < 0) target.costKnown = false;
+  else target.estimatedCostCny += cost;
+  if(source.costKnown !== true) target.costKnown = false;
+  for(const kind of ['image','video','text']){
+    const part = source.byMedia && source.byMedia[kind];
+    if(!part) continue;
+    const dest = target.byMedia[kind] || (target.byMedia[kind] = { requests:0, unreportedRequests:0, inputTokens:0, outputTokens:0,
+      cachedInputTokens:0, estimatedCostCny:0, costKnown:true });
+    for(const key of ['requests','unreportedRequests','inputTokens','outputTokens','cachedInputTokens']) dest[key] += intVal(part[key]);
+    const partCost = Number(part.estimatedCostCny);
+    if(part.estimatedCostCny == null || !Number.isFinite(partCost) || partCost < 0) dest.costKnown = false;
+    else dest.estimatedCostCny += partCost;
+    if(part.costKnown !== true) dest.costKnown = false;
+  }
+}
+function moneyLabel(usage){
+  const amount = Number(usage.estimatedCostCny) || 0;
+  if(usage.costKnown === true) return `¥${amount.toFixed(4)}`;
+  return amount > 0 ? `至少 ¥${amount.toFixed(4)}` : '未计价';
+}
+function renderApiUsage(tasks){
+  const generated = tasks.filter(r => r.event_kind === 'end' && r.task_type === 'copy.generate');
+  const tracked = generated.filter(r => r.api_usage && Number(r.api_usage.version) === 1);
+  const total = emptyUsage(), groups = new Map();
+  for(const row of tracked){
+    const usage = row.api_usage;
+    mergeUsage(total, usage);
+    const account = accountKey(row), brand = brandKey(row);
+    const key = `${account}\u0001${brand}`;
+    if(!groups.has(key)) groups.set(key, { account: [row.display_name, row.username].filter(Boolean).join(' / ') || '未标账号',
+      brand: row.brand_name || '未标品牌', usage: emptyUsage() });
+    mergeUsage(groups.get(key).usage, usage);
+  }
+  const kpis = [
+    ['估算费用', moneyLabel(total)], ['API 请求', total.requests.toLocaleString('zh-CN')],
+    ['输入 Token', total.inputTokens.toLocaleString('zh-CN')], ['输出 Token', total.outputTokens.toLocaleString('zh-CN')],
+    ['缓存命中 Token', total.cachedInputTokens.toLocaleString('zh-CN')]
+  ];
+  $('#apiKpis').innerHTML = kpis.map(([label, value]) => `<div class="kpi"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join('');
+  const untracked = generated.length - tracked.length;
+  $('#apiUsageNotice').textContent = generated.length
+    ? `已统计 ${tracked.length} 个任务${untracked ? `；${untracked} 个任务没有用量记录（旧版任务无法追溯）` : ''}。${total.unreportedRequests ? `${total.unreportedRequests} 个请求未返回 token 用量。` : ''}`
+    : '筛选范围内没有文案生成任务。';
+  const list = [...groups.values()].filter(g => g.usage.requests || g.usage.inputTokens || g.usage.outputTokens)
+    .sort((a,b) => (b.usage.inputTokens+b.usage.outputTokens)-(a.usage.inputTokens+a.usage.outputTokens));
+  $('#tApiUsage').innerHTML = `<thead><tr><th>账号 / 品牌</th><th class="num">请求</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">缓存命中</th><th class="num">图文</th><th class="num">视频</th><th class="num">纯文本</th><th class="num">费用估算</th></tr></thead><tbody>` +
+    (list.map(g => `<tr><td>${esc(g.account)} / ${esc(g.brand)}</td><td class="num">${g.usage.requests.toLocaleString('zh-CN')}</td>
+      <td class="num">${g.usage.inputTokens.toLocaleString('zh-CN')}</td><td class="num">${g.usage.outputTokens.toLocaleString('zh-CN')}</td>
+      <td class="num">${g.usage.cachedInputTokens.toLocaleString('zh-CN')}</td><td class="num">${intVal(g.usage.byMedia.image?.requests).toLocaleString('zh-CN')}</td>
+      <td class="num">${intVal(g.usage.byMedia.video?.requests).toLocaleString('zh-CN')}</td><td class="num">${intVal(g.usage.byMedia.text?.requests).toLocaleString('zh-CN')}</td>
+      <td class="num">${esc(moneyLabel(g.usage))}</td></tr>`).join('')
+      || '<tr><td colspan="9" class="hint">该筛选范围没有已记录的 AI API 用量</td></tr>') + '</tbody>';
 }
 
 function render(){
@@ -397,6 +469,7 @@ function render(){
       <td class="hint">${esc(r.reason||'')}</td><td class="num">${r.elapsed==null?'—':Number(r.elapsed).toFixed(1)+'s'}</td></tr>`).join('') || `<tr><td colspan="10" class="hint">—</td></tr>`) + '</tbody>';
 
   const tasks = filteredTasks();
+  renderApiUsage(tasks);
   $('#tTasks').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>任务</th><th>批次</th><th>状态</th><th class="num">耗时</th><th>错误摘要</th></tr></thead><tbody>` +
     (tasks.slice(0,200).map(r => `<tr>
       <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
@@ -406,9 +479,11 @@ function render(){
       <td class="num">${r.elapsed_sec==null?'—':Number(r.elapsed_sec).toFixed(1)+'s'}</td><td class="hint">${esc(r.error_summary||'')}</td></tr>`).join('') || `<tr><td colspan="9" class="hint">—</td></tr>`) + '</tbody>';
   $('#runLogNotice').hidden = !taskLoadError;
   $('#runLogNotice').textContent = taskLoadError
-    ? (/PGRST205|Could not find the table|run_log/i.test(taskLoadError)
+    ? (/PGRST205|Could not find the table/i.test(taskLoadError)
       ? '云端任务日志表尚未创建：请管理员先执行 docs/supabase-runlog-migration.sql。发布结果统计仍可正常使用。'
-      : '运行日志暂时读取失败：' + taskLoadError)
+      : (/PGRST204|api_usage.*column|column.*api_usage/i.test(taskLoadError)
+        ? '云端任务日志缺少 AI 用量字段：请在 Supabase SQL Editor 执行 docs/supabase-api-usage-migration.sql。'
+        : '运行日志暂时读取失败：' + taskLoadError))
     : '';
 
   $('#foot').innerHTML = `数据来自各台机器上行的<b>发布结果</b>（本轮全量取回 ${rows.length + dupFold} 行）。

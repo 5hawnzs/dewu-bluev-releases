@@ -259,6 +259,7 @@ async function dispatch(type, args, ctx) {
         return {
           batchId, count: r.rows.length, file, warning: r.warning, llm: r.llm,
           genSource: r.genSource || '', modelId: r.modelId || '', vision: !!r.vision,
+          apiUsage: r.apiUsage || null,
           reportFile: rep.file, reportRows: rep.rows, reportFlagged: rep.flagged,
           reportByLevel: rep.byLevel, reportProblems: rep.problems, reportVerify: rep.verify, reportFallback: rep.fellBack
         };
@@ -712,6 +713,17 @@ async function run(type, args = {}) {
     return { ok: false, error: msg, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   }
 
+  // 发布页定时查询设备状态，不登记为用户任务，避免任务栏闪动和轮询记录挤占云端日志。
+  // 返回格式保持一致，设备查询失败仍如实返回错误。
+  if (type === 'publish.devices') {
+    try {
+      const result = await dispatch(type, args, { cancelled: () => false, progress: () => {}, log: () => {}, conclude: () => {} });
+      return { ok: true, result, jobId: '', batch: '', brandId: brandInfo.brandId, brandName: brandInfo.brandName };
+    } catch (e) {
+      return { ok: false, error: e.message || String(e) };
+    }
+  }
+
   const parallel = PARALLEL_TYPES.has(type);
   const ids = typeIds(type);
   // 起不来就直接回 {ok:false}（不抛异常）：渲染层拿得到原因能弹提示，不会变成未捕获的 Promise 报错
@@ -775,7 +787,8 @@ async function run(type, args = {}) {
     const runOutcome = publishRunOutcome(type, res);
     const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
     send('job:done', { id, type, label, batch: job.batch, ok: true, busy: false, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
-    runlog.append(Object.assign({ kind: 'end', ok: runOutcome.ok, error: runOutcome.error, jobId: id, label, type, batch: job.batch, elapsedSec }, brandInfo, actorInfo));
+    runlog.append(Object.assign({ kind: 'end', ok: runOutcome.ok, error: runOutcome.error, jobId: id, label, type, batch: job.batch, elapsedSec,
+      apiUsage: type === 'copy.generate' ? (res && res.apiUsage) || null : null }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
     return { ok: true, result: res, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } catch (e) {
@@ -785,7 +798,8 @@ async function run(type, args = {}) {
     if (job.token.cancel) logbus.warn(`[${label}] 任务已取消`, { jobId: id, batch: job.batch, label, type });
     else logbus.error(`[${label}] ${type} 失败：${e.message}`, Object.assign({ jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo));
     send('job:done', { id, type, label, batch: job.batch, ok: false, cancelled: job.token.cancel, error: msg, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
-    runlog.append(Object.assign({ kind: 'end', ok: false, error: msg, cancelled: !!job.token.cancel, jobId: id, label, type, batch: job.batch, elapsedSec }, brandInfo, actorInfo));
+    runlog.append(Object.assign({ kind: 'end', ok: false, error: msg, cancelled: !!job.token.cancel, jobId: id, label, type, batch: job.batch, elapsedSec,
+      apiUsage: type === 'copy.generate' ? (e && e.apiUsage) || null : null }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
     return { ok: false, error: msg, cancelled: job.token.cancel, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } finally {

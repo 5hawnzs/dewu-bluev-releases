@@ -32,6 +32,7 @@ const imaging = require('./imaging');
 const frame = require('./frame');
 const copycheck = require('./copycheck');
 const hotwords = require('./hotwords');
+const apiusage = require('./apiusage');
 
 /**
  * 本地模板（**离线 / 明确关掉模型时才用**）。
@@ -566,17 +567,22 @@ async function callLLM(item, plan, brandPrompt, opt = {}) {
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     const err = new Error(`接口返回 ${res.status}${body ? '：' + body.slice(0, 200) : ''}`);
+    err.status = res.status;
     // 让上层知道「这次是因为图才失败的」，好退回纯文字再试一次，而不是把整条作废
     if (useImages && looksLikeVisionReject(body)) err.visionReject = true;
     throw err;
   }
   const data = await res.json();
+  const usage = apiusage.requestUsage(data && data.usage, opt.modelId || c.model, c.endpoint, opt.mediaKind, Date.now());
   const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-  const parsed = extractJson(content || '{}');
-  if (!parsed.title) throw new Error('返回缺少 title');
+  let parsed;
+  try { parsed = extractJson(content || '{}'); }
+  catch (error) { error.usage = usage; throw error; }
+  if (!parsed || !parsed.title) throw Object.assign(new Error('返回缺少 title'), { usage });
   return {
     title: unescapeNewlines(parsed.title).slice(0, 60),
-    body: unescapeNewlines(parsed.body).slice(0, 400)
+    body: unescapeNewlines(parsed.body).slice(0, 400),
+    usage
   };
 }
 
@@ -711,6 +717,8 @@ async function generate(items, ctx = {}) {
   log(`并发 ${concurrency} 路 · 每路 ${Math.ceil(plan.rows.length / concurrency)} 篇（按路数均分，不留尾批）`, 'info');
 
   const out = new Map();
+  const apiRequests = [];
+  let balanceInsufficient = false;
   let done = 0, failed = 0, visionOff = 0, topicStripped = 0, topicAppended = 0, noImage = 0, firstErr = '';
   // 视频抽帧的账：成功几条、失败几条（失败原因取第一条；逐条的结果都写进了报告的「生成来源」）
   let frameUsed = 0, frameFail = 0, frameErr = '';
@@ -739,13 +747,23 @@ async function generate(items, ctx = {}) {
       if (!images.length) noImage++;
     }
     for (let attempt = 0; attempt < 3 && !text; attempt++) {
+      if (llmOn && balanceInsufficient) {
+        err = Object.assign(new Error('AI 接口余额不足，本批已停止后续请求'), { status: 402 });
+        break;
+      }
       try {
         text = llmOn
-          ? await callLLM(item, row, brandPrompt, { modelId: pf.modelId, vision: vision, images })
+          ? await callLLM(item, row, brandPrompt, { modelId: pf.modelId, vision: vision, images,
+            mediaKind: fromVideo ? 'video' : (images.length ? 'image' : 'text') })
           : localFill(item, row);
+        if (llmOn && text) apiRequests.push(text.usage || { usageMissing: true,
+          mediaKind: fromVideo ? 'video' : (images.length ? 'image' : 'text') });
       } catch (e) {
         err = e;
         if (!llmOn) break;
+        // HTTP 成功但返回内容不能用时也可能已经计费；先记录响应里的 usage，再进行重试。
+        if (Object.prototype.hasOwnProperty.call(e, 'usage')) apiRequests.push(e.usage || { usageMissing: true,
+          mediaKind: fromVideo ? 'video' : (images.length ? 'image' : 'text') });
         // 这一次是因为「图」被网关拒了 ⇒ 整批改走纯文字，别让 50 条一条条撞同一个墙
         if (e.visionReject && vision) {
           vision = false;
@@ -753,6 +771,12 @@ async function generate(items, ctx = {}) {
           visionOff++;
           conclude(`${pf.modelId} 不收图（${e.message.slice(0, 80)}）⇒ 整批改成只发文字，标题会偏货号/颜色`, 'warn');
           continue;
+        }
+        // 余额不足属于账户状态，不会因重复请求恢复；立刻停下，避免每条素材再发两次无效请求。
+        if (Number(e.status) === 402) {
+          balanceInsufficient = true;
+          err = Object.assign(new Error('AI 接口余额不足（HTTP 402），请检查 API 账户余额后重试'), { status: 402 });
+          break;
         }
         if (attempt < 2) await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
       }
@@ -827,8 +851,13 @@ async function generate(items, ctx = {}) {
   if (llmOn && failed && !okCount) {
     // 带上**第一条的原始原因**：只说「一条都没生成出来」等于没说，
     // 用户还是不知道是 401、是模型名不对、还是网络断了。
-    throw new Error(`一条都没生成出来（${failed} 条全失败）——接口或模型有问题，先解决再跑，别拿空文案往下走。原始错误：${firstErr || '（没记到）'}`);
+    const error = new Error(balanceInsufficient
+      ? `AI 接口余额不足（HTTP 402），本批已停止（${failed} 条未生成）。请检查 API 账户余额后重试。`
+      : `一条都没生成出来（${failed} 条全失败）——接口或模型有问题，先解决再跑，别拿空文案往下走。原始错误：${firstErr || '（没记到）'}`);
+    error.apiUsage = apiusage.aggregate(apiRequests);
+    throw error;
   }
+  if (balanceInsufficient) conclude(`AI 接口余额不足（HTTP 402），本批有 ${failed} 条未生成；请检查 API 账户余额后重试`, 'warn');
   if (failed) log(`${failed} 条没生成出来（已如实记成「未生成」，报告里逐行写明了原因）`, 'warn');
   if (frameUsed) log(`${frameUsed} 条素材只有视频 ⇒ 已从视频里抽帧送去（每条最多 ${cfg.videoFrames} 帧，本机抽、不落素材目录）`, 'info');
   if (frameFail) log(`有 ${frameFail} 条视频没能抽出可用帧（${frameErr || '原因不明'}）⇒ 那几条标题只能按货号/颜色写`, 'warn');
@@ -838,6 +867,7 @@ async function generate(items, ctx = {}) {
   log(`文案生成完成：${rows.length} 篇${llmOn ? '' : '（本地模板，不是 AI 文案）'}`, llmOn ? 'ok' : 'warn');
   return {
     rows, warning: plan.warning, llm: llmOn,
+    apiUsage: apiusage.aggregate(apiRequests),
     genSource: llmOn ? (vision ? 'AI 看图' : 'AI 文字') : '本地模板',
     modelId: pf ? pf.modelId : '', modelHow: pf ? pf.modelHow : '',
     endpoint: cfg.endpoint, endpointSource: cfg.endpointSource,

@@ -96,6 +96,7 @@ create table if not exists public.run_log (
   cancelled     boolean      not null default false,
   elapsed_sec   numeric,
   error_summary text         not null default '',
+  api_usage     jsonb,
   created_at    timestamptz  not null default now()
 );
 create unique index if not exists run_log_dedup on public.run_log (machine_id, event_id);

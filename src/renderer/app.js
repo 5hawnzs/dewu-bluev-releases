@@ -1066,15 +1066,13 @@ TABS[8] = {
           <span class="chip">${m.isAdmin ? '全部品牌' : `我的品牌 ${usable.length} 个`}</span>
           ${s && s.range ? `<span class="chip stats-range">${esc(s.range.from)} → ${esc(s.range.to)}</span>` : ''}
         </div>
+        ${s && !s.error && (s.notes || []).length ? `<p class="hint" style="margin:6px 0 0">${s.notes.map(esc).join('；')}</p>` : ''}
         ${state.statsPath ? `<p class="hint" style="margin:6px 0 0;color:${state.statsPath.ok ? 'var(--tx3)' : 'var(--red)'}">输出目录：${state.statsPath.ok ? '可写' : esc(state.statsPath.error || '不可写')}</p>` : ''}
       </div>`;
     if (!s) return head + '<div class="empty">正在读取发布日志…（若一直停在这里，说明输出目录不可读）</div>';
     if (s.error) return head + `<div class="empty">查询失败：${esc(s.error)}</div>`;
 
     const t = s.totals;
-    const notes = (s.notes || []).length
-      ? `<div class="box" style="border-color:var(--amber)"><h3>口径说明</h3>${s.notes.map(x => `<p class="hint" style="margin:4px 0">· ${esc(x)}</p>`).join('')}</div>`
-      : '';
 
     const maxRows = Math.max(1, ...[...s.brands, s.untagged, ...s.orphans].map(b => b.rows));
     const rowOf = (b, cls, label) => `<tr class="${cls || ''}">
@@ -1160,6 +1158,31 @@ TABS[8] = {
     const accountBox = `<div class="box"><h3>本账号汇总（跨设备） · ${esc(accountLabel)}</h3>${own && own.available
       ? `<div class="stats"><div class="stat good"><b>${own.ok}</b><span>已发布篇数</span></div><div class="stat"><b>${own.rows}</b><span>尝试发布</span></div><div class="stat bad"><b>${own.fail}</b><span>失败</span></div></div>`
       : `<p class="hint">${esc(own && own.error || '云端账号汇总暂不可用')}，请稍后查询。</p>`}</div>`;
+    const api = s.apiUsage;
+    const usageNumber = n => new Intl.NumberFormat('zh-CN').format(Number(n) || 0);
+    const usageCost = u => u && Number.isFinite(Number(u.estimatedCostCny))
+      ? (u.costKnown ? `¥${Number(u.estimatedCostCny).toFixed(4)}`
+        : (Number(u.estimatedCostCny) > 0 ? `≈¥${Number(u.estimatedCostCny).toFixed(4)}（部分未计价）` : '未识别价格'))
+      : '未识别价格';
+    const usageRows = api && api.ok && api.rows && api.rows.length ? `<div class="tw"><table>
+      <thead><tr><th>账号</th><th>品牌</th><th>图文请求</th><th>视频请求</th><th>纯文本</th><th>输入 token</th><th>输出 token</th><th>估算费用</th></tr></thead>
+      <tbody>${api.rows.map(x => `<tr>
+        <td>${esc(x.displayName || x.username || '未记录')}</td><td>${esc(x.brandName || '未标品牌')}</td>
+        <td class="num">${usageNumber(x.media.image && x.media.image.requests)}</td>
+        <td class="num">${usageNumber(x.media.video && x.media.video.requests)}</td>
+        <td class="num">${usageNumber(x.media.text && x.media.text.requests)}</td>
+        <td class="num">${usageNumber(x.usage.inputTokens)}</td><td class="num">${usageNumber(x.usage.outputTokens)}</td>
+        <td class="num">${usageCost(x.usage)}</td></tr>`).join('')}</tbody></table></div>`
+      : (api && api.ok ? '<p class="hint">当前筛选范围内还没有已记录的 AI 用量。</p>'
+        : `<p class="hint">${esc(api && api.error || '云端 AI 用量暂不可用')}</p>`);
+    const usageBox = `<div class="box"><h3>AI 用量与费用（${esc(s.range.label)}）</h3>${api && api.ok
+      ? `<div class="stats">
+        <div class="stat good"><b>${usageCost(api.total)}</b><span>估算费用</span></div>
+        <div class="stat"><b>${usageNumber(api.total && api.total.requests)}</b><span>模型请求</span></div>
+        <div class="stat"><b>${usageNumber(api.total && api.total.inputTokens)}</b><span>输入 token</span></div>
+        <div class="stat"><b>${usageNumber(api.total && api.total.outputTokens)}</b><span>输出 token</span></div>
+      </div>${usageRows}<p class="hint">按接口返回的 token 用量和当前 DeepSeek Flash 价格估算；图文默认送图、视频按抽帧计。未知模型或自定义接口只统计 token，不估价。${api.total && api.total.unreportedRequests ? `有 ${usageNumber(api.total.unreportedRequests)} 次请求未返回 token 用量，估算不完整。` : ''}节假日价格可能与时段估算不同。</p>`
+      : usageRows}</div>`;
     return '<div class="stats-page">' + head + `
       <div class="stats">
         <div class="stat good"><b>${t.rows}</b><span>发布条数</span></div>
@@ -1171,7 +1194,7 @@ TABS[8] = {
         <div class="stat"><b>${s.brands.length}</b><span>品牌数</span></div>
       </div>
       ${accountBox}
-      ${notes}
+      ${usageBox}
       <div class="box"><h3>品牌汇总（${esc(s.range.label)}）</h3>${summary}</div>
       ${dailyBox}
       ${m.isAdmin ? `<div class="box"><h3>执行日志（显示最近 ${shownLogs} 条 / 共 ${totalLogs} 条）</h3>${logs}<p class="hint">${logHint}</p></div>` : ''}</div>`;

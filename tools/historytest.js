@@ -110,5 +110,37 @@ function fakeDb(records, cap = 1000, failAfter = -1) {
     await db.exec('reset role'); await db.exec(sql);
     ok('SQL 重复执行不再次清除新发布', await count('bluev') === 1);
   } finally { await db.close(); }
+  const accountFile = sheet.logFile();
+  const accountBefore = before + 100;
+  const accountRows = [{ts:before+10,userId:'test-id'}, {ts:before+10,userId:'other-id'}, {ts:accountBefore,userId:'test-id'}];
+  fs.writeFileSync(accountFile, accountRows.map(JSON.stringify).join('\n'));
+  const oldRevision = history.revision();
+  ok('按账号清除只删除该账号旧发布，保留其他账号和边界新记录', history.apply(before, accountFile, {'test-id':accountBefore})
+    && fs.readFileSync(accountFile,'utf8').trim().split('\n').length === 2);
+  ok('账号清除产生新同步版本，统计先清理后同步也不会跳过新记录', history.revision() !== oldRevision);
+  ok('缓存规则阻止旧账号发布记录重新进入本机统计', !history.keep(accountRows[0]) && history.keep(accountRows[1]) && history.keep(accountRows[2]));
+  fs.appendFileSync(accountFile, JSON.stringify(accountRows[0]) + '\n');
+  ok('旧备份恢复后读本机台账也不会计入已清账号旧记录', sheet.readLog().length === 2);
+  history.apply(before, accountFile, {'test-id':accountBefore-1});
+  ok('账号清除时间不倒退', !history.keep(accountRows[0]));
+  const accountDb = new PGlite();
+  try {
+    await accountDb.exec("create role anon; create role authenticated; create schema bluev_private; create table bluev_private.accounts(id uuid primary key,username text); insert into bluev_private.accounts values ('00000000-0000-0000-0000-000000000001','testbeta'); create table public.publish_log(id bigint generated always as identity primary key,org text,ts bigint,user_id text); grant select,insert on public.publish_log to anon; grant usage,select on sequence public.publish_log_id_seq to anon; insert into public.publish_log(org,ts,user_id) values ('bluev',1,'00000000-0000-0000-0000-000000000001'),('bluev',1,'other-id');");
+    const sql = fs.readFileSync(path.join(__dirname,'../docs/supabase-clear-account-publish-history.sql'),'utf8');
+    await accountDb.exec(sql);
+    const remaining = (await accountDb.query('select user_id from public.publish_log')).rows;
+    ok('真实 SQL 按登录账号清除且保留其他账号', remaining.length === 1 && remaining[0].user_id === 'other-id');
+    const epoch = (await accountDb.query('select before_ts from public.publish_account_history_control')).rows[0].before_ts;
+    await accountDb.exec('set role anon');
+    await accountDb.query("insert into public.publish_log(org,ts,user_id) values ('bluev',$1,'00000000-0000-0000-0000-000000000001'),('bluev',$2,'00000000-0000-0000-0000-000000000001')", [Number(epoch)-1, epoch]);
+    ok('账号旧记录补传被拒绝，边界新记录允许写入', (await accountDb.query('select count(*) as n from public.publish_log')).rows[0].n === 2);
+    let denied = false;
+    try { await accountDb.exec('delete from public.publish_account_history_control'); } catch (_) { denied = true; }
+    ok('匿名客户端无权取消账号清除规则', denied);
+    await accountDb.exec('reset role');
+    let missing = false;
+    try { await accountDb.exec(sql.replace("ARRAY['testbeta']", "ARRAY['does-not-exist']")); } catch (_) { missing = true; await accountDb.exec('rollback'); }
+    ok('填错账号名整笔回滚，不误删其他数据', missing && (await accountDb.query('select count(*) as n from public.publish_log')).rows[0].n === 2);
+  } finally { await accountDb.close(); }
   process.exitCode = failures ? 1 : 0;
 })().catch(e => { console.error(e); process.exitCode = 1; });

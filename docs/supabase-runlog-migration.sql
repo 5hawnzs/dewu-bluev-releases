@@ -25,8 +25,12 @@ create table if not exists public.run_log (
   cancelled     boolean      not null default false,
   elapsed_sec   numeric,
   error_summary text         not null default '',
+  api_usage     jsonb,
   created_at    timestamptz  not null default now()
 );
+
+-- 已有项目兼容：只存每个文案任务的 token 汇总，不含提示词、正文、图片或本机路径。
+alter table public.run_log add column if not exists api_usage jsonb;
 
 create unique index if not exists run_log_dedup
   on public.run_log (machine_id, event_id);
