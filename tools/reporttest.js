@@ -108,7 +108,7 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
   // ---- ① 读报告：列顺序打乱，靠列名认 ----
   const repFile = path.join(TMP, 'KIDS_AI内容报告_2026-09-01T10-00-00.xlsx');
   await writeReport(repFile, COLS, [
-    { 素材路径: batchDir, 标题: '白色的鞋谁懂', 文案: '这双本白真的百搭', 好物1_货号: 'UWG460108', 好物1_颜色: '本白', 好物2_货号: 'UWG460109', 内容类型: '26FWT75', 素材来源: 'KIDS' },
+    { 素材路径: batchDir, 标题: '白色的鞋谁懂', 文案: '这双本白真的百搭\n#日常穿搭\n#秋冬穿搭', 好物1_货号: 'UWG460108', 好物1_颜色: '本白', 好物2_货号: 'UWG460109', 内容类型: '26FWT75', 素材来源: 'KIDS' },
     { 素材路径: batchDir, 好物1_货号: 'UWG460110', 好物1_颜色: '本白', 好物3_货号: 'UWH760085' },
     { 素材路径: batchDir, 好物1_货号: 'UWG460111', 内容类型: '视频' },
     { 素材路径: batchDir, 好物1_货号: 'UWH760085', 好物1_颜色: '黑色条纹', 执行结果: '发布成功', 实际执行时间: '2026-09-01 10:00:00' }
@@ -133,6 +133,10 @@ const COLS = ['好物1_颜色', '素材路径', '标题', '好物2_货号', '内
     mismatch.split('，但').pop() || mismatch);
 
   const built = await report.build(rep, { generateCopy: async sub => sub.map(i => ({ id: i.id, title: '【本地】' + i.sku, body: '本地正文' + i.color })) });
+  const topicCopy = require('../src/main/services/topicinput').prepare(built.copyRows[0]);
+  ok('真实 Excel 导入后发布准备拆出话题，报告原文仍完整保留', topicCopy.body === '这双本白真的百搭'
+    && JSON.stringify(topicCopy.topics) === JSON.stringify(['#日常穿搭','#秋冬穿搭'])
+    && built.copyRows[0].body.includes('#日常穿搭'));
   ok('② 4 行 ↔ 4 个叶子，按叶子名自然排序配对',
     built.items.length === 4 && built.items[0].id === 'UWG460108+本白_1' && built.items[3].id === 'UWH760085+黑色条纹_1',
     built.items.map(i => i.id).join(' | '));

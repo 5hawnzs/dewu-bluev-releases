@@ -1,6 +1,24 @@
 'use strict';
 const adb = require('./adb');
 
+// 报告的文案单元格包含末尾话题；仅在发布时拆开，保留报告的可读格式。
+function prepare(copy = {}) {
+  const original = String(copy.body || '');
+  const lines = original.split(/\r?\n/);
+  const trailing = [];
+  let end = lines.length;
+  while (end && !lines[end - 1].trim()) end--;
+  let start = end;
+  while (start && /^(?:#[^\s#]+[ \t]*)+$/.test(lines[start - 1].trim())) {
+    trailing.unshift(...lines[start - 1].trim().match(/#[^\s#]+/g));
+    start--;
+  }
+  const topics = [...new Set(trailing.concat(copy.topics || []).map(x => '#' + String(x).trim().replace(/^#+/, '')).filter(x => x !== '#'))];
+  if (topics.length > 5) throw Error('一条内容最多支持 5 个话题，请先调整文案末尾的话题数量');
+  for (const value of topics) if (/[\s#]/u.test(value.slice(1))) throw Error('每个话题只能填写一个名称：' + value);
+  return { body: trailing.length ? lines.slice(0, start).join('\n').trimEnd() : original, topics };
+}
+
 // 识别原定位表中的独立话题占位符，图文和视频共用，不要求用户重新导入表。
 function mark(raw, filled) {
   return Object.assign({}, filled, {
@@ -39,4 +57,4 @@ async function finish(serial, ctx) {
   ctx.topicNeedsEnd = false;
 }
 
-module.exports = { mark, write, finish };
+module.exports = { prepare, mark, write, finish };

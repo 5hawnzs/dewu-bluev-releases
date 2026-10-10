@@ -18,6 +18,7 @@ const adb = require('./adb');
 const emulators = require('./emulators');
 const uimap = require('./uimap');
 const topicinput = require('./topicinput');
+const mediapermission = require('./mediapermission');
 const verifySvc = require('./verify');
 const mainimg = require('./mainimg');
 const store = require('../store');
@@ -298,7 +299,7 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
   //   ⇒ 守卫**不重试**（retries:0），并把「这一屏要不要关动画」交给**按步骤名学习**的缓存：
   //     同一个步骤名（定位表里写死的，不随数据变）第一次撞上就关动画抓、抓完记下来，
   //     后面每一条内容的同一步直接走「关动画」路径（实测关动画后 ~2s 就能抓到）。
-  const d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: !!preferAnimOff });
+  const d = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: !!preferAnimOff }, ctx);
   if (!d.ok) {
     // ★★ 2026-10-04：**已经决定要抛错了**，这时候才附带一句「设备在不在线」——
     //   设备掉线时那串「dump 没有任何输出 / 备用通道也跑不起来」会把排查带偏到「页面不 idle」上，
@@ -384,7 +385,7 @@ async function runStep(serial, step, data, ctx) {
           //   外层这个 for(attempt<3) 本来就会重试（每次先抓屏再找，间隔 450ms），
           //   两层叠加只会让「页面还没就绪」时白等一轮又一轮。
           //   preferAnimOff：这一屏已知不会 idle ⇒ 直接关动画抓，不再白等那 ~11 秒。
-          d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff });
+          d = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff }, ctx);
         }
         if (!d.ok) {
           lastWhy = `拿不到界面结构：${d.why}${d.idle ? '（这个页面一直不 idle）' : ''}`;
@@ -467,7 +468,7 @@ async function runStep(serial, step, data, ctx) {
                 + `${(waitedForEnable * 0.7).toFixed(1)}s，继续等`, 'info');
             }
             await sleep(700);
-            const d2 = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff });
+            const d2 = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff }, ctx);
             if (d2.ok) { nodes = uimap.parseNodes(d2.xml); rawHit = uimap.findNodes(nodes, cond).filter(x => x && x.center); }
           }
         }
@@ -617,7 +618,7 @@ async function runStep(serial, step, data, ctx) {
       const tmo = Math.max(1000, Number(step.timeout) || 10000);
       const t0 = Date.now();
       for (;;) {
-        const d = await adb.dumpEx(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff });
+        const d = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff }, ctx);
         if (d.ok && uimap.parseNodes(d.xml).some(n => String(n.id) === wantId)) return;
         const waited = Date.now() - t0;
         if (waited >= tmo) {
@@ -982,9 +983,10 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
       + `（抓之前先把模拟器停在得物发布页：${uimap.DEWU.entryHow}），把生成的候选表核对后导入，再发。`);
   }
 
+  const preparedCopy = topicinput.prepare(copyRow || {});
   const data = {
     title: (copyRow && copyRow.title) || '',
-    body: (copyRow && copyRow.body) || '',
+    body: preparedCopy.body,
     sku: item.sku || '', color: item.color || '',
     // 相册里按文件名点选时用：要填**推上去之后**的文件名（含中文的名字在推送时会被清洗成下划线），
     // 拿本地原名去匹配是匹配不到的
@@ -997,7 +999,7 @@ async function runReal(row, item, copyRow, serial, map, ctx, isLastRunnable = fa
     albumName: remoteDir.split('/').filter(Boolean).pop(),
     videoCount: (item.files || []).filter(f => f && f.type === 'video').length
   };
-  (copyRow && copyRow.topics || []).forEach((t, i) => { data['topic' + (i + 1)] = t; });
+  preparedCopy.topics.forEach((t, i) => { data['topic' + (i + 1)] = t; });
   // ★ 好物 1~3 的货号/颜色也进占位符（发布单列名：好物1货号 / 好物1颜色 … 好物3货号 / 好物3颜色，最多 3 组）。
   //   没有 item.goods 的老数据（本地扫出来的条目）按「主货号/主颜色」兜底 —— 与 sheet.buildRows 同一判据，
   //   否则定位表里的好物段会对**每一行**都判成「没有好物」而整段静默跳过（少关联商品，还不报错）。

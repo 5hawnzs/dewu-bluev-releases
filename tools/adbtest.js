@@ -415,7 +415,7 @@ const state = {
   // ★ 2026-10-03 提速后 dumpEx 多带了一个 retries:0（见 publisher 里那段注释）⇒
   //   断言不能锁死「参数只有 pkg」这一种写法，要看**语义**：抓屏调用里带了包名。
   ok('抓结构（源码级）：runStep 抓结构带上了包名（语义：dumpEx 调用里必须有 pkg: uimap.DEWU.pkg）',
-    /adb\.dumpEx\(serial, \{[^}]*pkg: uimap\.DEWU\.pkg[^}]*\}/.test(tapBranch) && tapBranch.length > 200,
+    /mediapermission\.dump\(serial, \{[^}]*pkg: uimap\.DEWU\.pkg[^}]*\}/.test(tapBranch) && tapBranch.length > 200,
     tapBranch.length + ' 字符的 tap 分支');
 
   // 4d) ★★ 2026-10-03 用户追问「什么叫做只能发第一张图片？？」——

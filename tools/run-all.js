@@ -68,6 +68,7 @@ const SUITES = [
   ['smoke', 'node', ['tools/smoke.js']],
   ['adbtest', 'node', ['tools/adbtest.js']],
   ['mediaquerytest', 'node', ['tools/mediaquerytest.js']],
+  ['mediapermissiontest', 'node', ['tools/mediapermissiontest.js']],
   ['pendingtest', 'node', ['tools/pendingtest.js']],
   ['compliancetest', 'node', ['tools/compliancetest.js']],
   ['videotest', 'node', ['tools/videotest.js']],

@@ -19,6 +19,15 @@ function reset() { sent = []; active = true; failAt = -1; return {}; }
 async function rejects(name, fn) { await assert.rejects(fn); count++; console.log('PASS ' + name); }
 
 (async () => {
+  const imported = topic.prepare({body:'正文第一行\n正文第二行\n#男生穿搭\n#秋冬穿搭',topics:[]});
+  ok('报告末尾话题在发布前拆出，正文不整段粘贴话题', imported.body === '正文第一行\n正文第二行' && JSON.stringify(imported.topics) === JSON.stringify(['#男生穿搭','#秋冬穿搭']));
+  const direct = topic.prepare({body:'正文\n#OOTD',topics:['#OOTD','#穿搭']});
+  ok('直接生成和报告导入话题合并去重', direct.body === '正文' && JSON.stringify(direct.topics) === JSON.stringify(['#OOTD','#穿搭']));
+  const inline = topic.prepare({body:'这是 #正文 中的文字\n仍然是正文'});
+  ok('正文中的井号不误剥离', inline.body === '这是 #正文 中的文字\n仍然是正文' && !inline.topics.length);
+  ok('同一行多个末尾话题和空行可拆分', topic.prepare({body:'正文\n#A #B\n\n'}).topics.length === 2);
+  assert.throws(()=>topic.prepare({body:'正文\n#A #B #C #D #E #F'}));
+  ok('超过五话题先报错，不静默遗漏', true);
   const names = ['男生穿搭', '秋冬穿搭', '日常穿搭', '通勤穿搭', '简约穿搭'];
   let ctx = reset();
   for (let i = 0; i < names.length; i++) {

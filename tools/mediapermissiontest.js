@@ -1,0 +1,51 @@
+'use strict';
+require('./test-runtime')();
+const assert = require('assert');
+const adb = require('../src/main/services/adb');
+const permission = require('../src/main/services/mediapermission');
+const publisher = require('../src/main/services/publisher');
+let count = 0;
+const ok = (label, value) => { assert(value, label); count++; console.log('PASS ' + label); };
+const pkg = 'com.android.permissioncontroller';
+const node = (text, id, p = pkg, extra = '') => `<node package="${p}" text="${text}" resource-id="${p}:id/${id}" clickable="true" enabled="true" bounds="[10,20][110,80]" ${extra}/>`;
+const prompt = node('要允许“得物”访问此设备上的照片和视频吗？', 'permission_message');
+const dialog = prompt + node('允许有限访问', 'permission_allow_selected_button') + node('全部允许', 'permission_allow_all_button') + node('不允许', 'permission_deny_button');
+const normal = {ok:true, xml:node('', 'target', 'com.shizhuang.duapp')};
+const original = {dumpEx:adb.dumpEx,tap:adb.tap,tapSeq:adb.tapSeq};
+(async () => {
+  ok('Android 新版选择全部允许，不选有限访问或拒绝', permission.allowButton(dialog).id.endsWith('/permission_allow_all_button'));
+  ok('旧版媒体权限允许按钮可识别', !!permission.allowButton(prompt + node('允许', 'permission_allow_button')));
+  ok('其他应用的媒体权限不点击', !permission.allowButton(dialog.replace('得物','其他应用')));
+  ok('得物相机权限不点击', !permission.allowButton(dialog.replace('照片和视频','相机')));
+  ok('得物内仿造按钮不点击', !permission.allowButton(dialog.replaceAll(pkg,'com.shizhuang.duapp')));
+  ok('没有全部允许时不退而点击有限访问', !permission.allowButton(prompt + node('允许有限访问','permission_allow_selected_button')));
+  ok('按钮禁用时不点击', !permission.allowButton(prompt + node('全部允许','permission_allow_all_button').replace('enabled="true"','enabled="false"')));
+  let dumps = 0, taps = [];
+  let forwarded;
+  adb.dumpEx = async (_serial, options) => { dumps++; forwarded = options; return normal; };
+  adb.tap = async (_s,x,y) => { taps.push([x,y]); return {ok:true}; };
+  ok('正常页面原样返回，不增加抓屏或点击', await permission.dump('test',{}) === normal && dumps === 1 && !taps.length);
+  const options = {pkg:'com.shizhuang.duapp',retries:0,preferAnimOff:true};
+  await permission.dump('test',options);
+  ok('权限包装完整传递得物包名和抓屏选项', forwarded === options);
+  dumps = 0;
+  adb.dumpEx = async () => ++dumps === 1 ? {ok:true,xml:dialog} : normal;
+  ok('授权后重新读取页面，不复用被遮挡的结构', await permission.dump('test',{}) === normal && dumps === 2 && taps.length === 1 && taps[0][0] === 60 && taps[0][1] === 50);
+  adb.dumpEx = async () => ({ok:true,xml:dialog}); taps = [];
+  let failed = false;
+  try { await permission.dump('test',{}); } catch(e) { failed = /仍未关闭/.test(e.message); }
+  ok('弹窗不关闭最多点击两次并报错，不无限循环', failed && taps.length === 2);
+  taps = []; failed = false;
+  try { await permission.dump('test',{}, {cancelled:()=>true}); } catch(e) { failed = /取消/.test(e.message); }
+  ok('取消任务不再授权', failed && !taps.length);
+  adb.tap = async () => ({ok:false,stderr:'device offline'}); failed = false;
+  try { await permission.dump('test',{}); } catch(e) { failed = /device offline/.test(e.message); }
+  ok('点击失败保留真实原因', failed);
+  dumps = 0; taps = [];
+  adb.dumpEx = async () => ++dumps === 1 ? {ok:true,xml:dialog} : normal;
+  adb.tap = async (_s,x,y) => { taps.push([x,y]); return {ok:true}; };
+  adb.tapSeq = async () => { taps.push('素材点击'); return {ok:true}; };
+  await publisher.runStep('test',{action:'tapId',value:'com.shizhuang.duapp:id/target'}, {}, {});
+  ok('真实发布步骤先完成授权，再点击实际目标', dumps === 2 && taps.length === 2 && taps[1] === '素材点击');
+  console.log('完成 ' + count + ' 项媒体权限测试');
+})().catch(e => {console.error(e);process.exitCode=1;}).finally(()=>Object.assign(adb,original));
