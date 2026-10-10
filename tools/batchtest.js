@@ -78,6 +78,28 @@ const ok = (label, cond, extra) => {
   project.patch({ compliance: { rows: [{ status: 'manual' }], stats: { total: 30, manual: 28 }, scannedAt: 123 } });
   const selected = await jobs.run('flatten.plan', { sourceDir: makeBatch('仅选择新目录', 1) });
   ok('仅选择新目录、未开始整理时也清除旧合规结果', selected.ok && project.get().compliance.stats === null && project.get().items.length === 0 && !project.get().flatDir);
+  // 原目录 A 与处理副本 B 必须贯通到文案报告和发布队列。
+  const originalA = makeBatch('原始素材A', 2);
+  const prepared = await jobs.run('flatten.run', { sourceDir: originalA });
+  const processedB = prepared.result.flatDir;
+  for (const it of project.get().items) {
+    fs.renameSync(path.join(it.absDir, '1.jpg'), path.join(it.absDir, '1_处理后.jpg'));
+  }
+  const fromA = await jobs.run('copy.generate', { sourceDir: originalA, batchId: '处理副本回归' });
+  ok('选择当前原目录 A 时，报告保存在处理目录 B', fromA.ok && path.dirname(fromA.result.reportFile) === processedB,
+    fromA.ok ? fromA.result.reportFile : fromA.error);
+  const copySaved = fromA.ok ? JSON.parse(fs.readFileSync(fromA.result.file, 'utf8')) : {};
+  ok('文案任务记录的素材目录是 B', copySaved.sourceDir === processedB);
+  const repRead = fromA.ok ? await require(path.join(base, 'src/main/services/report.js')).readReport(fromA.result.reportFile) : null;
+  ok('生成的 Excel 可以正常读回', !!repRead);
+  const importedB = fromA.ok ? await jobs.run('report.import', { file: fromA.result.reportFile }) : { ok: false };
+  ok('报告导入后的发布素材全部来自 B，不引用 A', importedB.ok && project.get().items.length === 2 &&
+    project.get().items.every(it => path.dirname(it.absDir) === processedB && it.files.some(f => f.name === '1_处理后.jpg')));
+  const removedB = processedB + '_暂时移走';
+  fs.renameSync(processedB, removedB);
+  const missingB = await jobs.run('copy.generate', { sourceDir: originalA, batchId: '处理目录已移走' });
+  fs.renameSync(removedB, processedB);
+  ok('处理目录 B 不存在时明确报错，不退回 A 生成', !missingB.ok && /处理.*目录.*不存在/.test(missingB.error || ''), missingB.error);
   project.patch({ sourceDir: '', flatDir: '', items: [] });
 
   // ---- 发布间隔的取消必须清除等待定时器 ----

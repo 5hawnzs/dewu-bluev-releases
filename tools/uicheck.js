@@ -2502,6 +2502,28 @@ app.whenReady().then(async () => {
     })()`);
     ok('文案目录选择器直接打开生成目录的母目录', dirOptions && dirOptions.defaultPath === path.join('C:\\素材'));
   } finally { dialog.showOpenDialog = originalDirDialog; }
+  // 点击小报告按钮只能打开刚生成的本地 Excel，不能打开目录或另存副本。
+  const reportFixture = path.join(TMP, '本次AI内容报告.xlsx');
+  fs.writeFileSync(reportFixture, '仅测试打开路径，不启动真实办公软件');
+  const { shell } = require('electron');
+  const originalOpenPath = shell.openPath, originalReveal = shell.showItemInFolder;
+  let openedReport = '', revealCount = 0;
+  shell.openPath = async file => { openedReport = file; return ''; };
+  shell.showItemInFolder = () => { revealCount++; };
+  try {
+    const buttonState = await win.webContents.executeJavaScript(`(async () => {
+      const previous = lastCopyReport;
+      try {
+        await afterCopy({result:{reportFile:${JSON.stringify(reportFixture)},reportRows:3}});
+        const container = document.createElement('div'); container.innerHTML = TABS[3].render();
+        const button = container.querySelector('[data-act="copy:openReport"]');
+        await ACTS['copy:openReport']();
+        return {small:button.classList.contains('sm'), icon:!!button.querySelector('svg'), label:button.getAttribute('aria-label')};
+      } finally {lastCopyReport=previous;renderAll();}
+    })()`);
+    ok('生成后提供带下载图标的小报告按钮', buttonState.small && buttonState.icon && /本地/.test(buttonState.label));
+    ok('报告按钮直接打开本次本地 Excel，不打开资源管理器', openedReport === reportFixture && revealCount === 0);
+  } finally {shell.openPath = originalOpenPath;shell.showItemInFolder = originalReveal;}
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 

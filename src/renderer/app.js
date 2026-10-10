@@ -316,7 +316,7 @@ async function runJob(type, args) {
 /**
  * 文案生成跑完的收尾：把「这批的 AI 内容报告落在哪、有没有要人工看的行」直接摆到人脸上。
  * 报告是这一步真正要交付的东西（用户 2026-10-02 要求：「在该文件夹生成一个全新的带时间戳的 ai 报告」），
- * 所以不能只在日志里留一句话就算了 —— 跑完自动打开它所在的位置，并说清有没有要人工复核的行。
+ * 生成后保留本地报告入口，由用户点击打开文件。
  */
 let lastCopyReport = null;
 async function afterCopy(r) {
@@ -333,7 +333,6 @@ async function afterCopy(r) {
   const name = String(x.reportFile).split(/[\\/]/).pop();
   toast(`AI 内容报告已生成：${x.reportRows} 行 · ${flag ? `${flag} 行要人工看一眼` : '文案/货号/颜色核对一致'} → ${name}`,
     flag ? 'warn' : 'ok');
-  await appApi.reveal(x.reportFile);
 }
 
 function jobOf(type) { const l = state.jobs.filter(j => j.type === type); return l.length ? l[l.length - 1] : null; }function running(type) { return !!jobOf(type); }
@@ -600,7 +599,8 @@ TABS[3] = {
           标题是<b>看图写</b>的（模型连不上会直接停下报错，不拿本地模板冒充）。
           <button class="btn sm" data-act="help:open" data-topic="copy" style="margin-left:6px">看说明书</button></p>
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
-        <p class="hint">跑完会在<b>你选的那个素材文件夹</b>里生成一份 <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>：
+        <p class="hint">报告保存在<b>本次使用的素材目录</b>。当前批次已整理时，选原目录也会使用处理后的目录，发布沿用报告中的素材路径。
+          <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>：
           逐行写清 标题 / 正文 / 货号 / 颜色 / 生成来源 / <b>文案核对</b>（自动查出「颜色对不上」「混进货号」「用了模板套话」这类问题）。
           格式与上游那份「KIDS_AI内容报告」一致 ⇒ <b>核对完可以直接把它当发布单导进来</b>。</p>
         ${lastCopyReport ? `<div class="hint" style="border:1px solid #E3E0D8;border-radius:6px;padding:8px 10px">
@@ -609,7 +609,7 @@ TABS[3] = {
           ${lastCopyReport.flagged
             ? ` · <b>${n(lastCopyReport.flagged)} 行要人工看一眼</b>（要人工看 ${n(lastCopyReport.byLevel.warn)} · 明显有问题 ${n(lastCopyReport.byLevel.bad)}）`
             : ' · 文案/货号/颜色自动核对<b>全部一致</b>'}
-          <button class="btn sm" data-act="copy:openReport" style="margin-left:8px">打开报告</button>
+          <button class="btn sm" data-act="copy:openReport" title="打开本次生成的本地 AI 内容报告" aria-label="打开本次生成的本地 AI 内容报告" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>报告</button>
         </div>` : ''}
       </div>
       ${batchesHtml('copy.generate', '运行中的批次（AI 文案生成）')}
@@ -2701,10 +2701,11 @@ const ACTS = {
     if (!state.brandsMeta) { toast('品牌列表还没加载好，稍等一下再点', 'err'); return; }
     openBrandModal('list');
   },
-  // 打开最近一次那份 AI 内容报告（跑完已经自动弹过一次资源管理器，这里是回看入口）
+  // 直接打开生成的本地文件，不下载、不复制，也不创建目录。
   'copy:openReport': async () => {
     if (!lastCopyReport || !lastCopyReport.file) { toast('还没有生成过报告', 'warn'); return; }
-    await appApi.reveal(lastCopyReport.file);
+    const opened = await appApi.openPath(lastCopyReport.file);
+    if (opened !== true) toast(typeof opened === 'string' && opened ? `无法打开报告：${opened}` : '无法打开报告，请确认文件仍在原位置并已安装 Excel 或 WPS', 'err');
   },
 
   // ---- 文案提示词弹窗 ----

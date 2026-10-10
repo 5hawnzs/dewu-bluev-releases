@@ -192,7 +192,16 @@ async function dispatch(type, args, ctx) {
       // 每个批次自带素材清单，产物写进「输出目录/batches/<批次>/copy.json」，
       // 不去动当前项目的单例状态（否则两个批次会互相覆盖）。
       if (args.sourceDir) {
-        const dir = args.sourceDir;
+        // 当前批次选回原目录时，沿用整理、合规处理使用的副本，避免重新读取原素材。
+        const current = st();
+        const sameDir = (a, b) => a && b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+        const useProcessed = current.flatDir && sameDir(args.sourceDir, current.sourceDir);
+        const dir = useProcessed ? current.flatDir : args.sourceDir;
+        if (useProcessed) {
+          const stat = await wp.statSafe(dir);
+          if (!stat || !stat.isDirectory()) throw new Error(`处理后的素材目录不存在：${dir}。请恢复目录或重新整理，不能改用原始素材生成。`);
+          logbus.info(`本批次使用处理后的素材目录：${wp.toDisplay(dir)}`);
+        }
         const batchId = args.batchId || (path.basename(dir) + '_' + wp.stamp());
         const plan = await flatten.plan(dir, ctx);
         if (ctx.cancelled()) throw new Error(`批次「${batchId}」已被取消`);
@@ -220,7 +229,7 @@ async function dispatch(type, args, ctx) {
         // ★ 带时间戳的 AI 内容报告：落在**本批素材文件夹**里（用户 2026-10-02 拍板），
         //   写不进去才退到批次输出目录，并且会用「如实告警」把换地方这件事说出来。
         const rep = await aireport.write({
-          dir: itemsDir(items, dir), fallbackDir: out, batch: batchId,
+          dir, fallbackDir: out, batch: batchId,
           brandName: ctx.brand.brandName, sourceDir: dir,
           items, rows: r.rows,
           gen: { modelId: r.modelId, genSource: r.genSource, endpoint: r.endpoint, endpointSource: r.endpointSource, vision: r.vision }
