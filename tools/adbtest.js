@@ -2062,6 +2062,25 @@ const state = {
   // ==========================================================================
   {
     const adb = require(path.join(base, 'src/main/services/adb.js'));
+    // 新设备刚连入时 MediaProvider 会偶发一次空输出的非零退出。
+    let videoQueries = 0;
+    const transientQuery = await adb.queryMediaTable('FAKESERIAL', 'video', async () => {
+      videoQueries++;
+      return videoQueries === 1
+        ? { ok: false, stdout: '', stderr: '', code: 1 }
+        : { ok: true, stdout: '', stderr: '', code: null };
+    });
+    ok('新设备视频表首次瞬时查询失败会自动重试并成功', transientQuery.result.ok && videoQueries === 2 && !transientQuery.error,
+      `queries=${videoQueries} error=${transientQuery.error}`);
+    let persistentQueries = 0;
+    const persistentQuery = await adb.queryMediaTable('FAKESERIAL', 'video', async () => {
+      persistentQueries++;
+      return { ok: false, stdout: 'provider unavailable', stderr: '', code: 1 };
+    });
+    ok('视频表持续不可用时仍阻止清理并给出设备详情与重试结果',
+      !persistentQuery.result.ok && persistentQueries === 2 && /provider unavailable/.test(persistentQuery.error)
+        && /退出码 1/.test(persistentQuery.error) && /重试后仍失败/.test(persistentQuery.error),
+      persistentQuery.error);
     // 拿到假 adb 挂出来的现场状态（直接读目录内容，不靠解析 calls.log）
     const fakeExec = require('child_process').execFile;
     const dirState = fakeExec.__bluevDir;

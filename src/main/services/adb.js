@@ -152,6 +152,21 @@ async function push(serial, local, remote) {
   return execAdb(withS(serial, ['push', local, remote]), { timeout: 120000 });
 }
 
+// 新设备刚连入时 MediaProvider 偶发短暂不可用；读取媒体表失败时短暂重试一次。
+async function queryMediaTable(serial, table, run = shell) {
+  const cmd = 'content query --uri content://media/external/' + table + '/media --projection _id:_data';
+  const detail = r => [String(r.stderr || '').trim(), String(r.stdout || '').trim(),
+    r.code == null ? '' : '退出码 ' + r.code].filter(Boolean).join('；') || '无设备错误详情';
+  let result = await run(serial, cmd, { timeout: 30000 });
+  if (result.ok) return { result, error: '' };
+  const first = detail(result);
+  await sleepMs(350);
+  result = await run(serial, cmd, { timeout: 30000 });
+  return result.ok
+    ? { result, error: '' }
+    : { result, error: detail(result) + '（首次：' + first + '；重试后仍失败）' };
+}
+
 /** /sdcard/... 与 /storage/emulated/0/... 是同一处，但 MediaStore 的 _data 记的是后者 */
 function toMediaPath(p) {
   return String(p || '').replace(/^\/sdcard\//, '/storage/emulated/0/');
@@ -374,10 +389,10 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
   // ★ 表名放宽：video / images / audio / files 全扫一遍（老代码只扫前两张，漏掉的表里
   //   若挂着指向该目录的记录，得物相册照样能看见它）。
   for (const t of ['video', 'images', 'audio', 'files']) {
-    const r = await shell(serial,
-      'content query --uri content://media/external/' + t + '/media --projection _id:_data', { timeout: 30000 });
-    if (!r.ok) {
-      const e = String(r.stderr || '').trim() || ('content query(' + t + ') 执行失败');
+    const queried = await queryMediaTable(serial, t);
+    const r = queried.result;
+    if (queried.error) {
+      const e = queried.error;
       // files 表在部分机型上不可查 —— 不因它整体失败，但**记录在案**
       if (t === 'files' && /no such table|Invalid|Unknown|not found/i.test(e)) continue;
       if (!error) error = e;
@@ -738,10 +753,10 @@ async function clearAlbum(serial, opts = {}) {
   const scanAll = async () => {
     const hit = []; let error = '';
     for (const t of TABLES) {
-      const r = await shell(serial,
-        'content query --uri content://media/external/' + t + '/media --projection _id:_data', { timeout: 30000 });
-      if (!r.ok) {
-        const e = String(r.stderr || '').trim() || ('content query(' + t + ') 执行失败');
+      const queried = await queryMediaTable(serial, t);
+      const r = queried.result;
+      if (queried.error) {
+        const e = queried.error;
         if (t === 'files' && /no such table|Invalid|Unknown|not found/i.test(e)) continue;
         if (!error) error = e;
         continue;
@@ -2058,7 +2073,7 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, queryMediaTable, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
   makeNewest, mediaNewest, toMediaPath,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   readTextOf, unxml,
