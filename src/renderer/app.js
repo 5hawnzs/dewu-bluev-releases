@@ -561,7 +561,7 @@ function topicsShown(r) {
 
 TABS[3] = {
   title: '文案生成',
-  desc: '看图写标题正文 · 话题组合去重 · 跑完落一份带时间戳的 AI 内容报告',
+  desc: '选择素材，生成文案和本地 Excel 报告',
   actions: () => [
     // ★ 2026-10-08 用户要求：模型配置搬到**这一页**，做成弹窗，并且是**唯一**入口
     //   （原来在「高级设置 → 文案模型」的折叠框已删）。位置按用户指定，放在「提示词配置」左边。
@@ -582,33 +582,21 @@ TABS[3] = {
       <div class="box">
         <h3>批次设置</h3>
         <div class="row">
-          <div class="hint">标题句式由系统按行自动轮换 T01–T15，无需手动选择。</div>
           <span class="lbl">必带话题</span>
           <input class="inp" style="min-width:210px;flex:0 0 auto" value="${esc(cfg.requiredTopic)}" data-cfg="copy.requiredTopic"
             placeholder="如 #品牌话题，#品类词" title="要多个就用空格 / 逗号 / 顿号隔开，没写 # 会自动补上">
           <span class="lbl">额外话题</span>
           <select class="inp" data-cfg="copy.extraTopics">${[3, 4, 5].map(v => `<option value="${v}" ${cfg.extraTopics === v ? 'selected' : ''}>${v} 个</option>`).join('')}</select>
         </div>
-        <!-- ★ 2026-10-03 用户要求：「批次设置」文字太多 ⇒ 规则明细收进「说明书」弹窗（HELP.copy），
-             页面只留一行结论 + 一个按钮。原来那 4 段共 600 多字，第一次用的人读不完、老手每次被挡着。
-             ★ 结论行里必须留住两条**会改变行为**的信息（不能只写「看说明书」）：
-               ① 必带话题可写多个（这是用户真正要动手填的那个框）；② 标题看图写、连不上直接报错（原来的承诺）。
-             ★ 详细文字**一字不改**地搬进 HELP.copy，不是删掉 —— 说明书里能逐句核对。 -->
-        <p class="hint">规则在<b>说明书</b>里（话题怎么拼 · 正文怎么写 · 重复怎么算 · 标题怎么来）：
-          必带话题可写多个（<b>空格</b> / <b>逗号</b>隔开，漏写 <code>#</code> 自动补）；正文写成 <b>4~5 行短句</b>；
-          标题是<b>看图写</b>的（模型连不上会直接停下报错，不拿本地模板冒充）。
+        <p class="hint">多个必带话题用空格或逗号分隔。
           <button class="btn sm" data-act="help:open" data-topic="copy" style="margin-left:6px">看说明书</button></p>
         ${running('copy.generate') ? progHtml(progFor('copy.generate')) : ''}
-        <p class="hint">报告保存在<b>本次使用的素材目录</b>。当前批次已整理时，选原目录也会使用处理后的目录，发布沿用报告中的素材路径。
-          <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>：
-          逐行写清 标题 / 正文 / 货号 / 颜色 / 生成来源 / <b>文案核对</b>（自动查出「颜色对不上」「混进货号」「用了模板套话」这类问题）。
-          格式与上游那份「KIDS_AI内容报告」一致 ⇒ <b>核对完可以直接把它当发布单导进来</b>。</p>
+        <p class="hint">生成后核对报告，再导入「模拟器发布」。</p>
         ${lastCopyReport ? `<div class="hint" style="border:1px solid #E3E0D8;border-radius:6px;padding:8px 10px">
-          最近一次：<b>${esc(lastCopyReport.file.split(/[\\/]/).pop())}</b> · ${n(lastCopyReport.rows)} 行
-          ${lastCopyReport.gen ? ` · 生成来源 ${esc(lastCopyReport.gen)}` : ''}
+          <b>${esc(lastCopyReport.file.split(/[\\/]/).pop())}</b> · ${n(lastCopyReport.rows)} 行
           ${lastCopyReport.flagged
-            ? ` · <b>${n(lastCopyReport.flagged)} 行要人工看一眼</b>（要人工看 ${n(lastCopyReport.byLevel.warn)} · 明显有问题 ${n(lastCopyReport.byLevel.bad)}）`
-            : ' · 文案/货号/颜色自动核对<b>全部一致</b>'}
+            ? ` · <b>${n(lastCopyReport.flagged)} 行待核对</b>`
+            : ' · 自动核对一致'}
           <button class="btn sm" data-act="copy:openReport" title="打开本次生成的本地 AI 内容报告" aria-label="打开本次生成的本地 AI 内容报告" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>报告</button>
         </div>` : ''}
       </div>
@@ -1970,6 +1958,9 @@ const HELP = {
   copy: {
     title: '文案生成 · 批次设置说明书',
     html: () => `
+      <p class="hint"><b>操作流程</b>：确认模型与品牌提示词，选择素材目录启动任务。标题句式由系统按行自动轮换 <b>T01–T15</b>，无需手动选择。</p>
+      <p class="hint"><b>素材与报告位置</b>：当前批次已整理时，选择原目录 A 也会使用处理后的目录 B；B 不存在时停止生成。报告保存在本次实际使用的素材目录，文件名为 <code>&lt;品牌&gt;_AI内容报告_&lt;时间戳&gt;.xlsx</code>，发布引用报告中的素材路径。</p>
+      <p class="hint"><b>打开与核对报告</b>：生成后点击带下载图标的「报告」按钮，直接用本机 Excel/WPS 打开原文件，不走云端、不新建目录。报告按行列出标题、正文、货号、颜色、生成来源和文案核对结果；待核对行应查看具体原因。修改后保存并关闭 Excel/WPS，再到「模拟器发布」导入报告。不要移动或重命名报告引用的素材目录。</p>
       <p class="hint"><b>必带话题可以写多个</b>：用 <b>空格</b> 或 <b>逗号</b>（中英文都行，顿号 / 分号 / 竖线也可以）隔开，如
         <code>#品牌话题, #品类词</code>。每条笔记都会带上它们、并固定排在话题最前面；漏写 <code>#</code> 会自动补上。
         每条笔记最多带 <b>5 个话题</b>（原来发布单的「话题1~话题5」五个格子，上限没变）——

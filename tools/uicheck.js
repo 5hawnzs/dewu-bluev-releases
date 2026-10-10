@@ -1382,9 +1382,9 @@ app.whenReady().then(async () => {
     document.querySelector('.nav[data-tab="3"]').click();
     await new Promise(r => setTimeout(r, 150));
     return !document.querySelector('[data-cfg="copy.rotateStrategy"]')
-      && /T01–T15/.test(document.body.innerText);
+      && /T01–T15/.test(HELP.copy.html()) && !/T01–T15/.test(document.querySelector('#pane').innerText);
   })()`);
-  ok('★ 文案生成页不提供轮换选项，并说明系统自动轮换 T01–T15', cfgSaved === true, String(cfgSaved));
+  ok('★ 文案生成页不提供轮换选项，自动轮换说明收进说明书', cfgSaved === true, String(cfgSaved));
 
   // ★ 2026-10-02：adb 路径输入框已从「模拟器发布」页删掉（内置即用，摆着只是干扰），
   //   手填入口挪到「设置 → 高级设置」（仅管理员）。所以这里**两件事都要验**：
@@ -1580,16 +1580,19 @@ app.whenReady().then(async () => {
   // 【已迁走】原来这里钉「文案模型块里有 看图开关 / 送图张数 / 缩放尺寸 / 接口自检」——
   //   2026-10-08 用户要求搬进「文案生成 → 模型配置」弹窗 ⇒ 这几条改为在下面那一段里钉（同口径，只是换了地方）。
 
-  // 「文案生成」页要说清两件事：标题是看图写的、跑完会落一份 AI 内容报告（可反向导入）。
+  // 详细规则收进说明书，保留看图生成、报告时间戳与发布导入说明。
   // 同时钉住**旧口径已删**：「标题格式轮换」那套壳不再对用户宣传（它就是「像 AI 做的」的来源）。
   const copyUi = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('.nav[data-tab="3"]').click();
     await new Promise(r => setTimeout(r, 200));
     const t = document.querySelector('#pane').textContent;
-    return { picture: /看图写/.test(t), report: /AI内容报告/.test(t), back: /反向|当发布单导进来/.test(t), oldFmt: /标题格式/.test(t) };
+    document.querySelector('#pane [data-act="help:open"]').click();
+    const help = document.querySelector('#hmBox').textContent;
+    document.querySelector('#hmBox [data-act="help:close"]').click();
+    return { picture: /看图写/.test(help), report: /AI内容报告/.test(help) && /时间戳/.test(help), back: /模拟器发布/.test(help) && /导入报告/.test(help), oldFmt: /标题格式/.test(t) };
   })()`);
-  ok('★ 「文案生成」页写明了「标题是看图写的」（不是拿货号颜色套模板）', copyUi.picture === true, JSON.stringify(copyUi));
-  ok('★ 「文案生成」页写明了跑完会落一份带时间戳的 AI 内容报告，且能反向导入当发布单',
+  ok('★ 文案说明书写明了标题是看图写的', copyUi.picture === true, JSON.stringify(copyUi));
+  ok('★ 文案说明书保留报告时间戳与发布导入说明',
     copyUi.report === true && copyUi.back === true, JSON.stringify(copyUi));
   ok('★ 旧口径「标题格式轮换」不再出现在这一页（F01~F10 已降级为离线模板专用）',
     copyUi.oldFmt === false, JSON.stringify(copyUi));
@@ -1769,7 +1772,7 @@ app.whenReady().then(async () => {
     const paneText = pane.textContent;
     // 页面上不该再出现那几段长文的特征句（它们已经搬进说明书）
     const longOnPage = /按「卖点 → 氛围感 → 上身体验 → 搭配」铺开/.test(paneText)
-      || /只看相邻两条/.test(paneText);
+      || /只看相邻两条|当前批次已整理时|KIDS_AI内容报告|4~5 行短句/.test(paneText);
     const btn = pane.querySelector('[data-act="help:open"]');
     if (!btn) return { keys, hasBtn: false, longOnPage };
     const topic = btn.getAttribute('data-topic') || '';
@@ -1796,7 +1799,8 @@ app.whenReady().then(async () => {
     const closedByMask = mask.hidden === true;
     return { keys, hasBtn: true, topic, opened, scrollable, closedByEsc, stayOnBoxClick, closedByMask,
       longOnPage,
-      hasRules: /只看相邻两条/.test(txt) && /4~5 行短句/.test(txt) && /不是拿货号颜色套模板/.test(txt),
+      hasRules: /只看相邻两条/.test(txt) && /4~5 行短句/.test(txt) && /不是拿货号颜色套模板/.test(txt)
+        && /处理后的目录 B/.test(txt) && txt.includes('本机 Excel/WPS') && /T01–T15/.test(txt),
       title: h3 ? h3.textContent : '' };
   })()`);
   ok('★「批次设置」里有「看说明书」按钮，且 data-topic 指向注册表里真实存在的条目',
