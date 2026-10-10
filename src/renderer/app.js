@@ -736,6 +736,14 @@ TABS[6] = {
         <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
           报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
           并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
+      <details class="publish-setup">
+        <summary><span class="publish-setup-icon" aria-hidden="true">!</span><span>得物设置提醒<span class="publish-setup-brief">手动关闭 2 项商品识别设置</span></span></summary>
+        <div class="publish-setup-items">
+          <div><span class="publish-setup-path">得物 → 我 → 设置 → 隐私设置</span><strong>允许平台在我的内容动态关联商品</strong><span class="publish-setup-off">设为关闭</span></div>
+          <div><span class="publish-setup-path">得物 → 我 → 设置 → 通用设置</span><strong>作品暂停时自动识别画面中商品</strong><span class="publish-setup-off">设为关闭</span></div>
+        </div>
+        <p>每个账号均需手动检查，重装后请重新确认；本工具不检测开关状态。</p>
+      </details>
       </div>
       ${reportBoxHtml()}
       ${probeHtml()}

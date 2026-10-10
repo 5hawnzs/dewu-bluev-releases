@@ -521,3 +521,16 @@ button.btn.lx-transfer:active:not(:disabled){transform:scale(.96)}
 .stats-page th,.stats-page td,.stats-users th,.stats-users td{text-align:center!important;vertical-align:middle}
 .stats-page .stat,.stats-page h3,.stats-page .hint,.stats-page .empty{text-align:center}
 .stats-page .spark,.stats-page .tagline{justify-content:center}
+.publish-setup{margin-top:12px;padding-top:10px;border-top:1px solid var(--bd);color:var(--tx)}
+.publish-setup summary{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:500;list-style:none}
+.publish-setup summary::-webkit-details-marker{display:none}
+.publish-setup summary::after{content:'展开';margin-left:auto;color:var(--tx3);font-size:11px;font-weight:400;white-space:nowrap}
+.publish-setup[open] summary::after{content:'收起'}
+.publish-setup-icon{display:grid;place-items:center;width:18px;height:18px;flex:none;border-radius:50%;background:var(--teal-bg);color:var(--teal)}
+.publish-setup-brief{margin-left:12px;font-size:11px;font-weight:400;color:var(--tx3)}
+.publish-setup-items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+.publish-setup-items>div{display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:12px;border-radius:8px;background:var(--bg)}
+.publish-setup-path{font-size:11px;color:var(--tx3)}
+.publish-setup-items strong{font-size:12px;font-weight:500;line-height:1.6}
+.publish-setup-off{font-size:11px;border-radius:5px;padding:3px 8px;background:var(--teal-bg);color:var(--teal)}
+.publish-setup p{margin:10px 0 0;font-size:11px;color:var(--tx3)}
