@@ -43,4 +43,4 @@ Windows 安装包为 264,382,711 字节，SHA256 为 `3665EF961324BFBDA846528D2E
 
 新增清零/分页专项包含 6151 条数据、缩小服务端分页上限、中途断网、同名账号、游标重置和真实 PostgreSQL 的删除/补传/权限/幂等测试。网页另在实际 Electron 页面中点击翻页至第 6151 条并校验全部账号、品牌合计一致。
 
-新版静态看板入口：`https://dewu-bluev-release-1499238579.cos.ap-guangzhou.myqcloud.com/board/index.html`。历史 WorkBuddy 托管地址没有可用的部署凭据，本次使用已有 COS 发布桶提供新版入口。
+新版看板已部署到仅当前账号可访问的 Sites：<https://dewu-bluev-board.honestgrebe16.chatgpt.site>。看板保持私有；没有公开权限。调试用 COS 下载对象已全部删除。
