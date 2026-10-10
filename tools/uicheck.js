@@ -2586,6 +2586,37 @@ app.whenReady().then(async () => {
     ok('28 行风格建议不会被页面报成 28 行待核对', /文案已生成/.test(buttonState.suggestionsOnly) && !/待核对|自动核对一致/.test(buttonState.suggestionsOnly));
     ok('报告真实字段错误具体显示原因和数量', /缺货号 1 行/.test(buttonState.actualErrors) && /正文为空 2 行/.test(buttonState.actualErrors) && !/文案已生成|待核对/.test(buttonState.actualErrors));
   } finally {shell.openPath = originalOpenPath;shell.showItemInFolder = originalReveal;}
+  const rowRefresh = await win.webContents.executeJavaScript(`(() => {
+    const keep = { project: state.project, tab: state.tab };
+    try {
+      state.project = Object.assign({}, state.project, { publish: { rows: [{ id: 'live-row', seq: 1, dir: 'live-row', result: '', status: '排队' }] } });
+      state.tab = 6; renderAll();
+      const before = publishRowElement('live-row');
+      updatePublishRow({ id: 'live-row', startAt: '12:34:56', startedAtMs: Date.now() - 4000, elapsed: 0, status: '清相册', result: '' });
+      refreshPublishElapsed();
+      const started = before.querySelector('[data-publish-start]').textContent === '12:34:56';
+      const ticking = parseFloat(before.querySelector('[data-publish-elapsed]').textContent) >= 3.5;
+      const phase = before.querySelector('[data-publish-status]').textContent.includes('清相册');
+      const stable = before === publishRowElement('live-row');
+      updatePublishRow({ id: 'live-row', result: '发布成功', elapsed: 7.5, reason: '<img id="row-injected" src="x">' });
+      refreshPublishElapsed();
+      const stopped = before.querySelector('[data-publish-elapsed]').textContent === '7.5s';
+      const escaped = !document.querySelector('#row-injected');
+      updatePublishRow({ id: 'live-row', result: '失败', reason: '测试失败' });
+      const retry = !!before.querySelector('[data-publish-action] [data-act="pub:rerun"]');
+      updatePublishRow({ id: 'live-row', result: '', reason: '', elapsed: 0, startedAtMs: Date.now() });
+      const retryCleared = !before.querySelector('[data-publish-action] button');
+      state.tab = 1;
+      updatePublishRow({ id: 'live-row', startAt: '13:00:00' });
+      state.tab = 6; renderAll();
+      const retained = publishRowElement('live-row').querySelector('[data-publish-start]').textContent === '13:00:00';
+      return { started, ticking, phase, stable, stopped, escaped, retained, retry, retryCleared };
+    } finally { state.project = keep.project; state.tab = keep.tab; renderAll(); }
+  })()`);
+  ok('发布行开始时间、阶段与实时耗时更新，且不重建该行',
+    rowRefresh.started && rowRefresh.ticking && rowRefresh.phase && rowRefresh.stable, JSON.stringify(rowRefresh));
+  ok('发布结束耗时停止、切换页面数据保留、错误文字安全转义',
+    rowRefresh.stopped && rowRefresh.escaped && rowRefresh.retained && rowRefresh.retry && rowRefresh.retryCleared, JSON.stringify(rowRefresh));
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 

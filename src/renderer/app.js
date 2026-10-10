@@ -399,9 +399,47 @@ function batchesHtml(type, title) {
  *   所以「重跑」那个按钮（publish.rerun）依旧保留：那是**人点的新任务**，不会自己发生。
  */
 
-/**
- * 「AI 内容报告」（真机流水线的中间产物）：导入后直接发布，结果回写它的 B/C 列
- */
+function publishElapsedText(row) {
+  const start = Number(row.startedAtMs);
+  const elapsed = !row.result && Number.isFinite(start) && start > 0
+    ? Math.max(0, (Date.now() - start) / 1000) : Number(row.elapsed);
+  return Number.isFinite(elapsed) && elapsed >= 0 && (row.startAt || row.elapsed != null)
+    ? elapsed.toFixed(1) + 's' : '—';
+}
+
+function publishRowElement(id) {
+  return [...document.querySelectorAll('[data-publish-row]')].find(el => el.dataset.publishRow === String(id));
+}
+
+function updatePublishRow(update) {
+  if (!update || update.id == null) return;
+  const rows = state.project && state.project.publish && state.project.publish.rows || [];
+  const row = rows.find(r => String(r.id) === String(update.id));
+  if (!row) return;
+  Object.assign(row, update);
+  if (state.tab !== 6) return;
+  const el = publishRowElement(row.id);
+  if (!el) return;
+  el.querySelector('[data-publish-start]').textContent = row.startAt || '—';
+  el.querySelector('[data-publish-elapsed]').textContent = publishElapsedText(row);
+  el.querySelector('[data-publish-status]').innerHTML = badge(row.result || row.status || '排队', kindOf(row.result || row.status || '排队'))
+    + (row.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(row.reason)}</div>` : '');
+  el.classList.toggle('flag', row.result === '失败' || row.result === '校验未通过');
+  el.querySelector('[data-publish-action]').innerHTML = row.result && row.result !== '发布成功'
+    ? `<button class="btn sm" data-act="pub:rerun" data-seq="${esc(row.seq)}">重跑</button>` : '';
+}
+
+function refreshPublishElapsed() {
+  if (state.tab !== 6 || document.hidden) return;
+  const rows = state.project && state.project.publish && state.project.publish.rows || [];
+  for (const row of rows) {
+    if (row.result || !row.startedAtMs) continue;
+    const el = publishRowElement(row.id);
+    if (el) el.querySelector('[data-publish-elapsed]').textContent = publishElapsedText(row);
+  }
+}
+
+/** 「AI 内容报告」：导入后直接发布，结果回写它的 B/C 列。 */
 function reportBoxHtml() {
   const pub = state.project.publish || {};
   if (!pub.reportFile) {
@@ -750,11 +788,11 @@ TABS[6] = {
       ${batchesHtml('', '运行中的批次 / 任务')}
       ${rows.length ? `<div class="tw"><table>
         <thead><tr><th>#</th><th>素材目录</th><th>好物</th><th>图片</th><th>开始时间</th><th>耗时</th><th>状态</th><th></th></tr></thead>
-        <tbody>${rows.map(r => `<tr class="${r.result === '失败' || r.result === '校验未通过' ? 'flag' : ''}">
+        <tbody>${rows.map(r => `<tr data-publish-row="${esc(r.id)}" class="${r.result === '失败' || r.result === '校验未通过' ? 'flag' : ''}">
           <td class="num">${r.seq}</td><td class="mono">${esc(r.dir)}</td><td class="num">${n(r.goods)}</td><td class="num">${n(r.images)}</td>
-          <td>${esc(r.startAt || '—')}</td><td class="num">${r.elapsed ? r.elapsed + 's' : '—'}</td>
-          <td>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
-          <td>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
+          <td data-publish-start>${esc(r.startAt || '—')}</td><td class="num" data-publish-elapsed>${publishElapsedText(r)}</td>
+          <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
+          <td data-publish-action>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">还没有发布队列，请先导入 AI 内容报告。</div>`}
       <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
@@ -3397,7 +3435,7 @@ function bind() {
     updateProgress(p);
     if (state.tab === 3 || state.tab === 6) refreshBatches();
   });
-  appApi.onPublishRow(() => { state.publishRowTick++; if (state.tab === 6) renderAll(); });
+  appApi.onPublishRow(updatePublishRow);
   appApi.onJobDone(d => {
     state.jobs = state.jobs.filter(x => x.id !== d.id);
     if (!d.ok) toast(d.error || '任务失败', d.cancelled || /已取消/.test(d.error || '') ? '' : 'err');
@@ -3420,6 +3458,7 @@ async function boot() {
 }
 
 setInterval(() => {
+  refreshPublishElapsed();
   if (state.tab === 6 && !document.hidden && Date.now() - deviceScanAt >= 10000) refreshDevices();
 }, 1000);
 

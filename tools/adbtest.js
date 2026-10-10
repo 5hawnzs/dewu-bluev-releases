@@ -2562,12 +2562,35 @@ const state = {
       store.set({ publish: { uiMap, ensureAppTimeoutMs: null } });
       clearCalls();
       const stE = mkAlbumState(2);
+      stE.publish.rows[0].elapsed = 777;
       const lgE = [];
-      const rE = await publisher.run(stE, {
+      const rowEventsE = [];
+      const scanAdbE = require(path.join(base, 'src/main/services/adb.js'));
+      const originalScanE = scanAdbE.mediaScan;
+      let activeScansE = 0, maxScansE = 0;
+      scanAdbE.mediaScan = async (...args) => {
+        activeScansE++;
+        maxScansE = Math.max(maxScansE, activeScansE);
+        try {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return await originalScanE(...args);
+        } finally { activeScansE--; }
+      };
+      let rE;
+      try { rE = await publisher.run(stE, {
         log: (m, l) => lgE.push((l || 'info') + ': ' + m),
-        progress: () => {}, cancelled: () => false, onRow: () => {}
-      });
+        progress: () => {}, cancelled: () => false, onRow: row => rowEventsE.push(Object.assign({}, row))
+      }); } finally { scanAdbE.mediaScan = originalScanE; }
+      ok('多图单文件索引两个并行且完成发布前全部收敛',
+        maxScansE === 2 && activeScansE === 0 && rE.okCount === 1);
       const logE = calls();
+      ok('发布开始立即发送开始时间与零耗时',
+        rowEventsE[0].status === '准备发布' && !!rowEventsE[0].startAt
+        && rowEventsE[0].startedAtMs > 0 && rowEventsE[0].elapsed === 0);
+      const finishedE = rowEventsE[rowEventsE.length - 1];
+      ok('发布完成事件已包含最终耗时，而非发送后才赋值',
+        finishedE.result === '发布成功' && finishedE.elapsed === rE.rows[0].elapsed
+        && finishedE.elapsed > 0 && finishedE.elapsed !== 777);
       ok('根目录递归清理后不再重复清理 bluev 子目录',
         rE.okCount === 1 && !/find .*Camera\/bluev\/? -mindepth/.test(logE),
         (logE.match(/.*find .*mindepth.*/g) || []).join(' | '));

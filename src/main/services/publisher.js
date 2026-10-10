@@ -886,11 +886,16 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     const remote = `${remoteDir}/${String(f.name).replace(/[^\w.\-+]/g, '_')}`;
     const r = await adb.push(serial, abs, remote);
     if (!r.ok) throw new Error(`推${mediaWord}片失败 ${f.name}：${(r.stderr || '').trim()}`);
-    row.status = `索引素材 ${index + 1}/${media.length}`;
-    if (ctx.onRow) ctx.onRow(row);
-    const sc = await adb.mediaScan(serial, remote, { fallbackVolume: false });
-    if (!sc.ok) needsVolumeScan = true;
     remotes.push(remote);
+  }
+  // 文件推送保持顺序，单文件索引最多两个并行；整卷兜底仍只执行一次。
+  for (let index = 0; index < remotes.length; index += 2) {
+    if (cancelled()) throw new Error('已取消');
+    row.status = `索引素材 ${Math.min(index + 2, remotes.length)}/${media.length}`;
+    if (ctx.onRow) ctx.onRow(row);
+    const scans = await Promise.all(remotes.slice(index, index + 2)
+      .map(remote => adb.mediaScan(serial, remote, { fallbackVolume: false })));
+    if (scans.some(sc => !sc.ok)) needsVolumeScan = true;
   }
   if (needsVolumeScan) {
     row.status = '索引素材';
@@ -1262,6 +1267,12 @@ async function run(state, ctx = {}) {
     let success = false, reason = '';
     const t0 = Date.now();
     row.startAt = new Date().toTimeString().slice(0, 8);
+    row.startedAtMs = t0;
+    row.elapsed = 0;
+    row.result = '';
+    row.reason = '';
+    row.status = '准备发布';
+    onRow(row);
     try {
       if (mode === 'adb') {
         success = await runReal(row, item, copyById.get(row.id), serial, map, ctx);
@@ -1284,10 +1295,9 @@ async function run(state, ctx = {}) {
     // ★ 2026-10-03：模拟通道不再随机失败 ⇒ 这里不需要「编一个失败原因」的分支了（拔掉假原因）。
     row.reason = success ? '' : (reason || '未知');
     if (!success) log(`${row.dir} 发布失败，原因${row.reason}`, 'warn');
-    onRow(row);
-
     const tag = rowKind(row, item) === 'video' ? '视频' : '图文';
     row.elapsed = +((Date.now() - t0) / 1000).toFixed(1);
+    onRow(row);
     if (success) log(`行 ${row.seq}[${tag}] 发布完成，已回填时间 ${row.startAt}（耗时 ${row.elapsed}s）`, 'ok');
     else log(`行 ${row.seq}[${tag}] 发布失败，原因${row.reason}（耗时 ${row.elapsed}s）`, 'warn');
 
