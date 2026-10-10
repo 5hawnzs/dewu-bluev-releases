@@ -1,4 +1,5 @@
 'use strict';
+require('./test-runtime')({ app: process.versions.electron ? require('electron').app : undefined });
 /*
  * 运行日志导出（src/main/logexport.js）纯逻辑回归 —— 纯 Node，不开窗口、不碰真配置。
  *

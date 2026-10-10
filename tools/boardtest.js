@@ -1,5 +1,6 @@
 // 实际浏览器加载完整网页：6151 条发布数据，分页统计与明细翻页行为。
 const { app, BrowserWindow } = require('electron');
+require('./test-runtime')({ app });
 const fs = require('fs'), path = require('path'), os = require('os'), http = require('http');
 app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-board-')));
 app.disableHardwareAcceleration();

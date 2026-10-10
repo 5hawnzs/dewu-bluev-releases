@@ -17,6 +17,14 @@ module.exports = function installTestRuntime({ app, timeoutMs = 180000 } = {}) {
   for (const stream of [process.stdout, process.stderr]) {
     if (stream) stream.on('error', onOutputError);
   }
+  // Electron 的 console 写管道也可能同步抛错，仅拦截输出断管，其他异常仍交给测试报告。
+  for (const method of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
+    const write = console[method].bind(console);
+    console[method] = (...args) => {
+      try { return write(...args); }
+      catch (error) { return onOutputError(error); }
+    };
+  }
   if (app) {
     // 即使隐藏窗口或异步等待卡住，自检也不能无限残留。
     const timer = setTimeout(() => {
