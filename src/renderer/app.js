@@ -2614,7 +2614,7 @@ const ACTS = {
 
   'comp:scan': async () => { await runJob('compliance.scan'); },
   'comp:parent': async () => {
-    const d = await appApi.pickDir({ title: '选择父目录（里面每个子文件夹独立检查）' });
+    const d = await appApi.pickDir({ title: '选择父目录（里面每个子文件夹独立检查）', parentOf: state.project.flatDir || state.project.sourceDir || '' });
     if (!d) return;
     await runJob('compliance.scanParent', { dir: d });
   },

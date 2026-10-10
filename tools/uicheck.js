@@ -2501,6 +2501,23 @@ app.whenReady().then(async () => {
       try { await ACTS['copy:pickRun'](); } finally { state.project.flatDir = keep; }
     })()`);
     ok('文案目录选择器直接打开生成目录的母目录', dirOptions && dirOptions.defaultPath === path.join('C:\\素材'));
+    for (const fixture of [
+      { flatDir: path.join(TMP, '整理后', 'flat_测试'), sourceDir: path.join(TMP, '原始', '素材'), name: '已有整理结果' },
+      { flatDir: '', sourceDir: path.join(TMP, '原始', '素材'), name: '尚未整理' }
+    ]) {
+      const options = [];
+      dialog.showOpenDialog = async (...args) => { options.push(args[args.length - 1]); return { canceled:true, filePaths:[] }; };
+      await win.webContents.executeJavaScript(`(async () => {
+        const keepFlat = state.project.flatDir, keepSource = state.project.sourceDir;
+        try {
+          Object.assign(state.project, ${JSON.stringify({ flatDir: fixture.flatDir, sourceDir: fixture.sourceDir })});
+          await ACTS['copy:pickRun']();
+          await ACTS['comp:parent']();
+        } finally {state.project.flatDir=keepFlat;state.project.sourceDir=keepSource;}
+      })()`);
+      const expected = path.dirname(fixture.flatDir || fixture.sourceDir);
+      ok(`${fixture.name}时合规父目录与文案目录弹窗打开同一母目录`, options.length === 2 && options.every(o => o.defaultPath === expected));
+    }
   } finally { dialog.showOpenDialog = originalDirDialog; }
   // 点击小报告按钮只能打开刚生成的本地 Excel，不能打开目录或另存副本。
   const reportFixture = path.join(TMP, '本次AI内容报告.xlsx');
