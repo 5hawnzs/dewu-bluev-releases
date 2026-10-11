@@ -112,7 +112,7 @@ h3{font-size:13px}
 
 /* 桌面工作台：左右等高，仅列表滚动；较矮窗口保留表单所需高度。 */
 @media(min-width:1051px){
- .layout{height:max(var(--workbench-min-height,820px),calc(100dvh - 244px));align-items:stretch}
+ .layout{height:var(--workbench-height,auto);align-items:stretch}
  .config{position:static;align-self:stretch;display:flex;flex-direction:column;min-height:0;overflow:hidden}
  .config> :not(.combo-list){flex-shrink:0}
  .combo-list{flex:1;min-height:80px;overflow-y:auto;overflow-x:hidden;align-content:start;scrollbar-gutter:stable;overscroll-behavior:contain}
@@ -146,6 +146,7 @@ h3{font-size:13px}
 .batch-dialog{width:min(560px,calc(100vw - 28px));max-height:85dvh;overflow:auto}.batch-download-list{max-height:200px;overflow:auto;margin:12px 0}.batch-download-row{padding:8px 10px;border-bottom:1px solid #edf0f5;font-size:12px;color:#65738c}.batch-dialog .save-progress-track{margin-top:14px}.batch-dialog [hidden]{display:none}
 @media(min-width:1051px){.config{overflow-y:auto;scrollbar-gutter:stable}}
 .archive-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:12px}.archive-scroll-controls{display:flex;align-items:center;gap:8px}.archive-scroll-controls[hidden]{display:none}.archive-list.has-archives{display:grid;grid-auto-flow:column;grid-auto-columns:min(340px,85%);gap:12px;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x proximity;overscroll-behavior-x:contain;padding:2px 2px 10px;scrollbar-width:thin;-webkit-overflow-scrolling:touch}.archive-list.has-archives .archive-item{scroll-snap-align:start;background:#fff;min-width:0}.archive-list:focus-visible{outline:2px solid #a8b7ff;outline-offset:4px;border-radius:10px}.archive-list.has-archives .archive-item .hint{line-height:1.7}
+@media(min-width:1051px){.shell{padding-top:22px;padding-bottom:16px}.top{margin-bottom:18px}#archivePanel{margin-bottom:14px}.config{padding-top:18px;padding-bottom:18px}.config>.rule{margin:14px 0}.config .pair{margin-top:10px;padding-top:10px;padding-bottom:10px}.config .combo-heading{padding-bottom:10px}.main{padding-top:20px;padding-bottom:20px}}
 </style>
 </head>
 <body>
@@ -631,13 +632,20 @@ $('openUsageGuide').addEventListener('click',()=>$('usageGuide').showModal());
 $('closeUsageGuide').addEventListener('click',()=>$('usageGuide').close());
 $('usageGuide').addEventListener('click',event=>{if(event.target===$('usageGuide')){const rect=$('usageGuide').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)$('usageGuide').close()}});
 function initializeWorkbenchHeight(){
- const config=document.querySelector('.config'),layout=document.querySelector('.layout');let frame=null;
- function measure(){frame=null;if(!matchMedia('(min-width:1051px)').matches)return;const style=getComputedStyle(config);let height=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+2+120;
-  for(const child of config.children){if(child.classList.contains('combo-list')||!child.getClientRects().length)continue;const cs=getComputedStyle(child);height+=child.getBoundingClientRect().height+(parseFloat(cs.marginTop)||0)+(parseFloat(cs.marginBottom)||0)}
-  const value=Math.max(820,Math.ceil(height))+'px';if(layout.style.getPropertyValue('--workbench-min-height')!==value)layout.style.setProperty('--workbench-min-height',value);
+ const config=document.querySelector('.config'),main=document.querySelector('.main'),layout=document.querySelector('.layout'),shell=document.querySelector('.shell');let frame=null;
+ function outerHeight(node){if(!node.getClientRects().length)return 0;const style=getComputedStyle(node);return node.getBoundingClientRect().height+(parseFloat(style.marginTop)||0)+(parseFloat(style.marginBottom)||0)}
+ function padding(node){const style=getComputedStyle(node);return (parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0)+(parseFloat(style.borderTopWidth)||0)+(parseFloat(style.borderBottomWidth)||0)}
+ function measure(){
+  frame=null;if(!matchMedia('(min-width:1051px)').matches){layout.style.removeProperty('--workbench-height');return}
+  let left=padding(config)+80;for(const child of config.children){if(child.classList.contains('combo-list')){const style=getComputedStyle(child);left+=(parseFloat(style.marginTop)||0)+(parseFloat(style.marginBottom)||0);continue}left+=outerHeight(child)}
+  let right=padding(main)+160;for(const child of main.children){if(child.id==='workspace'){for(const part of child.children)if(!part.classList.contains('groups')&&!part.classList.contains('empty'))right+=outerHeight(part)}else right+=outerHeight(child)}
+  const top=layout.getBoundingClientRect().top+window.scrollY,bottom=parseFloat(getComputedStyle(shell).paddingBottom)||0,available=window.innerHeight-top-bottom-2;
+  const height=Math.ceil(Math.max(left,right,available))+'px';if(layout.style.getPropertyValue('--workbench-height')!==height)layout.style.setProperty('--workbench-height',height);
  }
  function schedule(){if(frame===null)frame=requestAnimationFrame(measure)}
- if('ResizeObserver' in window){const observer=new ResizeObserver(schedule);observer.observe(config);for(const child of config.children)if(!child.classList.contains('combo-list'))observer.observe(child)}window.addEventListener('resize',schedule);schedule();
+ if('ResizeObserver' in window){const observer=new ResizeObserver(schedule);for(const node of [config,main,$('archivePanel'),document.querySelector('.top')])observer.observe(node);for(const child of config.children)if(!child.classList.contains('combo-list'))observer.observe(child)}
+ const mutations=new MutationObserver(schedule);mutations.observe(config,{childList:true,subtree:true});mutations.observe($('workspace'),{childList:true,subtree:true});
+ window.addEventListener('resize',schedule);$('archivePanel').addEventListener('toggle',schedule);schedule();
 }
 function scrollArchive(direction){const list=$('archiveList'),card=list.querySelector('.archive-item'),step=card?card.getBoundingClientRect().width+12:list.clientWidth;list.scrollBy({left:direction*step,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'})}
 $('archiveScrollLeft').addEventListener('click',()=>scrollArchive(-1));$('archiveScrollRight').addEventListener('click',()=>scrollArchive(1));$('archiveList').addEventListener('scroll',syncArchiveScroll,{passive:true});$('archivePanel').addEventListener('toggle',syncArchiveScroll);
