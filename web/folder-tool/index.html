@@ -132,7 +132,7 @@ h3{font-size:13px}
   <div><div class="hint">BLUE V · 素材整理</div><div class="brand-row"><div class="brand">素材文件夹生成器</div><div class="wave-loader" aria-hidden="true"><div class="wave-stage" id="titleWave"></div></div></div><div class="hint">支持图片和视频。每组最多 10 张照片或 1 个视频；先选择商品组合，再分批加入素材。</div></div>
   <span class="badge">本地处理 · 素材不上传</span>
  </header>
- <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><div class="archive-list" id="archiveList"></div></details>
+ <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><button class="btn btn-danger" id="clearArchives" style="margin-top:12px" type="button">清理已下载归档</button><div class="archive-list" id="archiveList"></div></details>
  <div class="layout">
   <aside class="card config">
    <div class="section-head combo-heading"><div><span class="combo-eyebrow">PRODUCT COLLECTION</span><h1>商品<span>组合</span></h1></div><span class="combo-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg></span></div>
@@ -159,13 +159,14 @@ h3{font-size:13px}
  </div>
 </div>
 <div class="toast" id="toast" role="status"></div>
+<dialog id="clearArchiveDialog" class="confirm-dialog" aria-labelledby="clearArchiveTitle"><h2 id="clearArchiveTitle">清理已下载归档？</h2><p class="dialog-note">请先确认下载文件完整。此操作永久清除全部已下载归档，之后无法恢复或撤销；正在整理的素材不受影响。</p><div class="dialog-actions"><button class="btn" id="cancelClearArchives" autofocus>保留归档</button><button class="btn btn-danger" id="confirmClearArchives">永久清理</button></div></dialog>
 <dialog id="groupLimitDialog" class="confirm-dialog" aria-labelledby="groupLimitTitle" aria-describedby="groupLimitNote"><h2 id="groupLimitTitle">本组素材未添加</h2><p id="groupLimitNote" class="dialog-note"></p><div class="dialog-actions"><form method="dialog"><button class="btn btn-light" autofocus>知道了</button></form></div></dialog>
 <dialog id="removeComboDialog" class="confirm-dialog" aria-labelledby="removeComboTitle"><h2 id="removeComboTitle">确认删除商品组合？</h2><p id="removeComboNote" class="dialog-note"></p><div class="dialog-actions"><button class="btn" id="cancelRemoveCombo">保留组合</button><button class="btn btn-danger" id="confirmRemoveCombo" autofocus>确认删除组合</button></div></dialog>
 <dialog id="removeGroupDialog" class="confirm-dialog" aria-labelledby="removeGroupTitle" aria-describedby="removeGroupNote removeGroupHelp"><div class="dialog-warning" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg></div><h2 id="removeGroupTitle">确认移除素材组？</h2><p class="dialog-note" id="removeGroupNote"></p><p class="dialog-note muted" id="removeGroupHelp">整组素材将从整理区移除。移除后仍可点击“撤销”恢复。</p><div class="dialog-actions"><button class="btn" type="button" id="cancelRemoveGroup">保留素材组</button><button class="btn btn-danger" type="button" id="confirmRemoveGroup" autofocus>确认移除</button></div></dialog>
 <script>
 const $=id=>document.getElementById(id);
 let combos=[],selectedId=null,nextId=1,toastTimer;
-let removingGroupId=null;
+let removingGroupId=null,previewObserver=null,persistedFileIds=null;
 let archives=[],db=null,ready=false,readOnly=false,busy=false,groupPage=0,archivePage=0,saveQueue=Promise.resolve(),saveVersion=0,savedVersion=0,saveFailed=false;
 const pendingFiles=new Map(),thumbPages=new Map(),ARCHIVE_TTL=3*24*60*60*1000;
 const undoStack=[],redoStack=[],HISTORY_LIMIT=50;
@@ -221,20 +222,23 @@ function persistState(){
   const tx=db.transaction(['state','files'],'readwrite'),done=transactionDone(tx),store=tx.objectStore('files'),ids=referencedFiles(state);
   for(const record of blobs)if(ids.has(record.id))store.put(record);
   tx.objectStore('state').put(state,'workspace');
-  const cursor=store.openKeyCursor();cursor.onsuccess=()=>{const item=cursor.result;if(item){if(!ids.has(item.key))store.delete(item.key);item.continue()}};
-  await done;
+  if(persistedFileIds){for(const id of persistedFileIds)if(!ids.has(id))store.delete(id)}else{const cursor=store.openKeyCursor();cursor.onsuccess=()=>{const item=cursor.result;if(item){if(!ids.has(item.key))store.delete(item.key);item.continue()}}}
+  await done;persistedFileIds=ids;
   for(const record of blobs)if(pendingFiles.get(record.id)===record)pendingFiles.delete(record.id);
   savedVersion=version;if(version===saveVersion){saveFailed=false;saveMessage('已保存到此浏览器 · '+new Date().toLocaleTimeString('zh-CN'));updateUsage()}
  });
  saveQueue=operation;operation.catch(error=>{saveFailed=true;saveMessage(error.name==='QuotaExceededError'?'保存失败：本地空间不足，请先导出备份并清理空间':'本地保存失败，请导出工作备份后重试',true)});return operation;
 }
 function changed(){persistState().catch(()=>{})}
-async function updateUsage(){try{const info=await navigator.storage?.estimate();if(info?.usage!==undefined)$('storageUsage').textContent='本地已用约 '+(info.usage/1024/1024).toFixed(1)+' MB'}catch(_){}}
+function storageSize(bytes){return bytes>=1024**3?(bytes/1024**3).toFixed(1)+' GB':(bytes/1024**2).toFixed(1)+' MB'}
+async function updateUsage(){try{const info=await navigator.storage?.estimate();if(info?.usage!==undefined){const remaining=Number.isFinite(info.quota)?Math.max(0,info.quota-info.usage):null;$('storageUsage').textContent='本地已用约 '+storageSize(info.usage)+(remaining===null?'':' · 配额剩余约 '+storageSize(remaining));$('storageUsage').style.color=remaining!==null&&remaining<512*1024**2?'#b45309':'';$('storageUsage').title='浏览器估算值，不代表电脑实际剩余磁盘空间；已下载归档仍占用本地空间。'}}catch(_){}}
+async function hasStorageRoom(bytes){
+ try{const info=await navigator.storage?.estimate();if(info&&Number.isFinite(info.quota)&&Number.isFinite(info.usage)&&bytes*1.15+64*1024**2>info.quota-info.usage){$('groupLimitTitle').textContent='本地存储空间不足';$('groupLimitNote').textContent='本次素材约 '+storageSize(bytes)+'，浏览器配额剩余约 '+storageSize(Math.max(0,info.quota-info.usage))+'。请先确认下载文件完整，再清理已下载归档或减少本次素材。未添加任何素材。';$('groupLimitDialog').showModal();return false}}catch(_){}return true;
+}
 async function hydrate(meta){
- const tx=db.transaction('files','readonly'),done=transactionDone(tx),store=tx.objectStore('files');
- const requests=meta.map(combo=>({...combo,groups:combo.groups.map(group=>({...group,files:group.files.map(item=>({id:item.id,request:requestResult(store.get(item.id))}))}))}));
- const result=await Promise.all(requests.map(async combo=>({...combo,groups:await Promise.all(combo.groups.map(async group=>({...group,files:await Promise.all(group.files.map(async item=>{const record=await item.request;if(!record?.file)throw new Error('部分素材无法恢复，请使用工作备份');return {id:item.id,file:record.file,previewUrl:''}}))})))})));
- await done;return result;
+ const result=meta.map(combo=>({...combo,groups:combo.groups.map(group=>({...group,files:group.files.map(item=>({id:item.id,file:null,previewUrl:''}))}))})),items=result.flatMap(combo=>combo.groups.flatMap(group=>group.files));
+ for(let offset=0;offset<items.length;offset+=64){const tx=db.transaction('files','readonly'),done=transactionDone(tx),store=tx.objectStore('files');await Promise.all(items.slice(offset,offset+64).map(async item=>{const record=await requestResult(store.get(item.id));if(!record?.file)throw new Error('部分素材无法恢复，请使用工作备份');item.file=record.file}));await done}
+ return result;
 }
 function expireArchives(now=Date.now()){const previous=archives.length;archives=archives.filter(archive=>archive.expiresAt>now);return previous!==archives.length}
 async function initializeWorkspace(){
@@ -251,7 +255,7 @@ function startWorkspace(){
 }
 function duplicateSkus(){const a=cleanName($('sku1').value).normalize('NFKC').toLocaleLowerCase(),b=cleanName($('sku2').value).normalize('NFKC').toLocaleLowerCase();return !!a&&a===b}
 function validateCombo(){const duplicate=duplicateSkus();$('comboWarning').hidden=!duplicate;$('comboWarning').textContent=duplicate?'款号 1 与款号 2 不能相同，请修改后再新建组合。':'';$('sku2').setAttribute('aria-invalid',String(duplicate));$('createCombo').disabled=duplicate||!ready||readOnly||busy;return !duplicate}
-function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo()}
+function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('clearArchives').disabled=disabled||!archives.length;$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo()}
 function renderArchives(){
  $('archiveCount').textContent=archives.length;
  const pages=Math.max(1,Math.ceil(archives.length/20));archivePage=Math.min(archivePage,pages-1);
@@ -274,14 +278,21 @@ function countFiles(combo){return combo.groups.reduce((n,group)=>n+group.files.l
 function allFiles(){return combos.reduce((n,combo)=>n+countFiles(combo),0)}
 function revoke(files){files.forEach(item=>{if(item.previewUrl)URL.revokeObjectURL(item.previewUrl)})}
 function comboName(values){return [values.sku1,values.color1,values.sku2,values.color2].filter(Boolean).map(cleanName).join('+')}
-function releasePreviews(){for(const combo of combos)for(const group of combo.groups)for(const item of group.files)if(item.previewUrl){URL.revokeObjectURL(item.previewUrl);item.previewUrl=''}}
+function releasePreviews(){previewObserver?.disconnect();for(const combo of combos)for(const group of combo.groups)for(const item of group.files)if(item.previewUrl){URL.revokeObjectURL(item.previewUrl);item.previewUrl=''}}
 function isVideo(file){return file.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|avi|mkv|wmv|mpeg|mpg|3gp)$/i.test(file.name)}
 function mediaCount(files){const videos=files.filter(item=>isVideo(item.file)).length,images=files.length-videos;return [images?images+'张图片':'',videos?videos+'个视频':''].filter(Boolean).join(' · ')||'0个文件'}
 function thumbMarkup(group,item){
- const video=isVideo(item.file),url=item.previewUrl||(item.previewUrl=URL.createObjectURL(item.file));
- const preview=video?'<video controls preload="none" playsinline src="'+url+'" aria-label="'+esc(item.file.name)+'">浏览器无法预览此视频，原文件仍可打包下载。</video>':'<img loading="lazy" src="'+url+'" alt="'+esc(item.file.name)+'">';
+ const video=isVideo(item.file),url=video?(item.previewUrl||(item.previewUrl=URL.createObjectURL(item.file))):'';
+ const preview=video?'<video controls preload="none" playsinline src="'+url+'" aria-label="'+esc(item.file.name)+'">浏览器无法预览此视频，原文件仍可打包下载。</video>':'<img loading="lazy" decoding="async" data-preview-id="'+item.id+'" alt="'+esc(item.file.name)+'">';
  const primary=video?'':'<button class="thumb-action '+(group.primaryId===item.id?'on':'')+'" type="button" data-primary="'+group.id+'" data-file="'+item.id+'">'+(group.primaryId===item.id?'★ 主图':'设为主图')+'</button>';
  return '<div class="thumb'+(video?' video':'')+'">'+preview+'<div class="thumb-label" title="'+esc(item.file.name)+'">'+esc(item.file.name)+'</div>'+primary+'<button class="icon-btn" type="button" data-remove-file="'+group.id+'" data-file="'+item.id+'">移除</button></div>';
+}
+function observePreviews(){
+ const items=new Map((selected()?.groups||[]).flatMap(group=>group.files.map(item=>[String(item.id),item])));
+ const load=(image,visible)=>{const item=items.get(image.dataset.previewId);if(!item)return;if(visible){if(!item.previewUrl)item.previewUrl=URL.createObjectURL(item.file);if(image.getAttribute('src')!==item.previewUrl)image.src=item.previewUrl}else{image.removeAttribute('src');if(item.previewUrl){URL.revokeObjectURL(item.previewUrl);item.previewUrl=''}}};
+ const images=$('workspace').querySelectorAll('img[data-preview-id]');
+ if(!('IntersectionObserver' in window)){images.forEach(image=>load(image,true));return}
+ previewObserver=new IntersectionObserver(entries=>entries.forEach(entry=>load(entry.target,entry.isIntersecting)),{root:matchMedia('(min-width:1051px)').matches?$('workspace').querySelector('.groups'):null,rootMargin:'200px'});images.forEach(image=>previewObserver.observe(image));
 }
 function groupMarkup(group){
  const pages=Math.max(1,Math.ceil(group.files.length/12)),page=Math.min(thumbPages.get(group.id)||0,pages-1),files=group.files.slice(page*12,page*12+12);
@@ -301,10 +312,10 @@ function render(){
   '<div class="toolbar"><h2>已整理素材</h2><span>'+combo.groups.length+'组</span></div>'+
   '<div class="groups">'+(combo.groups.length?combo.groups.slice(groupPage*20,groupPage*20+20).map(groupMarkup).join(''):'<div class="empty">还没有素材，拖入第一批图片或视频开始整理</div>')+'</div>'+
   (combo.groups.length>20?'<div class="pager"><button class="btn" data-group-page="'+Math.max(0,groupPage-1)+'">上一页素材组</button><span>'+(groupPage+1)+' / '+Math.ceil(combo.groups.length/20)+'</span><button class="btn" data-group-page="'+Math.min(Math.ceil(combo.groups.length/20)-1,groupPage+1)+'">下一页素材组</button></div>':'');
- syncControls();
+ syncControls();observePreviews();
 }
 function addCombo(event){
- event.preventDefault();if(!canEdit())return;
+ event.preventDefault();if(!canEdit())return;if(!validateCombo())return notify('款号 1 与款号 2 不能相同');
  const values={sku1:cleanName($('sku1').value),color1:cleanName($('color1').value),sku2:cleanName($('sku2').value),color2:cleanName($('color2').value)};
  if(!values.sku1||!values.color1)return notify('请填写款号 1 和款号 1 颜色');
  if(!hasChinese(values.color1))return notify('款号 1 颜色请包含中文，便于蓝V识别');
@@ -324,14 +335,15 @@ function addCombo(event){
  const combo={id:nextId++,name,groups:[],nextGroup:1};
  combos.push(combo);selectedId=combo.id;groupPage=0;$('comboForm').reset();render();changed();notify('组合已创建并选中');
 }
-function checkGroupLimit(files){const videos=files.filter(isVideo).length,photos=files.length-videos;let message='';if(videos&&photos)message='每个素材组仅支持最多 10 张照片或 1 个视频，照片和视频请分组录入。';else if(videos>1)message='每个素材组最多录入 1 个视频，请分组添加。';else if(photos>10)message='每个素材组最多录入 10 张照片，本次共 '+photos+' 张，请减少数量或新建素材组。';if(!message)return true;$('groupLimitNote').textContent=message+' 本次操作未添加任何素材。';if(!$('groupLimitDialog').open)$('groupLimitDialog').showModal();return false}
-function addFiles(fileList,groupId=null){
+function checkGroupLimit(files){const videos=files.filter(isVideo).length,photos=files.length-videos;let message='';if(videos&&photos)message='每个素材组仅支持最多 10 张照片或 1 个视频，照片和视频请分组录入。';else if(videos>1)message='每个素材组最多录入 1 个视频，请分组添加。';else if(photos>10)message='每个素材组最多录入 10 张照片，本次共 '+photos+' 张，请减少数量或新建素材组。';if(!message)return true;$('groupLimitTitle').textContent='本组素材未添加';$('groupLimitNote').textContent=message+' 本次操作未添加任何素材。';if(!$('groupLimitDialog').open)$('groupLimitDialog').showModal();return false}
+async function addFiles(fileList,groupId=null){
  if(!canEdit())return;
  const combo=selected();if(!combo)return notify('请先选择商品组合');
  const files=Array.from(fileList||[]).filter(file=>file.type.startsWith('image/')||isVideo(file));
  if(!files.length)return notify('请选择图片或视频文件');
  const targetGroup=groupId===null?null:combo.groups.find(item=>item.id===Number(groupId));if(groupId!==null&&!targetGroup)return notify('该素材组已不存在，请重新选择');
  if(!checkGroupLimit([...(targetGroup?.files.map(item=>item.file)||[]),...files]))return;
+ busy=true;syncControls();let room;try{await saveQueue.catch(()=>{});room=await hasStorageRoom(files.reduce((sum,file)=>sum+file.size,0))}finally{busy=false;syncControls()}if(!room||!canEdit())return;
  if(groupId!==null){
   const group=combo.groups.find(item=>item.id===Number(groupId));if(!group)return notify('该素材组已不存在，请重新选择');
   recordEdit('向'+group.name+'追加'+files.length+'个素材');
@@ -381,13 +393,16 @@ document.addEventListener('keydown',event=>{
 $('download').addEventListener('click',()=>downloadZip());
 $('comboForm').addEventListener('input',()=>{validateCombo();if(ready&&!busy&&!readOnly)changed()});
 $('archiveList').addEventListener('click',event=>{const pages=event.target.closest('[data-archive-page]');if(pages&&canEdit()){archivePage=Number(pages.dataset.archivePage);renderArchives();return}const button=event.target.closest('[data-restore]');if(button)restoreArchive(button.dataset.restore)});
+$('clearArchives').addEventListener('click',()=>{if(canEdit()&&archives.length)$('clearArchiveDialog').showModal()});
+$('cancelClearArchives').addEventListener('click',()=>$('clearArchiveDialog').close());
+$('confirmClearArchives').addEventListener('click',async()=>{if(!canEdit())return;$('clearArchiveDialog').close();busy=true;syncControls();const previous=archives;try{await saveQueue.catch(()=>{});archives=[];await persistState();clearEditHistory();archivePage=0;renderArchives();await updateUsage();notify('已清理下载归档，正在整理的素材保留')}catch(error){archives=previous;renderArchives();notify('清理失败：'+error.message)}finally{busy=false;syncControls()}});
 $('backup').addEventListener('click',exportBackup);
 $('importBackup').addEventListener('click',()=>{if(canEdit())$('backupFile').click()});
 $('backupFile').addEventListener('change',event=>{const file=event.target.files[0];event.target.value='';if(file)importBackup(file)});
 
 function crcTable(){const table=new Uint32Array(256);for(let n=0;n<256;n++){let value=n;for(let k=0;k<8;k++)value=value&1?(0xedb88320^(value>>>1)):(value>>>1);table[n]=value>>>0}return table}
 const CRC=crcTable();
-async function crc32(file){let crc=0xffffffff;const reader=file.stream().getReader();while(true){const {done,value}=await reader.read();if(done)break;for(let i=0;i<value.length;i++)crc=CRC[(crc^value[i])&255]^(crc>>>8)}return (crc^0xffffffff)>>>0}
+async function crc32(file){let crc=0xffffffff,lastYield=performance.now();const reader=file.stream().getReader();while(true){const {done,value}=await reader.read();if(done)break;for(let i=0;i<value.length;i++)crc=CRC[(crc^value[i])&255]^(crc>>>8);if(performance.now()-lastYield>24){await new Promise(resolve=>setTimeout(resolve,0));lastYield=performance.now()}}return (crc^0xffffffff)>>>0}
 function dosTime(){const date=new Date();return {time:(date.getHours()<<11)|(date.getMinutes()<<5)|Math.floor(date.getSeconds()/2),date:((date.getFullYear()-1980)<<9)|((date.getMonth()+1)<<5)|date.getDate()}}
 function zipParts(pathName,crc,size,offset,directory,dt){const name=new TextEncoder().encode(pathName),local=new Uint8Array(30+name.length),lv=new DataView(local.buffer);lv.setUint32(0,0x04034b50,true);lv.setUint16(4,20,true);lv.setUint16(6,0x0800,true);lv.setUint16(8,0,true);lv.setUint16(10,dt.time,true);lv.setUint16(12,dt.date,true);lv.setUint32(14,crc,true);lv.setUint32(18,size,true);lv.setUint32(22,size,true);lv.setUint16(26,name.length,true);local.set(name,30);const central=new Uint8Array(46+name.length),cv=new DataView(central.buffer);cv.setUint32(0,0x02014b50,true);cv.setUint16(4,20,true);cv.setUint16(6,20,true);cv.setUint16(8,0x0800,true);cv.setUint16(10,0,true);cv.setUint16(12,dt.time,true);cv.setUint16(14,dt.date,true);cv.setUint32(16,crc,true);cv.setUint32(20,size,true);cv.setUint32(24,size,true);cv.setUint16(28,name.length,true);cv.setUint32(38,directory?0x10<<16:0,true);cv.setUint32(42,offset,true);central.set(name,46);return {local,central}}
 function endRecord(count,size,offset){const end=new Uint8Array(22),view=new DataView(end.buffer);view.setUint32(0,0x06054b50,true);view.setUint16(8,count,true);view.setUint16(10,count,true);view.setUint32(12,size,true);view.setUint32(16,offset,true);return end}
@@ -396,29 +411,30 @@ function uniqueName(raw,used){const dot=raw.lastIndexOf('.'),stem=dot>0?raw.slic
 function downloadName(extension){const date=new Date(),stamp=[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0'),String(date.getHours()).padStart(2,'0'),String(date.getMinutes()).padStart(2,'0'),String(date.getSeconds()).padStart(2,'0')].join('');return '蓝V素材_'+stamp+extension}
 async function chooseDestination(filename){return window.showSaveFilePicker?window.showSaveFilePicker({suggestedName:filename}):null}
 async function deliverBlob(blob,filename,handle){
- if(handle){const writer=await handle.createWritable();try{await writer.write(blob);await writer.close()}catch(error){await writer.abort().catch(()=>{});throw error}return 'saved'}
+ if(handle){const writer=await handle.createWritable();try{for(let position=0;position<blob.size;position+=4*1024**2)await writer.write(blob.slice(position,position+4*1024**2));await writer.close()}catch(error){await writer.abort().catch(()=>{});throw error}return 'saved'}
  const link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);return 'started';
 }
-async function buildZip(downloadCombos){
+async function buildZip(downloadCombos,writer=null){
  const local=[],central=[],dt=dosTime();let offset=0,totalEntries=0;
+ async function emit(...parts){for(const part of parts){if(!writer){local.push(part);continue}if(part instanceof Blob){for(let position=0;position<part.size;position+=4*1024**2)await writer.write(part.slice(position,position+4*1024**2))}else await writer.write(part)}}
  for(const combo of downloadCombos){
-  const comboPath=cleanName(combo.name)+'/';const dir=zipParts(comboPath,0,0,offset,true,dt);local.push(dir.local);central.push(dir.central);offset+=dir.local.length;totalEntries++;
+  const comboPath=cleanName(combo.name)+'/';const dir=zipParts(comboPath,0,0,offset,true,dt);await emit(dir.local);central.push(dir.central);offset+=dir.local.length;totalEntries++;
   for(const group of combo.groups){
-   const groupPath=comboPath+cleanName(group.name)+'/';const gdir=zipParts(groupPath,0,0,offset,true,dt);local.push(gdir.local);central.push(gdir.central);offset+=gdir.local.length;totalEntries++;
+   const groupPath=comboPath+cleanName(group.name)+'/';const gdir=zipParts(groupPath,0,0,offset,true,dt);await emit(gdir.local);central.push(gdir.central);offset+=gdir.local.length;totalEntries++;
    const used=new Set(),files=group.files.slice().sort((a,b)=>Number(b.id===group.primaryId)-Number(a.id===group.primaryId));
    for(const item of files){
     const raw=cleanName(item.file.name)||'image';let request=raw;
     if(item.id===group.primaryId){const dot=raw.lastIndexOf('.');request='1'+(dot>0?raw.slice(dot):'')}
     const filename=uniqueName(request,used),size=item.file.size;
     if(size>0xffffffff||offset>0xffffffff)throw new Error('文件过大，请拆分为多个压缩包');
-    const parts=zipParts(groupPath+filename,await crc32(item.file),size,offset,false,dt);local.push(parts.local,item.file);central.push(parts.central);offset+=parts.local.length+size;totalEntries++;
+    const parts=zipParts(groupPath+filename,await crc32(item.file),size,offset,false,dt);await emit(parts.local,item.file);central.push(parts.central);offset+=parts.local.length+size;totalEntries++;
     if(totalEntries%8===0)$('status').textContent='正在打包 '+totalEntries+' 个文件…';
    }
   }
  }
  if(totalEntries>65535||offset>0xffffffff)throw new Error('内容太多，请拆分为多个压缩包');
  const centralSize=central.reduce((sum,part)=>sum+part.length,0);if(offset+centralSize>0xffffffff)throw new Error('ZIP 文件超过 4 GB，请拆分下载');
- return new Blob([...local,...central,endRecord(totalEntries,centralSize,offset)],{type:'application/zip'});
+ const end=endRecord(totalEntries,centralSize,offset);if(writer){for(const part of central)await writer.write(part);await writer.write(end);return null}return new Blob([...local,...central,end],{type:'application/zip'});
 }
 async function archiveDownloaded(downloadCombos,filename,delivery){
  const previousCombos=combos,previousArchives=archives,ids=new Set(downloadCombos.flatMap(combo=>combo.groups.map(group=>group.id))),now=Date.now();
@@ -433,12 +449,13 @@ async function downloadZip(groupId=null){
  const downloadCombos=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>groupId===null||group.id===groupId)})).filter(combo=>combo.groups.length);
  if(!downloadCombos.length)return;
  const size=downloadCombos.reduce((sum,combo)=>sum+combo.groups.reduce((n,group)=>n+group.files.reduce((m,item)=>m+item.file.size,0),0),0);
- if(size>1024*1024*1024)return notify('本次素材超过 1 GB，请按素材组分批下载，避免浏览器内存不足');
+ if(size>3.5*1024**3)return notify('本次素材超过 3.5 GB，请分组下载，以保留 ZIP 文件目录所需空间');
+ if(!window.showSaveFilePicker&&size>512*1024**2)return notify('当前浏览器仅支持单次 512 MB 下载，请分组下载或使用桌面版 Chrome / Edge');
  busy=true;syncControls();const filename=downloadName('.zip');
  try{
   const handle=await chooseDestination(filename);
   await persistState();$('status').textContent='正在打包文件夹…';
-  const blob=await buildZip(downloadCombos),delivery=await deliverBlob(blob,filename,handle);
+  let delivery;if(handle){const writer=await handle.createWritable();try{await buildZip(downloadCombos,writer);await writer.close();delivery='saved'}catch(error){await writer.abort().catch(()=>{});throw error}}else{const blob=await buildZip(downloadCombos);delivery=await deliverBlob(blob,filename,null)}
   await archiveDownloaded(downloadCombos,filename,delivery);
   $('status').textContent=delivery==='saved'?'文件已保存，素材已归档 3 天。':'已发起下载并归档 3 天；请确认浏览器下载完成，必要时可恢复重试。';
   notify(delivery==='saved'?'已保存并归档，保留 3 天':'已发起下载并归档，可从归档区恢复');
@@ -455,6 +472,7 @@ async function exportBackup(){
   const records=await Promise.all(requests.map(async item=>{const stored=await item.request,record=pendingFiles.get(item.id)||stored;if(!record?.file)throw new Error('备份缺少素材，请保留当前页面');return record}));await done;
   const manifest={format:BACKUP_MAGIC,state,files:records.map(record=>({id:record.id,name:record.file.name||'image',type:record.file.type,lastModified:record.file.lastModified||Date.now(),size:record.file.size}))};
   const bytes=new TextEncoder().encode(JSON.stringify(manifest)),length=new Uint8Array(4);if(bytes.length>8*1024*1024)throw new Error('备份记录太多，请分批整理');new DataView(length.buffer).setUint32(0,bytes.length,true);
+  const totalSize=records.reduce((sum,record)=>sum+record.file.size,0)+12+bytes.length;if(!handle&&totalSize>512*1024**2)throw new Error('大于 512 MB 的备份请使用桌面版 Chrome / Edge，选择保存位置后分块写入');
   const blob=new Blob([BACKUP_MAGIC,length,bytes,...records.map(record=>record.file)],{type:'application/octet-stream'});
   await deliverBlob(blob,filename,handle);notify('工作备份已导出，包含图片、视频和组合，可用于恢复');
  }catch(error){if(error.name!=='AbortError')notify('备份失败：'+error.message)}finally{busy=false;syncControls()}
@@ -490,6 +508,7 @@ async function parseBackup(file){
 async function importBackup(file){
  if(!canEdit())return;busy=true;syncControls();
  try{
+  if(!await hasStorageRoom(file.size))return;
   const parsed=await parseBackup(file);
   if(!confirm('恢复备份会替换当前工作区。建议先导出当前工作备份。确定恢复？'))return;
   await saveQueue.catch(()=>{});
