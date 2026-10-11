@@ -138,6 +138,11 @@ h3{font-size:13px}
 @media(max-width:520px){.top{flex-wrap:wrap}.top-actions{width:100%}.usage-dialog{padding:0 18px 20px}}
 @media(prefers-reduced-motion:reduce){.glare-button{transition:none}.glare-button:hover .glare-shine,.glare-button:focus-visible .glare-shine{animation:none}}
 .save-indicator{margin-left:auto;max-width:100%;padding:7px 10px;border-radius:8px;background:#fff7e6;border:1px solid #f5dfaf;color:#946214;font-size:11px;line-height:1.6}.save-indicator.saved{background:#ecf8f1;border-color:#c7e8d5;color:#227345}.save-indicator.error{background:#fff0f0;border-color:#f1c7c7;color:#b42323}.save-state.saved{color:#227345;font-weight:600}
+
+.save-progress-panel{margin-left:auto;width:320px;max-width:100%;color:#52617b;--save-color:#526bd1}.save-progress-heading{display:flex;justify-content:space-between;gap:12px;font-size:12px;font-weight:600;margin-bottom:7px}.save-progress-track{height:7px;border-radius:99px;background:#e9edf5;overflow:hidden}.save-progress-track>div{height:100%;width:0;background:var(--save-color);border-radius:inherit;transition:width .2s ease}.save-progress-panel .save-indicator{display:block;border:0;background:none;padding:6px 0 0;margin:0;font-size:11px;color:#8791a3;line-height:1.6}.save-progress-bottom{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:10px;color:#929bad;min-height:16px}.save-progress-bottom .btn{padding:4px 8px}.save-progress-panel.is-error{--save-color:#dc2626}.save-progress-panel.is-error .save-indicator,.save-progress-panel.is-error .save-progress-heading{color:#b42323}.save-progress-panel.is-saved{--save-color:#228451}.save-progress-panel.is-saved .save-indicator{color:#227345}.save-progress-bottom [hidden]{display:none}
+.usage-grid>.workflow-guide{grid-column:1/-1;background:#f7f9fd;border:1px solid #e2e8f4;border-radius:12px;padding:18px 20px}.workflow-guide ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px 30px;padding-left:22px;margin-top:14px!important}.workflow-guide li{padding:0 8px 0 2px}
+@media(max-width:520px){.save-progress-panel{width:100%;margin-left:0}.workflow-guide ol{grid-template-columns:1fr}.usage-grid>.workflow-guide{padding:16px}}
+@media(prefers-reduced-motion:reduce){.save-progress-track>div{transition:none}}
 </style>
 </head>
 <body>
@@ -167,14 +172,14 @@ h3{font-size:13px}
    <input class="file-input" id="backupFile" type="file" accept=".bluev">
   </aside>
   <main class="card main">
-   <div class="history-bar"><div class="history-controls" role="group" aria-label="撤销与重做"><button class="btn" id="undo" type="button" title="撤销（Ctrl+Z）" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5-7 7 7 7M3 12h18"/></svg>撤销</button><button class="btn" id="redo" type="button" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled>重做<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 7 7-7 7M21 12H3"/></svg></button></div><span class="history-hint" id="historyHint" aria-live="polite">误操作可撤销，重做可恢复</span><span id="saveIndicator" class="save-indicator" role="status" aria-live="polite">正在恢复本地工作…</span></div>
+   <div class="history-bar"><div class="history-controls" role="group" aria-label="撤销与重做"><button class="btn" id="undo" type="button" title="撤销（Ctrl+Z）" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5-7 7 7 7M3 12h18"/></svg>撤销</button><button class="btn" id="redo" type="button" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled>重做<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 7 7-7 7M21 12H3"/></svg></button></div><span class="history-hint" id="historyHint" aria-live="polite">误操作可撤销，重做可恢复</span><div class="save-progress-panel" id="saveProgressPanel"><div class="save-progress-heading"><span>本地保存</span><span id="saveProgressValue">等待恢复</span></div><div id="saveProgressTrack" class="save-progress-track" role="progressbar" aria-label="本地保存写入请求进度" aria-valuemin="0" aria-valuemax="100"><div id="saveProgressFill"></div></div><span id="saveIndicator" class="save-indicator" role="status" aria-live="polite">正在恢复本地工作…</span><div class="save-progress-bottom"><span id="saveElapsed"></span><button class="btn" id="retrySave" type="button" hidden>重试保存</button></div></div></div>
    <div id="workspace"><div class="empty">创建并选择一个组合后，开始整理素材</div></div>
    <footer class="footer"><div><span class="privacy" id="status">图片和视频只在当前浏览器本地处理，下载时打包为 ZIP。</span><p class="download-limit" id="downloadLimit"></p></div><button class="btn btn-light" id="download" disabled>下载全部并归档</button></footer>
   </main>
  </div>
 </div>
 <div class="toast" id="toast" role="status"></div>
-<dialog id="usageGuide" class="usage-dialog" aria-labelledby="usageTitle"><div class="usage-dialog-head"><h2 id="usageTitle">使用须知与限制</h2><button class="btn" id="closeUsageGuide" type="button" aria-label="关闭使用须知" autofocus>关闭 ✕</button></div><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，禁止 \ / : * ? &quot; &lt; &gt; | 等文件夹非法字符、控制字符、末尾句点及 Windows 保留名称（如 CON、NUL、COM1）。颜色最多 40 个字符，需包含中文。</li><li>禁止使用浏览器无痕模式。关闭网页或关机前，请确认右侧顶部显示绿色“已保存到此浏览器”。素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单次限制时请逐组下载。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击每组的“下载并归档”，避免一次打包全部素材。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></dialog>
+<dialog id="usageGuide" class="usage-dialog" aria-labelledby="usageTitle"><div class="usage-dialog-head"><h2 id="usageTitle">使用须知与限制</h2><button class="btn" id="closeUsageGuide" type="button" aria-label="关闭使用须知" autofocus>关闭 ✕</button></div><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，禁止 \ / : * ? &quot; &lt; &gt; | 等文件夹非法字符、控制字符、末尾句点及 Windows 保留名称（如 CON、NUL、COM1）。颜色最多 40 个字符，需包含中文。</li><li>禁止使用浏览器无痕模式。关闭网页或关机前，请确认右侧顶部进度达到 100%，并显示绿色“已保存到此浏览器”。超过 60 秒会变红提示耗时较长；真正失败时显示原因和“重试保存”，重试会保留当前素材。素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单次限制时请逐组下载。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section class="workflow-guide"><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击每组的“下载并归档”，避免一次打包全部素材。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></dialog>
 <dialog id="clearArchiveDialog" class="confirm-dialog" aria-labelledby="clearArchiveTitle"><h2 id="clearArchiveTitle">清理已下载归档？</h2><p class="dialog-note">请先确认下载文件完整。此操作永久清除全部已下载归档，之后无法恢复或撤销；正在整理的素材不受影响。</p><div class="dialog-actions"><button class="btn" id="cancelClearArchives" autofocus>保留归档</button><button class="btn btn-danger" id="confirmClearArchives">永久清理</button></div></dialog>
 <dialog id="groupLimitDialog" class="confirm-dialog" aria-labelledby="groupLimitTitle" aria-describedby="groupLimitNote"><h2 id="groupLimitTitle">本组素材未添加</h2><p id="groupLimitNote" class="dialog-note"></p><div class="dialog-actions"><form method="dialog"><button class="btn btn-light" autofocus>知道了</button></form></div></dialog>
 <dialog id="removeComboDialog" class="confirm-dialog" aria-labelledby="removeComboTitle"><h2 id="removeComboTitle">确认删除商品组合？</h2><p id="removeComboNote" class="dialog-note"></p><div class="dialog-actions"><button class="btn" id="cancelRemoveCombo">保留组合</button><button class="btn btn-danger" id="confirmRemoveCombo" autofocus>确认删除组合</button></div></dialog>
@@ -183,6 +188,7 @@ h3{font-size:13px}
 const $=id=>document.getElementById(id);
 let combos=[],selectedId=null,nextId=1,toastTimer;
 let removingGroupId=null,previewObserver=null,persistedFileIds=null;
+const saveProgress={percent:0,started:0,timer:null,operations:0,activeVersion:0,slow:false,phase:'idle'};
 let archives=[],db=null,ready=false,readOnly=false,busy=false,groupPage=0,archivePage=0,saveQueue=Promise.resolve(),saveVersion=0,savedVersion=0,saveFailed=false;
 const pendingFiles=new Map(),thumbPages=new Map(),ARCHIVE_TTL=3*24*60*60*1000;
 const undoStack=[],redoStack=[],HISTORY_LIMIT=50;
@@ -222,7 +228,24 @@ function applyEditHistory(redo=false){
  for(const combo of combos)for(const group of combo.groups)for(const item of group.files)pendingFiles.set(item.id,{id:item.id,file:item.file});
  render();changed();notify((redo?'已重做：':'已撤销：')+entry.label);
 }
-function saveMessage(message,error=false){const saved=!error&&message.startsWith('已保存到此浏览器');for(const id of ['saveState','saveIndicator']){const el=$(id);el.textContent=(saved?'✓ ':'')+message;el.classList.toggle('error',error);el.classList.toggle('saved',saved)}$('saveIndicator').title=saved?'当前工作区已成功写入此浏览器的本地数据库。请保留原文件，禁止使用无痕模式。':'请等待保存完成后再关闭网页。'}
+function saveErrorReason(error){const reasons={QuotaExceededError:'浏览器存储配额或磁盘空间不足，请确认已下载文件完整后清理归档，或释放磁盘空间再重试',AbortError:'数据库事务被中断，请保持页面打开后重试',UnknownError:'浏览器无法完成磁盘写入，请检查磁盘空间和浏览器状态后重试',InvalidStateError:'本地数据库连接已失效，请点击重试保存重新连接',TransactionInactiveError:'本地数据库事务已失效，请重试保存',SecurityError:'浏览器禁止本地存储，请检查网站权限，并使用普通浏览模式',NotReadableError:'原始素材无法读取，请保留原文件并检查磁盘状态',DataCloneError:'部分素材无法写入本地数据库，请保留原文件'};return reasons[error?.name]||'本地数据库异常'+(error?.name?'（'+error.name+'）':'')+'：'+(error?.message||'原因未知，请保留原文件后重试')}
+function renderSaveProgress(){
+ const panel=$('saveProgressPanel'),track=$('saveProgressTrack'),saving=saveProgress.operations>0;
+ const elapsed=saveProgress.started?Math.floor((Date.now()-saveProgress.started)/1000):0;
+ saveProgress.slow=saving&&elapsed>=60;
+ panel.classList.toggle('is-error',saveFailed||saveProgress.slow);panel.classList.toggle('is-saved',saveProgress.phase==='saved'&&!saving&&!saveFailed);
+ $('saveProgressFill').style.width=saveProgress.percent+'%';track.setAttribute('aria-valuenow',String(Math.floor(saveProgress.percent)));
+ $('saveProgressValue').textContent=saveProgress.phase==='saved'&&!saving?'100%':saveProgress.phase==='idle'?'等待恢复':Math.floor(saveProgress.percent)+'%';
+ $('saveElapsed').textContent=saving?'已等待 '+elapsed+' 秒 · '+(saveProgress.phase==='commit'?'等待数据库提交':'写入请求进度') : saveFailed?'当前素材保留在页面中':saveProgress.phase==='saved'?'数据库已提交成功':'';
+ $('retrySave').hidden=!(saveFailed&&ready&&!readOnly&&!saving);$('retrySave').disabled=busy||saving||readOnly;
+ if(saveProgress.slow&&!saveFailed){const message='保存耗时较长，请保持页面打开，并保留原始素材。';for(const id of ['saveState','saveIndicator']){$(id).textContent=message;$(id).classList.add('error');$(id).classList.remove('saved')}}
+}
+function saveMessage(message,error=false){
+ const saved=!error&&message.startsWith('已保存到此浏览器');
+ for(const id of ['saveState','saveIndicator']){const el=$(id);el.textContent=(saved?'✓ ':'')+message;el.classList.toggle('error',error);el.classList.toggle('saved',saved)}
+ if(saved){saveProgress.percent=100;saveProgress.phase='saved';clearInterval(saveProgress.timer);saveProgress.timer=null;saveProgress.started=0;saveProgress.slow=false}
+ $('saveIndicator').title=saved?'当前工作区已成功写入此浏览器的本地数据库。禁止使用无痕模式。':'请等待保存完成后再关闭网页。';renderSaveProgress();
+}
 function canEdit(){if(!ready||readOnly||busy){notify(readOnly?'另一个标签页正在整理，请关闭另一页后重新打开':busy?'正在处理文件，请稍候':'正在恢复本地工作，请稍候');return false}return true}
 function metaCombo(combo){return {id:combo.id,name:combo.name,nextGroup:combo.nextGroup,groups:combo.groups.map(group=>({id:group.id,name:group.name,primaryId:group.primaryId,files:group.files.map(item=>({id:item.id}))}))}}
 function snapshot(){return {version:1,combos:combos.map(metaCombo),archives:structuredClone(archives),selectedId,nextId,draft:Object.fromEntries(['sku1','color1','sku2','color2'].map(id=>[id,$(id).value]))}}
@@ -233,17 +256,24 @@ function openDatabase(){return new Promise((resolve,reject)=>{const request=inde
 function persistState(){
  if(!ready||readOnly)return Promise.reject(new Error('本地工作区尚未就绪'));
  const state=snapshot(),blobs=[...pendingFiles.values()],version=++saveVersion;
- saveMessage('保存中，请等待“已保存”后再关闭页面');
+ saveProgress.operations++;if(!saveProgress.started)saveProgress.started=Date.now();saveProgress.phase='queued';saveProgress.percent=0;
+ saveMessage('保存中，请等待“已保存”后再关闭页面');if(!saveProgress.timer)saveProgress.timer=setInterval(renderSaveProgress,1000);
  const operation=saveQueue.catch(()=>{}).then(async()=>{
-  const tx=db.transaction(['state','files'],'readwrite'),done=transactionDone(tx),store=tx.objectStore('files'),ids=referencedFiles(state);
-  for(const record of blobs)if(ids.has(record.id))store.put(record);
-  tx.objectStore('state').put(state,'workspace');
-  if(persistedFileIds){for(const id of persistedFileIds)if(!ids.has(id))store.delete(id)}else{const cursor=store.openKeyCursor();cursor.onsuccess=()=>{const item=cursor.result;if(item){if(!ids.has(item.key))store.delete(item.key);item.continue()}}}
-  await done;persistedFileIds=ids;
+  saveProgress.activeVersion=version;saveProgress.phase='writing';saveProgress.percent=0;saveFailed=false;saveMessage('正在写入本地数据库，请保持页面打开');
+  const tx=db.transaction(['state','files'],'readwrite'),done=transactionDone(tx),store=tx.objectStore('files'),ids=referencedFiles(state),records=blobs.filter(record=>ids.has(record.id));
+  let completed=0;const total=records.reduce((sum,record)=>sum+Math.max(1,record.file.size),0)+1;
+  function progress(request,weight){request.addEventListener('success',()=>{completed+=weight;if(saveProgress.activeVersion!==version)return;saveProgress.percent=Math.min(95,completed/total*95);if(completed>=total)saveProgress.phase='commit';renderSaveProgress()});return request}
+  try{
+   for(const record of records)progress(store.put(record),Math.max(1,record.file.size));
+   progress(tx.objectStore('state').put(state,'workspace'),1);
+   if(persistedFileIds){for(const id of persistedFileIds)if(!ids.has(id))store.delete(id)}else{const cursor=store.openKeyCursor();cursor.onsuccess=()=>{const item=cursor.result;if(item){if(!ids.has(item.key))store.delete(item.key);item.continue()}}}
+   await done;persistedFileIds=ids;
+  }catch(error){try{tx.abort()}catch(_){}await done.catch(()=>{});throw error}
   for(const record of blobs)if(pendingFiles.get(record.id)===record)pendingFiles.delete(record.id);
   savedVersion=version;if(version===saveVersion){saveFailed=false;saveMessage('已保存到此浏览器 · '+new Date().toLocaleTimeString('zh-CN'));updateUsage()}
  });
- saveQueue=operation;operation.catch(error=>{saveFailed=true;saveMessage(error.name==='QuotaExceededError'?'保存失败：本地空间不足，请先导出备份并清理空间':'本地保存失败，请导出工作备份后重试',true)});return operation;
+ const tracked=operation.catch(error=>{saveFailed=true;saveProgress.phase='failed';saveMessage('保存失败：'+saveErrorReason(error)+'。当前素材未清空，请保留原始素材。',true);throw error}).finally(()=>{saveProgress.operations--;if(!saveProgress.operations){clearInterval(saveProgress.timer);saveProgress.timer=null;saveProgress.started=0}renderSaveProgress()});
+ saveQueue=tracked;tracked.catch(()=>{});return tracked;
 }
 function changed(){persistState().catch(()=>{})}
 function storageSize(bytes){return bytes>=1024**3?(bytes/1024**3).toFixed(1)+' GB':(bytes/1024**2).toFixed(1)+' MB'}
@@ -284,7 +314,7 @@ function validateCombo(){
  for(const id of ['sku1','sku2'])$(id).setAttribute('aria-describedby','comboWarning');
  $('createCombo').disabled=!!message||!ready||readOnly||busy;return !message;
 }
-function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('clearArchives').disabled=disabled||!archives.length;$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo()}
+function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('clearArchives').disabled=disabled||!archives.length;$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo();renderSaveProgress()}
 function renderArchives(){
  $('archiveCount').textContent=archives.length;
  const pages=Math.max(1,Math.ceil(archives.length/20));archivePage=Math.min(archivePage,pages-1);
@@ -466,11 +496,11 @@ async function buildZip(downloadCombos,writer=null){
  const end=endRecord(totalEntries,centralSize,offset);if(writer){for(const part of central)await writer.write(part);await writer.write(end);return null}return new Blob([...local,...central,end],{type:'application/zip'});
 }
 async function archiveDownloaded(downloadCombos,filename,delivery){
- const previousCombos=combos,previousArchives=archives,ids=new Set(downloadCombos.flatMap(combo=>combo.groups.map(group=>group.id))),now=Date.now();
+ const previousCombos=combos,previousArchives=archives,previousSelectedId=selectedId,downloadedComboIds=new Set(downloadCombos.map(combo=>combo.id)),ids=new Set(downloadCombos.flatMap(combo=>combo.groups.map(group=>group.id))),now=Date.now();
  releasePreviews();
- combos=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>!ids.has(group.id))}));
+ combos=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>!ids.has(group.id))})).filter(combo=>combo.groups.length||!downloadedComboIds.has(combo.id));if(!combos.some(combo=>combo.id===selectedId))selectedId=combos[0]?.id??null;
  archives=[...archives,{id:nextId++,archivedAt:now,expiresAt:now+ARCHIVE_TTL,filename,delivery,combos:downloadCombos.map(metaCombo)}];
- try{await persistState()}catch(error){combos=previousCombos;archives=previousArchives;render();renderArchives();throw new Error('文件已发起保存，但归档保存失败；素材仍保留在整理区')}
+ try{await persistState()}catch(error){combos=previousCombos;archives=previousArchives;selectedId=previousSelectedId;render();renderArchives();throw new Error('文件已发起保存，但归档保存失败；素材仍保留在整理区')}
  clearEditHistory();groupPage=0;archivePage=0;render();renderArchives();
 }
 async function downloadZip(groupId=null){
@@ -552,6 +582,10 @@ async function importBackup(file){
 
 const zipLimitText=window.showSaveFilePicker?'当前浏览器：选择保存位置后分块写入，单次 ZIP 素材最多 3.5 GB；超出请逐组下载。':'当前浏览器：单次 ZIP 或工作备份最多 512 MB；更大文件请分组下载，或使用支持选择保存位置的桌面 Chrome / Edge。';
 $('downloadLimit').textContent=zipLimitText;$('zipLimitGuide').textContent=zipLimitText;
+$('retrySave').addEventListener('click',async()=>{
+ if(!ready||readOnly||busy||saveProgress.operations)return;busy=true;syncControls();
+ try{await saveQueue.catch(()=>{});db?.close();db=await openDatabase();persistedFileIds=null;await persistState()}catch(error){saveFailed=true;saveMessage('保存失败：'+saveErrorReason(error)+'。当前素材未清空，请保留原始素材。',true)}finally{busy=false;syncControls()}
+});
 $('openUsageGuide').addEventListener('click',()=>$('usageGuide').showModal());
 $('closeUsageGuide').addEventListener('click',()=>$('usageGuide').close());
 $('usageGuide').addEventListener('click',event=>{if(event.target===$('usageGuide')){const rect=$('usageGuide').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)$('usageGuide').close()}});
