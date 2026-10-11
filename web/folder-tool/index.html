@@ -112,7 +112,7 @@ h3{font-size:13px}
 
 /* 桌面工作台：左右等高，仅列表滚动；较矮窗口保留表单所需高度。 */
 @media(min-width:1051px){
- .layout{height:max(820px,calc(100dvh - 244px));align-items:stretch}
+ .layout{height:max(var(--workbench-min-height,820px),calc(100dvh - 244px));align-items:stretch}
  .config{position:static;align-self:stretch;display:flex;flex-direction:column;min-height:0;overflow:hidden}
  .config> :not(.combo-list){flex-shrink:0}
  .combo-list{flex:1;min-height:80px;overflow-y:auto;overflow-x:hidden;align-content:start;scrollbar-gutter:stable;overscroll-behavior:contain}
@@ -143,6 +143,8 @@ h3{font-size:13px}
 .usage-grid>.workflow-guide{grid-column:1/-1;background:#f7f9fd;border:1px solid #e2e8f4;border-radius:12px;padding:18px 20px}.workflow-guide ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px 30px;padding-left:22px;margin-top:14px!important}.workflow-guide li{padding:0 8px 0 2px}
 @media(max-width:520px){.save-progress-panel{width:100%;margin-left:0}.workflow-guide ol{grid-template-columns:1fr}.usage-grid>.workflow-guide{padding:16px}}
 @media(prefers-reduced-motion:reduce){.save-progress-track>div{transition:none}}
+.batch-dialog{width:min(560px,calc(100vw - 28px));max-height:85dvh;overflow:auto}.batch-download-list{max-height:200px;overflow:auto;margin:12px 0}.batch-download-row{padding:8px 10px;border-bottom:1px solid #edf0f5;font-size:12px;color:#65738c}.batch-dialog .save-progress-track{margin-top:14px}.batch-dialog [hidden]{display:none}
+@media(min-width:1051px){.config{overflow-y:auto;scrollbar-gutter:stable}}
 </style>
 </head>
 <body>
@@ -179,7 +181,8 @@ h3{font-size:13px}
  </div>
 </div>
 <div class="toast" id="toast" role="status"></div>
-<dialog id="usageGuide" class="usage-dialog" aria-labelledby="usageTitle"><div class="usage-dialog-head"><h2 id="usageTitle">使用须知与限制</h2><button class="btn" id="closeUsageGuide" type="button" aria-label="关闭使用须知" autofocus>关闭 ✕</button></div><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，禁止 \ / : * ? &quot; &lt; &gt; | 等文件夹非法字符、控制字符、末尾句点及 Windows 保留名称（如 CON、NUL、COM1）。颜色最多 40 个字符，需包含中文。</li><li>禁止使用浏览器无痕模式。关闭网页或关机前，请确认右侧顶部进度达到 100%，并显示绿色“已保存到此浏览器”。超过 60 秒会变红提示耗时较长；真正失败时显示原因和“重试保存”，重试会保留当前素材。素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单次限制时请逐组下载。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section class="workflow-guide"><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击每组的“下载并归档”，避免一次打包全部素材。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></dialog>
+<dialog id="batchDownloadDialog" class="confirm-dialog batch-dialog" aria-labelledby="batchDownloadTitle"><h2 id="batchDownloadTitle">自动分批下载</h2><p id="batchDownloadSummary" class="dialog-note"></p><div id="batchDownloadList" class="batch-download-list"></div><div class="save-progress-track" role="progressbar" aria-label="当前压缩包打包进度" aria-valuemin="0" aria-valuemax="100" id="batchProgressTrack"><div id="batchProgressFill" style="height:100%;width:0;background:#526bd1"></div></div><p id="batchDownloadStatus" class="dialog-note" role="status" aria-live="polite"></p><div class="dialog-actions"><button class="btn" id="stopBatchDownload" type="button">暂不下载</button><button class="btn btn-light" id="startBatchDownload" type="button" autofocus>开始下载</button></div></dialog>
+<dialog id="usageGuide" class="usage-dialog" aria-labelledby="usageTitle"><div class="usage-dialog-head"><h2 id="usageTitle">使用须知与限制</h2><button class="btn" id="closeUsageGuide" type="button" aria-label="关闭使用须知" autofocus>关闭 ✕</button></div><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，禁止 \ / : * ? &quot; &lt; &gt; | 等文件夹非法字符、控制字符、末尾句点及 Windows 保留名称（如 CON、NUL、COM1）。颜色最多 40 个字符，需包含中文。</li><li>禁止使用浏览器无痕模式。关闭网页或关机前，请确认右侧顶部进度达到 100%，并显示绿色“已保存到此浏览器”。超过 60 秒会变红提示耗时较长；真正失败时显示原因和“重试保存”，重试会保留当前素材。素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单包限制时自动分批，保持素材组完整；单个素材组超过上限会提示先处理该组。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section class="workflow-guide"><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击“下载全部并归档”，系统自动分批。支持目录保存时选择一次文件夹；其他浏览器按提示逐包下载。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></dialog>
 <dialog id="clearArchiveDialog" class="confirm-dialog" aria-labelledby="clearArchiveTitle"><h2 id="clearArchiveTitle">清理已下载归档？</h2><p class="dialog-note">请先确认下载文件完整。此操作永久清除全部已下载归档，之后无法恢复或撤销；正在整理的素材不受影响。</p><div class="dialog-actions"><button class="btn" id="cancelClearArchives" autofocus>保留归档</button><button class="btn btn-danger" id="confirmClearArchives">永久清理</button></div></dialog>
 <dialog id="groupLimitDialog" class="confirm-dialog" aria-labelledby="groupLimitTitle" aria-describedby="groupLimitNote"><h2 id="groupLimitTitle">本组素材未添加</h2><p id="groupLimitNote" class="dialog-note"></p><div class="dialog-actions"><form method="dialog"><button class="btn btn-light" autofocus>知道了</button></form></div></dialog>
 <dialog id="removeComboDialog" class="confirm-dialog" aria-labelledby="removeComboTitle"><h2 id="removeComboTitle">确认删除商品组合？</h2><p id="removeComboNote" class="dialog-note"></p><div class="dialog-actions"><button class="btn" id="cancelRemoveCombo">保留组合</button><button class="btn btn-danger" id="confirmRemoveCombo" autofocus>确认删除组合</button></div></dialog>
@@ -187,7 +190,7 @@ h3{font-size:13px}
 <script>
 const $=id=>document.getElementById(id);
 let combos=[],selectedId=null,nextId=1,toastTimer;
-let removingGroupId=null,previewObserver=null,persistedFileIds=null;
+let removingGroupId=null,previewObserver=null,persistedFileIds=null,batchDownload=null;
 const saveProgress={percent:0,started:0,timer:null,operations:0,activeVersion:0,slow:false,phase:'idle'};
 let archives=[],db=null,ready=false,readOnly=false,busy=false,groupPage=0,archivePage=0,saveQueue=Promise.resolve(),saveVersion=0,savedVersion=0,saveFailed=false;
 const pendingFiles=new Map(),thumbPages=new Map(),ARCHIVE_TTL=3*24*60*60*1000;
@@ -473,7 +476,8 @@ async function deliverBlob(blob,filename,handle){
  if(handle){const writer=await handle.createWritable();try{for(let position=0;position<blob.size;position+=4*1024**2)await writer.write(blob.slice(position,position+4*1024**2));await writer.close()}catch(error){await writer.abort().catch(()=>{});throw error}return 'saved'}
  const link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);return 'started';
 }
-async function buildZip(downloadCombos,writer=null){
+async function buildZip(downloadCombos,writer=null,onProgress=null){
+ let processedBytes=0;const totalBytes=downloadCombos.reduce((sum,combo)=>sum+combo.groups.reduce((n,group)=>n+group.files.reduce((m,item)=>m+item.file.size,0),0),0);
  const local=[],central=[],dt=dosTime();let offset=0,totalEntries=0;
  async function emit(...parts){for(const part of parts){if(!writer){local.push(part);continue}if(part instanceof Blob){for(let position=0;position<part.size;position+=4*1024**2)await writer.write(part.slice(position,position+4*1024**2))}else await writer.write(part)}}
  for(const combo of downloadCombos){
@@ -486,7 +490,7 @@ async function buildZip(downloadCombos,writer=null){
     if(item.id===group.primaryId){const dot=raw.lastIndexOf('.');request='1'+(dot>0?raw.slice(dot):'')}
     const filename=uniqueName(request,used),size=item.file.size;
     if(size>0xffffffff||offset>0xffffffff)throw new Error('文件过大，请拆分为多个压缩包');
-    const parts=zipParts(groupPath+filename,await crc32(item.file),size,offset,false,dt);await emit(parts.local,item.file);central.push(parts.central);offset+=parts.local.length+size;totalEntries++;
+    const parts=zipParts(groupPath+filename,await crc32(item.file),size,offset,false,dt);await emit(parts.local,item.file);central.push(parts.central);offset+=parts.local.length+size;totalEntries++;processedBytes+=size;onProgress?.(totalBytes?processedBytes/totalBytes:1);
     if(totalEntries%8===0)$('status').textContent='正在打包 '+totalEntries+' 个文件…';
    }
   }
@@ -503,24 +507,58 @@ async function archiveDownloaded(downloadCombos,filename,delivery){
  try{await persistState()}catch(error){combos=previousCombos;archives=previousArchives;selectedId=previousSelectedId;render();renderArchives();throw new Error('文件已发起保存，但归档保存失败；素材仍保留在整理区')}
  clearEditHistory();groupPage=0;archivePage=0;render();renderArchives();
 }
+function planZipBatches(source,limit){
+ const batches=[];let batch={combos:[],size:0,groups:0,entries:0};
+ for(const combo of source)for(const group of combo.groups){
+  const size=group.files.reduce((sum,item)=>sum+item.file.size,0),entries=group.files.length+2;
+  const overhead=1024+group.files.reduce((sum,item)=>sum+256+new TextEncoder().encode(combo.name+'/'+group.name+'/'+item.file.name).length*2,0);
+  if(size+overhead>limit||entries>65000)throw new Error('“'+combo.name+' / '+group.name+'”单组超过单包上限 '+storageSize(limit)+'，无法保持整组完整打包。请减少组内素材，或将大视频分段后重新添加。');
+  if(batch.groups&&(batch.size+size+overhead>limit||batch.entries+entries>65000)){batches.push(batch);batch={combos:[],size:0,groups:0,entries:0}}
+  let target=batch.combos.find(item=>item.id===combo.id);if(!target){target={...combo,groups:[]};batch.combos.push(target)}target.groups.push({...group,files:group.files.slice()});batch.size+=size+overhead;batch.entries+=entries;batch.groups++;
+ }if(batch.groups)batches.push(batch);return batches;
+}
+function batchProgress(value){const percent=Math.floor(Math.max(0,Math.min(100,value)));$('batchProgressFill').style.width=percent+'%';$('batchProgressTrack').setAttribute('aria-valuenow',String(percent))}
+function renderBatchDownload(){const plan=batchDownload;if(!plan)return;const count=plan.batches.length;
+ $('batchDownloadSummary').textContent='共 '+plan.totalGroups+' 组素材，将生成 '+count+' 个 ZIP；每包最多 '+storageSize(plan.limit)+'，保持素材组完整。';
+ $('batchDownloadList').replaceChildren(...plan.batches.map((batch,index)=>{const row=document.createElement('div');row.className='batch-download-row';row.textContent=(index<plan.index?'✓ 已归档 · ':'')+'第 '+(index+1)+' / '+count+' 包 · '+batch.groups+' 组 · 约 '+storageSize(batch.size);return row}));
+ $('startBatchDownload').disabled=plan.processing;$('startBatchDownload').hidden=plan.index>=count;
+ $('startBatchDownload').textContent=plan.directory?'继续保存剩余压缩包':plan.directoryMode?'选择文件夹并开始':plan.index?'下载下一包':'开始下载';
+ $('stopBatchDownload').textContent=plan.processing?'本包完成后暂停':plan.index>=count?'完成':'稍后继续';
+}
+function finishBatchSession(){if(!batchDownload)return;if(batchDownload.processing){batchDownload.stopRequested=true;$('batchDownloadStatus').textContent='将完成并归档当前包，然后暂停；剩余素材保留在整理区。';return}batchDownload=null;busy=false;$('batchDownloadDialog').close();syncControls()}
 async function downloadZip(groupId=null){
  if(!canEdit()||!allFiles())return;
- const downloadCombos=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>groupId===null||group.id===groupId)})).filter(combo=>combo.groups.length);
- if(!downloadCombos.length)return;
- const size=downloadCombos.reduce((sum,combo)=>sum+combo.groups.reduce((n,group)=>n+group.files.reduce((m,item)=>m+item.file.size,0),0),0);
- if(size>3.5*1024**3)return notify('本次素材超过 3.5 GB，请分组下载，以保留 ZIP 文件目录所需空间');
- if(!window.showSaveFilePicker&&size>512*1024**2)return notify('当前浏览器仅支持单次 512 MB 下载，请分组下载或使用桌面版 Chrome / Edge');
- busy=true;syncControls();const filename=downloadName('.zip');
- try{
-  const handle=await chooseDestination(filename);
-  await persistState();$('status').textContent='正在打包文件夹…';
-  let delivery;if(handle){const writer=await handle.createWritable();try{await buildZip(downloadCombos,writer);await writer.close();delivery='saved'}catch(error){await writer.abort().catch(()=>{});throw error}}else{const blob=await buildZip(downloadCombos);delivery=await deliverBlob(blob,filename,null)}
-  await archiveDownloaded(downloadCombos,filename,delivery);
-  $('status').textContent=delivery==='saved'?'文件已保存，素材已归档 3 天。':'已发起下载并归档 3 天；请确认浏览器下载完成，必要时可恢复重试。';
-  notify(delivery==='saved'?'已保存并归档，保留 3 天':'已发起下载并归档，可从归档区恢复');
- }catch(error){if(error.name==='AbortError')$('status').textContent='已取消保存，素材仍在整理区。';else{$('status').textContent='下载或归档未完成，素材仍在整理区。';notify(error.message||'下载失败，请重试')}}
- finally{busy=false;syncControls()}
+ const source=combos.map(combo=>({...combo,groups:combo.groups.filter(group=>groupId===null||group.id===groupId)})).filter(combo=>combo.groups.length);if(!source.length)return;
+ const limit=window.showSaveFilePicker?3.5*1024**3:512*1024**2;
+ let batches;try{batches=planZipBatches(source,limit)}catch(error){$('groupLimitTitle').textContent='有素材组无法打包';$('groupLimitNote').textContent=error.message;$('groupLimitDialog').showModal();return}
+ batchDownload={batches,index:0,limit,totalGroups:source.reduce((sum,combo)=>sum+combo.groups.length,0),directory:null,directoryMode:batches.length>1&&!!window.showDirectoryPicker,base:downloadName('')+'_'+String(Date.now()%1000).padStart(3,'0'),processing:false,stopRequested:false};
+ busy=true;syncControls();batchProgress(0);renderBatchDownload();$('batchDownloadStatus').textContent=batchDownload.directoryMode?'选择一次保存文件夹，即可依次保存全部 ZIP。每包成功保存后归档；中途停止时剩余素材保留。':'每包依次下载。保存当前包后点击“下载下一包”；浏览器下载方式需自行确认文件已下载完成。';$('batchDownloadDialog').showModal();
 }
+async function runBatchDownload(){
+ const plan=batchDownload;if(!plan||plan.processing||plan.index>=plan.batches.length)return;
+ plan.processing=true;plan.stopRequested=false;renderBatchDownload();
+ try{
+  // 目录或文件选择器直接由按钮点击触发，保留浏览器要求的用户激活。
+  let firstHandle=null;
+  if(plan.directoryMode&&!plan.directory){try{plan.directory=await window.showDirectoryPicker({mode:'readwrite',id:'bluev-zip-batches'})}catch(error){if(error.name!=='AbortError'){plan.directoryMode=false;throw new Error('无法选择保存文件夹。请再次点击开始，逐包选择保存位置。')}throw error}}
+  else if(!plan.directory)firstHandle=await chooseDestination(plan.base+(plan.batches.length>1?'_第'+String(plan.index+1).padStart(2,'0')+'包_共'+plan.batches.length+'包':'')+'.zip');
+  await persistState();
+  do{
+   const index=plan.index,batch=plan.batches[index],filename=plan.base+(plan.batches.length>1?'_第'+String(index+1).padStart(2,'0')+'包_共'+plan.batches.length+'包':'')+'.zip';
+   batchProgress(0);$('batchDownloadStatus').textContent='正在打包第 '+(index+1)+' / '+plan.batches.length+' 包（'+batch.groups+' 组）…';
+   const handle=plan.directory?await plan.directory.getFileHandle(filename,{create:true}):firstHandle;let delivery;
+   const progress=ratio=>{batchProgress(ratio*95);$('batchDownloadStatus').textContent='第 '+(index+1)+' / '+plan.batches.length+' 包 · 已处理 '+Math.floor(ratio*95)+'%'+(ratio===1?'，正在完成保存…':'')};
+   if(handle){const writer=await handle.createWritable();try{await buildZip(batch.combos,writer,progress);await writer.close();delivery='saved'}catch(error){await writer.abort().catch(()=>{});throw error}}else{const blob=await buildZip(batch.combos,null,progress);delivery=await deliverBlob(blob,filename,null)}
+   await archiveDownloaded(batch.combos,filename,delivery);plan.index++;batchProgress(100);renderBatchDownload();
+   $('batchDownloadStatus').textContent='第 '+plan.index+' / '+plan.batches.length+' 包'+(delivery==='saved'?'已保存并归档。':'已发起下载并归档，请确认浏览器下载完成。');
+  }while(plan.directory&&!plan.stopRequested&&plan.index<plan.batches.length);
+  const complete=plan.index===plan.batches.length;
+  $('status').textContent=complete?'全部 '+plan.index+' 个 ZIP 已处理并归档，保留 3 天；请确认下载文件完整。':'已处理 '+plan.index+' / '+plan.batches.length+' 包，剩余素材仍在整理区。';
+  if(complete){$('batchDownloadStatus').textContent='全部 '+plan.index+' 个 ZIP 已处理并归档。请确认下载文件完整；归档保留 3 天。';notify('已完成 '+plan.index+' 个压缩包')}else if(plan.stopRequested)$('batchDownloadStatus').textContent='已暂停。已完成 '+plan.index+' / '+plan.batches.length+' 包，剩余素材保留，可继续下载。';
+ }catch(error){$('batchDownloadStatus').textContent=(error.name==='AbortError'?'已取消本包保存。':error.message||'本包保存失败。')+' 已完成 '+plan.index+' / '+plan.batches.length+' 包；本包及剩余素材保留，点击开始可重试。';$('status').textContent='批量下载暂停，未完成素材保留在整理区。'}finally{plan.processing=false;renderBatchDownload()}
+}
+$('startBatchDownload').addEventListener('click',runBatchDownload);$('stopBatchDownload').addEventListener('click',finishBatchSession);
+$('batchDownloadDialog').addEventListener('cancel',event=>{event.preventDefault();finishBatchSession()});
 const BACKUP_MAGIC='BLUEVB01';
 async function exportBackup(){
  if(!canEdit())return;busy=true;syncControls();
@@ -580,7 +618,7 @@ async function importBackup(file){
  }catch(error){notify('恢复失败：'+error.message)}finally{busy=false;render();renderArchives();syncControls()}
 }
 
-const zipLimitText=window.showSaveFilePicker?'当前浏览器：选择保存位置后分块写入，单次 ZIP 素材最多 3.5 GB；超出请逐组下载。':'当前浏览器：单次 ZIP 或工作备份最多 512 MB；更大文件请分组下载，或使用支持选择保存位置的桌面 Chrome / Edge。';
+const zipLimitText=window.showSaveFilePicker?'当前浏览器：每包最多 3.5 GB；下载全部会自动分批，选择一次文件夹后依次保存。':'当前浏览器：每个 ZIP 或工作备份最多 512 MB；ZIP 自动分批，按提示逐包下载。建议使用桌面 Chrome / Edge。';
 $('downloadLimit').textContent=zipLimitText;$('zipLimitGuide').textContent=zipLimitText;
 $('retrySave').addEventListener('click',async()=>{
  if(!ready||readOnly||busy||saveProgress.operations)return;busy=true;syncControls();
@@ -589,7 +627,16 @@ $('retrySave').addEventListener('click',async()=>{
 $('openUsageGuide').addEventListener('click',()=>$('usageGuide').showModal());
 $('closeUsageGuide').addEventListener('click',()=>$('usageGuide').close());
 $('usageGuide').addEventListener('click',event=>{if(event.target===$('usageGuide')){const rect=$('usageGuide').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)$('usageGuide').close()}});
-initializeTitleWave();render();startWorkspace();
+function initializeWorkbenchHeight(){
+ const config=document.querySelector('.config'),layout=document.querySelector('.layout');let frame=null;
+ function measure(){frame=null;if(!matchMedia('(min-width:1051px)').matches)return;const style=getComputedStyle(config);let height=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+2+120;
+  for(const child of config.children){if(child.classList.contains('combo-list')||!child.getClientRects().length)continue;const cs=getComputedStyle(child);height+=child.getBoundingClientRect().height+(parseFloat(cs.marginTop)||0)+(parseFloat(cs.marginBottom)||0)}
+  const value=Math.max(820,Math.ceil(height))+'px';if(layout.style.getPropertyValue('--workbench-min-height')!==value)layout.style.setProperty('--workbench-min-height',value);
+ }
+ function schedule(){if(frame===null)frame=requestAnimationFrame(measure)}
+ if('ResizeObserver' in window){const observer=new ResizeObserver(schedule);observer.observe(config);for(const child of config.children)if(!child.classList.contains('combo-list'))observer.observe(child)}window.addEventListener('resize',schedule);schedule();
+}
+initializeTitleWave();render();initializeWorkbenchHeight();startWorkspace();
 </script>
 </body>
 </html>
