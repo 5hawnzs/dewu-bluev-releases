@@ -125,16 +125,28 @@ h3{font-size:13px}
  #workspace>.empty{display:grid;place-items:center;flex:1}
  .main>.footer{margin-top:14px;background:#fff}
 }
+
+.top-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-shrink:0}
+.glare-button{position:relative;display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 22px;border-radius:40px;background:#26334d;color:#fff;border:1px solid #ffffff20;cursor:pointer;overflow:hidden;transition:transform .15s,background .15s;font-size:13px;font-weight:550;letter-spacing:-.01em;white-space:nowrap}
+.glare-button svg{width:16px;height:16px;margin-right:10px;fill:none;stroke:currentColor;stroke-width:1.5}
+.glare-button:hover{background:#34415e;transform:scale(1.02)}.glare-button:active{transform:scale(.96)}.glare-button:focus-visible{outline:3px solid #a8b7ff;outline-offset:3px}
+.glare-shine{position:absolute;inset:0 auto 0 0;width:50px;transform:translateX(-150%) skewX(-20deg);background:linear-gradient(90deg,transparent,#ffffff33,transparent);pointer-events:none}
+.glare-button:hover .glare-shine,.glare-button:focus-visible .glare-shine{animation:guide-shine 1.85s ease-in-out infinite}
+@keyframes guide-shine{0%{left:0;transform:translateX(-150%) skewX(-20deg)}46%,100%{left:100%;transform:translateX(150%) skewX(-20deg)}}
+.usage-dialog{width:min(960px,calc(100vw - 32px));max-height:85dvh;border:1px solid #e2e7f0;border-radius:18px;padding:0 26px 26px;color:#18233d;background:#fff;box-shadow:0 24px 80px #14285030;overflow:auto}.usage-dialog::backdrop{background:#14233f66;backdrop-filter:blur(4px)}
+.usage-dialog-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 0 16px;background:#fff;border-bottom:1px solid #e8ecf3}.usage-dialog-head h2{font-size:19px}
+@media(max-width:520px){.top{flex-wrap:wrap}.top-actions{width:100%}.usage-dialog{padding:0 18px 20px}}
+@media(prefers-reduced-motion:reduce){.glare-button{transition:none}.glare-button:hover .glare-shine,.glare-button:focus-visible .glare-shine{animation:none}}
 </style>
 </head>
 <body>
 <div class="shell">
  <header class="top">
   <div><div class="hint">BLUE V · 素材整理</div><div class="brand-row"><div class="brand">素材文件夹生成器</div><div class="wave-loader" aria-hidden="true"><div class="wave-stage" id="titleWave"></div></div></div><div class="hint">支持图片和视频。每组最多 10 张照片或 1 个视频；先选择商品组合，再分批加入素材。</div></div>
-  <span class="badge">本地处理 · 素材不上传</span>
+  <div class="top-actions"><span class="badge">本地处理 · 素材不上传</span><button id="openUsageGuide" class="glare-button" type="button" aria-haspopup="dialog" aria-controls="usageGuide"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3L12 17.3l-5.6 3 1.1-6.3L3 9.6l6.2-.9Z"/></svg><span>使用须知</span><span class="glare-shine" aria-hidden="true"></span></button></div>
  </header>
  <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><button class="btn btn-danger" id="clearArchives" style="margin-top:12px" type="button">清理已下载归档</button><div class="archive-list" id="archiveList"></div></details>
- <details class="card usage-guide" id="usageGuide"><summary>使用须知与限制 · 大批素材操作指南</summary><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，颜色最多 40 个字符，颜色需包含中文。</li><li>素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单次限制时请逐组下载。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击每组的“下载并归档”，避免一次打包全部素材。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></details>
+ 
  <div class="layout">
   <aside class="card config">
    <div class="section-head combo-heading"><div><span class="combo-eyebrow">PRODUCT COLLECTION</span><h1>商品<span>组合</span></h1></div><span class="combo-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg></span></div>
@@ -161,6 +173,7 @@ h3{font-size:13px}
  </div>
 </div>
 <div class="toast" id="toast" role="status"></div>
+<dialog id="usageGuide" class="usage-dialog" aria-labelledby="usageTitle"><div class="usage-dialog-head"><h2 id="usageTitle">使用须知与限制</h2><button class="btn" id="closeUsageGuide" type="button" aria-label="关闭使用须知" autofocus>关闭 ✕</button></div><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，禁止 \ / : * ? &quot; &lt; &gt; | 等文件夹非法字符、控制字符、末尾句点及 Windows 保留名称（如 CON、NUL、COM1）。颜色最多 40 个字符，需包含中文。</li><li>素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单次限制时请逐组下载。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击每组的“下载并归档”，避免一次打包全部素材。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></dialog>
 <dialog id="clearArchiveDialog" class="confirm-dialog" aria-labelledby="clearArchiveTitle"><h2 id="clearArchiveTitle">清理已下载归档？</h2><p class="dialog-note">请先确认下载文件完整。此操作永久清除全部已下载归档，之后无法恢复或撤销；正在整理的素材不受影响。</p><div class="dialog-actions"><button class="btn" id="cancelClearArchives" autofocus>保留归档</button><button class="btn btn-danger" id="confirmClearArchives">永久清理</button></div></dialog>
 <dialog id="groupLimitDialog" class="confirm-dialog" aria-labelledby="groupLimitTitle" aria-describedby="groupLimitNote"><h2 id="groupLimitTitle">本组素材未添加</h2><p id="groupLimitNote" class="dialog-note"></p><div class="dialog-actions"><form method="dialog"><button class="btn btn-light" autofocus>知道了</button></form></div></dialog>
 <dialog id="removeComboDialog" class="confirm-dialog" aria-labelledby="removeComboTitle"><h2 id="removeComboTitle">确认删除商品组合？</h2><p id="removeComboNote" class="dialog-note"></p><div class="dialog-actions"><button class="btn" id="cancelRemoveCombo">保留组合</button><button class="btn btn-danger" id="confirmRemoveCombo" autofocus>确认删除组合</button></div></dialog>
@@ -256,7 +269,20 @@ function startWorkspace(){
  else{saveMessage('请使用最新版 Chrome 或 Edge，以保护本地工作区',true);syncControls()}
 }
 function duplicateSkus(){const a=cleanName($('sku1').value).normalize('NFKC').toLocaleLowerCase(),b=cleanName($('sku2').value).normalize('NFKC').toLocaleLowerCase();return !!a&&a===b}
-function validateCombo(){const duplicate=duplicateSkus();$('comboWarning').hidden=!duplicate;$('comboWarning').textContent=duplicate?'款号 1 与款号 2 不能相同，请修改后再新建组合。':'';$('sku2').setAttribute('aria-invalid',String(duplicate));$('createCombo').disabled=duplicate||!ready||readOnly||busy;return !duplicate}
+function skuNameError(value){
+ const raw=String(value).normalize('NFKC'),name=raw.trim();
+ if(Array.from(raw).some(char=>char.charCodeAt(0)<32||char.charCodeAt(0)===92||'/:*?"<>|'.includes(char)))return '不得包含文件夹禁止字符：反斜杠 / : * ? " < > | 或控制字符';
+ if(name==='.'||name==='..'||name.endsWith('.'))return '不得以句点结尾，也不能仅由句点组成';
+ if(/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name))return '不得使用 Windows 保留名称（如 CON、NUL、COM1）';
+ return '';
+}
+function validateCombo(){
+ const first=skuNameError($('sku1').value),second=skuNameError($('sku2').value),duplicate=duplicateSkus(),message=first?'款号 1 '+first:second?'款号 2 '+second:duplicate?'款号 1 与款号 2 不能相同，请修改后再新建组合。':'';
+ $('comboWarning').hidden=!message;$('comboWarning').textContent=message;
+ $('sku1').setAttribute('aria-invalid',String(!!first));$('sku2').setAttribute('aria-invalid',String(!!second||duplicate));
+ for(const id of ['sku1','sku2'])$(id).setAttribute('aria-describedby','comboWarning');
+ $('createCombo').disabled=!!message||!ready||readOnly||busy;return !message;
+}
 function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('clearArchives').disabled=disabled||!archives.length;$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo()}
 function renderArchives(){
  $('archiveCount').textContent=archives.length;
@@ -317,7 +343,7 @@ function render(){
  syncControls();observePreviews();
 }
 function addCombo(event){
- event.preventDefault();if(!canEdit())return;if(!validateCombo())return notify('款号 1 与款号 2 不能相同');
+ event.preventDefault();if(!canEdit())return;if(!validateCombo())return notify($('comboWarning').textContent);
  const values={sku1:cleanName($('sku1').value),color1:cleanName($('color1').value),sku2:cleanName($('sku2').value),color2:cleanName($('color2').value)};
  if(!values.sku1||!values.color1)return notify('请填写款号 1 和款号 1 颜色');
  if(!hasChinese(values.color1))return notify('款号 1 颜色请包含中文，便于蓝V识别');
@@ -525,6 +551,9 @@ async function importBackup(file){
 
 const zipLimitText=window.showSaveFilePicker?'当前浏览器：选择保存位置后分块写入，单次 ZIP 素材最多 3.5 GB；超出请逐组下载。':'当前浏览器：单次 ZIP 或工作备份最多 512 MB；更大文件请分组下载，或使用支持选择保存位置的桌面 Chrome / Edge。';
 $('downloadLimit').textContent=zipLimitText;$('zipLimitGuide').textContent=zipLimitText;
+$('openUsageGuide').addEventListener('click',()=>$('usageGuide').showModal());
+$('closeUsageGuide').addEventListener('click',()=>$('usageGuide').close());
+$('usageGuide').addEventListener('click',event=>{if(event.target===$('usageGuide')){const rect=$('usageGuide').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)$('usageGuide').close()}});
 initializeTitleWave();render();startWorkspace();
 </script>
 </body>
