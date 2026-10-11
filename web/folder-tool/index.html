@@ -167,7 +167,7 @@ h3{font-size:13px}
     <p id="comboWarning" role="alert" style="color:#dc2626;font-size:13px" hidden></p><button id="createCombo" class="btn btn-light wide" type="submit">＋ 新建组合</button>
    </form>
    <div class="rule"></div>
-   <div class="section-head"><h1>商品组合列表</h1></div>
+   <div class="section-head"><h1>商品组合列表 <span id="comboCount" style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:99px;background:#eef2ff;color:#526bd1;font-size:12px;font-weight:600;vertical-align:middle" aria-live="polite">0 个</span></h1></div>
    <div class="combo-list" id="comboList"><div class="empty">填写组合信息后，点击“新建组合”</div></div>
    <div class="rule"></div>
    <div id="saveState" class="save-state" role="status" aria-live="polite">正在恢复本地工作…</div>
@@ -366,6 +366,7 @@ function groupMarkup(group){
  return '<section><div class="group-row"><div class="group-info"><div class="group-name">'+esc(group.name)+'</div><div class="group-count">'+mediaCount(group.files)+'</div></div><button class="btn" type="button" data-download-group="'+group.id+'">下载并归档</button><button class="btn btn-danger" type="button" data-remove-group="'+group.id+'"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 10v8m4-8v8"/></svg>移除素材组</button></div><div class="thumbs">'+files.map(item=>thumbMarkup(group,item)).join('')+append+'</div>'+(pages>1?'<div class="pager"><button class="btn" data-thumb-group="'+group.id+'" data-page="'+Math.max(0,page-1)+'">上一页素材</button><span>'+(page+1)+' / '+pages+'</span><button class="btn" data-thumb-group="'+group.id+'" data-page="'+Math.min(pages-1,page+1)+'">下一页素材</button></div>':'')+'</section>';
 }
 function render(){
+ $('comboCount').textContent=combos.length+' 个';
  for(const combo of combos){combo.groups.forEach((group,index)=>{group.name='素材组'+String(index+1).padStart(2,'0')});combo.nextGroup=combo.groups.length+1}
  releasePreviews();
  const list=$('comboList');
