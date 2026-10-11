@@ -108,6 +108,22 @@ h3{font-size:13px}
 .pager{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:11px;color:#8791a3}
 @media(max-width:1050px){.layout{grid-template-columns:1fr}.config{position:static}.shell{padding:24px 20px}.top{gap:12px}.badge{display:none}}
 @media(max-width:520px){.shell{width:100%;padding:18px 14px}.brand{font-size:23px}.brand-row{gap:12px;min-height:51px}.wave-loader{width:102px;height:51px}.wave-stage{transform:scale(.35)}.main{padding:18px 14px}.pair{grid-template-columns:1fr}.drop{min-height:140px}.group-row{flex-wrap:wrap}.group-info{flex-basis:100%}.footer{align-items:flex-start;flex-direction:column}.footer .btn{width:100%}}
+
+/* 桌面工作台：左右等高，仅列表滚动；较矮窗口保留表单所需高度。 */
+@media(min-width:1051px){
+ .layout{height:max(820px,calc(100dvh - 244px));align-items:stretch}
+ .config{position:static;align-self:stretch;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+ .config> :not(.combo-list){flex-shrink:0}
+ .combo-list{flex:1;min-height:80px;overflow-y:auto;overflow-x:hidden;align-content:start;scrollbar-gutter:stable;overscroll-behavior:contain}
+ .main{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+ .history-bar,.main>.footer{flex-shrink:0}
+ #workspace{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+ #workspace>.current,#workspace>.drop,#workspace>.toolbar,#workspace>.pager{flex-shrink:0}
+ #workspace>.groups{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;align-content:start;scrollbar-gutter:stable;overscroll-behavior:contain;padding-right:8px}
+ #workspace>.groups>.empty{display:grid;place-items:center;min-height:100%;padding:36px 20px}
+ #workspace>.empty{display:grid;place-items:center;flex:1}
+ .main>.footer{margin-top:14px;background:#fff}
+}
 </style>
 </head>
 <body>
