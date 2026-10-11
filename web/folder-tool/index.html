@@ -23,6 +23,7 @@ button,input{font:inherit}
 .card{background:#fff;border:1px solid #e5eaf2;border-radius:15px;box-shadow:0 4px 18px #14285008}
 .config{padding:22px;align-self:start;position:sticky;top:18px}
 .main{padding:26px 28px;container-type:inline-size}
+.combo-heading{padding-bottom:14px;border-bottom:1px solid #e8ecf3}.combo-eyebrow{display:block;font-size:9px;font-weight:650;letter-spacing:.16em;color:#8b96ad;margin-bottom:6px}.combo-heading h1{font-size:23px;letter-spacing:.1em;font-weight:750}.combo-heading h1 span{color:#526bd1}.combo-heading-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#f2f4ff,#e7ecff);border:1px solid #e1e6fa}.combo-heading-icon svg{width:22px;height:22px;fill:none;stroke:#6175c8;stroke-width:1.5}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
 h1,h2,h3,p{margin:0}
 h1{font-size:15px;font-weight:700}
@@ -112,13 +113,13 @@ h3{font-size:13px}
 <body>
 <div class="shell">
  <header class="top">
-  <div><div class="hint">BLUE V · 素材整理</div><div class="brand-row"><div class="brand">素材文件夹生成器</div><div class="wave-loader" aria-hidden="true"><div class="wave-stage" id="titleWave"></div></div></div><div class="hint">支持图片和视频。先选择商品组合，再连续加入多批素材；每批自动生成一个素材组。</div></div>
+  <div><div class="hint">BLUE V · 素材整理</div><div class="brand-row"><div class="brand">素材文件夹生成器</div><div class="wave-loader" aria-hidden="true"><div class="wave-stage" id="titleWave"></div></div></div><div class="hint">支持图片和视频。每组最多 10 张照片或 1 个视频；先选择商品组合，再分批加入素材。</div></div>
   <span class="badge">本地处理 · 素材不上传</span>
  </header>
  <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><div class="archive-list" id="archiveList"></div></details>
  <div class="layout">
   <aside class="card config">
-   <div class="section-head"><h1>① 设置商品组合</h1></div>
+   <div class="section-head combo-heading"><div><span class="combo-eyebrow">PRODUCT COLLECTION</span><h1>商品<span>组合</span></h1></div><span class="combo-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg></span></div>
    <div class="hint" style="margin-top:6px">名称按“款号 1 + 颜色 1 + 款号 2 + 颜色 2”生成。款号 2 可不填。</div>
    <form id="comboForm">
     <div class="pair"><label class="field"><span class="field-label">款号 1</span><input class="input" id="sku1" placeholder="例如：A001" maxlength="80" required></label><label class="field"><span class="field-label">款号 1 颜色</span><input class="input" id="color1" placeholder="例如：白色" maxlength="40" required></label></div>
@@ -142,8 +143,9 @@ h3{font-size:13px}
  </div>
 </div>
 <div class="toast" id="toast" role="status"></div>
-<dialog id="removeComboDialog" class="confirm-dialog" aria-labelledby="removeComboTitle"><h2 id="removeComboTitle">确认删除商品组合？</h2><p id="removeComboNote" class="dialog-note"></p><div class="dialog-actions"><button class="btn" id="cancelRemoveCombo" autofocus>保留组合</button><button class="btn btn-danger" id="confirmRemoveCombo">确认删除组合</button></div></dialog>
-<dialog id="removeGroupDialog" class="confirm-dialog" aria-labelledby="removeGroupTitle" aria-describedby="removeGroupNote removeGroupHelp"><div class="dialog-warning" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg></div><h2 id="removeGroupTitle">确认移除素材组？</h2><p class="dialog-note" id="removeGroupNote"></p><p class="dialog-note muted" id="removeGroupHelp">整组素材将从整理区移除。移除后仍可点击“撤销”恢复。</p><div class="dialog-actions"><button class="btn" type="button" id="cancelRemoveGroup" autofocus>保留素材组</button><button class="btn btn-danger" type="button" id="confirmRemoveGroup">确认移除</button></div></dialog>
+<dialog id="groupLimitDialog" class="confirm-dialog" aria-labelledby="groupLimitTitle" aria-describedby="groupLimitNote"><h2 id="groupLimitTitle">本组素材未添加</h2><p id="groupLimitNote" class="dialog-note"></p><div class="dialog-actions"><form method="dialog"><button class="btn btn-light" autofocus>知道了</button></form></div></dialog>
+<dialog id="removeComboDialog" class="confirm-dialog" aria-labelledby="removeComboTitle"><h2 id="removeComboTitle">确认删除商品组合？</h2><p id="removeComboNote" class="dialog-note"></p><div class="dialog-actions"><button class="btn" id="cancelRemoveCombo">保留组合</button><button class="btn btn-danger" id="confirmRemoveCombo" autofocus>确认删除组合</button></div></dialog>
+<dialog id="removeGroupDialog" class="confirm-dialog" aria-labelledby="removeGroupTitle" aria-describedby="removeGroupNote removeGroupHelp"><div class="dialog-warning" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg></div><h2 id="removeGroupTitle">确认移除素材组？</h2><p class="dialog-note" id="removeGroupNote"></p><p class="dialog-note muted" id="removeGroupHelp">整组素材将从整理区移除。移除后仍可点击“撤销”恢复。</p><div class="dialog-actions"><button class="btn" type="button" id="cancelRemoveGroup">保留素材组</button><button class="btn btn-danger" type="button" id="confirmRemoveGroup" autofocus>确认移除</button></div></dialog>
 <script>
 const $=id=>document.getElementById(id);
 let combos=[],selectedId=null,nextId=1,toastTimer;
@@ -279,7 +281,7 @@ function render(){
  const combo=selected(),root=$('workspace');if(combo)groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));
  if(!combo){root.innerHTML='<div class="empty">创建并选择一个组合后，开始整理素材</div>';syncControls();return}
  root.innerHTML='<div class="current"><div class="current-label">当前正在整理</div><div class="current-name">'+esc(combo.name)+'</div></div>'+
-  '<label class="drop" data-drop="1"><input class="file-input" type="file" accept="image/*,video/*,.mp4,.mov,.m4v,.webm,.avi,.mkv,.wmv,.mpeg,.mpg,.3gp" multiple><span><svg viewBox="0 0 24 24"><rect x="4" y="6" width="15" height="14" rx="2"/><path d="M8 4h11a2 2 0 0 1 2 2v10M7 16l3-3 2 2 2-2 3 3M9 10h.01"/></svg><div class="drop-title">将一批图片或视频拖到这里</div><div class="drop-note">图片和视频可一起加入，每批自动生成一个素材组<br>图片可设为主图；视频保留原格式，预览播放取决于浏览器支持。</div><button class="btn btn-light" type="button" data-pick="1" style="margin-top:10px">＋ 选择图片或视频</button></span></label>'+
+  '<label class="drop" data-drop="1"><input class="file-input" type="file" accept="image/*,video/*,.mp4,.mov,.m4v,.webm,.avi,.mkv,.wmv,.mpeg,.mpg,.3gp" multiple><span><svg viewBox="0 0 24 24"><rect x="4" y="6" width="15" height="14" rx="2"/><path d="M8 4h11a2 2 0 0 1 2 2v10M7 16l3-3 2 2 2-2 3 3M9 10h.01"/></svg><div class="drop-title">将一批图片或视频拖到这里</div><div class="drop-note">每组最多 10 张照片或 1 个视频，每批自动生成一个素材组<br>图片可设为主图；视频保留原格式，预览播放取决于浏览器支持。</div><button class="btn btn-light" type="button" data-pick="1" style="margin-top:10px">＋ 选择图片或视频</button></span></label>'+
   '<div class="toolbar"><h2>已整理素材</h2><span>'+combo.groups.length+'组</span></div>'+
   '<div class="groups">'+(combo.groups.length?combo.groups.slice(groupPage*20,groupPage*20+20).map(groupMarkup).join(''):'<div class="empty">还没有素材，拖入第一批图片或视频开始整理</div>')+'</div>'+
   (combo.groups.length>20?'<div class="pager"><button class="btn" data-group-page="'+Math.max(0,groupPage-1)+'">上一页素材组</button><span>'+(groupPage+1)+' / '+Math.ceil(combo.groups.length/20)+'</span><button class="btn" data-group-page="'+Math.min(Math.ceil(combo.groups.length/20)-1,groupPage+1)+'">下一页素材组</button></div>':'');
@@ -306,11 +308,14 @@ function addCombo(event){
  const combo={id:nextId++,name,groups:[],nextGroup:1};
  combos.push(combo);selectedId=combo.id;groupPage=0;$('comboForm').reset();render();changed();notify('组合已创建并选中');
 }
+function checkGroupLimit(files){const videos=files.filter(isVideo).length,photos=files.length-videos;let message='';if(videos&&photos)message='每个素材组仅支持最多 10 张照片或 1 个视频，照片和视频请分组录入。';else if(videos>1)message='每个素材组最多录入 1 个视频，请分组添加。';else if(photos>10)message='每个素材组最多录入 10 张照片，本次共 '+photos+' 张，请减少数量或新建素材组。';if(!message)return true;$('groupLimitNote').textContent=message+' 本次操作未添加任何素材。';if(!$('groupLimitDialog').open)$('groupLimitDialog').showModal();return false}
 function addFiles(fileList,groupId=null){
  if(!canEdit())return;
  const combo=selected();if(!combo)return notify('请先选择商品组合');
  const files=Array.from(fileList||[]).filter(file=>file.type.startsWith('image/')||isVideo(file));
  if(!files.length)return notify('请选择图片或视频文件');
+ const targetGroup=groupId===null?null:combo.groups.find(item=>item.id===Number(groupId));if(groupId!==null&&!targetGroup)return notify('该素材组已不存在，请重新选择');
+ if(!checkGroupLimit([...(targetGroup?.files.map(item=>item.file)||[]),...files]))return;
  if(groupId!==null){
   const group=combo.groups.find(item=>item.id===Number(groupId));if(!group)return notify('该素材组已不存在，请重新选择');
   recordEdit('向'+group.name+'追加'+files.length+'个素材');
@@ -324,10 +329,10 @@ function addFiles(fileList,groupId=null){
  for(const item of group.files)pendingFiles.set(item.id,{id:item.id,file:item.file});
  combo.groups.push(group);groupPage=Math.floor((combo.groups.length-1)/20);render();changed();navigator.storage?.persist?.().catch(()=>{});notify('已自动创建'+group.name+'，加入'+mediaCount(group.files));
 }
-function removeGroup(groupId,confirmed=false){if(!canEdit())return;const combo=selected();if(!combo)return;const index=combo.groups.findIndex(group=>group.id===Number(groupId));if(index<0)return;const group=combo.groups[index];if(!confirmed){removingGroupId=group.id;$('removeGroupNote').textContent='“'+group.name+'”包含'+mediaCount(group.files)+'。';$('removeGroupDialog').showModal();return}recordEdit('移除'+group.name);revoke(group.files);combo.groups.splice(index,1);groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));render();changed()}
+function removeGroup(groupId,confirmed=false){if(!canEdit())return;const combo=selected();if(!combo)return;const index=combo.groups.findIndex(group=>group.id===Number(groupId));if(index<0)return;const group=combo.groups[index];if(!confirmed){removingGroupId=group.id;$('removeGroupNote').textContent='“'+group.name+'”包含'+mediaCount(group.files)+'。';$('removeGroupDialog').showModal();$('confirmRemoveGroup').focus();return}recordEdit('移除'+group.name);revoke(group.files);combo.groups.splice(index,1);groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));render();changed()}
 function removeFile(groupId,fileId){if(!canEdit())return;const combo=selected();const group=combo?.groups.find(item=>item.id===Number(groupId));if(!group)return;const index=group.files.findIndex(item=>item.id===Number(fileId));if(index<0)return;recordEdit('从'+group.name+'移除素材');revoke([group.files[index]]);group.files.splice(index,1);if(group.primaryId===Number(fileId))group.primaryId=null;if(!group.files.length)combo.groups=combo.groups.filter(item=>item.id!==group.id);groupPage=Math.min(groupPage,Math.max(0,Math.ceil(combo.groups.length/20)-1));render();changed()}
 function setPrimary(groupId,fileId){if(!canEdit())return;const group=selected()?.groups.find(item=>item.id===Number(groupId)),item=group?.files.find(item=>item.id===Number(fileId));if(!item||isVideo(item.file))return;recordEdit(group.primaryId===item.id?'取消主图':'设置主图');group.primaryId=group.primaryId===item.id?null:item.id;render();changed()}
-function removeCombo(id,confirmed=false){if(!canEdit())return;const combo=combos.find(item=>item.id===Number(id));if(!combo)return;if(!confirmed){const dialog=$('removeComboDialog');dialog.dataset.comboId=combo.id;$('removeComboNote').textContent='删除“'+combo.name+'”及其全部'+combo.groups.length+'组素材？删除后可以撤销恢复。';dialog.showModal();return}recordEdit('删除商品组合');for(const group of combo.groups)revoke(group.files);combos=combos.filter(item=>item.id!==combo.id);if(selectedId===combo.id)selectedId=combos[0]?.id??null;groupPage=0;render();changed()}
+function removeCombo(id,confirmed=false){if(!canEdit())return;const combo=combos.find(item=>item.id===Number(id));if(!combo)return;if(!confirmed){const dialog=$('removeComboDialog');dialog.dataset.comboId=combo.id;$('removeComboNote').textContent='删除“'+combo.name+'”及其全部'+combo.groups.length+'组素材？删除后可以撤销恢复。';dialog.showModal();$('confirmRemoveCombo').focus();return}recordEdit('删除商品组合');for(const group of combo.groups)revoke(group.files);combos=combos.filter(item=>item.id!==combo.id);if(selectedId===combo.id)selectedId=combos[0]?.id??null;groupPage=0;render();changed()}
 function onListClick(event){const remove=event.target.closest('[data-remove-combo]');if(remove){removeCombo(remove.dataset.removeCombo);return}if(!canEdit())return;const button=event.target.closest('[data-select]');if(!button)return;if(selectedId===Number(button.dataset.select))return;recordEdit('切换商品组合');selectedId=Number(button.dataset.select);groupPage=0;render();changed()}
 $('comboForm').addEventListener('submit',addCombo);
 $('comboList').addEventListener('click',onListClick);
