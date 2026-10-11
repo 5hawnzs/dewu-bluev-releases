@@ -145,6 +145,7 @@ h3{font-size:13px}
 @media(prefers-reduced-motion:reduce){.save-progress-track>div{transition:none}}
 .batch-dialog{width:min(560px,calc(100vw - 28px));max-height:85dvh;overflow:auto}.batch-download-list{max-height:200px;overflow:auto;margin:12px 0}.batch-download-row{padding:8px 10px;border-bottom:1px solid #edf0f5;font-size:12px;color:#65738c}.batch-dialog .save-progress-track{margin-top:14px}.batch-dialog [hidden]{display:none}
 @media(min-width:1051px){.config{overflow-y:auto;scrollbar-gutter:stable}}
+.archive-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:12px}.archive-scroll-controls{display:flex;align-items:center;gap:8px}.archive-scroll-controls[hidden]{display:none}.archive-list.has-archives{display:grid;grid-auto-flow:column;grid-auto-columns:min(340px,85%);gap:12px;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x proximity;overscroll-behavior-x:contain;padding:2px 2px 10px;scrollbar-width:thin;-webkit-overflow-scrolling:touch}.archive-list.has-archives .archive-item{scroll-snap-align:start;background:#fff;min-width:0}.archive-list:focus-visible{outline:2px solid #a8b7ff;outline-offset:4px;border-radius:10px}.archive-list.has-archives .archive-item .hint{line-height:1.7}
 </style>
 </head>
 <body>
@@ -153,7 +154,7 @@ h3{font-size:13px}
   <div><div class="hint">BLUE V · 素材整理</div><div class="brand-row"><div class="brand">素材文件夹生成器</div><div class="wave-loader" aria-hidden="true"><div class="wave-stage" id="titleWave"></div></div></div><div class="hint">支持图片和视频。每组最多 10 张照片或 1 个视频；先选择商品组合，再分批加入素材。<span style="display:inline-block;margin-left:10px;color:#526bd1">建议使用桌面版 Chrome / Edge 打开，支持更大批量素材下载，单次 ZIP 素材最高 3.5 GB。禁止使用浏览器无痕模式。</span></div></div>
   <div class="top-actions"><span class="badge">本地处理 · 素材不上传</span><button id="openUsageGuide" class="glare-button" type="button" aria-haspopup="dialog" aria-controls="usageGuide"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3L12 17.3l-5.6 3 1.1-6.3L3 9.6l6.2-.9Z"/></svg><span>使用须知</span><span class="glare-shine" aria-hidden="true"></span></button></div>
  </header>
- <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><button class="btn btn-danger" id="clearArchives" style="margin-top:12px" type="button">清理已下载归档</button><div class="archive-list" id="archiveList"></div></details>
+ <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><div class="archive-actions"><button class="btn btn-danger" id="clearArchives" type="button">清理已下载归档</button><div class="archive-scroll-controls" id="archiveScrollControls" hidden><span class="hint">左右滑动查看更多</span><button class="btn" type="button" id="archiveScrollLeft" aria-label="向左查看归档">←</button><button class="btn" type="button" id="archiveScrollRight" aria-label="向右查看归档">→</button></div></div><div class="archive-list" id="archiveList" tabindex="0" role="region" aria-label="已下载归档，可左右滚动"></div><div id="archivePager"></div></details>
  
  <div class="layout">
   <aside class="card config">
@@ -317,11 +318,13 @@ function validateCombo(){
  for(const id of ['sku1','sku2'])$(id).setAttribute('aria-describedby','comboWarning');
  $('createCombo').disabled=!!message||!ready||readOnly||busy;return !message;
 }
-function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button').forEach(el=>el.disabled=disabled);$('clearArchives').disabled=disabled||!archives.length;$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo();renderSaveProgress()}
+function syncControls(){const disabled=!ready||readOnly||busy;document.querySelectorAll('#comboForm input,#comboForm button,#workspace button,#workspace input,#comboList button,#archiveList button,#archivePager button').forEach(el=>el.disabled=disabled);$('clearArchives').disabled=disabled||!archives.length;$('download').disabled=disabled||!allFiles();$('backup').disabled=disabled;$('importBackup').disabled=disabled;syncHistoryControls();validateCombo();renderSaveProgress()}
+function syncArchiveScroll(){const list=$('archiveList'),overflow=list.scrollWidth>list.clientWidth+2;$('archiveScrollControls').hidden=!overflow;$('archiveScrollLeft').disabled=list.scrollLeft<=2;$('archiveScrollRight').disabled=list.scrollLeft+list.clientWidth>=list.scrollWidth-2}
 function renderArchives(){
  $('archiveCount').textContent=archives.length;
  const pages=Math.max(1,Math.ceil(archives.length/20));archivePage=Math.min(archivePage,pages-1);
  $('archiveList').innerHTML=archives.length?archives.slice().reverse().slice(archivePage*20,archivePage*20+20).map(archive=>'<div class="archive-item"><strong>'+esc(archive.filename)+'</strong><div class="hint">'+archive.combos.reduce((n,combo)=>n+combo.groups.length,0)+' 组 · '+new Date(archive.archivedAt).toLocaleString('zh-CN')+'<br>到期时间：'+new Date(archive.expiresAt).toLocaleString('zh-CN')+'<br>'+(archive.delivery==='saved'?'已写入所选文件':'已发起下载，请确认浏览器下载完成；可恢复后重试')+'</div><button class="btn" data-restore="'+archive.id+'">恢复到整理区</button></div>').join('')+(pages>1?'<div class="pager"><button class="btn" data-archive-page="'+Math.max(0,archivePage-1)+'">上一页归档</button><span>'+(archivePage+1)+' / '+pages+'</span><button class="btn" data-archive-page="'+Math.min(pages-1,archivePage+1)+'">下一页归档</button></div>':''):'<div class="hint">暂无归档记录</div>';
+ const pager=$('archiveList').querySelector('.pager');$('archivePager').replaceChildren(...(pager?[pager]:[]));$('archiveList').classList.toggle('has-archives',!!archives.length);requestAnimationFrame(syncArchiveScroll);
  syncControls();
 }
 async function restoreArchive(id){
@@ -454,7 +457,7 @@ document.addEventListener('keydown',event=>{
 });
 $('download').addEventListener('click',()=>downloadZip());
 $('comboForm').addEventListener('input',()=>{validateCombo();if(ready&&!busy&&!readOnly)changed()});
-$('archiveList').addEventListener('click',event=>{const pages=event.target.closest('[data-archive-page]');if(pages&&canEdit()){archivePage=Number(pages.dataset.archivePage);renderArchives();return}const button=event.target.closest('[data-restore]');if(button)restoreArchive(button.dataset.restore)});
+$('archivePanel').addEventListener('click',event=>{const pages=event.target.closest('[data-archive-page]');if(pages&&canEdit()){archivePage=Number(pages.dataset.archivePage);renderArchives();return}const button=event.target.closest('[data-restore]');if(button)restoreArchive(button.dataset.restore)});
 $('clearArchives').addEventListener('click',()=>{if(canEdit()&&archives.length)$('clearArchiveDialog').showModal()});
 $('cancelClearArchives').addEventListener('click',()=>$('clearArchiveDialog').close());
 $('confirmClearArchives').addEventListener('click',async()=>{if(!canEdit())return;$('clearArchiveDialog').close();busy=true;syncControls();const previous=archives;try{await saveQueue.catch(()=>{});archives=[];await persistState();clearEditHistory();archivePage=0;renderArchives();await updateUsage();notify('已清理下载归档，正在整理的素材保留')}catch(error){archives=previous;renderArchives();notify('清理失败：'+error.message)}finally{busy=false;syncControls()}});
@@ -636,6 +639,9 @@ function initializeWorkbenchHeight(){
  function schedule(){if(frame===null)frame=requestAnimationFrame(measure)}
  if('ResizeObserver' in window){const observer=new ResizeObserver(schedule);observer.observe(config);for(const child of config.children)if(!child.classList.contains('combo-list'))observer.observe(child)}window.addEventListener('resize',schedule);schedule();
 }
+function scrollArchive(direction){const list=$('archiveList'),card=list.querySelector('.archive-item'),step=card?card.getBoundingClientRect().width+12:list.clientWidth;list.scrollBy({left:direction*step,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'})}
+$('archiveScrollLeft').addEventListener('click',()=>scrollArchive(-1));$('archiveScrollRight').addEventListener('click',()=>scrollArchive(1));$('archiveList').addEventListener('scroll',syncArchiveScroll,{passive:true});$('archivePanel').addEventListener('toggle',syncArchiveScroll);
+if('ResizeObserver' in window)new ResizeObserver(syncArchiveScroll).observe($('archiveList'));
 initializeTitleWave();render();initializeWorkbenchHeight();startWorkspace();
 </script>
 </body>
