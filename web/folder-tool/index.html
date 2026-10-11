@@ -19,6 +19,7 @@ button,input{font:inherit}
 .wave-bars{position:absolute;inset:0;width:292px;height:144px}
 .wave-ball{position:absolute;bottom:0;left:-12px;width:36px;height:36px;object-fit:contain;border-radius:8px;transform-origin:bottom center;box-shadow:0 2px 3px #18181b12}
 .badge{border:1px solid #dce4f2;border-radius:99px;background:#fff;padding:9px 13px;font-size:12px;color:#52617b;white-space:nowrap}
+.usage-guide{margin:0 0 18px;padding:15px 20px}.usage-guide summary{cursor:pointer;font-size:13px;font-weight:650;color:#52617b}.usage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px;padding-top:18px}.usage-grid h2{font-size:14px}.usage-grid ul,.usage-grid ol{padding-left:19px;margin:10px 0 0;color:#65738c;font-size:12px;line-height:1.85}.download-limit{font-size:11px;color:#8791a3;line-height:1.6;margin-top:5px}
 .layout{display:grid;grid-template-columns:minmax(320px,380px) minmax(0,1fr);gap:24px;align-items:start}
 .card{background:#fff;border:1px solid #e5eaf2;border-radius:15px;box-shadow:0 4px 18px #14285008}
 .config{padding:22px;align-self:start;position:sticky;top:18px}
@@ -133,6 +134,7 @@ h3{font-size:13px}
   <span class="badge">本地处理 · 素材不上传</span>
  </header>
  <details id="archivePanel" class="card"><summary>已下载归档 <span id="archiveCount">0</span></summary><div class="hint" style="margin-top:8px">归档保留 3 天，可恢复后重新下载。到期素材将在页面打开时自动清理；未下载素材继续保留。</div><button class="btn btn-danger" id="clearArchives" style="margin-top:12px" type="button">清理已下载归档</button><div class="archive-list" id="archiveList"></div></details>
+ <details class="card usage-guide" id="usageGuide"><summary>使用须知与限制 · 大批素材操作指南</summary><div class="usage-grid"><section><h2>录入与存储</h2><ul><li>每个素材组最多 10 张照片或 1 个视频，不可混放；追加后仍按整组数量计算，超限时整批不录入。</li><li>同一组合的两个款号不能相同，忽略大小写、全角字符和首尾空格。</li><li>款号最多 80 个字符，颜色最多 40 个字符，颜色需包含中文。</li><li>素材只保存在当前设备、当前浏览器中，不跨设备同步。容量由浏览器配额和实际磁盘空间决定，没有固定的 10 GB 保证；录入前会预留存储缓冲空间。</li></ul></section><section><h2>下载与备份</h2><ul><li id="zipLimitGuide"></li><li>ZIP 使用经典格式，总文件大小必须小于 4 GB，含文件夹在内最多 65,535 个条目。超过单次限制时请逐组下载。</li><li>支持选择保存位置的浏览器可分块导出工作备份；其他浏览器单次备份最多 512 MB。备份目录信息最多 8 MB，超过时需分批整理。</li><li>已下载归档保留 3 天，仍占本地空间；到期会在页面打开期间清理。手动清理无法撤销，请先确认下载文件完整。</li></ul></section><section><h2>撤销与重做</h2><ul><li>最多保留最近 50 次组合及素材编辑操作，刷新或关闭页面后不保留撤销历史。</li><li>下载归档、恢复归档、恢复工作备份和永久清理归档会重置编辑历史。</li><li>同一浏览器工作区仅允许一个标签页编辑，其他标签页为只读。</li></ul></section><section><h2>大批素材建议流程</h2><ol><li>先用少量素材完成一次录入、下载，确认保存位置。</li><li>每组录入最多 10 张照片或 1 个视频，大批素材分组处理。</li><li>点击每组的“下载并归档”，避免一次打包全部素材。</li><li>打开下载文件，确认内容完整；需要保留浏览器恢复能力时，先导出工作备份。</li><li>在“已下载归档”中清理确认无误的归档，释放本地空间。当前整理区的素材会保留。</li></ol></section></div></details>
  <div class="layout">
   <aside class="card config">
    <div class="section-head combo-heading"><div><span class="combo-eyebrow">PRODUCT COLLECTION</span><h1>商品<span>组合</span></h1></div><span class="combo-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg></span></div>
@@ -154,7 +156,7 @@ h3{font-size:13px}
   <main class="card main">
    <div class="history-bar"><div class="history-controls" role="group" aria-label="撤销与重做"><button class="btn" id="undo" type="button" title="撤销（Ctrl+Z）" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5-7 7 7 7M3 12h18"/></svg>撤销</button><button class="btn" id="redo" type="button" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled>重做<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 7 7-7 7M21 12H3"/></svg></button></div><span class="history-hint" id="historyHint" aria-live="polite">误操作可撤销，重做可恢复</span></div>
    <div id="workspace"><div class="empty">创建并选择一个组合后，开始整理素材</div></div>
-   <footer class="footer"><span class="privacy" id="status">图片和视频只在当前浏览器本地处理，下载时打包为 ZIP。</span><button class="btn btn-light" id="download" disabled>下载全部并归档</button></footer>
+   <footer class="footer"><div><span class="privacy" id="status">图片和视频只在当前浏览器本地处理，下载时打包为 ZIP。</span><p class="download-limit" id="downloadLimit"></p></div><button class="btn btn-light" id="download" disabled>下载全部并归档</button></footer>
   </main>
  </div>
 </div>
@@ -521,6 +523,8 @@ async function importBackup(file){
  }catch(error){notify('恢复失败：'+error.message)}finally{busy=false;render();renderArchives();syncControls()}
 }
 
+const zipLimitText=window.showSaveFilePicker?'当前浏览器：选择保存位置后分块写入，单次 ZIP 素材最多 3.5 GB；超出请逐组下载。':'当前浏览器：单次 ZIP 或工作备份最多 512 MB；更大文件请分组下载，或使用支持选择保存位置的桌面 Chrome / Edge。';
+$('downloadLimit').textContent=zipLimitText;$('zipLimitGuide').textContent=zipLimitText;
 initializeTitleWave();render();startWorkspace();
 </script>
 </body>
