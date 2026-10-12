@@ -25,9 +25,16 @@ async function rpc(name, body) {
       if (res.status === 404 || code === 'PGRST202' || code === 'PGRST205') {
         return { ok: false, setupRequired: true, error: '云端账号表尚未初始化，请先在 Supabase 执行 docs/supabase-auth-migration.sql' };
       }
-      return { ok: false, error: `云端账号服务返回 HTTP ${res.status}${code ? ` · ${code}` : ''}` };
+      return { ok: false, offline: res.status === 429 || res.status >= 500,
+        error: `云端账号服务返回 HTTP ${res.status}${code ? ` · ${code}` : ''}` };
     }
-    return data && typeof data === 'object' ? data : { ok: false, error: '云端账号服务返回了无效响应' };
+    if (data && typeof data === 'object') {
+      // 仅数据库明确返回的会话失效结果可触发退出；HTTP 和解析错误不算失效。
+      if ((name === 'bluev_auth_status' || name === 'bluev_auth_brands')
+          && data.ok === false && data.error === '登录已过期') data.sessionInvalid = true;
+      return data;
+    }
+    return { ok: false, offline: true, error: '云端账号服务返回了无效响应' };
   } catch (e) {
     const detail = e && e.name === 'AbortError' ? '请求超时' : String((e && e.cause && e.cause.code) || (e && e.message) || e);
     return { ok: false, offline: true, error: `无法连接云端账号服务：${detail}` };
@@ -44,10 +51,9 @@ const login = (username, password) => rpc('bluev_auth_login', { p_username: user
 const status = token => rpc('bluev_auth_status', { p_token: token || '' });
 const admin = (token, action, payload) => rpc('bluev_auth_admin', { p_token: token || '', p_action: action, p_payload: payload || {} });
 const brands = token => rpc('bluev_auth_brands', { p_token: token || '' });
-const prompt = (token, brandId, text) => rpc('bluev_auth_prompt', { p_token: token || '', p_brand_id: brandId, p_prompt: text });
 const changePassword = (token, oldPassword, newPassword) => rpc('bluev_auth_change_password', {
   p_token: token || '', p_old: oldPassword, p_new: newPassword
 });
 const logout = token => rpc('bluev_auth_logout', { p_token: token || '' });
 
-module.exports = { setupState, bootstrap, login, status, admin, brands, prompt, changePassword, logout };
+module.exports = { setupState, bootstrap, login, status, admin, brands, changePassword, logout };

@@ -347,6 +347,7 @@ async function scanParent(parentDir, ctx = {}) {
   const dirs = ents.filter(e => e.isDirectory() && !wp.isJunk(e.name, true)).map(e => e.name);
   const groups = [];
   let i = 0;
+  progress({ done: 0, total: dirs.length, label: '正在读取父目录' });
 
   for (const d of dirs) {
     if (cancelled()) break;
@@ -358,7 +359,9 @@ async function scanParent(parentDir, ctx = {}) {
       sku: r.sku, color: r.color, seq: r.seq,
       files: r.files.map(f => ({ name: f, size: 0, type: wp.isVideo(f) ? 'video' : (wp.isJunk(f, false) ? 'junk' : 'image') }))
     }));
-    const r = await scan(items, { cancelled, progress: () => {} });
+    const r = await scan(items, { cancelled, progress: p => progress({
+      done: i, total: dirs.length, label: `${d} · 素材目录 ${p.done || 0} / ${p.total}`
+    }) });
     for (const row of r.rows) row.group = d;
     groups.push({ name: d, stats: r.stats, rows: r.rows });
     i++;

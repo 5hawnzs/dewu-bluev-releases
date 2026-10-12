@@ -29,6 +29,34 @@ const STEPS = ['上传图片…', '填标题正文', '填话题', '关联好物'
 
 function cfg() { return store.get('publish') || {}; }
 
+// 得物拉起后会经历桌面横屏到应用竖屏的转场；连续读到相同尺寸才允许固定坐标点击。
+async function stableCoordinates(serial, screen, ctx = {}) {
+  const end = Date.now() + 6000;
+  let last = null, stable = 0;
+  while (Date.now() < end) {
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    const live = await adb.uiSize(serial);
+    if (live.known) {
+      stable = last && last.w === live.w && last.h === live.h ? stable + 1 : 1;
+      last = live;
+      const mm = uimap.screenMismatch(screen, live);
+      if (stable >= 2 && !mm.mismatch) return live;
+      // 分辨率确实不同，且方向与表相同：等待旋转也无法修复，不再反复尝试。
+      if (stable >= 2 && mm.mismatch && screen && ((Number(screen.w) > Number(screen.h)) === live.landscape)) {
+        const error = new Error(`设备分辨率 ${live.w}×${live.h} 与定位表 ${screen.w}×${screen.h} 不匹配。请将 MuMu 调为定位表分辨率并核对 DPI，重启模拟器后重试，或重新制作本设备的定位表。`);
+        error.code = 'UI_COORDINATES';
+        throw error;
+      }
+    } else { stable = 0; last = null; }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  const error = new Error(last
+    ? `屏幕方向尚未稳定或与定位表不一致（当前 ${last.w}×${last.h}）。请关闭自动旋转，将得物保持在定位表方向后重试。`
+    : '无法读取设备屏幕尺寸，已停止发布。请重新连接模拟器后重试。');
+  error.code = 'UI_COORDINATES';
+  throw error;
+}
+
 /** 支持「还剩 N 秒」倒计时回调（真机日志：按 1 分钟间隔，57s 后执行） */
 function sleep(ms, cancelled, onTick) {
   return new Promise(resolve => {
@@ -335,7 +363,29 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
   return Object.assign({}, g, { xml: d.xml, animOff: !!d.animOff });
 }
 
+// 商家主页可能没有 tvGoHomePage；使用首页动态流的相机入口，不依赖账号主页布局。
+async function openPublishEntry(serial, ctx = {}) {
+  const home = await adb.ensureApp(serial, { pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity, judge: f => uimap.isHomeScreen(f), timeoutMs: 30000 });
+  if (!home.ok) throw new Error('无法返回得物首页：' + (home.why || '未知原因'));
+  await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' }, {}, ctx);
+  await sleep(400, ctx.cancelled);
+  await runStep(serial, { action: 'tapId', value: uimap.DEWU.entryId, name: '备用发布入口 · 相机' }, {}, ctx);
+  const end = Date.now() + 8000;
+  while (Date.now() < end) {
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    const focus = await adb.currentFocus(serial);
+    if (uimap.isPublishScreen(focus) || uimap.isDraftScreen(focus)) {
+      ctx.publishEntryReady = true;
+      if (ctx.log) ctx.log('已通过动态流相机进入发布流程，跳过账号主页入口', 'info');
+      return { ok: true, focus };
+    }
+    await sleep(300, ctx.cancelled);
+  }
+  throw new Error('已点击动态流相机，但未进入发布流程，请查看当前屏幕或失败截图');
+}
+
 async function runStep(serial, step, data, ctx) {
+  if (ctx.publishEntryReady && step.action === 'tapId' && /:(?:id)\/(?:tvGoHomePage|rlPublish)$/.test(step.value || '')) return { skipped: true, why: '已由备用入口进入发布流程' };
   // 离开话题输入段前先结束最后一个话题，必须早于点击关联好物或提交发布。
   if (!step.topicInput) await topicinput.finish(serial, ctx);
   // ★ 屏幕守卫先判：不成立就**一个像素都不碰**，如实返回 skipped（交给调用方写日志）。
@@ -422,6 +472,11 @@ async function runStep(serial, step, data, ctx) {
             + `（报告导入的老行可能没有）⇒ 改成固定数字，或先把素材重新扫一遍。`);
         }
         const exact = uimap.findNodes(nodes, cond).filter(x => x && x.center);
+        if (!exact.length && step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/tvGoHomePage') {
+          if (ctx.log) ctx.log('当前账号页面没有「主页」按钮，切换动态流相机入口', 'info');
+          await openPublishEntry(serial, ctx);
+          return { alternateEntry: true };
+        }
         const rawHit = exact.length ? exact : uimap.findNodes(nodes, { contains: step.value }).filter(x => x && x.center);
         // ★★ tapCardText：颜色文字**不是**选中卡片的开关
         //   （真机实测：点它弹「选择商品规格」）。这里把「颜色文字」
@@ -538,18 +593,19 @@ async function runStep(serial, step, data, ctx) {
       //   所以「写死的坐标落到了屏幕外」在真机上表现为**每一步都安静地点偏**，日志一条错都没有。
       //   尺寸从 `adb.uiSize()` 取（= `dumpsys window displays` 的 `cur=`，那才是 tap 用的坐标系；
       //   不能拿 `wm size`：它报的是自然方向尺寸，横屏时会给出相反的宽高）。
-      //   ★ 读不到尺寸（known=false）时**不拦** —— 拿一个猜的尺寸判越界就是拿幻觉当判据。
-      //   尺寸只读一次，缓存在 ctx 里（同一次发布里坐标系不会变）。
-      if (!ctx.uiSize) ctx.uiSize = await adb.uiSize(serial);
+      //   读不到尺寸时停止，避免在旋转或断连时继续点击；每个固定坐标步骤重新读取。
+      ctx.uiSize = await stableCoordinates(serial, ctx.uiMapScreen, ctx);
       const badPts = uimap.outOfScreenTapPoints([step], ctx.uiSize);
       if (badPts.length) {
         const sz = ctx.uiSize;
-        throw new Error(`这一步（${step.name || 'tapXY'}）写死的坐标落在屏幕之外：`
+        const error = new Error(`这一步（${step.name || 'tapXY'}）写死的坐标落在屏幕之外：`
           + badPts.map(p => `${p.x},${p.y}`).join(' / ')
           + `；当前坐标系是 ${sz.w}x${sz.h}（${sz.landscape ? '横屏' : '竖屏'}）。`
           + `input tap 对越界坐标**不报错**（实测 rc=0、什么都没点到）⇒ 不拦就是全程静默点偏。`
           + `多半是抓定位表时的分辨率/方向和现在不一样：把模拟器调回去，或停到得物发布页`
           + `重新「抓取页面结构」→ 导入。`);
+        error.code = 'UI_COORDINATES';
+        throw error;
       }
       const r = await adb.tapSeq(serial, pts, pts.length > 1 ? 250 : 0);
       if (!r.ok) throw new Error('点击失败：' + (r.stderr || '').trim());
@@ -730,6 +786,9 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
 }
 
 async function runReal(row, item, copyRow, serial, map, ctx) {
+  ctx.publishEntryReady = false;
+  ctx.uiMapScreen = map.screen;
+  ctx.uiSize = null;
   // 每条素材独立，上一条中断时遗留的输入状态不能带到新页面。
   ctx.topicNeedsEnd = false;
   const log = ctx.log || (() => {});
@@ -815,7 +874,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   const steps = uimap.stepsFor(map, isVideo);
   const fixedPts = uimap.tapPointsOf(steps);
   if (fixedPts.length) {
-    if (!ctx.uiSize) ctx.uiSize = await adb.uiSize(serial);
+    ctx.uiSize = await stableCoordinates(serial, map.screen, ctx);
     const liveSize = ctx.uiSize;
     const mm = uimap.screenMismatch(map.screen, liveSize);
     if (mm.mismatch) {
@@ -828,7 +887,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   }
 
   // ★ 清空必须在 push **之前**：push 完再清会把这一条刚推的也一起清掉。
-  row.status = '清相册';
+  row.status = '清理素材文件';
   if (ctx.onRow) ctx.onRow(row);
   // ★★ 2026-10-04（第四十轮）用户口径：「删除完所有其他不相关的素材后，不要 bluev 了」
   //   ⇒ 清相册的**范围**从「专属目录」扩到**整个 DCIM/Camera**（得物相册的聚合视图读的就是它）。
@@ -848,7 +907,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   if (!mk.ok) throw new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
   log(`${row.dir}：目录清理 ${(Date.now() - clearStarted) / 1000}s`, 'info');
   const albumStarted = Date.now();
-  row.status = '清媒体库';
+  row.status = '清理全盘相册索引';
   if (ctx.onRow) ctx.onRow(row);
   // ★★★ 2026-10-04（真机实测新增）**清全盘相册** —— 上面两步只清了目录，
   //   而得物相册顶部那个「所有照片」是**全盘聚合视图**：把一条 mp4 放进 /sdcard/Movies
@@ -1075,6 +1134,15 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     //      只有屏幕守卫跳过时才返回 `{skipped:true}`。所以「没被跳过」是 `!(rs && rs.skipped)`
     //      —— 写成 `rs && !rs.skipped` 会**永远为假**，回读整段静默失效（这个坑我当场踩过一次）。
     lastTapId = (step.action === 'tapId' && !(rs && rs.skipped)) ? String(step.value || '') : '';
+    // 2026-10-12 用户确认：实际点击提交发布即记成功，不再按 Activity 判断结果。
+    const submit = /^提交发布/.test(step.name || '') || step.submit === true
+      || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布');
+    if (submit && /^tap(?:Id|Text|Desc|XY)$/.test(step.action)) {
+      if (rs && rs.skipped) throw new Error('「提交发布」被屏幕守卫跳过，未点击发布按钮。');
+      log(`${row.dir}：已实际点击提交发布，按确认的口径记录发布成功`, 'ok');
+      return true;
+    }
+
     // ★★ 屏幕守卫（whenOn / whenNotOn）判「这一屏不对」⇒ 这一步**没发任何点击**。
     //   必须说出来：静默少点一步，真机上表现为「下一条莫名失败」，最难查。
     if (rs && rs.skipped) {
@@ -1082,49 +1150,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     }
   }
 
-  // 自定义定位表以话题收尾时，也必须补齐结束空格。
-  await topicinput.finish(serial, ctx);
-
-  // ★★★ 2026-10-04 用户口径：「**发出去了才算成功**」—— 点完「提交发布」必须**真的离开**发布流程。
-  //   不判的话，下面几种情况都会记成「发布成功」，而账号里根本没有这条内容：
-  //     · 得物没受理，还停在发布流程里；· 得物把它存成了草稿；· 提交那一步被屏幕守卫跳过。
-  //   判据与理由见 waitLeftPublishFlow 的注释。
-  //   ★ 超时走**产品真的会读**的那个配置（`postPublishWaitSec`，默认 15s）——
-  //     回归里把它调小来验「等不到就失败」，而不是在这里干等 15 秒
-  //     （干等的坏处：既慢，又会让「超时逻辑本身」没被测到 —— 改坏读取点照样绿）。
-  const waitSec = Number(c.postPublishWaitSec) > 0 ? Number(c.postPublishWaitSec) : 30;
-  const vr = await waitLeftPublishFlow(serial, { timeoutMs: waitSec * 1000, cancelled });
-  if (!vr.ok) {
-    // ★★★ 2026-10-04 修：**先留证、再强停**。
-    //   原来外层的失败截图（run() 的 catch 里那个 saveShot）是在**这里 force-stop 之后**才拍的
-    //   ⇒ 今晚实测两张「失败截图」拍的全是 MuMu 桌面（得物已经被关掉了），等于没留证，
-    //   这也是我今晚一直在瞎猜「点发布那一刻屏幕上是什么」的原因。
-    await saveShot(serial, `seq${row.seq}_publish_stuck`, ctx);
-    // ★ 不许留草稿：把得物**强制关掉** —— 它侧边那条「未完成的动态」不关掉就会躺在草稿箱里，
-    //   下一条发布时还会弹「是否继续编辑」把流程顶偏（用户已经踩过这一次）。
-    const fsr = await adb.forceStop(serial, uimap.DEWU.pkg);
-    if (vr.draft) {
-      throw new Error('点了「提交发布」，但得物把它**存成了草稿**：前台落到了 '
-        + '`com.shizhuang.duapp.media.activity.DraftActivity`（草稿箱），'
-        + `用时 ${vr.waited}s，前台变化：${vr.seen.join(' → ') || '一直读不到'}`
-        + ' —— 按「发出去了才算成功」，这条记**失败**。'
-        + '（已经点了「提交发布」这一步，不是被屏幕守卫跳过；标题/正文是否真的填进去了，'
-        + '看上面「已回读确认填进去了」那几行。）'
-        + (fsr.ok
-          ? '已强制关掉得物，把这条草稿清掉（不然它会以草稿形式留在「草稿箱」里）。'
-          : '★ 想强制关掉得物清草稿但没停掉（' + (fsr.error || '未知原因') + '）—— 请手动去得物「草稿箱」检查并删掉那条草稿。'));
-    }
-    throw new Error('点了「提交发布」，但得物**没有离开发布流程**（等了 ' + vr.waited + 's，最后停在「'
-      + (vr.focus || '读不到') + '」；这段里前台的变化：' + (vr.seen.join(' → ') || '一直读不到') + '）'
-      + ' —— 按你的口径「发出去了才算成功」，这条记**失败**。'
-      + '（也可能是上一步「提交发布」被屏幕守卫跳过了，看上面的日志。）'
-      + (fsr.ok
-        ? '已强制关掉得物，把这条没发出去的草稿清掉（不然它会以草稿形式留在「草稿箱」里）。'
-        : '★ 想强制关掉得物清草稿但没停掉（' + (fsr.error || '未知原因') + '）—— 请手动去得物「草稿箱」检查并删掉那条草稿。'));
-  }
-  log(`${row.dir}：提交发布后已确认离开发布流程（前台 ${vr.seen.join(' → ')}，用时 ${vr.waited}s）`, 'info');
-  // 用户要求取消主页停留。发布确认通过后立即返回，间隔仅由页面上的发布间隔控制。
-  return true;
+  throw new Error('定位表未实际点击「提交发布」按钮，请检查定位表；本条未记为成功。');
 }
 
 /* ---------------- 模拟通道 ---------------- */
@@ -1165,6 +1191,10 @@ async function run(state, ctx = {}) {
   const onRow = ctx.onRow || (() => {});
   const c = cfg();
   const mode = (state.publish && state.publish.mode) || 'mock';
+  // 正式安装版不能在设备未就绪时退回模拟发布。
+  if (require('electron').app.isPackaged && mode !== 'adb') {
+    throw new Error('设备尚未准备好，不能发布。请连接模拟器并通过「检查能不能发布」后重试。');
+  }
   // ★★ 2026-10-03：这里**绝不许**再兜底任何硬编码序列号（此前是 '127.0.0.1:5555'，再前是 'emulator-5554'）。
   //   后果：没选设备也能“跑起来”，实际拿一台**不存在**的设备去发，界面与台账却是绿的。
   const serial = (state.publish && state.publish.device) || c.device || '';
@@ -1210,6 +1240,22 @@ async function run(state, ctx = {}) {
   if (!who.brandId) conclude('这条批次没有品牌归属：发布日志里会记成「未标品牌」，统计时单独列出（不会并进任何品牌）', 'warn');
 
   const todo = rows.filter(r => r.result !== '发布成功');
+  // 批次共有的设备配置在循环前检查，一次不匹配就保持所有条目待处理。
+  if (mode === 'adb' && todo.length && [false, true].some(video => uimap.tapPointsOf(uimap.stepsFor(map, video)).length)) {
+    const home = await adb.ensureApp(serial, {
+      pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity,
+      judge: focus => uimap.isHomeScreen(focus), timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
+    });
+    if (!home.ok) throw new Error('发布前未能将得物拉回首页：' + (home.why || '未知原因'));
+    ctx.uiMapScreen = map.screen;
+    ctx.uiSize = await stableCoordinates(serial, map.screen, ctx);
+    const invalid = [false, true].flatMap(video => uimap.outOfScreenTapPoints(uimap.stepsFor(map, video), ctx.uiSize));
+    if (invalid.length) {
+      const error = new Error(`定位表坐标超出当前 ${ctx.uiSize.w}×${ctx.uiSize.h} 屏幕，请调整分辨率或重新导入定位表。尚未清理相册或推送素材。`);
+      error.code = 'UI_COORDINATES';
+      throw error;
+    }
+  }
   // 预估要按图文/视频分开算：视频单条更慢（推得久 + 还要等媒体库索引），混着算会明显偏短
   const itemById = new Map((state.items || []).map(it => [String(it.id), it]));
   const estKinds = todo.reduce((a, r) => {
@@ -1225,6 +1271,7 @@ async function run(state, ctx = {}) {
   const copyById = new Map((state.copyRows || []).map(r => [r.id, r]));
   let done = 0;
   const results = [];
+  let stoppedReason = '';
 
   for (const row of todo) {
     if (cancelled()) break;
@@ -1286,6 +1333,7 @@ async function run(state, ctx = {}) {
     } catch (e) {
       success = false;
       reason = e.message;
+      if (e.code === 'UI_COORDINATES') stoppedReason = reason;
       // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
       if (mode === 'adb') await saveShot(serial, `seq${row.seq}_fail`, ctx);
     }
@@ -1322,13 +1370,17 @@ async function run(state, ctx = {}) {
     });
     done++;
     progress({ done, total: todo.length, label: row.dir, succeeded: rows.filter(r => r.result === '发布成功').length });
+    if (stoppedReason) {
+      conclude('设备屏幕配置变化，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
+      break;
+    }
   }
 
   const okCount = rows.filter(r => r.result === '发布成功').length;
   const failCount = rows.filter(r => r.result === '失败').length;
   log(`批量发布完成，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s`, 'info');
   log(`发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。发完 ≠ 发出去了，还要回查审核状态`, 'ok');
-  return { rows, results, okCount, total: todo.length, failCount, batch, mode };
+  return { rows, results, okCount, total: todo.length, failCount, batch, mode, stoppedReason };
 }
 
 module.exports = {
@@ -1337,6 +1389,7 @@ module.exports = {
   // ★★ 2026-10-03：把**步骤引擎**也导出来。理由：真机上要逐屏验证某一步（选图 N 张、点颜色格）
   //    时，只有拿这套真代码跑才算数 —— 自己另写一份「差不多的」点在真机上，验的就不是发布器了。
   runStep,
+  openPublishEntry,
   probes: adb.probe, probe: adb.probe, dump: adb.dump, dumpEx: adb.dumpEx,
   currentFocus: adb.currentFocus,
   imeComponent: adb.adbKeyboardIme,

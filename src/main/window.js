@@ -228,7 +228,7 @@ function setLoginMode(on) {
     normalGeo = { bounds: win.getBounds(), maximized: win.isMaximized() };
     loginMode = true;                     // 先置位：让下面的 unmaximize 不落盘
     if (win.isMaximized()) win.unmaximize();
-    win.setMinimumSize(340, 340);
+    win.setMinimumSize(GATE_WIDTH, 200);
     win.setResizable(false);
     win.setMaximizable(false);
     win.setBackgroundColor(GATE_BG);      // 登录页固定浅色，窗口底色跟着走
@@ -252,12 +252,18 @@ function setLoginMode(on) {
 
 /** 渲染层量出登录卡片的实际高度后回调：把窗口收紧到「卡片高度 + 上下呼吸位」 */
 function fitGate(cardHeight) {
-  if (!win || win.isDestroyed() || !loginMode) return;
+  if (!win || win.isDestroyed()) return;
   const raw = Math.round(Number(cardHeight) || 0) + GATE_PAD_Y * 2;
   if (!(raw > 0)) return;
+  // 会话失效或首页加载失败也会重新显示登录页，必须同步收回主窗口尺寸。
+  if (win.isFullScreen()) win.setFullScreen(false);
+  setLoginMode(true);
+  if (win.isMaximized()) win.unmaximize();
+  win.setMinimumSize(GATE_WIDTH, 200);
   const target = Math.max(200, Math.min(760, raw));
-  if (Math.abs(win.getBounds().height - target) < 2) return;
-  win.setBounds({ height: target });
+  const bounds = win.getBounds();
+  if (bounds.width === GATE_WIDTH && Math.abs(bounds.height - target) < 2) return;
+  win.setBounds({ width: GATE_WIDTH, height: target });
   win.center();
 }
 

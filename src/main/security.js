@@ -22,7 +22,7 @@ function trustedSender(event) {
 
 const EDITABLE = new Set([
   'paths.output', 'paths.rejected', 'copy.requiredTopic', 'copy.extraTopics',
-  'copy.concurrency', 'copy.defaultBrandId', 'verify.mode', 'verify.api.endpoint',
+  'copy.concurrency', 'copy.defaultBrandId', 'copy.promptProfileId', 'verify.mode', 'verify.api.endpoint',
   'verify.api.apiKey', 'publish.device', 'publish.intervalSec',
   'publish.intervalMinSec', 'publish.intervalMaxSec'
 ]);

@@ -1,5 +1,7 @@
 # 得物蓝V 素材发布工具 · Windows 桌面版
 
+2026-10-11：改用 GitHub Releases + 网站手动分发，停止 COS 发版。当前客户端已关闭自动更新；操作以 [手动分发说明](docs/MANUAL-DISTRIBUTION.md) 为准，下面的历史自动更新说明不再作为发版步骤。
+
 2026-10-09：本地词库改用 Excel 导入导出，修复登录加载、合并品牌分配界面并完成安全复核。25 套回归、1844 项通过；详情与云端安全补丁见 [复核记录](docs/AUDIT-2026-10-09.md)。
 
 按 [PRD](https://c325414b53f748618ec865de0d865c08.app.workbuddy.host/#prd) 与原型页实现的 Electron 桌面应用，

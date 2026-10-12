@@ -158,7 +158,7 @@ function readRunEntries() {
 }
 
 /** 只留可排错的短错误摘要，并抹掉本机绝对路径与凭据样式字符串。 */
-function safeRunText(value) {
+function safeRunText(value, maxLength = 500) {
   return String(value || '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     // Windows 异常常把含空格路径用引号包住，先整体删除，再处理未加引号的路径片段。
@@ -170,7 +170,7 @@ function safeRunText(value) {
     .replace(/(?:service[_ -]?role|secret|anon)[_ -]?(?:key)?\s*[:=]\s*[^\s,;]+/ig, '[已隐藏凭据]')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 500);
+    .slice(0, maxLength);
 }
 
 function safeApiUsage(value) {
@@ -220,7 +220,7 @@ function toRunRow(e, machine, index = 0) {
     ok: e.kind === 'end' ? !!e.ok : null,
     cancelled: e.kind === 'end' ? !!e.cancelled : false,
     elapsed_sec: e.kind === 'end' ? Number(e.elapsedSec) || 0 : null,
-    error_summary: e.kind === 'end' && !e.ok ? safeRunText(e.error) : '',
+    error_summary: e.type === 'feedback.submit' ? safeRunText(e.feedback, 1000) : (e.kind === 'end' && !e.ok ? safeRunText(e.error) : ''),
     api_usage: e.kind === 'end' && e.type === 'copy.generate' ? safeApiUsage(e.apiUsage) : null
   };
 }
@@ -570,7 +570,10 @@ async function syncOnce(opts = {}) {
     const allTasks = readRunEntries();
     taskRows = allTasks;
     // 首次升级只从当前文件末尾开始，避免把旧版完整运行日志批量补传。
-    if (!Number.isInteger(st.runOffset) || st.runOffset < 0) st.runOffset = allTasks.length;
+    if (!Number.isInteger(st.runOffset) || st.runOffset < 0) {
+      const feedbackAt = allTasks.findIndex(e => e.type === 'feedback.submit');
+      st.runOffset = feedbackAt >= 0 ? feedbackAt : allTasks.length;
+    }
     if (st.runOffset > allTasks.length) {
       st.reset = `运行日志现有 ${allTasks.length} 行，游标停在 ${st.runOffset} —— 已跳到末尾`;
       st.runOffset = allTasks.length;
@@ -730,12 +733,15 @@ async function test() {
 
 function start() {
   stop();
+  // 自检仍可显式调用模拟同步，但不启动向真实云端上传的后台定时器。
+  if (process.env.BLUEV_TEST_RUNTIME === '1') return;
   const cfg = cfgOf();
   if (!cfg.enabled) return;
   const st = readState();
   if (!Number.isInteger(st.runOffset)) {
     // 升级后的首次同步从当前日志末尾开始，旧历史不自动补传。
-    st.runOffset = readRunEntries().length;
+    const entries = readRunEntries(), feedbackAt = entries.findIndex(e => e.type === 'feedback.submit');
+    st.runOffset = feedbackAt >= 0 ? feedbackAt : entries.length;
     writeState(st);
   }
   const ms = Math.max(10, cfg.intervalSec) * 1000;

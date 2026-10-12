@@ -219,6 +219,10 @@ console.log('\nK. ★ 端到端：真跑一次任务，验证「流水走明细�
   };
 
   try {
+    // userData 隔离不影响默认输出路径；必须显式隔离日志和素材输出。
+    const isolatedStore = require(path.join(ROOT, 'src/main/store.js'));
+    isolatedStore.set({ paths: { output: path.join(TMP, 'output'), rejected: path.join(TMP, 'rejected') } });
+    isolatedStore.flush();
     const LB = require(path.join(ROOT, 'src/main/logbus.js'));
     const lifecycleEvents = [];
     fakeElectron.BrowserWindow.getAllWindows = () => [{ isDestroyed: () => false, setProgressBar() {}, webContents: { send: (channel, payload) => lifecycleEvents.push({ channel, payload }) } }];

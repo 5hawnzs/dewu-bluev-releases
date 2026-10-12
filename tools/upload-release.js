@@ -325,4 +325,7 @@ function main() {
 }
 
 module.exports = { parseManifest, humanSize, padTo, pickInstaller, versionGate, compareVersion, channelFile, channelMismatch, loadEnv, argOf, hasOf };
-if (require.main === module) main();
+if (require.main === module) {
+  console.error('COS 发布已停用。请运行 npm run release:prepare，使用 GitHub Releases 和网站手动分发。');
+  process.exitCode = 1;
+}

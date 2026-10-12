@@ -4,6 +4,8 @@
 node_modules/
 dist/
 dist-new/
+dist-manual/
+distribution/
 out/
 *.log
 
@@ -53,3 +55,4 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+dist-*/

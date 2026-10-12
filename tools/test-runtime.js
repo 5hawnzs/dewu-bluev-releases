@@ -2,6 +2,7 @@
 
 // 自检的日志接收端可能随终端/父进程结束而断开。此时按失败退出，不能弹窗或假报通过。
 module.exports = function installTestRuntime({ app, timeoutMs = 180000 } = {}) {
+  process.env.BLUEV_TEST_RUNTIME = '1';
   function exitFailed() {
     if (app) app.exit(1);
     else process.exit(1);

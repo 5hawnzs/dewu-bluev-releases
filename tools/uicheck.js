@@ -25,7 +25,7 @@ app.commandLine.appendSwitch('disable-gpu');
 
 // ★ 下标 = 页签编号 - 1。页签 5「发布单」2026-10-03 已按用户要求删除，编号**不重排**
 //   ⇒ 第 5 位留 null 占位（否则 6~12 的标题会整体错位一格）。
-const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '本地词库'];
+const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '本地词库', '更新日志'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -178,7 +178,8 @@ app.whenReady().then(async () => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      spellcheck: false
+      spellcheck: false,
+      backgroundThrottling: false
     }
   });
   logbus.attach(win);
@@ -194,6 +195,33 @@ app.whenReady().then(async () => {
 
   await win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
   await new Promise(r => setTimeout(r, 1500));   // 等 boot() 把配置/工程/日志都取回来
+  if (process.env.BLUEV_UPDATE_PREVIEW_ONLY === '1') {
+    win.setSize(1280, 1000);
+    win.showInactive();
+    for (const stage of ['downloading', 'verifying', 'installing']) {
+      await win.webContents.executeJavaScript(`state.info.version = '1.1.1'; state.update = { current: '1.1.1', status: '${stage}', percent: 47, message: '${stage === 'downloading' ? '正在下载安装包…' : stage === 'verifying' ? '正在校验安装包，请稍候…' : '校验完成，正在启动更新…App 即将退出，更新完成后自动打开'}' }; state.tab = 13; renderAll(); document.querySelector('#pane').scrollTop = 0;`);
+      await new Promise(r => setTimeout(r, 700));
+      fs.writeFileSync(path.join(ROOT, '../investigation-20261012/update-' + stage + '-preview.png'), (await win.webContents.capturePage()).toPNG());
+    }
+    console.log('PASS 更新进度三阶段预览已生成（仅预览，不替代完整回归）');
+    app.exit(0); return;
+  }
+  if (process.env.BLUEV_FEEDBACK_PREVIEW_ONLY === '1') {
+    win.setSize(1280, 900);
+    await win.webContents.executeJavaScript(`state.tab = 7; renderAll(); document.querySelector('[data-act="feedback:open"]').click();`);
+    await new Promise(r => setTimeout(r, 300));
+    fs.writeFileSync(path.join(ROOT, '../investigation-20261012/feedback-preview.png'), (await win.webContents.capturePage()).toPNG());
+    console.log('PASS 反馈窗口预览已生成（仅预览，不替代完整回归）');
+    app.exit(0); return;
+  }
+  if (process.env.BLUEV_RELEASE_PREVIEW_ONLY === '1') {
+    win.setSize(1280, 1500);
+    await win.webContents.executeJavaScript(`Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); state.info.version = '1.1.1'; state.tab = 13; renderAll(); document.querySelector('#pane').scrollTop = 0;`);
+    await new Promise(r => setTimeout(r, 700));
+    fs.writeFileSync(path.join(ROOT, '../investigation-20261012/changelog-preview.png'), (await win.webContents.capturePage()).toPNG());
+    console.log('PASS 更新日志预览已生成（仅预览，不替代完整回归）');
+    app.exit(0); return;
+  }
 
   // 文件夹工具按钮在系统开启「减少动态效果」时也必须继续慢速播放，不能整段停成静态。
   const cdp = win.webContents.debugger;
@@ -213,7 +241,7 @@ app.whenReady().then(async () => {
       && folderMotion.names[2] === 'folder-tool-gradient' && folderMotion.durations.every(x => x === '18s'),
     JSON.stringify(folderMotion));
 
-  ok('左侧导航是 10 个页签（货号颜色校验与「发布单」已隐藏/删除）', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 10,
+  ok('左侧导航包含新增更新日志，共 11 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 11,
     await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
   ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
     await win.webContents.executeJavaScript(`(() => {
@@ -1031,12 +1059,12 @@ app.whenReady().then(async () => {
   // 设置页对所有账号撤掉分发入口，并忽略旧版本的状态推送。
   const panel = await win.webContents.executeJavaScript(`(() => {
     document.querySelector('.nav[data-tab="7"]').click();
-    return { box: !!document.querySelector('#updBox'),
+    return { box: !!document.querySelector('#versionUpdate'),
       text: document.querySelector('#head').textContent + document.querySelector('#pane').textContent,
       deps: /外部依赖/.test(document.querySelector('#pane').textContent) };
   })()`);
-  ok('管理员也没有应用更新面板', panel.box === false);
-  ok('设置页没有分发文字及按钮', !/应用更新|检查更新|下载更新|更新通道|立即安装/.test(panel.text));
+  ok('更新面板已从设置页移走', panel.box === false);
+  ok('设置页不再重复显示检查更新入口', !/检查更新/.test(panel.text));
   ok('设置页其他功能正常显示', panel.deps === true);
   const updaterSource = fs.readFileSync(path.join(ROOT, 'src/main/index.js'), 'utf8');
   ok('启动时不再初始化或调度联网检查', !/updater\.(init|scheduleStartupCheck)/.test(updaterSource));
@@ -1060,7 +1088,7 @@ app.whenReady().then(async () => {
       nav7.click();
       await new Promise(r => setTimeout(r, 200));
       out.admin = {
-        updBox: !!document.querySelector('#pane #updBox'),
+        updBox: !!document.querySelector('#pane #versionUpdate'),
         head: (document.querySelector('#head') || {}).textContent || '',
         // ★ 2026-10-04：管理员视角也要查「路径」块在不在 —— 用户要求的是「对所有人隐藏」，
         //   所以两个视角都得覆盖，不能只验普通成员那一支。
@@ -1073,7 +1101,7 @@ app.whenReady().then(async () => {
       const pane = document.querySelector('#pane');
       const head = document.querySelector('#head');
       out.nonadmin = {
-        updBox: !!pane.querySelector('#updBox'),
+        updBox: !!pane.querySelector('#versionUpdate'),
         paneText: pane.textContent,
         head: head.textContent,
         h3: [...pane.querySelectorAll('.box h3')].map(e => e.textContent),
@@ -1091,20 +1119,20 @@ app.whenReady().then(async () => {
       // ③ 还原登录态，别污染后面的套件
       state.auth = saved;
       renderAll();
-      out.restored = { canAdmin: canAdmin(), updBox: !!document.querySelector('#pane #updBox') };
+      out.restored = { canAdmin: canAdmin(), updBox: !!document.querySelector('#pane #versionUpdate') };
       return out;
     })()`);
 
-    ok('★ 管理员视角：设置页没有「应用更新」整块',
-      !!gate && gate.admin.updBox === false && !/应用更新/.test(gate.admin.head),
+    ok('管理员设置页不重复显示更新入口',
+      !!gate && gate.admin.updBox === false,
       gate ? 'updBox=' + gate.admin.updBox + ' head=' + JSON.stringify((gate.admin.head || '').slice(0, 60)) : 'gate=null');
     ok('★ 切到普通成员后 renderAll：canAdmin() 真的变 false（机制先自证，免得断言建在空地基上）',
       !!gate && gate.canAdmin_nonadmin === false, JSON.stringify(gate && gate.canAdmin_nonadmin));
-    ok('★ 非管理员设置页：整块「应用更新」从 DOM 里消失（不是藏起来，是真的不渲染）',
+    ok('普通成员设置页不重复显示更新入口',
       !!gate && gate.nonadmin.updBox === false,
       gate ? 'h3=' + JSON.stringify(gate.nonadmin.h3) : '');
-    ok('★ 非管理员设置页：页面（含副标题）一个字都不提 应用更新/当前版本/新版本/检查更新/下载更新/更新通道/测试版',
-      !!gate && !/应用更新|当前版本|新版本|检查更新|下载更新|更新通道|测试版/.test(gate.nonadmin.paneText + gate.nonadmin.head),
+    ok('普通成员设置页不残留旧更新文案',
+      !!gate && !/应用更新|检查更新/.test(gate.nonadmin.paneText),
       gate ? JSON.stringify((gate.nonadmin.paneText || '').replace(/\s+/g, ' ').slice(0, 90)) : '');
     ok('★ 非管理员设置页副标题也不再提「应用更新」（界面文字得跟界面上真有的东西对得上）',
       !!gate && !/应用更新/.test(gate.nonadmin.head),
@@ -1120,10 +1148,10 @@ app.whenReady().then(async () => {
     ok('★ 设置页副标题跟着改口：不再提「路径」（界面文字得跟界面上真有的东西对得上）',
       !!gate && !/路径、/.test(gate.admin.head + gate.nonadmin.descText),
       gate ? JSON.stringify((gate.nonadmin.descText || '').replace(/\s+/g, ' ').slice(0, 90)) : '');
-    ok('★ 正向对照：非管理员这一页**照常渲染**（外部依赖 / 保存 / 运行环境 都在，不是白页）—— 防「空==空」假绿',
-      !!gate && gate.nonadmin.hasDeps && gate.nonadmin.saveBtn && gate.nonadmin.hasRuntime,
+    ok('普通成员外部依赖正常显示，去掉无效保存按钮',
+      !!gate && gate.nonadmin.hasDeps && !gate.nonadmin.saveBtn && gate.nonadmin.hasRuntime,
       gate ? 'deps=' + gate.nonadmin.hasDeps + ' save=' + gate.nonadmin.saveBtn + ' runtime=' + gate.nonadmin.hasRuntime : '');
-    ok('还原管理员登录态后仍无分发面板',
+    ok('还原管理员登录态后设置页仍无重复更新面板',
       !!gate && gate.restored.updBox === false && gate.restored.canAdmin === true,
       JSON.stringify(gate && gate.restored));
 
@@ -1168,7 +1196,7 @@ app.whenReady().then(async () => {
       !!ver && ver.exists && ver.inTitlebar && ver.afterName,
       JSON.stringify(ver && { exists: ver.exists, inTitlebar: ver.inTitlebar, afterName: ver.afterName }));
     ok('★ 版本号显示的就是 app:info.version（一致性断言，不写死版本号）',
-      !!ver && !!ver.info && ver.text === 'v' + ver.info,
+      !!ver && !!ver.info && ver.text.split(' · ')[0] === 'v' + ver.info,
       JSON.stringify(ver && { text: ver.text, info: ver.info }));
 
     // 源码级守卫：更新界面与渲染函数必须彻底移除。
@@ -1444,7 +1472,7 @@ app.whenReady().then(async () => {
       await new Promise(r => setTimeout(r, 250));
       if (document.body.textContent.includes('设备检查结果')) break;
     }
-    const box = [...document.querySelectorAll('.box')].find(b => b.textContent.includes('设备检查结果'));
+    const box = document.querySelector('.device-probe');
     if (!box) return { err: '结果面板没出现', btnLabel };
     const det = box.querySelector('details');
     return {
@@ -2460,7 +2488,7 @@ app.whenReady().then(async () => {
       {level:'bad',title:'中文标题和正文发不出去（没装中文输入法）',how:'需配置输入法'}
     ] };
     renderAll();
-    const beforeClickCards = document.querySelectorAll('#pane .box > div[style*="border-left:3px solid"]').length;
+    const beforeClickCards = document.querySelectorAll('#pane .device-probe > div[style*="border-left:3px solid"]').length;
     const onlyDewu = beforeClickCards === 1 && document.querySelector('#pane').textContent.includes('去设置下载得物')
       && !document.querySelector('#pane').textContent.includes('中文标题和正文发不出去');
     const imeRow = [...document.querySelectorAll('#pane details tr')].find(tr => tr.textContent.includes('中文输入 ADBKeyboard'));
@@ -2501,6 +2529,26 @@ app.whenReady().then(async () => {
   ok('合规结果超过60条时28项未自动处理仍完整可见且优先显示', regressionUi.complete && regressionUi.first);
   ok('主工作页移除顶部项目标识', regressionUi.noProject);
   ok('左侧所有模块移除数字和状态角标', regressionUi.noCounts);
+  const complianceBusy = await win.webContents.executeJavaScript(`(() => {
+    const saved = { jobs: state.jobs, compliance: state.project.compliance, tab: state.tab };
+    try {
+      state.tab = 2;
+      const results = [];
+      for (const type of ['compliance.scanParent', 'compliance.scan', 'compliance.fix']) {
+        state.jobs = [{ id: '合规进度测试', type, progress: { done: 1, total: 3, label: '当前批次' } }];
+        state.project.compliance = { rows: [], stats: null };
+        renderAll();
+        const first = !!document.querySelector('#prog') && document.querySelector('#pane').textContent.includes('正在');
+        updateProgress({ done: 2, total: 3, label: '下一批次' });
+        const updated = document.querySelector('#progTxt').textContent.includes('2 / 3');
+        state.project.compliance = { rows: [{ file: '上次报告.jpg', status: 'manual', issue: '尺寸不足' }], stats: { total: 1, manual: 1 } };
+        renderAll();
+        results.push(first && updated && !!document.querySelector('#prog') && document.querySelector('#pane').textContent.includes('上次报告.jpg'));
+      }
+      return results;
+    } finally { state.jobs = saved.jobs; state.project.compliance = saved.compliance; state.tab = saved.tab; renderAll(); }
+  })()`);
+  ok('首次父目录检查、普通检查和处理均显示并更新进度，重新检查保留上次报告', complianceBusy.length === 3 && complianceBusy.every(Boolean));
   const { dialog } = require('electron');
   const originalDirDialog = dialog.showOpenDialog;
   let dirOptions = null;
@@ -2623,6 +2671,98 @@ app.whenReady().then(async () => {
   ok('发布状态文字增长不会改变素材目录列的位置、宽度和行高', rowRefresh.layoutStable, JSON.stringify(rowRefresh));
   ok('发布结束耗时停止、切换页面数据保留、错误文字安全转义',
     rowRefresh.stopped && rowRefresh.escaped && rowRefresh.retained && rowRefresh.retry && rowRefresh.retryCleared, JSON.stringify(rowRefresh));
+  // IntersectionObserver 在完全隐藏的窗口里会暂停画布；短暂显示测试窗口验证真实可见播放。
+  win.showInactive();
+  const releaseCheck = await win.webContents.executeJavaScript(`(async () => {
+    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    state.tab = 13; renderAll();
+    document.querySelector('#pane').scrollTop = 0;
+    document.querySelector('[data-release-canvas]').scrollIntoView({ block: 'center' });
+    await new Promise(r => setTimeout(r, 500));
+    const c = document.querySelector('[data-release-canvas]');
+    const first = c.toDataURL();
+    const flow = document.querySelector('.release-flow');
+    const offset = getComputedStyle(flow).strokeDashoffset;
+    await new Promise(r => setTimeout(r, 500));
+    const second = c.toDataURL();
+    const pipelineAnimated = offset !== getComputedStyle(flow).strokeDashoffset;
+    await new Promise(r => setTimeout(r, 500));
+    const animated = first !== second && second !== c.toDataURL();
+    const media = window.matchMedia;
+    let reducedAnimated = false;
+    try {
+      window.matchMedia = query => query.includes('prefers-reduced-motion') ? { matches: true } : media.call(window, query);
+      window.releaseMotion.mount();
+      await new Promise(r => setTimeout(r, 300));
+      const reducedFirst = c.toDataURL();
+      await new Promise(r => setTimeout(r, 500));
+      reducedAnimated = reducedFirst !== c.toDataURL();
+    } finally { window.matchMedia = media; }
+    if (hiddenDescriptor) Object.defineProperty(document, 'hidden', hiddenDescriptor); else delete document.hidden;
+    const stations = document.querySelectorAll('.release-pipeline li').length;
+    const dateGroups = document.querySelectorAll('.release-date').length;
+    state.tab = 12; renderAll();
+    if (!state.lex) await loadLexicon();
+    const cells = [...document.querySelectorAll('.skeleton-table tbody td:nth-child(2)')];
+    const namesFit = cells.length === 15 && cells.every(c => c.scrollWidth <= c.clientWidth);
+    state.tab = 13; renderAll();
+    return { animated, pipelineAnimated, reducedAnimated, canvasFrames: c.dataset.frame, canvasSize: [c.width,c.height], stations, dateGroups, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
+  })()`);
+  win.hide();
+  ok('更新日志轮廓连续变化、流程动画移动，减少动态效果模式仍缓慢播放', releaseCheck.animated && releaseCheck.pipelineAnimated && releaseCheck.reducedAnimated && releaseCheck.stations === 5 && releaseCheck.dateGroups === 1, JSON.stringify(releaseCheck));
+  ok('句式名称完整显示、更新日志页提供检查更新', releaseCheck.namesFit && releaseCheck.updatePanel, JSON.stringify(releaseCheck));
+  const updateNotice = await win.webContents.executeJavaScript(`(() => {
+    const saved = { update: state.update, auth: state.auth, tab: state.tab };
+    try {
+      state.auth = { requireLogin: true, user: { username: '测试', role: 'member' } };
+      state.update = { status: 'available', build: 1, latestBuild: 2 };
+      ACTS['update:open']();
+      const nav = document.querySelector('.nav[data-tab="13"]');
+      const found = state.tab === 13 && nav.classList.contains('has-update') && !!document.querySelector('[data-act="update:download"]');
+      state.update = { status: 'current', build: 2, latestBuild: 2 }; renderAll();
+      return found && !nav.classList.contains('has-update');
+    } finally { state.update = saved.update; state.auth = saved.auth; state.tab = saved.tab; renderAll(); }
+  })()`);
+  ok('普通成员在更新日志下载更新，有新版显示紫色圆点、最新版本移除圆点', updateNotice);
+  const updateProgressUi = await win.webContents.executeJavaScript(`(() => {
+    const saved = state.update;
+    try {
+      state.update = { status: 'downloading', percent: 47 }; let box = document.createElement('div'); box.innerHTML = updatePanelHtml();
+      const download = box.querySelector('[role="progressbar"]').getAttribute('aria-valuenow') === '47' && box.textContent.includes('47%') && !box.querySelector('progress');
+      state.update = { status: 'verifying', percent: 28 }; box.innerHTML = updatePanelHtml();
+      const verifying = box.textContent.includes('校验安装包') && box.querySelector('[data-act="update:check"]').disabled && !box.querySelector('[data-act="update:install"]');
+      state.update = { status: 'installing', percent: 100 }; box.innerHTML = updatePanelHtml();
+      return download && verifying && !!box.querySelector('.indeterminate') && !box.querySelector('[role="progressbar"]').hasAttribute('aria-valuenow') && box.textContent.includes('每小时自动检查');
+    } finally { state.update = saved; }
+  })()`);
+  ok('更新下载显示同款细进度条、校验状态禁用按钮、安装启动显示不确定进度', updateProgressUi);
+  const feedbackUi = await win.webContents.executeJavaScript(`(() => {
+    const saved = state.tab;
+    try {
+      state.tab = 7; renderAll();
+      document.querySelector('[data-act="feedback:open"]').click();
+      const input = document.querySelector('#feedbackText'); input.value = '测试反馈';
+      const dialog = document.querySelector('.feedback-dialog'), style = getComputedStyle(dialog);
+      const opened = !document.querySelector('#feedbackModal').hidden && input.maxLength === 1000
+        && dialog.getAttribute('role') === 'dialog' && style.paddingTop === '28px'
+        && dialog.getBoundingClientRect().width <= 520
+        && dialog.textContent.includes('反馈会同步至开发');
+      document.querySelector('[data-act="feedback:close"]').click();
+      state.tab = 6; renderAll();
+      const reminder = document.querySelector('#pane').textContent.includes('确保目前账号草稿箱为空');
+      state.tab = 8; renderAll();
+      return opened && document.querySelector('#feedbackModal').hidden && reminder && !document.querySelector('[data-act="stats:checkPath"]');
+    } finally { state.tab = saved; renderAll(); }
+  })()`);
+  ok('设置反馈弹窗可输入和关闭、发布前提醒草稿箱为空、统计页移除检测输出目录按钮', feedbackUi);
+  if (process.env.BLUEV_CAPTURE_RELEASE === '1') {
+    await win.webContents.executeJavaScript(`Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); state.tab = 13; renderAll(); document.querySelector('#pane').scrollTop = 0;`);
+    await new Promise(r => setTimeout(r, 500));
+    const capture = await win.webContents.capturePage();
+    fs.writeFileSync(path.join(ROOT, '../investigation-20261012/changelog-preview.png'), capture.toPNG());
+    await win.webContents.executeJavaScript(`delete document.hidden;`);
+  }
   const rendererErrs = await win.webContents.executeJavaScript('window.__errs || []');
   rendererErrs.forEach(e => errors.push('[page] ' + e));
 

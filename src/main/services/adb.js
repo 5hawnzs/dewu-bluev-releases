@@ -442,16 +442,26 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
   if (error) return { ok: false, removed: 0, files: hit.map(h => h.file), error, forceStopped };
 
   let removed = 0;
-  // 媒体记录逐条启动 content 成本较高，最多两个并行；所有删除结束后才清文件和复查。
-  for (let i = 0; i < hit.length; i += 2) {
-    const group = hit.slice(i, i + 2);
-    const results = await Promise.all(group.map(h => shell(serial,
-      'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 })));
-    for (let j = 0; j < results.length; j++) {
-      const r = results[j], h = group[j];
-      if (r.ok) removed++;
-      else if (!error) error = String(r.stderr || '').trim() || ('content delete(' + h.id + ') 执行失败');
+  // 同一媒体在 images/video 和 files 表共用记录；去重后仅并行删除不同记录。
+  const seenMedia = new Set(), deleteFailures = [];
+  const uniqueMedia = hit.filter(h => {
+    const key = h.id + ':' + h.file;
+    if (seenMedia.has(key)) return false;
+    seenMedia.add(key);
+    return true;
+  });
+  const removeMedia = async h => {
+    let r;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await sleepMs(attempt * 200);
+      r = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
+      if (r.ok || /Permission Denial|SecurityException/i.test((r.stderr || '') + (r.stdout || ''))) break;
     }
+    if (r.ok) removed++;
+    else deleteFailures.push(String(r.stderr || r.stdout || '').trim() || ('content delete(' + h.id + ') 执行失败'));
+  };
+  for (let i = 0; i < uniqueMedia.length; i += 2) {
+    await Promise.all(uniqueMedia.slice(i, i + 2).map(removeMedia));
   }
   // ★★ 2026-10-04（第三十五轮）：按用户指令「全部删掉」，把目录**内容**清空到一条不剩。
   //   用户原话：「我跟你说全部删掉，你还考虑误杀什么？……我指令已经非常非常明确了」
@@ -718,6 +728,26 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
     const mk = await shell(serial, 'mkdir -p ' + dir, { timeout: 30000 });
     if (!mk.ok && !error) error = String(mk.stderr || '').trim() || '专属目录建不出来';
   }
+  // 命令异常不等于记录仍在：设备可能已执行删除，但 content 进程异常退出。
+  // 仅在删除命令失败时额外复查；查询失败或记录残留必须拦截，不能按空输出放行。
+  if (deleteFailures.length && !error) {
+    const checks = await Promise.all(tables.map(t => queryMediaTable(serial, t)));
+    const remaining = [];
+    for (let i = 0; i < checks.length; i++) {
+      const q = checks[i];
+      if (q.error) {
+        if (tables[i] === 'files' && /no such table|Invalid|Unknown|not found/i.test(q.error)) continue;
+        if (!error) error = '删除后媒体库复查失败：' + q.error;
+        continue;
+      }
+      for (const line of String(q.result.stdout || '').split(/\r?\n/)) {
+        const m = /_id=(\d+),\s*_data=(.+?)\s*$/.exec(line);
+        if (m && dirs.some(d => m[2].indexOf(d) === 0)) remaining.push(m[2]);
+      }
+    }
+    if (remaining.length && !error) error = deleteFailures[0] + '；重试后仍有媒体记录：' + remaining.slice(0, 3).join('、');
+    if (!error) dirNote = [dirNote, '删除命令曾异常，重试并复查媒体记录已清空'].filter(Boolean).join('；');
+  }
   if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error, forceStopped };
   if (left) {
     // ★★★ 2026-10-04（第三十八轮）**判据修正：看「还有没有文件」，不是「目录 listing 空不空」**。
@@ -813,6 +843,12 @@ async function clearAlbum(serial, opts = {}) {
 
   const removeAll = async (hit) => {
     let removed = 0;
+    const seen = new Set();
+    hit = hit.filter(h => {
+      const key = h.id + ':' + h.file;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
     const removeOne = async h => {
       // 只对纯安全字符路径直接删文件，其他路径交给按 ID 删除，避免文件名被当作 shell 指令。
       if (h.file && /^\/[A-Za-z0-9_./+\-]+$/.test(h.file)) {

@@ -104,9 +104,10 @@ async function main() {
       ? new Response(JSON.stringify({ ok: false, error: '权限读取失败' }), { status: 200 })
       : successFetch(url, opts);
     const failedScope = await mainAuth.status();
-    ok('品牌权限刷新失败时清除内存身份，不沿用旧品牌继续工作', () => {
-      assert.equal(failedScope.user, null);
-      assert.equal(mainAuth.current(), null);
+    ok('品牌权限暂时读取失败时保留已验证会话，下次联网继续刷新', () => {
+      assert.equal(failedScope.user.username, 'shared-user');
+      assert.equal(mainAuth.current().username, 'shared-user');
+      assert.equal(failedScope.offline, true);
     });
     global.fetch = successFetch;
     await mainAuth.logout();

@@ -6,7 +6,7 @@ function ok(label, value) {
   console.log((value ? 'PASS ' : 'FAIL ') + label);
   if (!value) failed++;
 }
-function driver(reply) {
+function driver(reply, delayMs = 0) {
   const calls = [];
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/main/services/adb.js'), 'utf8'), {
@@ -15,8 +15,9 @@ function driver(reply) {
       const command = args[args.length - 1];
       calls.push(command);
       const result = reply(command);
-      callback(result.code ? Object.assign(new Error('设备命令返回非零'), { code: result.code }) : null,
+      const finish = () => callback(result.code ? Object.assign(new Error('设备命令返回非零'), { code: result.code }) : null,
         result.stdout || '', result.stderr || '');
+      if (delayMs) setTimeout(finish, delayMs); else finish();
     } } : require(name)
   });
   return { adb: module.exports, calls };
@@ -73,5 +74,53 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
   const cleaned = await unsafeName.adb.clearAlbum('FAKE');
   ok('带 shell 控制符的文件名只按媒体 ID 清理，不拼成设备指令',cleaned.ok
     && unsafeName.calls.some(c=>c.startsWith('content delete ')) && !unsafeName.calls.some(c=>c.startsWith('rm -f ')));
+  const camera = '/storage/emulated/0/DCIM/Camera/test.jpg';
+  let attempts = 0, gone = false;
+  const retry = driver(cmd => {
+    if (cmd.startsWith('content query ')) return { stdout: gone ? 'No result found.\n' : `Row: 0 _id=1000000140, _data=${camera}\n` };
+    if (cmd.startsWith('content delete ')) {
+      attempts++;
+      if (attempts === 1) return { code: 139 };
+      gone = true; return { stdout: 'Deleted 1 rows\n' };
+    }
+    return {};
+  });
+  const retried = await retry.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
+  ok('首次删除退出139时重试成功，第三条无需直接中止', retried.ok && attempts === 2);
+  ok('跨图片与文件表的同一媒体记录仅执行一组删除', retried.removed === 1 && attempts === 2);
+  for (const mode of ['已删但进程异常', '记录仍残留', '复查权限失败']) {
+    let deletion = false, count = 0;
+    const d = driver(cmd => {
+      if (cmd.startsWith('content delete ')) { deletion = true; count++; return { code: 139 }; }
+      if (cmd.startsWith('content query ')) {
+        if (deletion && mode === '复查权限失败') return { code: 1, stderr: 'Permission Denial' };
+        return { stdout: deletion && mode === '已删但进程异常' ? 'No result found.\n' : `Row: 0 _id=1000000140, _data=${camera}\n` };
+      }
+      return {};
+    });
+    const result = await d.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
+    ok(`${mode}：最多三次删除，依据真实媒体复查结果放行或拦截`, count === 3
+      && (mode === '已删但进程异常' ? result.ok && /复查/.test(result.note) : !result.ok && !!result.error));
+  }
+  let albumGone = false, albumDeletes = 0;
+  const albumDedup = driver(cmd => {
+    if (cmd.startsWith('content delete ')) { albumGone = true; albumDeletes++; return {}; }
+    if (cmd.startsWith('content query ')) return { stdout: albumGone ? 'No result found.\n' : `Row: 0 _id=9, _data=${camera}\n` };
+    return {};
+  });
+  const albumResult = await albumDedup.adb.clearAlbum('FAKE');
+  ok('全盘相册清理也合并四张表的重复媒体记录', albumResult.ok && albumDeletes === 1);
+  let deletes = 0;
+  const rows = Array.from({ length: 12 }, (_, i) => `Row: ${i} _id=${i + 1}, _data=/storage/emulated/0/DCIM/Camera/${i}.jpg`).join('\n');
+  const timing = driver(cmd => {
+    if (cmd.startsWith('content query ')) return { stdout: /\/(images|files)\/media/.test(cmd) ? rows : 'No result found.\n' };
+    if (cmd.startsWith('content delete ')) deletes++;
+    return {};
+  }, 20);
+  const started = Date.now();
+  const timed = await timing.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
+  ok('12张素材跨两表只删除12次，正常路径不增加媒体库复查', timed.ok && deletes === 12
+    && timing.calls.filter(c => c.startsWith('content query ')).length === 4);
+  console.log('清理指令对比：12张素材跨两表，旧逻辑24次删除，新逻辑' + deletes + '次；模拟每条设备命令20ms，新清理耗时' + (Date.now() - started) + 'ms（不是实机发布时间）');
   process.exitCode = failed ? 1 : 0;
 })().catch(error => { console.error(error); process.exitCode = 1; });

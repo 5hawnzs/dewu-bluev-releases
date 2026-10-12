@@ -199,6 +199,33 @@ function status() {
   };
 }
 
+// 网络故障沿用本次运行中已验证的会话，但不能超过令牌有效期。
+// 不用磁盘缓存绕过首次登录，也不忽略服务器明确返回的失效结果。
+function transientCloudStatus(error) {
+  const now = Date.now();
+  const active = cloudSession && cloudSession.expiresAt > now;
+  if (!active) cloudSession = null;
+  return { requireLogin: true, user: active ? cloudSession.user : null,
+    isAdmin: !!(active && cloudSession.user.role === 'admin'),
+    rememberDays: REMEMBER_DAYS, cloud: true, offline: true, error };
+}
+
+// 云端仅同步品牌身份和权限；本机提示词不被其他设备覆盖。
+function applyCloudBrands(rows) {
+  const local = new Map(brands.list().map(b => [b.id, b.promptWrite || '']));
+  brands.replaceAll(rows.map(b => ({ ...b, promptWrite: local.get(b.id) || '' })));
+}
+
+async function syncBrandDirectory(token, list) {
+  const remote = await cloudauth.brands(token);
+  if (!remote.ok || !Array.isArray(remote.brands)) return remote;
+  // 兼容既有服务端接口：保留其旧提示词列，不上传本机编辑的提示词。
+  const oldPrompts = new Map(remote.brands.map(b => [b.id, b.promptWrite || '']));
+  return cloudauth.admin(token, 'save_brands', {
+    brands: list.map(b => ({ ...b, promptWrite: oldPrompts.get(b.id) || '' }))
+  });
+}
+
 async function cloudStatus() {
   load();
   const token = (cloudSession && cloudSession.token) || (db.cloudRemember && db.cloudRemember.token) || '';
@@ -206,21 +233,24 @@ async function cloudStatus() {
   if (token) {
     const r = await cloudauth.status(token);
     if (r.ok && r.user) {
-      cloudSession = { token, user: normalizeCloudUser(r.user), remembered: !!(db.cloudRemember && db.cloudRemember.token === token), expiresAt: Number(r.expiresAt) || 0 };
+      const candidate = { token, user: normalizeCloudUser(r.user), remembered: !!(db.cloudRemember && db.cloudRemember.token === token), expiresAt: Number(r.expiresAt) || 0, verifiedAt: Date.now() };
       // Also hydrate the canonical brand directory on startup and every status refresh.
       // A remembered session on a new device must not depend on a local config.json copy.
       const remoteBrands = await cloudauth.brands(token);
       if (!remoteBrands.ok || !Array.isArray(remoteBrands.brands)) {
+        if (!remoteBrands.sessionInvalid) return transientCloudStatus(remoteBrands.error || '品牌权限同步暂时不可用');
         cloudSession = null;
         return { requireLogin: true, user: null, isAdmin: false, cloud: true,
           error: remoteBrands.error || '无法读取品牌权限，请重试' };
       }
-      brands.replaceAll(remoteBrands.brands);
+      applyCloudBrands(remoteBrands.brands);
+      cloudSession = candidate;
       if (cloudSession.remembered) { db.cloudRemember.user = cloudSession.user; save(); }
-      return { requireLogin: true, user: cloudSession.user, isAdmin: cloudSession.user.role === 'admin', userCount: null, rememberDays: REMEMBER_DAYS, cloud: true };
+      return { requireLogin: true, user: cloudSession.user, isAdmin: cloudSession.user.role === 'admin', userCount: null, rememberDays: REMEMBER_DAYS, cloud: true,
+        brandsRevision: JSON.stringify(remoteBrands.brands.map(b => [b.id, b.name, b.enabled])) };
     }
+    if (!r.sessionInvalid) return transientCloudStatus(r.error || '暂时无法校验登录状态');
     cloudSession = null;
-    if (r.offline) return { requireLogin: true, user: null, isAdmin: false, rememberDays: REMEMBER_DAYS, cloud: true, error: r.error };
     loginNotice = r.error || '';
     if (db.cloudRemember) { delete db.cloudRemember; save(); }
     if (r.setupRequired) return { requireLogin: true, user: null, isAdmin: false, rememberDays: REMEMBER_DAYS, cloud: true, setupRequired: true, error: r.error };
@@ -240,7 +270,7 @@ async function cloudLogin(username, password, remember) {
   const r = await cloudauth.login(username, password);
   if (!r.ok || !r.token || !r.user) return r;
   const user = normalizeCloudUser(r.user);
-  cloudSession = { token: r.token, user, remembered: !!remember, expiresAt: Number(r.expiresAt) || Date.now() + REMEMBER_DAYS * 86400000 };
+  cloudSession = { token: r.token, user, remembered: !!remember, expiresAt: Number(r.expiresAt) || Date.now() + REMEMBER_DAYS * 86400000, verifiedAt: Date.now() };
   load();
   if (remember) db.cloudRemember = { token: r.token, user, until: cloudSession.expiresAt };
   else delete db.cloudRemember;
@@ -255,7 +285,7 @@ async function cloudLogin(username, password, remember) {
   }
   const localBrands = brands.list();
   if (user.role === 'admin' && (!Array.isArray(cloudBrands.brands) || cloudBrands.brands.length === 0) && localBrands.length) {
-    const seeded = await cloudauth.admin(r.token, 'save_brands', { brands: localBrands });
+    const seeded = await syncBrandDirectory(r.token, localBrands);
     if (!seeded.ok) {
       await cloudauth.logout(r.token);
       cloudSession = null; if (remember) delete db.cloudRemember; save();
@@ -263,7 +293,7 @@ async function cloudLogin(username, password, remember) {
     }
     cloudBrands = { ok: true, brands: localBrands };
   }
-  brands.replaceAll(Array.isArray(cloudBrands.brands) ? cloudBrands.brands : []);
+  applyCloudBrands(Array.isArray(cloudBrands.brands) ? cloudBrands.brands : []);
   return { ok: true, user };
 }
 
@@ -278,7 +308,7 @@ async function cloudBootstrap(setupCode, username, password, displayName, rememb
   const localBrands = brands.list();
   let warning = '';
   if (localBrands.length) {
-    const b = await cloudauth.admin(r.token, 'save_brands', { brands: localBrands });
+    const b = await syncBrandDirectory(r.token, localBrands);
     if (!b.ok) warning = `管理员已创建，但本机品牌目录未能上云：${b.error || '未知错误'}`;
   }
   return { ok: true, user, warning };
@@ -522,8 +552,7 @@ module.exports = {
   load, status, login, logout, enabled, current, cloudMode, cloudBootstrap,
   changePassword, listUsers, createUser, updateUser, resetPassword, removeUser,
   purgeBrand,
-  syncBrands: (list) => cloudMode() && cloudSession ? cloudauth.admin(cloudSession.token, 'save_brands', { brands: list }) : Promise.resolve({ ok: true }),
+  syncBrands: (list) => cloudMode() && cloudSession ? syncBrandDirectory(cloudSession.token, list) : Promise.resolve({ ok: true }),
   cloudBrands: () => cloudMode() && cloudSession ? cloudauth.brands(cloudSession.token) : Promise.resolve({ ok: true, brands: brands.list() }),
-  syncBrandPrompt: (id, prompt) => cloudMode() && cloudSession ? cloudauth.prompt(cloudSession.token, id, prompt) : Promise.resolve({ ok: true }),
   DEFAULT_USER, DEFAULT_PASS
 };

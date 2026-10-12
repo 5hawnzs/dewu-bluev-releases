@@ -8,7 +8,9 @@ const logbus = require('./logbus');
 const logexport = require('./logexport');
 const jobs = require('./jobs');
 const auth = require('./auth');
+const logincredentials = require('./logincredentials');
 const brands = require('./brands');
+const promptprofiles = require('./promptprofiles');
 const imaging = require('./services/imaging');
 const video = require('./services/video');   // ★ 不许漏：config:set 里改 ffmpeg 路径要立刻生效（漏了＝ReferenceError，接口直接报错）
 const cloudsync = require('./services/cloudsync');   // 云端协作（可选）：只上行发布结果，发布核心不依赖它
@@ -76,9 +78,12 @@ function register() {
   });
   // ---- 账号与登录：登录页本身要用，不设门禁 ----
   handle('auth:status', () => auth.status());
+  handle('feedback:submit', guard((_e, text) => require('./feedback').submit(text, auth.current())));
+  handle('auth:saved-login', () => logincredentials.read());
   // 身份确认后仍保持登录小窗，等渲染层准备好首页后再放大。
   handle('auth:login', async (_e, u, p, remember) => {
     const r = await auth.login(u, p, remember);
+    if (r.ok) logincredentials.remember(u, p);
     return r;
   });
   handle('auth:ui-ready', guard(() => { winmod.setLoginMode(false); return { ok: true }; }));
@@ -87,13 +92,22 @@ function register() {
     winmod.setLoginMode(true);
     return r;
   });
-  handle('auth:change-password', (_e, oldP, newP) => auth.changePassword(oldP, newP));
+  handle('auth:change-password', async (_e, oldP, newP) => {
+    const user = auth.current();
+    const r = await auth.changePassword(oldP, newP);
+    if (r.ok && user) logincredentials.remember(user.username, newP);
+    return r;
+  });
   handle('auth:users', () => auth.listUsers());
   handle('auth:create-user', (_e, input) => auth.createUser(input));
   handle('auth:update-user', (_e, id, patch) => auth.updateUser(id, patch));
   handle('auth:reset-password', (_e, id, newP) => auth.resetPassword(id, newP));
   handle('auth:remove-user', (_e, id) => auth.removeUser(id));
-  handle('auth:bootstrap', (_e, setupCode, username, password, displayName, remember) => auth.cloudBootstrap(setupCode, username, password, displayName, remember));
+  handle('auth:bootstrap', async (_e, setupCode, username, password, displayName, remember) => {
+    const r = await auth.cloudBootstrap(setupCode, username, password, displayName, remember);
+    if (r.ok) logincredentials.remember(username, password);
+    return r;
+  });
 
   // ---- 品牌注册表 ----
   // 读取对所有登录用户开放（发布侧要拉品牌下拉），但只回「这个人能用的」那部分 id；
@@ -117,6 +131,7 @@ function register() {
       defaultBrandId: store.get('copy.defaultBrandId') || ''
     };
   }));
+  handle('prompt:save', guard((_e, id, input) => promptprofiles.save(id, input)));
   handle('brand:add', guardAdmin(async (_e, input) => {
     const before = brands.list();
     const r = brands.add(input);
@@ -148,13 +163,7 @@ function register() {
     if (!a.all && !a.ids.includes(b.id)) return { ok: false, error: `没有「${b.name}」的操作权限` };
     const p = patch || {};
     const r = brands.update(id, { promptWrite: p.promptWrite });
-    if (r.ok) {
-      const synced = await auth.syncBrandPrompt(id, r.brand.promptWrite);
-      if (!synced.ok) {
-        brands.update(id, { promptWrite: b.promptWrite });
-        return { ok: false, error: `云端提示词同步失败，已撤销本机修改：${synced.error || '未知错误'}` };
-      }
-    }
+    // 提示词只保存在当前设备，不向云端写入。
     // 日志里只记品牌名：整段模板上千字，抄进 runlog 每条都占一大截
     if (r.ok) logbus.ok(`已更新品牌「${r.brand.name}」的提示词`);
     return r;
@@ -218,10 +227,10 @@ function register() {
   // ★ 只查配置里那个输出目录，不收前端传的路径；只读性质（建一个临时文件再删掉 + 追加方式打开）
   handle('stats:checkPath', guard(() => stats.checkOutput()));
 
-  // 兼容旧界面接口，但所有账号都不能从客户端访问分发服务器。
-  for (const channel of ['update:status', 'update:check', 'update:download', 'update:install', 'update:set-channel']) {
-    handle(channel, guard(() => ({ ok: false, disabled: true, error: '此功能已关闭' })));
-  }
+  const githubupdates = require('./githubupdates');
+  for (const method of ['status', 'check', 'download', 'install']) handle('update:' + method, guard(() => githubupdates[method]()));
+  handle('update:set-channel', guard(() => ({ ok: false, error: '当前仅提供正式版更新' })));
+  githubupdates.start();
 
   handle('app:info', () => ({
     platform: process.platform,

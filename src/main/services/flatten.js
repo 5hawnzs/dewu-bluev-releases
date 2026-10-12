@@ -11,6 +11,21 @@
 const path = require('path');
 const wp = require('../util/winpath');
 const store = require('../store');
+const fs = require('fs').promises;
+const crypto = require('crypto');
+
+// 按原目录、文件元数据和整理选项记录完成结果，重启后也避免重复建目录。
+async function sourceKey(sourceDir, plan, cfg) {
+  const files = [];
+  for (const row of plan.rows) for (const name of row.files) {
+    const file = path.join(row.from, name);
+    const stat = await wp.statSafe(file);
+    if (!stat) throw new Error('素材已变化或无法读取，请重新生成清单');
+    files.push([path.relative(sourceDir, file), stat.size, stat.mtimeMs]);
+  }
+  files.sort((a, b) => a[0].localeCompare(b[0]));
+  return crypto.createHash('sha256').update(JSON.stringify([path.resolve(sourceDir).toLowerCase(), files, cfg, (store.get('flatten') || {}).connector])).digest('hex');
+}
 
 const NUMERIC = /^\d+$/;
 /** 颜色名一定带汉字（冠军白 / 煤黑色01 / 酒红色74）；货号/批次目录/日期目录都是纯 ASCII。 */
@@ -227,7 +242,7 @@ async function plan(sourceDir, ctx = {}) {
 }
 
 /** 执行整理：建扁平副本 + 原目录改名加时间戳 */
-async function run(sourceDir, opts, ctx = {}) {
+async function runOnce(sourceDir, opts, ctx = {}) {
   const log = ctx.log || (() => {});
   const progress = ctx.progress || (() => {});
   const cancelled = ctx.cancelled || (() => false);
@@ -237,6 +252,17 @@ async function run(sourceDir, opts, ctx = {}) {
 
   const p = await plan(sourceDir, { cancelled });
   if (!p.total) return { ok: false, message: '没有找到任何素材叶子目录' };
+
+  const cacheFile = path.join(require('electron').app.getPath('userData'), 'flatten-completed.json');
+  const key = await sourceKey(sourceDir, p, cfg);
+  let completed = {};
+  try { completed = JSON.parse(await fs.readFile(cacheFile, 'utf8')); }
+  catch (e) { if (e.code !== 'ENOENT') throw new Error('无法读取整理记录，请先修复记录文件：' + e.message); }
+  const previous = completed[key];
+  if (previous && await wp.exists(previous.flatDir)) {
+    log('这份素材已整理，使用已有目录：' + previous.flatDir, 'ok');
+    return Object.assign({}, previous, { reused: true, summary: '素材未变化，已保留上次整理结果，未创建新文件夹' });
+  }
 
   const parent = path.dirname(sourceDir);
   // 同一分钟内重跑会撞名，自动加 -2 / -3 后缀，不覆盖上一批结果
@@ -272,6 +298,7 @@ async function run(sourceDir, opts, ctx = {}) {
   }
 
   progress({ done, total: p.total, links, copies, bytes });
+  if (cancelled()) throw new Error('整理已取消，未登记为完成；部分副本保留在：' + flatDir);
 
   // 默认不动原目录；只有显式开启 touchOriginal 才改名加时间戳
   let renamed = null, warn = null;
@@ -298,11 +325,24 @@ async function run(sourceDir, opts, ctx = {}) {
   }
   if (p.longRisk) log(`有 ${p.longRisk} 个目标路径偏长，已自动启用 \\\\?\\ 长路径前缀`, 'warn');
 
-  return {
+  const result = {
     ok: true, flatDir, renamed, links, copies, bytes,
     fileTotal: links + copies, items,
     summary: `${p.total} 个叶子目录 · 链接 ${links} · 复制 ${copies} · ${wp.humanSize(bytes)}`
   };
+  completed[key] = result;
+  if (renamed) completed[await sourceKey(renamed, await plan(renamed, { cancelled }), cfg)] = result;
+  await fs.mkdir(path.dirname(cacheFile), { recursive: true });
+  await fs.writeFile(cacheFile + '.tmp', JSON.stringify(completed), 'utf8');
+  await fs.rename(cacheFile + '.tmp', cacheFile);
+  return result;
 }
 
+let organizing = false;
+async function run(sourceDir, opts, ctx = {}) {
+  if (organizing) throw new Error('素材正在整理，请等待当前整理完成');
+  organizing = true;
+  try { return await runOnce(sourceDir, opts, ctx); }
+  finally { organizing = false; }
+}
 module.exports = { plan, run, parseName, stripTail, refineItem };

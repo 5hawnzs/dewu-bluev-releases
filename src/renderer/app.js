@@ -44,6 +44,9 @@ const state = {
   lexTransferBusy: false,
   lexTried: false,    // 读失败过就不再自动重试（否则 render → load → render 会打转）
   lexDirty: false,    // 界面上改了但还没点「保存」
+  lexUndo: [],
+  lexRedo: [],
+  lexSavedFingerprint: '',
   // 得物安装包：点过「装进模拟器」且**设备上本来就有**时置 true ——
   // 只有这时才在设置页那一行多挂一枚「覆盖重装」按钮（用户没点过之前不给这个危险入口）
   dewuAlready: false
@@ -296,7 +299,7 @@ const BRAND_SCOPED_TYPES = new Set(['copy.generate', 'report.import', 'sheet.exp
  */
 function brandArgs(type, args) {
   const a = Object.assign({}, args || {});
-  if (BRAND_SCOPED_TYPES.has(type) && !a.brandId && state.brandId) a.brandId = state.brandId;
+  if (!a.brandId && state.brandId) a.brandId = state.brandId;
   return a;
 }
 
@@ -502,7 +505,7 @@ TABS[1] = {
   actions: () => [
     { act: 'flatten:pick', label: '选择目录' },
     { act: 'flatten:plan', label: '生成清单', disabled: !state.project.sourceDir },
-    { act: 'flatten:run', label: '开始整理', primary: true, disabled: !state.project.sourceDir }
+    { act: 'flatten:run', label: state.flattenSubmitting ? '整理中…' : '开始整理', primary: true, disabled: !state.project.sourceDir || state.flattenSubmitting || running('flatten.run') }
   ],
   render() {
     const p = state.project;
@@ -545,7 +548,9 @@ TABS[2] = {
     const c = state.project.compliance || {};
     const s = c.stats;
     const cfg0 = state.config.compliance || {};
-    if (!s) return `<div class="empty">素材待检查。点击「开始检查」后才会读取视频时长和图片信息；也可选择「检查父目录」。</div>`;
+    const active = ['compliance.scanParent', 'compliance.scan', 'compliance.fix'].find(type => running(type));
+    const progress = active ? `<div class="box"><h3>${active === 'compliance.scanParent' ? '正在检查父目录' : active === 'compliance.fix' ? '正在处理素材' : '正在检查素材'}</h3><p class="hint">${s ? '下方保留上次结果，本次检查完成后更新。' : '正在读取素材信息，请稍候。'}</p>${progHtml(progFor(active))}</div>` : '';
+    if (!s) return progress || `<div class="empty">素材待检查。点击「开始检查」后才会读取视频时长和图片信息；也可选择「检查父目录」。</div>`;
     const rows = c.rows.filter(r => r.status !== 'ok')
       .sort((a, b) => Number(b.status === 'manual') - Number(a.status === 'manual'));
     const okRows = c.rows.filter(r => r.status === 'ok').length;
@@ -566,7 +571,7 @@ TABS[2] = {
         ${c.groups.map(g => `<tr class="${g.stats.manual ? 'warnrow' : ''}"><td class="mono">${esc(g.name)}</td><td class="num">${n(g.stats.ok)}</td><td class="num">${n(g.stats.todo)}</td><td class="num">${n(g.stats.manual)}</td></tr>`).join('')}
         </tbody></table></div>
         <p class="hint">「导出报告」会把这张分组表 + 全部明细写成 <code>合规报告_时间戳.xlsx</code>（汇总 / 明细两个工作表）和同名 <code>.csv</code>，落到输出目录。</p></div>` : ''}
-      ${running('compliance.scan') || running('compliance.fix') ? progHtml(progFor(running('compliance.scan') ? 'compliance.scan' : 'compliance.fix')) : ''}
+      ${progress}
       ${rows.length ? `<p class="hint">共 ${rows.length} 项检查结果，未自动处理项优先显示。</p><div class="tw"><table>
         <thead><tr><th>文件</th><th>类型</th><th>问题</th><th>处置</th><th>状态</th></tr></thead>
         <tbody>${rows.map(r => `<tr class="${r.status === 'manual' ? 'flag' : (r.status === 'isolate' ? 'warnrow' : '')}">
@@ -599,7 +604,11 @@ function topicsShown(r) {
 
 TABS[3] = {
   title: '文案生成',
-  desc: '选择素材，生成文案和本地 Excel 报告',
+  desc: () => {
+    const copy = state.config?.copy || {};
+    const profile = (copy.localPrompts || []).find(p => p.id === copy.promptProfileId);
+    return profile ? `文案提示词：${profile.name} · 生成文案和本地 Excel 报告` : '选择素材，生成文案和本地 Excel 报告';
+  },
   actions: () => [
     // ★ 2026-10-08 用户要求：模型配置搬到**这一页**，做成弹窗，并且是**唯一**入口
     //   （原来在「高级设置 → 文案模型」的折叠框已删）。位置按用户指定，放在「提示词配置」左边。
@@ -766,25 +775,22 @@ TABS[6] = {
         </div>
         ${ivNow === 0 ? '<p class="hint" style="margin-top:6px">★ 已选 <b>连续发布</b>：上一条发完直接发下一条，中间<b>不再等待</b>。'
           + '注意单条本身仍要花 ≈30 秒（视频 ≈60 秒）—— 那是设备上的真实耗时（推素材 / 上传 / 填内容），不是间隔。</p>' : ''}
-        <div class="row" style="margin-top:10px">
-          <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
-        </div>
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
         <p class="hint">预计约 <b>${est} 分钟</b>，包含发布操作及所选间隔，实际耗时受网络和设备影响。</p>
         <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
           报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
           并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
       <details class="publish-setup">
-        <summary><span class="publish-setup-icon" aria-hidden="true">!</span><span>得物设置提醒<span class="publish-setup-brief">手动关闭 2 项商品识别设置</span></span></summary>
+        <summary><span class="publish-setup-icon" aria-hidden="true">!</span><span>得物设置提醒<span class="publish-setup-brief">关闭 2 项商品识别设置，并确保草稿箱为空</span></span></summary>
         <div class="publish-setup-items">
           <div><span class="publish-setup-path">得物 → 我 → 设置 → 隐私设置</span><strong>允许平台在我的内容动态关联商品</strong><span class="publish-setup-off">设为关闭</span></div>
           <div><span class="publish-setup-path">得物 → 我 → 设置 → 通用设置</span><strong>作品暂停时自动识别画面中商品</strong><span class="publish-setup-off">设为关闭</span></div>
+          <div><span class="publish-setup-path">得物 → 当前账号 → 草稿箱</span><strong>确保目前账号草稿箱为空</strong><span class="publish-setup-off">发布前手动确认</span></div>
         </div>
         <p>每个账号均需手动检查，重装后请重新确认；本工具不检测开关状态。</p>
       </details>
       </div>
       ${reportBoxHtml()}
-      ${probeHtml()}
       ${batchesHtml('', '运行中的批次 / 任务')}
       ${rows.length ? `<div class="tw publish-rows"><table>
         <colgroup><col style="width:40px"><col><col style="width:48px"><col style="width:48px"><col style="width:88px"><col style="width:70px"><col style="width:180px"><col style="width:64px"></colgroup>
@@ -861,14 +867,24 @@ function apkBtns(a, already) {
     + (already ? ` <button class="btn sm" data-act="apk:installForce"${dis}>覆盖重装</button>` : '');
 }
 
+function updatePanelHtml() {
+  const s = state.update || {};
+  const busy = ['checking', 'downloading', 'verifying', 'installing'].includes(s.status);
+  const progressing = ['downloading', 'downloaded', 'verifying', 'installing'].includes(s.status);
+  const percent = Math.max(0, Math.min(100, Number(s.percent) || 0));
+  const label = { downloading: '下载安装包', downloaded: '下载完成', verifying: '校验安装包', installing: '正在启动更新' }[s.status];
+  const progress = progressing ? `<div class="update-progress"><div class="update-progress-heading"><span>${label}</span><span>${s.status === 'installing' ? '请稍候' : percent + '%'}</span></div><div class="update-progress-track ${s.status === 'installing' ? 'indeterminate' : ''}" role="progressbar" aria-label="${label}" aria-valuemin="0" aria-valuemax="100" ${s.status === 'installing' ? '' : 'aria-valuenow="' + percent + '"'}><div style="width:${percent}%"></div></div></div>` : '';
+  return `<div class="box" id="versionUpdate"><div class="row"><h3>应用更新</h3><span class="chip">v${esc(s.current || state.info?.version || '1.1.1')}</span><span class="grow"></span><button class="btn sm" data-act="update:check" ${busy ? 'disabled' : ''}>检查更新</button>${s.status === 'available' ? '<button class="btn sm primary" data-act="update:download">下载新版本</button>' : ''}${s.status === 'downloaded' ? '<button class="btn sm primary" data-act="update:install">重启并更新</button>' : ''}</div>${progress}<p class="hint" role="status">${esc(s.message || '启动后自动检查，也可手动检查。')}</p><p class="hint">每小时自动检查新版本 · 下载后点击重启并更新 · 任务运行时禁止重启</p></div>`;
+}
+
 TABS[7] = {
   title: '设置',
   // ★ desc 支持函数（renderAll 里求值）：非管理员这一页没有「应用更新」那块，
   //   副标题就不该提它 —— 界面文字得跟界面上真有的东西对得上。
   // ★ 2026-10-04：副标题里原来的「路径、」也一并去掉 —— 那一块已经从页面上撤掉，
   //   副标题再提它就是「界面文字跟界面上真有的东西对不上」（见下面那条注释的同一条原则）。
-  desc: '外部依赖',
-  actions: () => [{ act: 'cfg:save', label: '保存', primary: true }],
+  desc: '外部依赖与问题反馈',
+  actions: () => [{ act: 'feedback:open', label: '反馈' }],
   render() {
     const info = state.info || {};
     const dep = [
@@ -1040,16 +1056,19 @@ async function loadStats() {
   if (state.statsBusy) return;
   state.statsBusy = true;
   state.statsTried = true;
+  const profile = state.auth;
   try {
     const r = await appApi.statsQuery(state.statsOpts);
+    if (profile !== state.auth) { state.statsTried = false; return; }
     state.stats = r && r.ok ? r : { error: (r && r.error) || '查询失败' };
     state.statsQueryOpts = state.stats.error ? null : JSON.parse(JSON.stringify(state.statsOpts));
   } catch (e) {
     state.stats = { error: (e && e.message) || '查询失败' };
     state.statsQueryOpts = null;
+  } finally {
+    state.statsBusy = false;
+    renderAll();
   }
-  state.statsBusy = false;
-  renderAll();
 }
 
 function statsFiltersCurrent() {
@@ -1082,9 +1101,6 @@ TABS[8] = {
     // （xlsx 里那张执行日志表过去只导最近 100 条，界面上一句不提 → 对账会对不上）
     { act: 'stats:export', label: '导出 xlsx', disabled: !statsFiltersCurrent() },
     ...((state.auth && state.auth.isAdmin) ? [{ act: 'stats:exportLog', label: '导出执行日志', disabled: !statsFiltersCurrent() }] : []),
-    // 日志是「追加写、失败不报错」的：输出目录指向共享盘时，盘掉线会**静默少数据**，
-    // 所以给一颗按钮让管理员当场问一句「这台机器现在写得进去吗」
-    { act: 'stats:checkPath', label: '检测输出目录' }
   ],
   render() {
     const s = state.stats;
@@ -1273,6 +1289,36 @@ function lexStatusHtml() {
     </div>`;
 }
 
+// 历史仅保留当前运行中的最近一百步；撤销恢复草稿，点保存后才写入本机。
+function lexFingerprint(library) {
+  return JSON.stringify(library.groups.map(g => [g.key, g.words]));
+}
+function lexCheckpoint() {
+  state.lexUndo.push(JSON.parse(JSON.stringify(state.lex)));
+  if (state.lexUndo.length > 100) state.lexUndo.shift();
+  state.lexRedo = [];
+}
+function updateLexHistoryButtons() {
+  for (const [action, history] of [['undo', state.lexUndo], ['redo', state.lexRedo]]) {
+    const button = document.querySelector('[data-act="lex:' + action + '"]');
+    if (button) button.disabled = !state.lex || state.lexTransferBusy || state.lexBusy || !history.length;
+  }
+}
+function lexTravel(direction) {
+  if (!state.lex || state.lexTransferBusy || state.lexBusy) return;
+  const from = direction === 'undo' ? state.lexUndo : state.lexRedo;
+  const to = direction === 'undo' ? state.lexRedo : state.lexUndo;
+  if (!from.length) return;
+  to.push(JSON.parse(JSON.stringify(state.lex)));
+  state.lex = from.pop();
+  state.lexDirty = lexFingerprint(state.lex) !== state.lexSavedFingerprint;
+  renderAll();
+}
+function lexHistoryIcon(direction) {
+  const path = direction === 'undo' ? 'M9 5 4 10l5 5M4 10h9a6 6 0 0 1 6 6v3' : 'm15 5 5 5-5 5m5-5h-9a6 6 0 0 0-6 6v3';
+  return '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + path + '"/></svg>';
+}
+
 function lexGroupHtml(g) {
   const chips = g.words.map(w =>
     `<span class="chip lxw">${esc(w)}<button class="lxx" data-lx-del="${esc(g.key)}" data-lx-w="${esc(w)}" title="删掉这个词">×</button></span>`
@@ -1298,6 +1344,7 @@ function lexTransferIcon(kind) {
 function setLexTransferBusy(value) {
   state.lexTransferBusy = value;
   document.querySelectorAll('#head [data-act^="lex:"],#pane [data-lx-del],#pane [data-lx-in],#pane [data-lx-add]').forEach(el => { el.disabled = value || !state.lex; });
+  updateLexHistoryButtons();
 }
 
 function markLexTransferDone(action) {
@@ -1312,6 +1359,8 @@ TABS[12] = {
   desc: '所有成员可编辑 · 仅保存在本机',
   actions: () => {
     return [
+      { act: 'lex:undo', label: '撤销', history: 'undo', disabled: !state.lex || state.lexTransferBusy || !state.lexUndo.length },
+      { act: 'lex:redo', label: '重做', history: 'redo', disabled: !state.lex || state.lexTransferBusy || !state.lexRedo.length },
       { act: 'lex:export', label: '导出', transfer: 'export', disabled: !state.lex || state.lexTransferBusy },
       { act: 'lex:import', label: '导入', transfer: 'import', disabled: !state.lex || state.lexTransferBusy },
       { act: 'lex:reset', label: '恢复内置', disabled: !state.lex || state.lexTransferBusy },
@@ -1340,10 +1389,11 @@ TABS[12] = {
         <p class="hint">参与生成，不可编辑。</p>
       </div>`).join('')}
       <div class="box">
-        <h3>15 种句式骨架（T01~T15）· 不可编辑</h3>
-        <div class="tw"><table>
+        <h3>15 种句式骨架（T01~T15）· 不可编辑 · 新增请找开发</h3>
+        <div class="tw"><table class="skeleton-table">
+          <colgroup><col style="width:60px"><col style="width:250px"><col><col style="width:270px"></colgroup>
           <thead><tr><th>编号</th><th>名称</th><th>结构</th><th>形状示例</th></tr></thead>
-          <tbody>${L.styles.map(s => `<tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${esc(s.formula)}</td><td class="mono">${esc(s.sample)}</td></tr>`).join('')}</tbody>
+          <tbody>${L.styles.map(s => `<tr><td class="mono">${esc(s.code)}</td><td title="${esc(s.name)}">${esc(s.name)}</td><td title="${esc(s.formula)}">${esc(s.formula)}</td><td class="mono" title="${esc(s.sample)}">${esc(s.sample)}</td></tr>`).join('')}</tbody>
         </table></div>
         <p class="hint">骨架是<b>语法</b>（连接字在第几位、收尾在末尾）—— 改坏会直接产出病句 / 标签串，
           而判据只能事后告警、拦不住，所以锁死在程序里。上面那些<b>词</b>才是你可以随便换的。</p>
@@ -1365,6 +1415,7 @@ async function loadLexicon() {
     toast('读不到词库：' + ((r && r.error) || '主进程没回应'), 'err');
   } else {
     state.lex = r;
+    state.lexSavedFingerprint = lexFingerprint(r);
   }
   if (state.tab === 12) renderAll();
 }
@@ -1380,6 +1431,7 @@ function paintLexGroup(key) {
   bindLexicon();
   const st = $('#lxStatus');
   if (st) st.innerHTML = lexStatusHtml();
+  updateLexHistoryButtons();
 }
 
 function bindLexicon() {
@@ -1387,9 +1439,12 @@ function bindLexicon() {
   const pane = $('#pane');
   pane.querySelectorAll('[data-lx-del]').forEach(b => {
     b.onclick = () => {
+      if (state.lexTransferBusy || state.lexBusy) return;
       const g = state.lex.groups.find(x => x.key === b.dataset.lxDel);
       if (!g) return;
+      lexCheckpoint();
       g.words = g.words.filter(w => w !== b.dataset.lxW);
+      state.lex.wordTotal = state.lex.groups.reduce((n, group) => n + group.words.length, 0);
       state.lexDirty = true;
       paintLexGroup(b.dataset.lxDel);
     };
@@ -1405,7 +1460,7 @@ function bindLexicon() {
 
 async function addLexWord(key, inp) {
   const L = state.lex;
-  if (!L) return;
+  if (!L || state.lexTransferBusy || state.lexBusy) return;
   const w = String(inp.value || '').trim();
   if (!w) return;
   const g = L.groups.find(x => x.key === key);
@@ -1413,12 +1468,14 @@ async function addLexWord(key, inp) {
   if (g.words.indexOf(w) >= 0) { toast('「' + w + '」已经在库里了', 'err'); return; }
   // ★ 红线只在主进程判：拿整份库 + 这个词去 dryRun 预检，通过了才真的进界面列表
   const payload = L.groups.map(x => ({ key: x.key, words: x.key === key ? x.words.concat([w]) : x.words.slice() }));
-  inp.disabled = true;
+  setLexTransferBusy(true);
   const r = await appApi.hotwordsSave(payload, { dryRun: true }).catch(() => null);
-  inp.disabled = false;
+  setLexTransferBusy(false);
   if (!r || !r.ok) { toast('主进程没回应，这次没加进去', 'err'); return; }
   if (r.rejected.length) { toast('「' + r.rejected[0].word + '」不能进库：' + r.rejected[0].why, 'err'); return; }
+  lexCheckpoint();
   g.words.push(w);
+  L.wordTotal = L.groups.reduce((n, group) => n + group.words.length, 0);
   state.lexDirty = true;
   paintLexGroup(key);
   const ni = $('#pane').querySelector(`[data-lx-in="${key}"]`);
@@ -1530,10 +1587,12 @@ function devicesHtml() {
   return `<div class="box" id="devicesPanel"><h3>设备管理（一个设备 = 一个账号）</h3>${rows}
     <div class="row" style="margin-top:10px">
       <button class="btn sm primary" data-act="pub:devScan">扫描设备</button>
+      <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
       <span class="chip">${(state.jobs || []).some(j => ['publish.run', 'publish.rerun'].includes(j.type)) ? '发布中，暂停刷新' : '自动发现已开启'}</span>
       <span class="hint" style="margin:0">自动发现 · 自动连接 · 每 10 秒刷新</span>
     </div>
     ${freshBox}${noneBox}${state.devScanError ? `<p class="hint">自动连接未完成：${esc(state.devScanError)}</p>` : ''}
+    ${probeHtml()}
   </div>`;
 }
 
@@ -1570,7 +1629,7 @@ function probeHtml() {
   const line = (k, v, pass) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v || '—')}</td><td>${badge(pass == null ? '未检查' : pass ? '可用' : '不满足', pass == null ? 'wait' : pass ? 'ok' : 'bad')}</td></tr>`;
   const items = bad.concat(warn);
   return `
-    <div class="box">
+    <div class="device-probe">
       <h3>设备检查结果${p.ts ? `（${esc(new Date(p.ts).toLocaleTimeString())}）` : ''}</h3>
       <div class="row">${badge(headline, kind)}
         <span class="ts" style="color:var(--tx3)">点上面的「检查能不能发布」可随时重查</span></div>
@@ -1579,7 +1638,7 @@ function probeHtml() {
           <div style="font-size:12.5px;font-weight:600;color:${accent[f.level]}">${esc(f.title)}</div>
           <div style="font-size:12px;color:var(--tx2);line-height:1.75;margin-top:3px">${esc(f.how)}</div>
           ${f.act ? `<button class="btn sm primary" style="margin-top:8px" data-act="${esc(f.act.act)}">${esc(f.act.label)}</button>` : ''}
-        </div>`).join('') || '<p class="hint">7 项检查全部通过 —— 按上面的「开始发布」就是真机发布了。</p>'}
+        </div>`).join('')}
       <details style="margin-top:11px">
         <summary style="cursor:pointer;font-size:11.5px;color:var(--tx3)">技术详情（一般不用看，出问题给开发看）</summary>
         <div class="tw" style="margin-top:8px"><table>
@@ -1668,6 +1727,23 @@ function bindLogPane() {
 const PROJ_KEYS = ['items', 'compliance', 'verify', 'sheet', 'publish'];      // 真值一定带（主进程 blank() 保证）
 const CFG_KEYS = ['paths', 'flatten', 'compliance', 'copy', 'verify', 'publish']; // 真值一定带（store.defaults() 保证）
 
+// 更新日志按日期集中展示，动画资源随包保存。
+TABS[13] = {
+  title: '更新日志', desc: '版本更新、重要修复与实测记录。', actions: () => [],
+  render: () => updatePanelHtml() + window.releaseMotion.render()
+};
+
+function syncUpdateNotice() {
+  const available = ['available', 'downloading', 'downloaded'].includes(state.update?.status)
+    || (state.update?.latestBuild > state.update?.build);
+  const nav = document.querySelector('.nav[data-tab="13"]');
+  if (nav) {
+    nav.classList.toggle('has-update', !!available);
+    nav.title = available ? '有新版本可下载' : '更新日志';
+    nav.setAttribute('aria-label', available ? '更新日志，有新版本可下载' : '更新日志');
+  }
+}
+
 function stateGate() {
   const denyOf = v => (v && typeof v === 'object' && v.ok === false) ? (v.error || '读取被拒绝') : null;
   const shapeBad = (v, keys) => !v || typeof v !== 'object' || keys.some(k => v[k] === undefined);
@@ -1683,6 +1759,7 @@ function stateGate() {
 }
 
 function renderAll() {
+  syncUpdateNotice();
   if (state.tab === 6 && !deviceScanBusy && Date.now() - deviceScanAt > 10000) setTimeout(() => refreshDevices(), 0);
   syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 编号在 5 处留了空位。老配置里存过 tab=5、
@@ -1704,9 +1781,10 @@ function renderAll() {
     return;
   }
   $('#head').innerHTML = `<div><h2>${esc(t.title)}</h2><p>${esc(typeof t.desc === 'function' ? t.desc() : t.desc)}</p></div>
-    <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}${a.transfer ? ' lx-transfer lx-' + a.transfer : ''}" data-act="${a.act}" ${a.disabled ? 'disabled' : ''}>${a.transfer ? lexTransferIcon(a.transfer) + '<span>' + esc(a.label) + '</span>' : esc(a.label)}</button>`).join('')}</div>`;
+    <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}${a.transfer ? ' lx-transfer lx-' + a.transfer : ''}${a.history ? ' lx-history' : ''}" data-act="${a.act}" title="${esc(a.label)}" aria-label="${esc(a.label)}" ${a.disabled ? 'disabled' : ''}>${a.history ? lexHistoryIcon(a.history) : a.transfer ? lexTransferIcon(a.transfer) + '<span>' + esc(a.label) + '</span>' : esc(a.label)}</button>`).join('')}</div>`;
   const scroll = $('#pane').scrollTop;
   $('#pane').innerHTML = t.render();
+  if (window.releaseMotion) window.releaseMotion.mount();
   $('#pane').scrollTop = scroll;
   const chip = $('#runChip');
   if (state.jobs.length) {
@@ -1716,7 +1794,7 @@ function renderAll() {
   // 左上角 app 名字后面的版本号：app:info 不受 guardAdmin 限制，人人可读；
   // 取不到就显示 v—（未知 ≠ 0，绝不编一个版本号出来）
   const av = $('#appVer');
-  if (av) av.textContent = 'v' + ((state.info && state.info.version) || '—');
+  if (av) av.textContent = 'v' + ((state.info && state.info.version) || '—') + (['available', 'downloaded'].includes(state.update?.status) ? ' · 有更新' : '');
   const me = state.auth && state.auth.user;
   const cu = $('#chipUser');
   if (cu) {
@@ -1799,6 +1877,16 @@ function showGate(msg) {
   // ★ 出厂账号提示已删（2026-10-02 用户要求）：登录页不再回显 admin / 口令，
   //   连带 auth.status() 的 defaultHint 字段一起删掉（不留悬空字段）。
   fitGateWindow();                                // 量卡片实际高度，把窗口收紧
+  // 异步读取本机加密凭据，不覆盖用户在等待期间输入的新内容。
+  const beforeUser = $('#lgUser').value, beforePassword = $('#lgPwd').value;
+  if (!bootstrapMode && appApi.authSavedLogin) appApi.authSavedLogin().then(saved => {
+    if (!document.body.classList.contains('locked') || $('#gate').hidden) return;
+    if ($('#lgUser').value !== beforeUser || $('#lgPwd').value !== beforePassword) return;
+    if (saved && saved.username && (!beforeUser || beforeUser === saved.username)) {
+      $('#lgUser').value = saved.username;
+      if (!beforePassword) $('#lgPwd').value = saved.password || '';
+    }
+  }).catch(() => {});
   setTimeout(() => {
     const u = $('#lgUser');
     if (u.value) $('#lgPwd').focus(); else u.focus();
@@ -2277,14 +2365,14 @@ function myBrands() {
 
 function bmListHtml() {
   const isAdmin = canAdmin();
-  const list = myBrands();
+  const list = [...myBrands(), ...((state.config.copy || {}).localPrompts || [])];
   const def = (state.brandsMeta && state.brandsMeta.defaultBrandId) || '';
   const rows = list.length ? list.map(b => {
     const ok = !!String(b.promptWrite || '').trim();
     const dead = b.enabled === false;
     // 「本次」= 内存里正在用的那个（state.brandId），点了立即生效、不落盘，重启回到默认
     // 「默认」= 落盘的 copy.defaultBrandId，重启后还是它
-    const isPick = !!b.id && state.brandId === b.id;
+    const isPick = b.local ? (state.config.copy || {}).promptProfileId === b.id : !((state.config.copy || {}).promptProfileId) && !!b.id && state.brandId === b.id;
     const isDefault = !!b.id && def === b.id;
     return `<div class="brow${dead ? ' dead' : ''}">
       <span class="bn">${esc(b.name)}</span>
@@ -2295,7 +2383,7 @@ function bmListHtml() {
       <span class="grow snip">${esc(String(b.promptWrite || '').replace(/\s+/g, ' ').slice(0, 46) || '—')}</span>
       <button class="btn sm" data-act="bm:open" data-id="${esc(b.id)}">配置</button>
       <button class="btn sm${isPick ? ' primary' : ''}" data-act="bm:pick" data-id="${esc(b.id)}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>选择</button>
-      <button class="btn sm${isDefault ? ' primary' : ''}" data-act="bm:default" data-id="${esc(b.id)}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>默认选择</button>
+      ${b.local ? '<span class="chip">本机提示词</span>' : `<button class="btn sm${isDefault ? ' primary' : ''}" data-act="bm:default" data-id="${esc(b.id)}" data-name="${esc(b.name)}" ${dead ? 'disabled' : ''}>默认选择</button>`}
     </div>`;
   }).join('') : `<div class="empty">${isAdmin
     ? '还没有品牌。点左下角「新增品牌」建一个，再给它写文案提示词。'
@@ -2304,15 +2392,14 @@ function bmListHtml() {
     <div class="mh"><h3>文案提示词</h3><span class="grow"></span>
       <button class="btn sm" data-act="bm:close">关闭</button></div>
     <div class="mb">
-      <p class="mnote" style="margin:0 0 11px">每个品牌一份自己的文案提示词 —— <b>点「配置」进去改</b>。
+      <p class="mnote" style="margin:0 0 11px">提示词仅保存在当前设备，同一品牌在其他设备上可单独配置，互不覆盖。<b>点「配置」进去改</b>。
         没配的品牌<b>不允许生成</b>：会直接拦下并提示来这儿补，不会悄悄拿别的品牌的口吻顶替。</p>
       <p class="mnote" style="margin:0 0 11px">右边两个按钮别混：
-        <b>「选择」只影响这一次</b>（本次的文案 / 发布单 / 发布都归它，切页签还在，<b>重启就回到默认</b>）；
-        <b>「默认选择」会写进配置</b>，以后每次打开都是它。当前状态看行里的「本次」「默认」两个小标。</p>
+        自定义品牌的「选择」用于文案提示词，保留到下次启动；发布品牌按标题栏的账号权限选择。</p>
       <div class="blist">${rows}</div>
     </div>
     <div class="mf">
-      ${isAdmin ? '<button class="btn sm primary" data-act="bm:new">新增品牌</button>' : '<span class="mnote">品牌由管理员新建</span>'}
+      <button class="btn sm primary" data-act="bm:new">新增品牌提示词</button>
       <span class="grow"></span>
       <span class="mnote">共 ${list.length} 个</span>
     </div>`;
@@ -2324,14 +2411,15 @@ function bmEditHtml(id) {
   const m = state.brandsMeta || {};
   const b = isNew
     ? { id: '', name: '', enabled: true, promptWrite: '' }
-    : (m.brands || []).find(x => x.id === id);
+    : [...(m.brands || []), ...((state.config.copy || {}).localPrompts || [])].find(x => x.id === id);
   if (!b) {
     return `<div class="mh"><h3>品牌不见了</h3><span class="grow"></span>
         <button class="btn sm" data-act="bm:list">返回列表</button></div>
       <div class="mb"><div class="empty">这个品牌刚被删掉了（可能是在另一个窗口干的）。回列表看看。</div></div>`;
   }
   const picked = (m.defaultBrandId || '') === b.id;
-  const meta = isAdmin;   // 改名 / 启停 / 选用只归管理员；提示词谁有权限谁都能改
+  const local = isNew || b.local;
+  const meta = isAdmin || local;
   return `
     <div class="mh">
       <h3>${isNew ? '新增品牌' : '文案提示词 · ' + esc(b.name)}</h3>
@@ -2349,17 +2437,17 @@ function bmEditHtml(id) {
       </label>
       <p class="mnote">这段是「文案生成」发给模型的角色设定。<b>输出格式</b>（JSON 字段名、标题字数上限）由程序另外追加，不用写在这儿。</p>
 
-      <label class="mchk" style="margin-top:13px" ${meta ? '' : 'data-off="1"'}>
+      <label class="mchk" style="margin-top:13px;${local ? 'display:none' : ''}" ${meta ? '' : 'data-off="1"'}>
         <input type="checkbox" id="bmEnabled" ${b.enabled === false ? '' : 'checked'} ${meta ? '' : 'disabled'}> 启用该品牌
       </label>
-      <label class="mchk" ${meta ? '' : 'data-off="1"'}>
+      <label class="mchk" style="${local ? 'display:none' : ''}" ${meta ? '' : 'data-off="1"'}>
         <input type="checkbox" id="bmPick" ${picked ? 'checked' : ''} ${meta ? '' : 'disabled'}> 本次选用（生成 / 发布默认归属它）
       </label>
-      <p class="mnote">「本次选用」同时只会有一个品牌 —— 勾上它，标题栏的「当前品牌」也跟着切过去。</p>
+      <p class="mnote">${local ? '保存于本机，可自由命名；点列表中的「选择」用于文案生成。发布品牌仍按账号权限选择。' : '「本次选用」同时只会有一个品牌。'}</p>
       ${meta ? '' : '<p class="mnote">品牌名 / 启用 / 选用由管理员维护，你能改的是上面两段提示词。</p>'}
     </div>
     <div class="mf">
-      ${(isAdmin && !isNew) ? `<button class="btn sm" data-act="bm:del" data-id="${esc(b.id)}">删除品牌</button>` : ''}
+      ${(isAdmin && !isNew && !b.local) ? `<button class="btn sm" data-act="bm:del" data-id="${esc(b.id)}">删除品牌</button>` : ''}
       <span class="grow"></span>
       <button class="btn sm" data-act="bm:close">取消</button>
       <button class="btn sm primary" data-act="bm:save" data-id="${esc(b.id)}">保存</button>
@@ -2596,6 +2684,8 @@ const ACTS = {
 
   // ---- 热词库（左侧第 12 页）----
   // 所有登录用户均可修改本机词库，保存不会影响其他电脑。
+  'lex:undo': () => lexTravel('undo'),
+  'lex:redo': () => lexTravel('redo'),
   'lex:export': async () => {
     if (!state.lex || state.lexTransferBusy) return;
     setLexTransferBusy(true);
@@ -2616,7 +2706,9 @@ const ACTS = {
       if (!window.confirm('导入会替换本机的可编辑词库' + (state.lexDirty ? '，包括当前尚未保存的修改' : '') + '。内置锁定词组和句式骨架保持不变。\n\n确定导入并保存吗？')) return;
       const saved = await appApi.hotwordsSave(result.groups);
       if (!saved || !saved.ok) { toast((saved && saved.error) || '导入保存失败', 'err'); return; }
+      lexCheckpoint();
       state.lex = saved.library;
+      state.lexSavedFingerprint = lexFingerprint(state.lex);
       state.lexDirty = false;
       renderAll();
       markLexTransferDone('lex:import');
@@ -2626,10 +2718,14 @@ const ACTS = {
   },
   'lex:save': async () => {
     const L = state.lex;
-    if (!L) return;
+    if (!L || state.lexTransferBusy) return;
+    setLexTransferBusy(true);
+    try {
     const r = await appApi.hotwordsSave(L.groups.map(g => ({ key: g.key, words: g.words.slice() }))).catch(() => null);
     if (!r || !r.ok) { toast((r && r.error) || '保存失败', 'err'); return; }
+    if (lexFingerprint(L) !== lexFingerprint(r.library)) lexCheckpoint();
     state.lex = r.library;
+    state.lexSavedFingerprint = lexFingerprint(state.lex);
     state.lexDirty = false;
     if (r.rejected.length) {
       toast(`有 ${r.rejected.length} 个词没进库：` + r.rejected.map(x => `「${x.word}」${x.why}`).join('；'), 'err');
@@ -2639,15 +2735,22 @@ const ACTS = {
       toast('本机词库已保存 —— 下一次生成就会使用，不影响其他电脑');
     }
     renderAll();
+    } finally { setLexTransferBusy(false); }
   },
   'lex:reset': async () => {
+    if (!state.lex || state.lexTransferBusy) return;
     if (!window.confirm('恢复内置词库？\n\n你在这一页做的增删改会全部丢弃，回到程序自带的那 8 组词。')) return;
+    setLexTransferBusy(true);
+    try {
     const r = await appApi.hotwordsReset().catch(() => null);
     if (!r || !r.ok) { toast((r && r.error) || '恢复失败', 'err'); return; }
+    lexCheckpoint();
     state.lex = r.library;
+    state.lexSavedFingerprint = lexFingerprint(state.lex);
     state.lexDirty = false;
     toast('已恢复内置词库');
     renderAll();
+    } finally { setLexTransferBusy(false); }
   },
 
   // 「说明书」弹窗：topic 从按钮的 data-topic 上取（写错 topic ⇒ 弹窗打不开，测试点名抓）
@@ -2655,16 +2758,46 @@ const ACTS = {
   'help:close': () => closeHelpModal(),
   'flatten:pick': async () => {
     const d = await appApi.pickDir({ title: '选择素材目录', defaultPath: state.project.sourceDir || '' });
-    if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', { sourceDir: d }).then(r => r.ok ? r.result : null); renderAll(); }
+    if (d) { state.project.sourceDir = d; state.plan = await appApi.run('flatten.plan', brandArgs('flatten.plan', { sourceDir: d })).then(r => r.ok ? r.result : null); renderAll(); }
   },
   'flatten:plan': async () => {
-    const r = await appApi.run('flatten.plan', { sourceDir: state.project.sourceDir });
+    const r = await appApi.run('flatten.plan', brandArgs('flatten.plan', { sourceDir: state.project.sourceDir }));
     if (r.ok) { state.plan = r.result; toast(`清单已生成：${r.result.total} 个叶子目录`, 'ok'); }
     renderAll();
   },
   'flatten:run': async () => {
+    if (state.flattenSubmitting) return;
+    state.flattenSubmitting = true;
+    try {
     const r = await runJob('flatten.run', { sourceDir: state.project.sourceDir });
     if (r.ok) { state.plan = null; toast(r.result.summary, 'ok'); }
+    } finally { state.flattenSubmitting = false; renderAll(); }
+  },
+  'update:check': async () => { await appApi.updateCheck(); },
+  'update:open': () => { state.tab = 13; renderAll(); },
+  'feedback:open': () => {
+    let mask = $('#feedbackModal');
+    if (!mask) { mask = document.createElement('div'); mask.id = 'feedbackModal'; mask.className = 'modal'; document.body.appendChild(mask); }
+    mask.innerHTML = `<section class="feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle"><header class="feedback-heading"><div><span class="feedback-eyebrow">我们在听</span><h3 id="feedbackTitle">问题与建议</h3></div><button class="feedback-dismiss" data-act="feedback:close" aria-label="关闭反馈">×</button></header><p class="feedback-description">反馈会同步至开发，帮助我们把工具做得更好。</p><label class="feedback-label" for="feedbackText">反馈内容</label><textarea id="feedbackText" class="inp" maxlength="1000" rows="6" placeholder="哪里遇到了问题？你希望如何改进？"></textarea><p class="feedback-note">请勿填写密码或密钥。</p><p id="feedbackMessage" class="hint" role="status"></p><footer class="feedback-footer"><button class="btn" data-act="feedback:close">取消</button><button class="btn primary" data-act="feedback:send">提交反馈</button></footer></section>`;
+    mask.hidden = false; $('#feedbackText').focus();
+  },
+  'feedback:close': () => { if ($('#feedbackModal')) $('#feedbackModal').hidden = true; },
+  'feedback:send': async el => {
+    const input = $('#feedbackText'), message = $('#feedbackMessage');
+    if (!input.value.trim()) { message.textContent = '请填写反馈内容'; return; }
+    el.disabled = true; message.textContent = '正在提交…';
+    try {
+      const result = await appApi.feedbackSubmit(input.value);
+      message.textContent = result.ok ? result.message : (result.error || '提交失败，请重试');
+      if (result.ok) { input.value = ''; input.disabled = true; }
+      else el.disabled = false;
+    } catch (error) { message.textContent = '提交失败：' + error.message; el.disabled = false; }
+  },
+  'update:download': async () => { await appApi.updateDownload(); },
+  'update:install': async () => {
+    if (!window.confirm('将退出 App、自动完成更新并重新启动。请确认已保存编辑内容。')) return;
+    const r = await appApi.updateInstall();
+    if (!r.ok) toast(r.error, 'err');
   },
   'flatten:openFlat': async () => { if (state.project.flatDir) await appApi.openPath(state.project.flatDir); },
 
@@ -2769,12 +2902,15 @@ const ACTS = {
   'bm:open': (el) => openBrandModal('edit', el.dataset.id),
   // 「选择」= 本次用它。★ 只改内存里的 state.brandId，**不落盘** —— 这就是它和「默认选择」的全部区别。
   // 后续任务在 runJob 里会把这个 id 随 args 带给主进程（主进程还会再校验一次权限）。
-  'bm:pick': (el) => {
-    state.brandId = el.dataset.id;
+  'bm:pick': async (el) => {
+    const local = el.dataset.id.startsWith('local-');
+    await appApi.configSet({ copy: { promptProfileId: local ? el.dataset.id : '' } });
+    state.config = await appApi.configGet();
+    if (!local) state.brandId = el.dataset.id;
     // 标题栏那个下拉要跟着变 —— 否则「本次」改了却看不见，用户会以为没生效
     // （paintBrandSelect 原先只在刷新品牌列表时调，这条路径得自己叫一次）
     paintBrandSelect();
-    toast(`本次使用「${el.dataset.name}」—— 重启后回到默认品牌`, 'ok');
+    toast(`已选择「${el.dataset.name}」${local ? '文案提示词' : ''}`, 'ok');
     renderBrandModal();
     renderAll();
   },
@@ -2800,12 +2936,12 @@ const ACTS = {
 
     const enEl = $('#bmEnabled'), pkEl = $('#bmPick');
 
-    if (!id) {
+    if (!id || id.startsWith('local-')) {
       // 新增：按钮本来就只给管理员看，主进程还会再校验一次
       if (!name) { toast('先给品牌起个名字', 'err'); return; }
-      const r = await appApi.brandAdd({ name, promptWrite, enabled: enEl ? enEl.checked : true });
+      const r = await appApi.promptSave(id, { name, promptWrite });
       if (!r.ok) { toast(r.error, 'err'); return; }
-      if (pkEl && pkEl.checked) await appApi.configSet({ copy: { defaultBrandId: r.brand.id } });
+      await appApi.configSet({ copy: { promptProfileId: r.brand.id } });
       state.config = await appApi.configGet();
       await refreshBrands();
       toast(`已新增品牌「${r.brand.name}」${promptWrite.trim() ? '' : '（还没配文案提示词，生成会被拦下）'}`, 'ok');
@@ -2897,7 +3033,7 @@ const ACTS = {
   'verify:pool': async () => {
     const f = await appApi.pickFile({ title: '导入商品池（CSV/TSV/JSON：货号 + 颜色）' });
     if (!f) return;
-    const r = await appApi.run('pool.import', { file: f });
+    const r = await appApi.run('pool.import', brandArgs('pool.import', { file: f }));
     if (r.ok) { state.info = await appApi.info(); toast(`商品池已导入：${r.result.count} 个货号`, 'ok'); }
     renderAll();
   },
@@ -2944,12 +3080,12 @@ const ACTS = {
   },
 
   'pub:connect': async () => {
-    const r = await appApi.run('publish.connect', {});
+    const r = await appApi.run('publish.connect', brandArgs('publish.connect', {}));
     if (r.ok) toast(r.result.note, r.result.connected ? 'ok' : '');
     renderAll();
   },
   'pub:probe': async () => {
-    const r = await appApi.run('publish.probe', {});
+    const r = await appApi.run('publish.probe', brandArgs('publish.probe', {}));
     if (r.ok) {
       state.probe = r.result;
       const fx = r.result.fix || [];
@@ -2963,7 +3099,7 @@ const ACTS = {
     renderAll();
   },
   'pub:dump': async () => {
-    const r = await appApi.run('publish.dump', {});
+    const r = await appApi.run('publish.dump', brandArgs('publish.dump', {}));
     if (r.ok) {
       toast(`抓到 ${r.result.nodeCount} 个节点，候选定位表已生成：${r.result.mapFile.split(/[\\/]/).pop()}`, 'ok');
       const cfg = await appApi.configGet();
@@ -2974,12 +3110,12 @@ const ACTS = {
   'pub:map': async () => {
     const f = await appApi.pickFile({ title: '导入 UI 定位表（uiMap.json）', filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (!f) return;
-    const r = await appApi.run('publish.importMap', { file: f });
+    const r = await appApi.run('publish.importMap', brandArgs('publish.importMap', { file: f }));
     if (r.ok) { state.config = await appApi.configGet(); toast(`定位表已导入：${r.result.steps} 步`, 'ok'); }
     renderAll();
   },
   'pub:delDev': async (el) => {
-    await appApi.run('publish.removeDevice', { id: el.dataset.id });
+    await appApi.run('publish.removeDevice', brandArgs('publish.removeDevice', { id: el.dataset.id }));
     state.config = await appApi.configGet();
     renderAll();
   },
@@ -2987,7 +3123,7 @@ const ACTS = {
     await appApi.configSet({ publish: { device: el.dataset.serial } });
     state.config = await appApi.configGet();
     state.project.publish = state.project.publish || {};
-    await appApi.run('publish.connect', { device: el.dataset.serial });
+    await appApi.run('publish.connect', brandArgs('publish.connect', { device: el.dataset.serial }));
     state.project = await appApi.projectGet();
     renderAll();
   },
@@ -3000,12 +3136,12 @@ const ACTS = {
   'pub:useFound': async (el) => {
     const serial = el.dataset.serial;
     const found = (state.devFound || []).find(d => d.serial === serial);
-    const add = await appApi.run('publish.addDevice', { name: (found && found.name) || serial, serial });
+    const add = await appApi.run('publish.addDevice', brandArgs('publish.addDevice', { name: (found && found.name) || serial, serial }));
     if (!add.ok && !/已存在/.test(add.error || '')) { toast(add.error || '加入失败', 'err'); renderAll(); return; }
     await appApi.configSet({ publish: { device: serial } });
     state.config = await appApi.configGet();
     state.project.publish = state.project.publish || {};
-    const r = await appApi.run('publish.connect', { device: serial });
+    const r = await appApi.run('publish.connect', brandArgs('publish.connect', { device: serial }));
     state.project = await appApi.projectGet();
     toast(r.ok ? `${serial}：${r.result.note}` : `${serial} 已加入，但连接没成`, r.ok ? 'ok' : 'err');
     renderAll();
@@ -3238,7 +3374,7 @@ const ACTS = {
   // 「装进模拟器」：**先读设备再动手**。已经装了就不发任何安装命令，把版本如实报出来，
   //   并把「覆盖重装」按钮挂出来（state.dewuAlready）—— 覆盖重装必须由用户再点一次，不替他做决定。
   'apk:install': async () => {
-    const r = await appApi.run('publish.installDewuApk', {});
+    const r = await appApi.run('publish.installDewuApk', brandArgs('publish.installDewuApk', {}));
     if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
     const d = r.result || {};
     if (d.already) {
@@ -3253,7 +3389,7 @@ const ACTS = {
     renderAll();
   },
   'apk:installForce': async () => {
-    const r = await appApi.run('publish.installDewuApk', { force: true });
+    const r = await appApi.run('publish.installDewuApk', brandArgs('publish.installDewuApk', { force: true }));
     if (!r.ok) { toast(r.error, 'err'); renderAll(); return; }
     state.dewuAlready = false;
     toast(`覆盖重装完成：得物 ${(r.result && r.result.installedVersion) || ''}（应用数据与登录状态保留）`, 'ok');
@@ -3446,6 +3582,15 @@ function bind() {
 }
 
 async function boot() {
+  appApi.onUpdate(s => {
+    state.update = s;
+    syncUpdateNotice();
+    const panel = $('#versionUpdate');
+    if (panel) panel.outerHTML = updatePanelHtml();
+    const av = $('#appVer');
+    if (av) { av.title = s.message; av.textContent = 'v' + (state.info?.version || '1.1.1') + (['available', 'downloaded'].includes(s.status) ? ' · 有更新' : ''); av.classList.toggle('update-available', s.status === 'available' || s.status === 'downloaded'); }
+  });
+  state.update = await appApi.updateStatus();
   state.info = await appApi.info();
   applyTheme(await appApi.themeGet());
   state.auth = await appApi.authStatus();
@@ -3486,9 +3631,14 @@ setInterval(async () => {
       return;
     }
     const changed = before.user.role !== next.user.role
-      || JSON.stringify(before.user.brands || []) !== JSON.stringify(next.user.brands || []);
+      || JSON.stringify(before.user.brands || []) !== JSON.stringify(next.user.brands || [])
+      || (!next.offline && before.brandsRevision !== next.brandsRevision);
     state.auth = next;
     if (changed) {
+      state.stats = null;
+      state.statsTried = false;
+      state.statsQueryOpts = null;
+      if (state.brandModal) closeBrandModal();
       await refreshBrands();
       await refreshUsers();
       renderAll();

@@ -215,7 +215,7 @@ const state = {
       return st;
     };
     store.set({ publish: { uiMap: { package: 'com.shizhuang.duapp',
-      steps: [{ name: '配置里的步', action: 'wait', value: '1' }] } } });
+      steps: [{ name: '配置里的步', action: 'wait', value: '1' }, { name: '提交发布', action: 'tapText', value: '发布' }] } } });
     // ★ 注意：runReal 抛的异常会被 run 的 try/catch **吞掉**并写成行结果
     //   （row.result='失败'、row.reason=错误消息）⇒ 判据必须看**行的结果**，不是看调用有没有抛错。
     const rA = await publisher.run(mkSt(), ctx);
@@ -576,7 +576,8 @@ const state = {
       { name: '切到视频页签', action: 'tapText', value: '相册' },
       { name: '确认选视频', action: 'tapText', value: '下一步' },
       { name: '填标题', action: 'input', value: '${title}' },
-      { name: '关联好物', action: 'tapText', value: '关联好物' }
+      { name: '关联好物', action: 'tapText', value: '关联好物' },
+      { name: '提交发布', action: 'tapText', value: '发布' }
     ]
   };
   const videoState = {
@@ -2491,22 +2492,22 @@ const state = {
       fs.writeFileSync(FOCUSF, HOME_F);
       fs.writeFileSync(TAPF, 'publish');
       rf = await runPub();
-      ok('发布后校验 ② ★ 点完**还停在发布流程里** ⇒ 必须记「失败」（不许记成功）',
-        rf.row.result === '失败', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
-      ok('发布后校验 ② ★ 失败原因要说清「没有离开发布流程」（不是一句含糊的"未知"）',
-        /离开发布流程/.test(rf.row.reason || ''), String(rf.row.reason || '').slice(0, 120));
-      ok('发布后校验 ② ★ 必须强停得物把没发出去的草稿清掉（不留草稿是用户的硬要求）',
-        stopsF.includes('com.shizhuang.duapp'), JSON.stringify(stopsF));
+      ok('提交成功后仍停在发布流程，按用户确认口径记录成功',
+        rf.row.result === '发布成功', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
+      ok('提交成功不再因后续页面追加失败原因',
+        !rf.row.reason, String(rf.row.reason || '').slice(0, 120));
+      ok('提交后不强制退出得物',
+        stopsF.length === 0, JSON.stringify(stopsF));
 
       // ③ 被存成草稿 ⇒ 失败 + 强停清草稿
       cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
       fs.writeFileSync(FOCUSF, HOME_F);
       fs.writeFileSync(TAPF, 'draft');
       rf = await runPub();
-      ok('发布后校验 ③ ★★ 落到**草稿箱**（＝被存成草稿）⇒ 必须记「失败」',
-        rf.row.result === '失败', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
-      ok('发布后校验 ③ ★★ 同样必须强停得物（否则那条草稿会一直留在「草稿箱」里，下一条还会弹「是否继续编辑」）',
-        stopsF.includes('com.shizhuang.duapp'), JSON.stringify(stopsF));
+      ok('提交后落在 DraftActivity 不再误判失败',
+        rf.row.result === '发布成功', rf.row.result + ' / ' + (rf.row.reason || '').slice(0, 90));
+      ok('DraftActivity 不触发强制退出得物',
+        stopsF.length === 0, JSON.stringify(stopsF));
 
       // ⑤ 超时**行为级**：`postPublishWaitSec` 配大 ⇒ 真等更久。
       //   为什么不用源码级：本项目规矩是「源码里有这行字 ≠ 它真解决了问题」——
@@ -2522,8 +2523,8 @@ const state = {
       };
       const fastF = await timePub(1);
       const slowF = await timePub(3);
-      ok('发布后校验 ⑤ 超时配置真被读到（1s 档 vs 3s 档，实测耗时差 ≥ 1.5s）',
-        slowF - fastF >= 1500, `1s 档 ${fastF}ms / 3s 档 ${slowF}ms`);
+      ok('旧发布后等待配置不再延迟完成',
+        Math.abs(slowF - fastF) < 1500, `1s 档 ${fastF}ms / 3s 档 ${slowF}ms`);
 
       // ④ 判据自证：`isDraftScreen` 真在查草稿箱（把草稿箱写进判据，别让它变成死代码）
       ok('发布后校验 ④ 草稿箱判据认得 DraftActivity（否则 ③ 是空==空）',

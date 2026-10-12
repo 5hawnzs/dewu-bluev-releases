@@ -45,6 +45,12 @@ app.whenReady().then(async () => {
   const logbus = require(path.join(ROOT, 'src/main/logbus.js'));
   const ipc = require(path.join(ROOT, 'src/main/ipc.js'));
   const auth = require(path.join(ROOT, 'src/main/auth.js'));
+  const githubUpdates = require(path.join(ROOT, 'src/main/githubupdates.js'));
+  githubUpdates.start = () => {};
+  const liveFetch = global.fetch;
+  global.fetch = (url, opts) => String(url).startsWith('https://raw.githubusercontent.com/' + githubUpdates.REPO)
+    ? Promise.resolve(new Response(JSON.stringify({ version: '1.1.1', build: githubUpdates.BUILD, bytes: 1000000, sha256: '0'.repeat(64), url: 'https://github.com/' + githubUpdates.REPO + '/releases/download/test/test.exe' })))
+    : liveFetch(url, opts);
   store.load();
   project.load();
   auth.load();
@@ -208,8 +214,8 @@ app.whenReady().then(async () => {
     }
     return titles;
   })()`);
-  ok('登录后 10 个可见页签都能渲染（货号颜色校验不向任何用户展示）',
-    tabs.length === 10 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+  ok('登录后 11 个可见页签都能渲染（包含更新日志）',
+    tabs.length === 11 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
   // ★ 一律用「有没有这一页」判，**不按第几个** —— 页签编号从 2026-10-03 起在 5 处留了空位，
   //   写死下标会在每次增删页签时失效（上一次就是这么被漏掉的）。
   ok('页签里有「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
@@ -665,19 +671,22 @@ app.whenReady().then(async () => {
   ok('⑦e 成员写的那段模板真的落到注册表上了（不是只在返回值里改了一下）',
     !!adminSee && adminSee.promptWrite === '成员自己写的模板', JSON.stringify(adminSee && adminSee.promptWrite));
 
-  // ---- 所有账号均不能从客户端获取安装包 ----
-  const deniedActions = async () => js(`(async () => {
-    const results = await Promise.all([window.api.updateStatus(), window.api.updateCheck(),
-      window.api.updateDownload(), window.api.updateInstall(), window.api.updateSetChannel('beta')]);
-    return results.every(r => r && r.ok === false && r.disabled === true);
+  // 全部已登录账号可检查更新；无新构建时不允许下载或安装。
+  const updateActions = async () => js(`(async () => {
+    const status = await window.api.updateStatus(), check = await window.api.updateCheck();
+    const download = await window.api.updateDownload(), install = await window.api.updateInstall();
+    return status.ok && check.ok && check.status === 'current' && !download.ok && !install.ok;
   })()`);
-  ok('管理员的全部客户端分发接口均已关闭', await deniedActions());
-  const adminSettings = await js(`(() => { document.querySelector('.nav[data-tab="7"]').click();
-    return !document.querySelector('#updBox') && !/应用更新|检查更新|下载更新|更新通道/.test(document.querySelector('#head').textContent + document.querySelector('#pane').textContent); })()`);
-  ok('管理员设置页也没有更新入口及文字', adminSettings);
+  ok('管理员可以检查更新，无新版本不能下载或安装', await updateActions());
+  const adminSettings = await js(`(() => { document.querySelector('.nav[data-tab="13"]').click();
+    return !!document.querySelector('#versionUpdate [data-act="update:check"]'); })()`);
+  ok('管理员更新日志页提供更新入口', adminSettings);
   const backMember = await js(`__t.login(${JSON.stringify(MEMBER)}, 'Member@456', false)`);
   ok('切换普通成员登录成功', backMember.locked === false);
-  ok('普通成员的全部客户端分发接口均已关闭', await deniedActions());
+  ok('普通成员也可以检查更新，无新版本不能安装', await updateActions());
+  const customPrompt = await js(`window.api.promptSave('', { name: '成员自定义品牌', promptWrite: '成员独立提示词' })`);
+  ok('普通成员可以新增自定义品牌提示词', customPrompt.ok && customPrompt.brand.name === '成员自定义品牌');
+  ok('自定义提示词不改变云端品牌权限', !(await js('window.api.brandList()')).brands.some(b => b.id === customPrompt.brand.id));
 
   const backAdmin3 = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
   ok('⑦f 切回管理员（后面几条要管理员会话）', backAdmin3.locked === false, backAdmin3.err || '');

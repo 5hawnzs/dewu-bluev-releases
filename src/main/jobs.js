@@ -163,6 +163,11 @@ async function dispatch(type, args, ctx) {
       const dir = needSourceDir(args.sourceDir || st().sourceDir);
       const res = await flatten.run(dir, store.get('flatten'), ctx);
       if (!res.ok) throw new Error(res.message);
+      if (res.reused) {
+        ctx.conclude(res.summary);
+        if (st().flatDir !== res.flatDir) throw new Error('这份素材已整理，请打开已有目录：' + res.flatDir + '；为避免覆盖后续处理，本次没有重建工程');
+        return res;
+      }
       project.patch({ sourceDir: dir, flatDir: res.flatDir, items: res.items, compliance: { rows: [], stats: null, scannedAt: 0 }, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: res.items.length, colCount: 26, locked: false, exportedAt: 0 } });
       // 大结论（2026-10-05）：一行说清这次整理出来多少
       ctx.conclude(`素材整理完成【${res.summary}】`);
@@ -170,7 +175,7 @@ async function dispatch(type, args, ctx) {
     }
     case 'compliance.scan': {
       if (!st().items.length) throw new Error('请先做素材整理');
-      project.patch({ compliance: { rows: [], stats: null, groups: [], scannedAt: 0 } });
+      // 检查完成后再替换结果；失败或读取期间保留上次报告。
       const { rows, stats } = await compliance.scan(st().items, ctx);
       project.patch({ compliance: { rows, stats, scannedAt: Date.now() } });
       // 大结论（2026-10-05）：逐条的判定过程在明细里，这里只给用户几个数
@@ -180,7 +185,7 @@ async function dispatch(type, args, ctx) {
     }
     case 'compliance.scanParent': {
       const dir = needSourceDir(args.dir || st().sourceDir);
-      project.patch({ compliance: { rows: [], stats: null, groups: [], scannedAt: 0 } });
+      // 父目录检查同样保留已有结果，避免扫描期间页面被清空。
       const r = await compliance.scanParent(dir, ctx);
       project.patch({ compliance: { rows: r.rows, stats: r.stats, groups: r.groups, scannedAt: Date.now() } });
       ctx.conclude(`父目录检查完成【${r.groups.length} 个批次 · ${r.stats.total} 个文件 · 可自动处理 ${r.stats.todo} · 未自动处理 ${r.stats.manual}】`,
@@ -694,9 +699,19 @@ async function run(type, args = {}) {
   // 品牌归属与权限放在最前面：不通过就连任务都不起、日志也不写 ——
   // 否则「被拒绝」这件事会以一条正常任务日志的样子留在台账里，越查越乱
   const actor = auth.enabled() ? auth.current() : null;
-  const picked = brands.resolveFor(actor, args.brandId, { required: BRAND_SCOPED.has(type) });
+  // 登录后的用户任务都记录品牌；自动设备轮询不生成任务日志。
+  const picked = brands.resolveFor(actor, args.brandId, { required: BRAND_SCOPED.has(type) || !!actor && type !== 'publish.devices' });
   if (!picked.ok) return { ok: false, error: picked.error, brandDenied: true };
   const brand = picked.brand || null;
+  const promptProfile = type === 'copy.generate' ? require('./promptprofiles').selected() : null;
+  if (['publish.run', 'publish.rerun'].includes(type)) {
+    const queue = project.get().publish || {};
+    if (queue.brandId) {
+      const allowed = brands.resolveFor(actor, queue.brandId, { required: true });
+      if (!allowed.ok) return { ok: false, error: '当前队列品牌权限已被撤销，不能启动新发布任务；正在运行的批次可继续完成', brandDenied: true };
+      if (!brand || brand.id !== queue.brandId) return { ok: false, error: `当前队列属于「${queue.brandName || queue.brandId}」，请切换原品牌或重新导入当前品牌的报告`, brandDenied: true };
+    }
+  }
   const actorInfo = actor
     ? { userId: actor.id, username: actor.username, displayName: actor.displayName || actor.username }
     : { userId: '', username: '', displayName: '' };
@@ -706,7 +721,7 @@ async function run(type, args = {}) {
   // 文案生成必须有「这个品牌自己的」提示词。拦在这里（job 实例化之前）而不是生成中途：
   // 中途失败会在 runlog 里留下一条「开始 + 失败」，台账上多出一堆没跑成的批次更难查。
   // 没配提示词时**不回退到内置模板** —— 那样产出的文案看不出归属，比直接拦住更难发现。
-  if (type === 'copy.generate' && brand && !brands.hasWritePrompt(brand)) {
+  if (type === 'copy.generate' && brand && !brands.hasWritePrompt(promptProfile || brand)) {
     const lb = args.label || args.batchId || TYPE_LABEL[type] || type;
     const msg = `品牌「${brand.name}」还没配「文案生成提示词」——到「文案生成 → 提示词配置」里补上再跑`;
     logbus.error(`[${lb}] ${msg}`, Object.assign({ type, label: lb }, brandInfo, actorInfo));
@@ -766,7 +781,7 @@ async function run(type, args = {}) {
     // brand 只放 id/name —— 它会整条 Object.assign 进每条日志的 meta，
     // 完整品牌对象带着上千字的提示词，塞进去等于每条日志都抄一遍模板
     brand: brandInfo,
-    brandFull: brand,
+    brandFull: promptProfile || brand,
     actor: actorInfo,
     cancelled: () => job.token.cancel,
     log: emit,

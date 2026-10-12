@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   info: () => ipcRenderer.invoke('app:info'),
 
   authStatus: () => ipcRenderer.invoke('auth:status'),
+  authSavedLogin: () => ipcRenderer.invoke('auth:saved-login'),
   authUiReady: () => ipcRenderer.invoke('auth:ui-ready'),
   authLogin: (u, p, remember) => ipcRenderer.invoke('auth:login', u, p, remember),
   authBootstrap: (code, u, p, displayName, remember) => ipcRenderer.invoke('auth:bootstrap', code, u, p, displayName, remember),
@@ -24,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
 
   brandList: () => ipcRenderer.invoke('brand:list'),
   brandAdd: input => ipcRenderer.invoke('brand:add', input),
+  promptSave: (id, input) => ipcRenderer.invoke('prompt:save', id, input),
   brandUpdate: (id, patch) => ipcRenderer.invoke('brand:update', id, patch),
   brandPrompts: (id, patch) => ipcRenderer.invoke('brand:prompts', id, patch),
   brandRemove: id => ipcRenderer.invoke('brand:remove', id),
@@ -34,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
 
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: () => ipcRenderer.invoke('update:check'),
+  feedbackSubmit: text => ipcRenderer.invoke('feedback:submit', text),
   updateDownload: () => ipcRenderer.invoke('update:download'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
   updateSetChannel: next => ipcRenderer.invoke('update:set-channel', next),
