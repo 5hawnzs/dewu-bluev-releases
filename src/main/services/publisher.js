@@ -758,7 +758,7 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
       if (uimap.isDraftScreen(f)) {
         return { ok: true, draft: true, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: f, left: f, seen };
       }
-      if (!uimap.isPublishScreen(f) && !uimap.isDraftScreen(f)) { left = f; break; }
+      if (uimap.isDewuFocus(f) && !uimap.isPublishScreen(f) && !uimap.isDraftScreen(f)) { left = f; break; }
     }
     if (Date.now() - t0 >= timeoutMs) break;
     if (typeof cancelled === 'function' && cancelled()) break;
@@ -890,8 +890,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     throw error;
   }
   // 根目录已经递归清理并核实无文件，子目录不再重复查询四张媒体表。
-  const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir);
-  if (!mk.ok) throw new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
+  const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { deadline: clearOptions.deadline, timeout: 8000 });
+  if (!mk.ok) {
+    const error = new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
+    if (mk.killed) error.code = 'ALBUM_IO_INTERRUPTED';
+    throw error;
+  }
   log(`${row.dir}：目录清理 ${(Date.now() - clearStarted) / 1000}s`, 'info');
   const albumStarted = Date.now();
   require('./diagnostics').phase('清理全盘相册索引', row.seq);

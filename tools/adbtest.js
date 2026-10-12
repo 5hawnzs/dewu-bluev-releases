@@ -3122,6 +3122,13 @@ const state = {
       ok('㉙ ★ 反向对照：落在**首页** ⇒ ok:true 且不是草稿（证明上面那条不是恒判草稿）',
         vr29b.ok === true && !vr29b.draft, JSON.stringify({ ok: vr29b.ok, draft: !!vr29b.draft }));
 
+      for (const focus of ['com.android.launcher/.Launcher', 'com.android.permissioncontroller/.GrantPermissionsActivity', '']) {
+        fs.writeFileSync(FOCUS29, focus);
+        const unknown = await publisher.waitLeftPublishFlow('FAKESERIAL', { timeoutMs: 0 });
+        ok('提交后跳到系统桌面、权限弹窗或前台未知时不能开始下一条清相册：' + (focus || '未知'), !unknown.ok);
+      }
+      fs.writeFileSync(FOCUS29, 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
+
       // ---- ④ 防回退：回读的**触发条件** ----
       //   ★ 这一条是**故意写成源码级**的：我当场把它写成 `rs && !rs.skipped`，而 runStep 对 tapId 是
       //     `return;`（**返回 undefined**）⇒ 条件恒假、回读整段静默失效，跑完整条发布都看不出来。

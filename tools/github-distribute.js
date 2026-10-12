@@ -35,7 +35,7 @@ async function main() {
   const releases = await api('/repos/' + REPO + '/releases?per_page=100');
   let release = releases.find(x => x.tag_name === tag);
   if (release && !release.draft) throw Error('此构建已发布，禁止覆盖');
-  if (!release) release = await api('/repos/' + REPO + '/releases', 'POST', { tag_name: tag, name: '得物蓝V素材发布工具 ' + m.version, draft: true, body: '登录稳定性、品牌提示词、本地词库撤销、素材复用、GitHub 更新与发布入口修复。\n\n安装前请保存编辑内容并退出应用。\nSHA-256：' + m.sha256 });
+  if (!release) release = await api('/repos/' + REPO + '/releases', 'POST', { tag_name: tag, name: '得物蓝V素材发布工具 ' + m.version, draft: true, body: '相册查询与全盘重扫退出 139 的兼容修复；清理及重连共享总预算；提交后前台未知时保护后续任务。\n\n安装前请保存编辑内容并退出应用。\nSHA-256：' + m.sha256 });
   for (const name of [m.file, 'SHA256SUMS.txt', 'distribution.json']) {
     const binaryName = `bluev-publisher-${m.version}-x64-win.exe`;
     const remoteName = name === m.file ? binaryName : name;

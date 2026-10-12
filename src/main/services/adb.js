@@ -119,18 +119,27 @@ function execAdbOnce(args, { timeout = 20000, binary = false } = {}) {
 const ADB_SERVICE_ERR = /daemon still not running|cannot connect to daemon|failed to start daemon|adb server (?:is )?out of date|Could not install \*smartsocket\*|device '[^']*' not found|device not found/i;
 const NET_SERIAL = /^[\w.\-]+:\d+$/;
 async function execAdb(args, opts = {}) {
-  const first = await execAdbOnce(args, opts);
+  // 清相册的同一总预算必须覆盖服务自愈，不能重连时另加两轮 20 秒。
+  const execute = (command, options) => {
+    const left = Number.isFinite(opts.deadline) ? opts.deadline - Date.now() : Infinity;
+    if (left <= 0) return Promise.resolve({ ok: false, stdout: '', stderr: '相册命令总预算已耗尽',
+      code: null, killed: true, signal: null, timeoutMs: 0 });
+    return execAdbOnce(command, { ...options, timeout: Math.max(1, Math.min(options.timeout || 20000, left)) });
+  };
+  const first = await execute(args, opts);
   if (first.ok) return first;
   const blob = `${first.stderr || ''}${first.stdout || ''}`;
   if (!ADB_SERVICE_ERR.test(blob)) return first;   // 业务错误：原样返回，不重试
-  await execAdbOnce(['start-server'], { timeout: 20000 });
+  const started = await execute(['start-server'], { timeout: 20000 });
+  if (started.killed) return started;
   const arr = Array.isArray(args) ? args : [];
   const si = arr.indexOf('-s');
   const serial = si >= 0 ? String(arr[si + 1] || '') : '';
   if (serial && NET_SERIAL.test(serial)) {
-    await execAdbOnce(['connect', serial], { timeout: 20000 });
+    const connected = await execute(['connect', serial], { timeout: 20000 });
+    if (connected.killed) return connected;
   }
-  return execAdbOnce(args, opts);
+  return execute(args, opts);
 }
 
 const withS = (serial, args) => (serial ? ['-s', serial] : []).concat(args);
@@ -167,9 +176,17 @@ function mediaUri(table) {
   if (!['video', 'images', 'audio', 'files'].includes(table)) throw new Error('未知媒体表');
   return 'content://media/external/' + (table === 'files' ? 'file' : table + '/media');
 }
+// 现场 content 返回 139 并同时写入崩溃提示；仅过滤这一精确标记。
+// 调用方仍须校验结果格式并回读媒体库，不能把崩溃本身当成动作成功。
+function normalizeContentCrash(r) {
+  if (Number(r.code) !== 139 || r.killed) return r;
+  return { ...r, stderr: String(r.stderr || '').split(/\r?\n/)
+    .filter(line => !/^Segmentation fault(?: \(core dumped\))?$/.test(line.trim())).join('\n') };
+}
 async function queryMediaTable(serial, table, run = shell, projection = '_id:_data') {
   const cmd = 'content query --uri ' + mediaUri(table) + ' --projection ' + projection
     + (table === 'files' ? " --where 'media_type=1 OR media_type=2 OR media_type=3'" : '');
+  const read = async () => normalizeContentCrash(await run(serial, cmd, { timeout: 8000 }));
   const isExplicitEmpty = r => {
     const output = [r && r.stdout, r && r.stderr].map(v => String(v || '').trim()).filter(Boolean).join('\n');
     // Android 的 content query 在空表时会明确打印这个标记；部分新设备随后会以 139 退出。
@@ -189,13 +206,13 @@ async function queryMediaTable(serial, table, run = shell, projection = '_id:_da
     r.code == null ? '' : '退出码 ' + r.code].filter(Boolean).join('；') || '无设备错误详情';
   const valid = r => !r.killed && !String(r.stderr || '').trim()
     && (/^No result found\.?\s*$/i.test(String(r.stdout || '').trim()) || isCompleteRows(r));
-  let result = await run(serial, cmd, { timeout: 8000 });
+  let result = await read();
   if (result.ok && valid(result)) return { result, error: '' };
   if (isExplicitEmpty(result)) return { result: Object.assign(acceptedResult(result), { stdout: '' }), error: '' };
   if (Number(result.code) === 139 && !result.killed && isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
   const first = detail(result);
   await sleepMs(350);
-  result = await run(serial, cmd, { timeout: 8000 });
+  result = await read();
   if (!result.ok && isExplicitEmpty(result)) return { result: Object.assign(acceptedResult(result), { stdout: '' }), error: '' };
   if (!result.ok && Number(result.code) === 139 && !result.killed && isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
   return result.ok && valid(result)
@@ -452,7 +469,7 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
     if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
     const left = deadline - Date.now();
     if (left <= 0) { const e = new Error('本条相册清理达到 90 秒总预算，停止本条，下一条将重新检查'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
-    const result = await shell(device, command, { ...options, timeout: Math.max(1, Math.min(options.timeout || 8000, 10000, left)) });
+    const result = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(options.timeout || 8000, 10000, left)) });
     if (result.killed) {
       const e = new Error(command.split(' ')[0] + ' 相册命令超时或被终止（限时 ' + result.timeoutMs + 'ms，信号 ' + (result.signal || '未知') + '），未确认清空');
       e.code = 'ALBUM_IO_INTERRUPTED'; throw e;
@@ -568,7 +585,7 @@ async function clearAlbum(serial, opts = {}) {
     if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
     const left = deadline - Date.now();
     if (left <= 0) { const e = new Error('相册清理达到本条总预算，停止本条'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
-    const r = await shell(device, command, { ...options, timeout: Math.max(1, Math.min(options.timeout || 8000, 15000, left)) });
+    const r = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(options.timeout || 8000, 15000, left)) });
     if (r.killed) { const e = new Error(command.split(' ')[0] + ' 全盘相册命令超时或被终止（限时 ' + r.timeoutMs + 'ms，信号 ' + (r.signal || '未知') + '）'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
     return r;
   };
@@ -603,8 +620,8 @@ async function clearAlbum(serial, opts = {}) {
     for (let i = 0; i < hit.length; i += 2) await group(hit.slice(i, i + 2).map(removeOne));
   };
   const reScan = async () => {
-    const scan = await run(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 15000 });
-    if (!scan.ok && !(Number(scan.code) === 139 && !scan.stderr && /Result:\s*Bundle/.test(scan.stdout || ''))) {
+    const scan = normalizeContentCrash(await run(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 15000 }));
+    if (!scan.ok && !(Number(scan.code) === 139 && !scan.stderr && /^Result:\s*Bundle\[\{[^\r\n]*\}\]\s*$/.test(scan.stdout || ''))) {
       throw new Error('全盘扫描失败，不能确认残留是否重新入库：' + (scan.stderr || scan.stdout || '无错误详情'));
     }
     return scanAll();

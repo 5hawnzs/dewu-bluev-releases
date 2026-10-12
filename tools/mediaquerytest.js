@@ -37,6 +37,36 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
     const q = await driver(() => ({})).adb.queryMediaTable('FAKE', 'images', async () => response);
     ok(name + '必须拒绝当成空相册或完整查询', !!q.error);
   }
+  for (const [label, stdout] of [
+    ['现场视频记录', 'Row: 0 _id=1000000143, _data=/storage/emulated/0/DCIM/Camera/bluev/326113200701-1.mp4\n'],
+    ['明确空表', 'No result found.\n']
+  ]) {
+    const q = await driver(() => ({})).adb.queryMediaTable('FAKE', 'video', async () =>
+      ({ ok: false, code: 139, stdout, stderr: 'Segmentation fault\n' }));
+    ok(label + '带 139 崩溃提示仍按实际媒体结果处理', !q.error && q.result.ok
+      && (label !== '现场视频记录' || q.result.stdout.includes('_id=1000000143')));
+  }
+  for (const [label, stdout, stderr, killed] of [
+    ['崩溃无结果', '', 'Segmentation fault', false],
+    ['崩溃截断', 'Row: 0 _id=1, _data=', 'Segmentation fault', false],
+    ['崩溃伴权限错误', 'No result found.', 'Segmentation fault\nPermission denied', false],
+    ['超时遗留空标记', 'No result found.', 'Segmentation fault', true]
+  ]) {
+    const q = await driver(() => ({})).adb.queryMediaTable('FAKE', 'video', async () =>
+      ({ ok: false, code: 139, stdout, stderr, killed }));
+    ok(label + '仍阻止清理放行', !!q.error);
+  }
+  const recovery = driver(cmd => cmd.startsWith('content query ')
+    ? { code: 1, stderr: 'cannot connect to daemon' } : {}, 50);
+  const recovered = await recovery.adb.shell('127.0.0.1:16384', 'content query --uri content://media/external/video/media --projection _id:_data',
+    { timeout: 8000, deadline: Date.now() + 80 });
+  ok('连接自愈沿用清理总预算，耗尽后不再连接或重发业务命令', recovered.killed
+    && recovery.calls.filter(c => c.startsWith('content query ')).length === 1
+    && !recovery.calls.includes('127.0.0.1:16384')
+    && recovery.executions.every(e => e.timeout <= 80));
+  const expiredRecovery = driver(() => ({}));
+  const expiredResult = await expiredRecovery.adb.shell('FAKE', 'ls -A /sdcard/DCIM/Camera', { deadline: Date.now() - 1 });
+  ok('传入过期总预算时驱动层不启动任何设备命令', expiredResult.killed && !expiredRecovery.calls.length);
   const uri = driver(() => ({ stdout: 'No result found.\n' }));
   await uri.adb.queryMediaTable('FAKE', 'files');
   ok('Files 使用真实 file 地址并只查询图片、音频、视频，不删文档目录', uri.calls[0].includes('/external/file --projection')
@@ -131,6 +161,19 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
   const cleaned = await unsafeName.adb.clearAlbum('FAKE');
   ok('带 shell 控制符的文件名只按媒体 ID 清理，不拼成设备指令',cleaned.ok
     && unsafeName.calls.some(c=>c.startsWith('content delete ')) && !unsafeName.calls.some(c=>c.startsWith('rm -f ')));
+  for (const mode of ['实际删净', '残留视频']) {
+    let removed = false, count = 0;
+    const d = driver(cmd => {
+      if (cmd.startsWith('content delete ')) { removed = true; count++; return { stdout: 'Deleted 1 rows' }; }
+      if (cmd.startsWith('content query ')) return { code: 139, stderr: 'Segmentation fault\n',
+        stdout: removed && mode === '实际删净' ? 'No result found.\n'
+          : 'Row: 0 _id=1000000143, _data=/storage/emulated/0/DCIM/Camera/bluev/326113200701-1.mp4\n' };
+      return {};
+    });
+    const result = await d.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
+    ok('现场139查询后' + mode + '必须依据删除后媒体复查决定结果', count === 1
+      && (mode === '实际删净' ? result.ok : !result.ok && /残留|还有/.test(result.error)));
+  }
   const camera = '/storage/emulated/0/DCIM/Camera/test.jpg';
   let attempts = 0, gone = false;
   const retry = driver(cmd => {
@@ -158,6 +201,20 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
     const result = await d.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
     ok(`${mode}：最多三次删除，依据真实媒体复查结果放行或拦截`, count === 3
       && (mode === '已删但进程异常' ? result.ok && /复查/.test(result.note) : !result.ok && !!result.error));
+  }
+  for (const mode of ['扫描返回完整结果', '扫描无结果', '扫描结果截断', '扫描伴权限错误', '扫描后素材重现']) {
+    let gone = false;
+    const d = driver(cmd => {
+      if (cmd.startsWith('content delete ')) { gone = true; return {}; }
+      if (cmd.includes('--method scan_volume')) return { code: 139,
+        stdout: mode === '扫描无结果' ? '' : mode === '扫描结果截断' ? 'Result: Bundle[{' : 'Result: Bundle[{}]\n',
+        stderr: 'Segmentation fault\n' + (mode === '扫描伴权限错误' ? 'Permission denied' : '') };
+      if (cmd.startsWith('content query ')) return { code: 139, stderr: 'Segmentation fault\n',
+        stdout: gone && mode !== '扫描后素材重现' ? 'No result found.\n' : 'Row: 0 _id=21, _data=/sdcard/Movies/old.mp4\n' };
+      return {};
+    });
+    const result = await d.adb.clearAlbum('FAKE');
+    ok(mode + '：139提示不能代替全盘清空判据', mode === '扫描返回完整结果' ? result.ok : !result.ok);
   }
   let albumGone = false, albumDeletes = 0;
   const albumDedup = driver(cmd => {
