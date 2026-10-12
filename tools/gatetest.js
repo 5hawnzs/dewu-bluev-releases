@@ -146,6 +146,13 @@ app.whenReady().then(async () => {
      !!contrast && !!contrast.bad && contrast.bad.length === 0, JSON.stringify(contrast));
 
   // 走渲染层自己的流程：填表 + 提交（等同于用户敲完点「登录」）
+  // 保留一次未执行的量高回调，复现它晚于主窗口恢复的执行顺序。
+  await js(`(() => {
+    const original = window.requestAnimationFrame;
+    window.requestAnimationFrame = callback => { window.__lateGateFit = callback; return 0; };
+    fitGateWindow();
+    window.requestAnimationFrame = original;
+  })()`);
   await js(`(() => {
     document.querySelector('#lgUser').value = ${JSON.stringify(USER)};
     document.querySelector('#lgPwd').value = ${JSON.stringify(PASS)};
@@ -159,6 +166,18 @@ app.whenReady().then(async () => {
   ok('登录后：窗口还原成正常尺寸', g.width >= 900, geoSig(g));
   ok('登录后：登录门消失、业务界面出来', (await isLocked()) === false && (await gateDisplay()) === 'none');
   ok('登录后：窗口恢复可拉伸 / 可最大化', w.isResizable() === true && w.isMaximizable() === true);
+  await js(`(() => {
+    // 模拟 ui-ready 已返回、登录遮罩尚未隐藏的瞬间，旧量高回调不能收回主窗口。
+    document.querySelector('#gate').hidden = false;
+    document.body.classList.add('locked');
+    window.__lateGateFit();
+    document.querySelector('#gate').hidden = true;
+    document.body.classList.remove('locked');
+    delete window.__lateGateFit;
+  })()`);
+  await new Promise(r => setTimeout(r, 100));
+  ok('登录前排队的量高回调晚到时不会再次缩小或锁住主窗口',
+    w.getBounds().width >= 900 && w.isResizable() && w.isMaximizable(), geoSig(w.getBounds()));
   const savedAfterLogin = store.get('window.bounds') || {};
   ok('登录后：落盘的窗口尺寸不是小窗（下次启动不会变小）', !savedAfterLogin.width || savedAfterLogin.width >= 900, JSON.stringify(savedAfterLogin));
 

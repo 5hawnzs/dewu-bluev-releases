@@ -419,6 +419,12 @@ function makeFakeAdb(dir) {
       if (d) {
         const st = dirs[d];
         if (!st.exists) return fail('find: ' + target + ': No such file or directory');
+        if (/-delete/.test(cmd)) {
+          if (fs.existsSync(DIR_STALE) || appLocked()) return fail('find: ' + target + ': Text file busy');
+          st.files = st.files.filter(f => !isFile(f));
+          for (let i = pushed.length - 1; i >= 0; i--) if (toCmp(pushed[i]).startsWith(d + '/')) pushed.splice(i, 1);
+          return okOut('');
+        }
         const files = pushed.filter(p => toCmp(p).indexOf(d + '/') === 0)
           .map(p => toCmp(p)).concat(
             st.files.filter(f => isFile(f)).map(f => d + '/' + f));
@@ -683,14 +689,14 @@ function makeFakeAdb(dir) {
       if (fs.existsSync(path.join(dir, 'QUERY_EXIT_139'))) {
         return { out: out || 'No result found.\n', code: 139 };
       }
-      return okOut(out);
+      return okOut(out || 'No result found.\n');
     }
     if (/^content delete /.test(cmd)) {
       // ★★ 2026-10-04 新增：按 _id 删库记录（clearMediaDir 用的就是这条）。
       //   真机语义：删掉记录的同时**物理文件也一起消失**（见 adb.js 顶部实测注释）。
       //   夹具要同步把 scanned / pushed 里的对应项去掉 —— 否则 content query 还看得见，
       //   「删完库里还有」这种 bug 就永远抓不到。
-      const m = cmd.match(/\/media\/(\d+)\s*$/);
+      const m = cmd.match(/\/(?:media|file)\/(\d+)\s*$/);
       if (m) {
         const id = Number(m[1]);
         const idx = scanned.findIndex(p => mediaIdOf(p) === id);   // 按**稳定 id** 反查（不再用下标推算）

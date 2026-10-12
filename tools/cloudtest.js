@@ -188,7 +188,9 @@ let r = null;
   appendRun({ eventId: 'task-detail-1', ts: 1760000000200, kind: 'log', msg: '内部路径 C:\\Users\\Alice\\private\\content.txt' });
   appendRun({ eventId: 'task-end-1', ts: 1760000000300, kind: 'end', ok: false, jobId: 'j1', type: 'publish.run', label: '批次甲', batch: 'B1',
     brandId: 'brd_1', brandName: '示例品牌', userId: 'u1', username: 'zhangsan', displayName: '张三', elapsedSec: 18.4,
-    error: '打不开 C:\\Users\\Alice\\private\\content.txt Bearer abc.def.secret' });
+    error: '打不开 C:\\Users\\Alice\\private\\content.txt Bearer abc.def.secret',
+    diagnostic: { version: '1.1.1', build: 2026101208, phase: '清理素材文件', row: 2,
+      failures: [{ op: 'find', ms: 8001, timeoutMs: 8000, killed: true, signal: 'SIGTERM', source: 'bundled' }], commands: [] } });
   appendRun({ eventId: 'copy-end-1', ts: 1760000000310, kind: 'end', ok: true, jobId: 'jcopy', type: 'copy.generate',
     apiUsage: { version: 1, requests: 1, inputTokens: 100, outputTokens: 50, cachedInputTokens: 10,
       estimatedCostCny: 0.0002, costKnown: true, models: ['deepseek-flash'],
@@ -214,6 +216,10 @@ let r = null;
   ok('任务上行字段只含已授权白名单',
     Object.keys(uploadedTasks[0]).join(',') === 'org,event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_id,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary,api_usage',
     Object.keys(uploadedTasks[0]).join(','));
+  ok('失败诊断自动进入现有云端错误摘要，不新增数据库字段',
+    uploadedTasks[1].error_summary.startsWith('[诊断 1.1.1/2026101208')
+      && uploadedTasks[1].error_summary.includes('find:8001ms') && uploadedTasks[1].error_summary.includes('SIGTERM')
+      && uploadedTasks[1].error_summary.includes('limit=8000'), uploadedTasks[1].error_summary);
   const uploadedUsage = uploadedTasks.find(x => x.task_type === 'copy.generate').api_usage;
   ok('AI 用量只上传模型/token/估算字段，过滤任何额外内容', uploadedUsage.inputTokens === 100
     && uploadedUsage.byMedia.image.requests === 1 && !JSON.stringify(uploadedUsage).includes('must not upload')

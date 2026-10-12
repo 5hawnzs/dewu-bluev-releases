@@ -19,6 +19,7 @@ const publisher = require('./services/publisher');
 const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装包（装进模拟器那条兜底路）
 const pool = require('./services/pool');
 const runlog = require('./services/runlog');
+const diagnostics = require('./services/diagnostics');
 const wp = require('./util/winpath');
 
 /**
@@ -795,15 +796,16 @@ async function run(type, args = {}) {
   };
 
   send('job:started', { id, type, label, batch: job.batch, startedAt: job.startedAt, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
+  const diagnosticState = diagnostics.create({ version: require('electron').app.getVersion(), build: require('./githubupdates').BUILD });
   runlog.append(Object.assign({ kind: 'start', jobId: id, label, type, batch: job.batch }, brandInfo, actorInfo));
   if (picked.auto) logbus.info(`[${label}] 你的品牌权限只有一个，本次归属「${who}」`, Object.assign({ jobId: id, type, label }, brandInfo, actorInfo));
   try {
-    const res = await dispatch(type, args, ctx);
+    const res = await diagnostics.run(diagnosticState, () => dispatch(type, args, ctx));
     const runOutcome = publishRunOutcome(type, res);
     const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
     send('job:done', { id, type, label, batch: job.batch, ok: true, busy: false, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
     runlog.append(Object.assign({ kind: 'end', ok: runOutcome.ok, error: runOutcome.error, jobId: id, label, type, batch: job.batch, elapsedSec,
-      apiUsage: type === 'copy.generate' ? (res && res.apiUsage) || null : null }, brandInfo, actorInfo));
+      diagnostic: diagnostics.snapshot(diagnosticState), apiUsage: type === 'copy.generate' ? (res && res.apiUsage) || null : null }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
     return { ok: true, result: res, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } catch (e) {
@@ -814,7 +816,7 @@ async function run(type, args = {}) {
     else logbus.error(`[${label}] ${type} 失败：${e.message}`, Object.assign({ jobId: id, batch: job.batch, label, type }, brandInfo, actorInfo));
     send('job:done', { id, type, label, batch: job.batch, ok: false, cancelled: job.token.cancel, error: msg, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
     runlog.append(Object.assign({ kind: 'end', ok: false, error: msg, cancelled: !!job.token.cancel, jobId: id, label, type, batch: job.batch, elapsedSec,
-      apiUsage: type === 'copy.generate' ? (e && e.apiUsage) || null : null }, brandInfo, actorInfo));
+      diagnostic: diagnostics.snapshot(diagnosticState), apiUsage: type === 'copy.generate' ? (e && e.apiUsage) || null : null }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
     return { ok: false, error: msg, cancelled: job.token.cancel, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } finally {

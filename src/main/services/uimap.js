@@ -155,7 +155,12 @@ function screenMismatch(mapScreen, live) {
   if (!mapScreen || !live || live.known !== true) return { judgeable: false, mismatch: false, swapped: false, why: '' };
   const mw = Number(mapScreen.w) || 0, mh = Number(mapScreen.h) || 0;
   if (!mw || !mh) return { judgeable: false, mismatch: false, swapped: false, why: '' };
-  if (mw === live.w && mh === live.h) return { judgeable: true, mismatch: false, swapped: false, why: '' };
+  if (mw === live.w && mh === live.h) {
+    const dpi = Number(mapScreen.density), current = Number(live.density);
+    if (dpi > 0 && current > 0 && dpi !== current) return { judgeable: true, mismatch: true, swapped: false,
+      why: `定位表 DPI 为 ${dpi}，设备当前为 ${current}` };
+    return { judgeable: true, mismatch: false, swapped: false, why: '' };
+  }
   const swapped = (mw === live.h && mh === live.w);
   return {
     judgeable: true, mismatch: true, swapped,
@@ -171,7 +176,8 @@ function screenMismatch(mapScreen, live) {
  */
 function screenStamp(size) {
   if (!size || size.known !== true) return null;
-  return { w: size.w, h: size.h, landscape: !!size.landscape, at: Date.now() };
+  return { w: size.w, h: size.h, landscape: !!size.landscape, at: Date.now(),
+    ...(Number(size.density) > 0 ? { density: Number(size.density) } : {}) };
 }
 
 /**

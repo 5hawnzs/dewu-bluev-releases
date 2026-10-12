@@ -13,6 +13,7 @@
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const diagnostics = require('./diagnostics');
 
 /**
  * adb 可执行文件从哪来 —— 三段，优先级从高到低：
@@ -73,16 +74,25 @@ function bundledStatus() {
 }
 
 function execAdbOnce(args, { timeout = 20000, binary = false } = {}) {
+  const started = Date.now();
+  const selected = active();
   return new Promise(resolve => {
-    execFile(active().path, args, {
+    execFile(selected.path, args, {
       timeout, windowsHide: true, maxBuffer: 64 * 1024 * 1024,
       encoding: binary ? 'buffer' : 'utf8'
-    }, (err, stdout, stderr) => resolve({
+    }, (err, stdout, stderr) => {
+      const result = {
       ok: !err,
       stdout: stdout || (binary ? Buffer.alloc(0) : ''),
       stderr: String(stderr || ''),
-      code: err ? err.code : null
-    }));
+      code: err ? err.code : null,
+      killed: !!(err && err.killed),
+      signal: err ? err.signal || null : null,
+      timeoutMs: timeout
+      };
+      diagnostics.record(args, result, Date.now() - started, selected.source);
+      resolve(result);
+    });
   });
 }
 
@@ -153,17 +163,22 @@ async function push(serial, local, remote) {
 }
 
 // 新设备刚连入时 MediaProvider 偶发短暂不可用；读取媒体表失败时短暂重试一次。
+function mediaUri(table) {
+  if (!['video', 'images', 'audio', 'files'].includes(table)) throw new Error('未知媒体表');
+  return 'content://media/external/' + (table === 'files' ? 'file' : table + '/media');
+}
 async function queryMediaTable(serial, table, run = shell, projection = '_id:_data') {
-  const cmd = 'content query --uri content://media/external/' + table + '/media --projection ' + projection;
+  const cmd = 'content query --uri ' + mediaUri(table) + ' --projection ' + projection
+    + (table === 'files' ? " --where 'media_type=1 OR media_type=2 OR media_type=3'" : '');
   const isExplicitEmpty = r => {
     const output = [r && r.stdout, r && r.stderr].map(v => String(v || '').trim()).filter(Boolean).join('\n');
     // Android 的 content query 在空表时会明确打印这个标记；部分新设备随后会以 139 退出。
-    return Number(r && r.code) === 139 && /^(?:No result found\.?\s*)$/i.test(output);
+    return !r.killed && Number(r && r.code) === 139 && /^(?:No result found\.?\s*)$/i.test(output);
   };
   const isCompleteRows = r => {
     // 新设备可能已经完整输出 Row 行，随后 content CLI 在关闭游标时以 139 崩溃。
     // 只接收全由完整记录组成的 stdout；调用方仍会删记录并复查，残留媒体不会被放行。
-    if (Number(r && r.code) !== 139 || String(r && r.stderr || '').trim()) return false;
+    if (String(r && r.stderr || '').trim()) return false;
     const lines = String(r && r.stdout || '').replace(/\r/g, '').trim().split('\n').filter(Boolean);
     const fields = projection.split(':').map(field => field + '=' + (field === '_data' ? '.+?' : '\\d+'));
     const record = new RegExp('^Row:\\s*\\d+\\s+' + fields.join(',\\s*') + '$');
@@ -172,21 +187,40 @@ async function queryMediaTable(serial, table, run = shell, projection = '_id:_da
   const acceptedResult = r => Object.assign({}, r, { ok: true, stderr: '' });
   const detail = r => [String(r.stderr || '').trim(), String(r.stdout || '').trim(),
     r.code == null ? '' : '退出码 ' + r.code].filter(Boolean).join('；') || '无设备错误详情';
-  let result = await run(serial, cmd, { timeout: 30000 });
-  if (result.ok) return { result, error: '' };
+  const valid = r => !r.killed && !String(r.stderr || '').trim()
+    && (/^No result found\.?\s*$/i.test(String(r.stdout || '').trim()) || isCompleteRows(r));
+  let result = await run(serial, cmd, { timeout: 8000 });
+  if (result.ok && valid(result)) return { result, error: '' };
   if (isExplicitEmpty(result)) return { result: Object.assign(acceptedResult(result), { stdout: '' }), error: '' };
-  if (isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
+  if (Number(result.code) === 139 && !result.killed && isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
   const first = detail(result);
   await sleepMs(350);
-  result = await run(serial, cmd, { timeout: 30000 });
+  result = await run(serial, cmd, { timeout: 8000 });
   if (!result.ok && isExplicitEmpty(result)) return { result: Object.assign(acceptedResult(result), { stdout: '' }), error: '' };
-  if (!result.ok && isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
-  return result.ok
+  if (!result.ok && Number(result.code) === 139 && !result.killed && isCompleteRows(result)) return { result: acceptedResult(result), error: '' };
+  return result.ok && valid(result)
     ? { result, error: '' }
     : { result, error: detail(result) + '（首次：' + first + '；重试后仍失败）' };
 }
 
 /** /sdcard/... 与 /storage/emulated/0/... 是同一处，但 MediaStore 的 _data 记的是后者 */
+async function albumMatches(serial, remoteFiles) {
+  const wanted = new Set(remoteFiles.map(toMediaPath));
+  const present = new Set();
+  const reads = await Promise.all(['images', 'video'].map(t => queryMediaTable(serial, t, shell, '_data')));
+  for (const q of reads) {
+    if (q.error) return { ok: false, error: '选素材前相册复查失败：' + q.error };
+    for (const line of String(q.result.stdout || '').split(/\r?\n/)) {
+      const m = /^Row:\s*\d+\s+_data=(.*?)\s*$/.exec(line);
+      if (m) present.add(toMediaPath(m[1]));
+    }
+  }
+  const extra = [...present].filter(p => !wanted.has(p));
+  const missing = [...wanted].filter(p => !present.has(p));
+  return { ok: !extra.length && !missing.length, extra, missing,
+    error: extra.length || missing.length ? `相册素材与本条不一致：多出 ${extra.length} 个、缺少 ${missing.length} 个，已阻止选图` : '' };
+}
+
 function toMediaPath(p) {
   return String(p || '').replace(/^\/sdcard\//, '/storage/emulated/0/');
 }
@@ -405,388 +439,98 @@ async function forceStop(serial, pkg) {
  * 返回 { ok, removed, files, error, note, forceStopped }
  */
 async function clearMediaDir(serial, remoteDir, opts = {}) {
-  const forceStopPkg = String((opts && opts.forceStopPkg) || '').trim();
-  // ★ 「这次是不是把 App 强停过」—— 调用方要据此决定「得物现在是不是死的、要不要重新拉起来」。
-  let forceStopped = false;
   const dir = toMediaPath(remoteDir).replace(/\/+$/, '') + '/';
-  // ★★ 2026-10-04：路径匹配放宽成「两种写法都认」。
-  //   设备上同一个文件在库里可能写成 /storage/emulated/0/DCIM/... 也可能写成 /sdcard/DCIM/...
-  //   （实测两种都存在）⇒ 只比一种前缀会**漏掉一半**，那半个就是「删了但还在」的那半个。
-  const dirs = [dir];
-  const alt = String(remoteDir).replace(/\/+$/, '') + '/';
-  if (alt !== dir) dirs.push(alt);
-  const hit = [];
-  let error = '';
-  // ★ 表名放宽：video / images / audio / files 全扫一遍（老代码只扫前两张，漏掉的表里
-  //   若挂着指向该目录的记录，得物相册照样能看见它）。
-  // 四张媒体表互不依赖，只并行读取；删除与最终复查仍按原顺序执行。
+  if (!/^\/storage\/emulated\/0\/[A-Za-z0-9_./+\-]+\/$/.test(dir) || dir.includes('/../') || dir.includes('/./')
+    || !dir.startsWith('/storage/emulated/0/DCIM/')) {
+    return { ok: false, error: '清理目录不在允许的 DCIM 路径内，未执行删除', removed: 0, files: [], forceStopped: false };
+  }
   const tables = ['video', 'images', 'audio', 'files'];
-  const queries = await Promise.all(tables.map(t => queryMediaTable(serial, t)));
-  for (let i = 0; i < tables.length; i++) {
-    const t = tables[i], queried = queries[i];
-    const r = queried.result;
-    if (queried.error) {
-      const e = queried.error;
-      // files 表在部分机型上不可查 —— 不因它整体失败，但**记录在案**
-      if (t === 'files' && /no such table|Invalid|Unknown|not found/i.test(e)) continue;
-      if (!error) error = e;
-      continue;
+  const deadline = Math.min(Number(opts.deadline) || Infinity, Date.now() + 90000);
+  const hit = [], failures = [];
+  let removed = 0, forceStopped = false;
+  const run = async (device, command, options = {}) => {
+    if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
+    const left = deadline - Date.now();
+    if (left <= 0) { const e = new Error('本条相册清理达到 90 秒总预算，停止本条，下一条将重新检查'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
+    const result = await shell(device, command, { ...options, timeout: Math.max(1, Math.min(options.timeout || 8000, 10000, left)) });
+    if (result.killed) {
+      const e = new Error(command.split(' ')[0] + ' 相册命令超时或被终止（限时 ' + result.timeoutMs + 'ms，信号 ' + (result.signal || '未知') + '），未确认清空');
+      e.code = 'ALBUM_IO_INTERRUPTED'; throw e;
     }
-    for (const line of String(r.stdout || '').split(/\r?\n/)) {
-      const m = /_id=(\d+),\s*_data=(.+?)\s*$/.exec(line);
-      if (!m) continue;
-      if (!dirs.some(d => m[2].indexOf(d) === 0)) continue;
-      hit.push({ table: t, id: m[1], file: m[2] });
-    }
-  }
-  if (error) return { ok: false, removed: 0, files: hit.map(h => h.file), error, forceStopped };
-
-  let removed = 0;
-  // 同一媒体在 images/video 和 files 表共用记录；去重后仅并行删除不同记录。
-  const seenMedia = new Set(), deleteFailures = [];
-  const uniqueMedia = hit.filter(h => {
-    const key = h.id + ':' + h.file;
-    if (seenMedia.has(key)) return false;
-    seenMedia.add(key);
-    return true;
-  });
-  const removeMedia = async h => {
-    let r;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt) await sleepMs(attempt * 200);
-      r = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
-      if (r.ok || /Permission Denial|SecurityException/i.test((r.stderr || '') + (r.stdout || ''))) break;
-    }
-    if (r.ok) removed++;
-    else deleteFailures.push(String(r.stderr || r.stdout || '').trim() || ('content delete(' + h.id + ') 执行失败'));
+    return result;
   };
-  for (let i = 0; i < uniqueMedia.length; i += 2) {
-    await Promise.all(uniqueMedia.slice(i, i + 2).map(removeMedia));
-  }
-  // ★★ 2026-10-04（第三十五轮）：按用户指令「全部删掉」，把目录**内容**清空到一条不剩。
-  //   用户原话：「我跟你说全部删掉，你还考虑误杀什么？……我指令已经非常非常明确了」
-  //   ⇒ 这里**不做任何"可能还有用"的保留判断**，凡在这个目录里的一律删掉。
-  //   为什么以前清不干净（真机实测 2026-10-04 01:15，127.0.0.1:16384）：
-  //     `ls -laR /sdcard/DCIM/Camera/bluev` 里躺着一条 10-02 23:28 的 mp4（38,919,318 B），
-  //     而 `content query` 按 _data 前缀**匹配不到它**（库里没有对应记录 / 记录路径与磁盘路径
-  //     写法不一致）⇒ 老代码报 `removed=0` 却**假装清干净了**，那条文件就一直留在目录里，
-  //     下一条发布时得物相册里照样能看到它 ⇒ 用户看到的「第二条的相册里混着上一条的素材」。
-  //   ⇒ 结论：**不能只依赖 MediaStore 记录**，必须直接对**磁盘目录**动刀（下面这步）。
-  //   ★★ 2026-10-04 追加实测修正（很重要，差点踩坑）：
-  //     一开始写的是 `rm -rf '<dir>'`（删目录本身），真机一跑就炸：
-  //       `rm: /sdcard/DCIM/Camera/bluev: Text file busy`
-  //     因为**得物 App 正停在发布页、它就打开着这个目录**。目录被占住时：
-  //       rm 删不掉目录 → 接着那句 mkdir -p 也因为目录还在而"成功"得毫无意义
-  //       → 如果这里判 ok，就等于**在素材最可能残留的时候假装清干净了**，比不删更糟。
-  //     ⇒ 正确做法：**只删目录里的内容、绝不碰目录本身**（目录 inode 不动 ⇒ 被占也能删内容）。
-  //   ★★★ 2026-10-04 第三次实测修正（引号坑，这次是真踩透了）：
-  //     写成 `rm -rf '<dir>'/* '<dir>'/.[!.]*` 后 — 实测把 `ls -A` 的结果变成了**设备根目录 /
-  //     的内容**（acct / apex / bin / data ... 全列出来了）。根因是 `shell()` 走 `execFile`
-  //     数组传参：设备端最终执行 `sh -c '<我们拼的整串>'`，**里面的引号会被再解析一次**，
-  //     我们精心写的 `'...'` 到设备端已被剥掉，`<dir>/*` 里的 `*` 就落到别的目录上了。
-  //     ⇒ 结论：**不要再往设备端塞任何引号 / glob**。用 `find <dir> -mindepth 1 -delete`：
-  //       路径不含空格（DCIM/Camera/bluev 全是安全字符），根本不需要引号；
-  //       find 按路径递归删**内容**、不碰目录本体。
-  //   ★★ 2026-10-04 第四次实测补充（重试是必需的，不是保险）：
-  //     得物停在发布页时会**持有这个目录的句柄**，此时删目录内容会间歇性报
-  //     `Text file busy`（实测：造一个空子目录 sub，连 `rm -rf sub`、`find -delete`、
-  //     `rmdir sub` 全失败；等得物重新扫过目录后**同一句 `rmdir` 直接成功**）。
-  //     ⇒ 锁是**短暂**的，不是永久的 ⇒ 删完若还有残留，**等一下重试**就能过。
-  //     这解释了老代码为什么偶尔"清干净了"偶尔没有 —— 它只删一次，撞上锁就放弃了。
-  //   ★★★ 2026-10-04 第五次实测修正（★ 这是最终方案，前面四次都被它取代）：
-  //     实测发现 `Text file busy` **不是得物持有的** —— 把得物 `am force-stop` 掉之后
-  //     同一个目录**照样报 Text file busy**（真机实测：force-stop 后 `rm -rf <dir>` 仍 rc=1）；
-  //     而且报错里提到的子目录（`deep`）**其实早就不存在了** ⇒ 这是 MuMu 的
-  //     sdcardfs/共享目录映射留下的**失效句柄（stale handle）**，等多久都不会自己好。
-  //     ⇒ 死等重试解决不了它（实测等了 3s、60s 都照样失败）。
-  //     ★ 真正有效的解法是 **`mv` 换名法**（实测同一时刻 `rm -rf` rc=1、`mv` rc=0）：
-  //         把 `DCIM/Camera/bluev` 整个改名叫 `DCIM/Camera/bluev_trash_<时间戳>`，
-  //         再 `mkdir` 一个新的 `bluev`。
-  //       · 改名**不删任何 inode** ⇒ 不受失效句柄影响，一次就成功；
-  //       · 换完之后「bluev 这个相册」里的内容 = **全新的空目录** ⇒ 得物相册下拉里的
-  //         bluev 相册就是空的，正是用户要的「上一条的素材一条都不出现」；
-  //       · 改名后的垃圾目录若删得掉就顺手删掉，删不掉也不影响正确性（它不在 bluev 名下，
-  //         得物相册不会把它当成本工具素材；它是隐藏在外面的废目录）。
-  //     ★ 顺序：先按记录删库（上面那段，能删多少删多少）→ 再 mv 换名 → 再 mkdir 新的。
-  //       库记录必须先删：不然记录还指向 <dir>/xxx.mp4，而那个路径已经被换名了 ⇒ 僵尸记录。
-  //   ★★★ 2026-10-04 第十四次实测修正（上面第五次那段**归因错了，别照它推理**）：
-  //     第五次结论说「force-stop 掉得物之后照样 Text file busy ⇒ 是 MuMu 的 stale 句柄」。
-  //     本轮重做同一个实验，结果**相反**：force-stop 之后**同一句 rm 立刻成功**、目录立刻空。
-  //     两次都在真机上做的，差别在于**当时锁在谁手里**：
-  //       · 得物**正在跑**、停在发布页/相册页 ⇒ 锁在**得物进程**里 ⇒ force-stop 能解；
-  //       · 得物**早就退出/被杀**、锁却还在   ⇒ 才是 MuMu sdcardfs 的 stale 句柄 ⇒ force-stop 解不开。
-  //     两类现象长得一模一样（都是 `Text file busy`），但解法不同
-  //     ⇒ 所以现在**两手都留着**：先 force-stop 重试（见上面 1b 段，能过就不造残骸），
-  //       过不了再 mv 换名（对付真 stale）。
-
-  // ★★ 2026-10-04 第八次实测修正（这里原来也在犯「读不到 = 空的」这个错误）：
-  //   原来写的是 `if (left)` —— **只看 stdout 非空、没看命令是否成功**。
-  //   目录不存在时 `ls -A` 是**非零退出码 + 空输出** ⇒ `left=''` ⇒ 代码当成「目录是空的、
-  //   已经干净」。判据必须和末尾那处一致：**命令成功（ok）且输出非空** 才算「有残留」。
-  //   · 读不到 ≠ 没有；· 目录不存在 ≠ 目录是空的（虽然两者都算「这次不用换名」）。
-  const hasLeftover = s => !!(s && s.ok && String(s.stdout || '').trim());
-  // ★★ 非致命的备注（例：只剩几个清不掉的空目录残骸）—— 不阻断发布，但要如实带回去给人看。
-  let dirNote = '';
-
-  // 1) 先试「原地清内容」（绝大多数情况能过；只有 stale 句柄时才会失败）
-  await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
-  await shell(serial, 'rm -rf ' + dir + '/* ' + dir + '/.[!.]* 2>/dev/null', { timeout: 60000 });
-  let stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-  let left = String(stage.stdout || '').trim();
-  // ★★★ 2026-10-05（第四十二轮）★ 先数「还有没有文件」——没有就**立刻收工**，别为空气做功。
-  //   用户原话：「检查有没有图片就行，空目录有什么关系？」
-  //
-  //   为什么必须提前（真机实测，可复算）：得物相册 = MediaStore，**只认文件**；
-  //   空目录（哪怕里面套着 sub/deep）一条都进不去 ⇒「目录 listing 非空」根本不代表「相册还有素材」。
-  //   而这块设备上躺着 8 个**删不掉**的超长残骸空目录（`rm -rf` 撞 `Text file busy`；
-  //   `adb kill-server` 解不开，**重启模拟器也解不开** —— 实测 Android uptime 75s 后照样在）。
-  //   ⇒ 按老流程，这 8 个残骸会让**每一条内容**都必然走完下面这一整套：
-  //     强停得物 → 重删 → mv 换名（Camera 是 sdcardfs 挂载点，必失败）→ 逐子项循环
-  //     （每个子项 4~6 次 shell）→ 4 轮扫描 → 兜底 2 轮（含 1.6s 纯 sleep）→ reapLongTrashDirs
-  //   实测这一段 **15.3s**，而它想删的东西（文件）**一个都不存在**。
-  //   ★ 更糟的连带损失：白白把得物**强停**掉 ⇒ 发布流程后面还要再花 4.4s 把它重新拉回首页。
-  //
-  //   ⇒ 判据：只要 `find <dir> -type f` 数出来是 **0 个文件**，就地判干净
-  //     —— **不强停得物、不换名、不 reap**，直接返回。
-  //   ★★ 红线不变（不许为了快而造假）：**读不到 ≠ 空**。`find` 自身失败时**不放行**，
-  //     照样往下走原流程（原流程会去 `ls`、会如实报错）。有文件时行为与以前一字不差。
-  if (hasLeftover(stage)) {
-    const fchk0 = await shell(serial, 'find ' + dir + ' -type f 2>/dev/null', { timeout: 30000 });
-    const filesNow0 = String(fchk0.stdout || '').trim();
-    if (fchk0.ok && !filesNow0) {
-      const n0 = String(stage.stdout || '').trim().split(/\r?\n/).length;
-      return {
-        ok: true, removed: removed, files: hit.map(h => h.file), error: '', forceStopped: false,
-        note: dirNote || ('只剩 ' + n0 + ' 个删不掉的空目录残骸（find -type f 数出来 '
-          + '0 个文件，不含任何素材）—— 得物相册只认文件 ⇒ 不强停得物、不换名、直接放行')
-      };
-    }
-  }
-  if (hasLeftover(stage)) {
-    // ★★★ 1b) 2026-10-04 第十四次实测修正（★ 本轮用户报的「第 2/3 篇直接提示没能清干净」的真解）：
-    //   先别急着 mv 换名 —— **先看清是什么在锁**。
-    //   真机上这两条命令的差别是决定性的（同一秒、同一台设备）：
-    //     `rm -rf /sdcard/DCIM/Camera/bluev`            → rc=1  `Text file busy`
-    //     `am force-stop com.shizhuang.duapp` 之后再执行 → **rc=0，目录立刻空**
-    //   根因：**得物自己正停在发布页/相册页、拿着这批 mp4 的硬解码句柄**（这跟「MuMu 的 stale
-    //   句柄」是两回事 —— 那种 force-stop 也解不开，所以才要把 mv 换名法留在后面当第二手）。
-    //   ★ 顺序很重要：**先强停、再重试原地删**，成功了就**不进换名那条路**——
-    //     换名会造出 `X_trash_<ts>` 残骸，残骸会一直堆在相册目录里（老代码吃过这个亏）。
-    //   ★ 只在调用方明确给了包名（`forceStopPkg`）时才做 —— 默认一个 App 都不碰。
-    if (forceStopPkg && !forceStopped) {
-      const st = await forceStop(serial, forceStopPkg);
-      if (st.ok) {
-        forceStopped = true;
-        await sleepMs(500);   // 等系统把句柄收回去（实测 force-stop 后立刻 rm 也能过，留点余量）
-        await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
-        await shell(serial, 'rm -rf ' + dir + '/* ' + dir + '/.[!.]* 2>/dev/null', { timeout: 60000 });
-        stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-        left = String(stage.stdout || '').trim();
-      } else if (!dirNote) {
-        dirNote = '想强停 ' + forceStopPkg + ' 腾出文件句柄，但没停掉（' + (st.error || '未知原因') + '）';
-      }
-    }
-    // ★ 到这里还没清掉 ⇒ 才走 mv 换名法（对付 force-stop 也解不开的那种 stale 句柄）
-  }
-  if (hasLeftover(stage)) {
-    // 2) 原地清不掉（stale 句柄）⇒ mv 换名法，绕开它
-    const trash = dir.replace(/\/+$/, '') + '_trash_' + Date.now();
-    const mv = await shell(serial, 'mv ' + dir + ' ' + trash, { timeout: 60000 });
-    if (mv.ok) {
-      await shell(serial, 'mkdir -p ' + dir, { timeout: 30000 });
-      // 垃圾目录能删就删（删不掉不影响正确性，留着也不进 bluev 相册）
-      await shell(serial, 'rm -rf ' + trash + ' 2>/dev/null', { timeout: 60000 });
-      stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-      left = String(stage.stdout || '').trim();
-    } else {
-      // ★★ 2026-10-04（第三十八轮）真机实测修正：**整个目录换名可能失败**。
-      //   `mv /storage/emulated/0/DCIM/Camera <trash>` 回
-      //     `mv: bad '.../DCIM/Camera/': Device or resource busy`
-      //   —— Camera 是 sdcardfs 的**挂载点级目录**，它自己不能被改名（bluev 这种子目录才行）。
-      //   但用户的诉求是「清空整个 Camera」，不能因为"整个换不了名"就整体放弃。
-      //   ⇒ 退一步：**逐个子项处理**。每个子项自己试 `mv <child> <child>_trash_<ts>` ——
-      //     子目录（bluev_trash_* 那些）能改名，改完就绕过了它的 stale 句柄；
-      //     单个文件能 rm 就直接 rm。
-      //   ★ 逐项循环有上限（防止目录里是垃圾海时无限跑）——上限内清不完就如实报 error，
-      //     绝不假装干净。
-      const kids = String(left || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      // ★★ 2026-10-04（第三十九轮）**判据矛盾修复 —— 这是「第二条起必失败」的真根因**。
-      //   现象（真机复现，seq8 成功后 seq9/seq10 连续失败）：
-      //     `没能清干净设备相册目录（/sdcard/DCIM/Camera）：目录里有 11 个子项清不掉也改不了名`
-      //   而**同一时刻** `find /sdcard/DCIM/Camera -type f` = **0 个文件** ⇒ 相册里其实一条素材都没有。
-      //   根因：这里把「清不掉的子项」（全是历次 `mv` 换名留下的**空目录残骸** `X_gone_TS…`）
-      //   直接写进了 `error`；而函数末尾（另一个判据）又说「`find -type f` 为空 = 干净」。
-      //   两个判据**自相矛盾**，而这里的 error 优先级更高 ⇒ 末尾那条正确的判据被它废掉了。
-      //   更糟的是它**会累积**：每次发布都新增一个残骸 ⇒ 越跑越多 ⇒ 第 N 条之后**永远失败**。
-      //   ⇒ 修正：**空目录残骸**只算「备注」不算失败；只有「里面真剩着文件」才是失败。
-      //     判据统一成一句话：**递归找不到任何文件 = 干净**（得物相册只认文件，空目录不进相册）。
-      const survivors = [];       // = 清不掉但**确认里面没有文件**的空目录残骸（只记 note）
-      const withFiles = [];       // = 清不掉且**里面还有文件**的子项（真失败）
-      for (let i = 0; i < kids.length && i < 200; i++) {
-        const child = dir.replace(/\/+$/, '') + '/' + kids[i];
-        // ★ 逐项最多试两轮：第一轮 rm（删内容 + 删空目录）；删不掉就换名绕开句柄；
-        //   换名后的垃圾名再进下一轮（循环会重新 `ls -A` 拿到新名字）。
-        const rmv = await shell(serial, 'rm -rf ' + child + ' 2>/dev/null', { timeout: 30000 });
-        let probe = child;   // 探哪个路径：没换名 = 原名；换了名 = 新名（原路径已经不存在了）
-        let stillThere = await shell(serial, 'ls -d ' + child + ' 2>/dev/null', { timeout: 20000 });
-        if (String(stillThere.stdout || '').trim()) {
-          // ★★★ 2026-10-04（第三十九轮）**不再对「空目录」换名 —— 换名是残骸的元凶**。
-          //   真机实测：残骸目录名会**一路加后缀直到 255 字符**（Linux 文件名上限）——
-          //   到那时 `mv` 必然报 `File name too long`、`rm` 又删不掉 ⇒ **永久卡死**。
-          //   而它之所以会滚成那样，正是因为老代码「只要 rm 不掉就换名」：
-          //   每次清相册都给残骸再加一截 `_gone_<ts>`，越滚越长、越多，还**每条发布都新增**。
-          //   ⇒ 修正：**先看里面有没有文件**——
-          //     · 没有文件（纯空目录残骸）⇒ 只试 `rm``rmdir`，**绝不换名**（换名只会把名字撑爆）；
-          //     · 真有文件删不掉 ⇒ 这时才值得换名（文件必须先离开相册，名字长短无所谓）。
-          const fin0 = await shell(serial, 'find ' + child + ' -type f 2>/dev/null', { timeout: 20000 });
-          const childHasFiles = !!String(fin0.stdout || '').trim();
-          if (childHasFiles) {
-            const ctrash = child + '_gone_' + Date.now();
-            const cmv = await shell(serial, 'mv ' + child + ' ' + ctrash, { timeout: 30000 });
-            if (cmv.ok) {
-              // 换名成功后，把垃圾名也顺手删一次（大多删不掉，但不影响正确性）
-              await shell(serial, 'rm -rf ' + ctrash + ' 2>/dev/null', { timeout: 60000 });
-              probe = ctrash;
-              stillThere = await shell(serial, 'ls -d ' + ctrash + ' 2>/dev/null', { timeout: 20000 });
-            }
-          } else {
-            // 空目录：补一次 rmdir（stale 句柄偶尔会被 rmdir 而不是 rm 放行，实测有效）
-            await shell(serial, 'rmdir ' + child + ' 2>/dev/null', { timeout: 20000 });
-            stillThere = await shell(serial, 'ls -d ' + child + ' 2>/dev/null', { timeout: 20000 });
-          }
-        }
-        // ★ 换名也没清掉 ⇒ 看看它**里面到底还有没有文件**，按这个定性质（不是按「目录还在」定）。
-        if (String(stillThere.stdout || '').trim()) {
-          const fin = await shell(serial, 'find ' + probe + ' -type f 2>/dev/null', { timeout: 20000 });
-          if (String(fin.stdout || '').trim()) withFiles.push(kids[i]);
-          else survivors.push(kids[i]);
-        }
-        void rmv;
-      }
-      // ★ 反复扫到「没有变化」为止：换名会**造出新的垃圾目录名**（`X_gone_TS`），
-      //   它们下一轮才会被看见 ⇒ 单趟扫不干净。最多 4 轮，每轮都要有进展，
-      //   否则如实报 error（绝不假装干净）。
-      for (let round = 0; round < 4; round++) {
-        stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-        const now = String(stage.stdout || '').trim();
-        if (!now) break;
-        await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
-        const after = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-        if (String(after.stdout || '').trim() === now) break;   // 没进展 ⇒ 停
-      }
-      stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-      left = String(stage.stdout || '').trim();
-      // ★★ 只有「里面**真还有文件**」的子项才算清不干净（= 相册里可能还挂着素材 ⇒ 必须失败）。
-      //   空目录残骸（stale 句柄锁着、改名也删不掉）**不算失败**，如实记进 note ——
-      //   详见上面第三十九轮的说明：把空目录当失败，会让残骸累积到「第二条起永远发不出去」。
-      if (withFiles.length && !error) {
-        error = '目录里有 ' + withFiles.length + ' 个子项里面的文件删不掉（前几个：'
-          + withFiles.slice(0, 3).join(' , ') + '）';
-      }
-      if (survivors.length && !dirNote) {
-        dirNote = '另有 ' + survivors.length + ' 个清不掉的空目录残骸（stale 句柄锁着，不含任何素材）';
-      }
-    }
-  }
-  // 3) 兜底重试：换名后仍残留（极罕见）⇒ 再原地清两次
-  for (let attempt = 1; attempt <= 2 && hasLeftover(stage); attempt++) {
-    await new Promise(r => setTimeout(r, 800));
-    await shell(serial, 'find ' + dir + ' -mindepth 1 -delete 2>/dev/null', { timeout: 60000 });
-    stage = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-    left = String(stage.stdout || '').trim();
-  }
-  // ★★ 2026-10-04 第六次实测修正：目录**不存在**时也必须算「干净」并把它建出来。
-  //   实测踩到：把 bluev 目录整个 mv 走了之后，`ls -A <dir>` 返回
-  //     `ls: .../bluev/: No such file or directory` ⇒ 老判据会把它当成"校验失败"报 ok:false，
-  //     于是**第一条内容永远发不出去**（每次都在清相册这步卡死）。这个坑比它看起来严重得多。
-  //   ★★★ 2026-10-04 第七次实测修正（这一段先说 `ls`、**再** mkdir —— 顺序不能反）：
-  //     第一版把它写成「先 `mkdir -p` 再 `ls -A`」⇒ 两个后果，都是真 bug：
-  //       ① `missing` 分支变成**死代码**（mkdir 已经建好了，ls 永远不会报 No such file）
-  //          ⇒ 反向验证时「删掉 missing 分支」一条测试都不红（假通过）；
-  //       ② 更危险：ls 若因**别的原因**失败（权限、挂载掉了），会被 `left = ''` 当成
-  //          「干净」放过去 —— 这就是在**假装清干净了**，正是我们的红线。
-  //     ⇒ 正确顺序：**先 `ls -A` 定状态**（此时目录还没被 mkdir 造出来，missing 判据才有效），
-  //       确认真需要建目录之后，再 `mkdir -p`；只有「明确 clean」才允许往下走。
-  //   三态判据：① 目录不存在 = 干净（顺手建出来）；② 存在且 ls 空 = 干净；
-  //            ③ 其余（含 ls 失败） = 不干净，如实报 error。
-  const chk = await shell(serial, 'ls -A ' + dir, { timeout: 30000 });
-  const chkOut = String(chk.stdout || '').trim();
-  const missing = /No such file or directory|not found/i.test(chkOut + String(chk.stderr || ''));
-  const needsMkdir = !chk.ok && missing;
-  if (needsMkdir) {
-    // 目录不存在 ⇒ 本来就干净，把它建出来（后面推素材要用）
-    left = '';
-  } else if (!chk.ok) {
-    // ★ 不许在这里判「干净」：ls 读不出来时必须如实报错（读不到 ≠ 没有）
-    if (!error) error = String(chk.stderr || '').trim() || 'ls -A 校验失败（读不到目录，不敢判干净）';
-    left = '';
-  } else {
-    left = chkOut;
-  }
-  // 只有「这次真的需要建目录」时才建；正常存在的情况不动它（免得掩盖上面的读失败）
-  if (needsMkdir) {
-    const mk = await shell(serial, 'mkdir -p ' + dir, { timeout: 30000 });
-    if (!mk.ok && !error) error = String(mk.stderr || '').trim() || '专属目录建不出来';
-  }
-  // 命令异常不等于记录仍在：设备可能已执行删除，但 content 进程异常退出。
-  // 仅在删除命令失败时额外复查；查询失败或记录残留必须拦截，不能按空输出放行。
-  if (deleteFailures.length && !error) {
-    const checks = await Promise.all(tables.map(t => queryMediaTable(serial, t)));
-    const remaining = [];
-    for (let i = 0; i < checks.length; i++) {
-      const q = checks[i];
-      if (q.error) {
-        if (tables[i] === 'files' && /no such table|Invalid|Unknown|not found/i.test(q.error)) continue;
-        if (!error) error = '删除后媒体库复查失败：' + q.error;
-        continue;
-      }
+  // 等待同批在途命令全部结束后才返回，不能让上一条的删除与下一条推图重叠。
+  const group = async work => {
+    const results = await Promise.allSettled(work);
+    const bad = results.find(r => r.status === 'rejected');
+    if (bad) throw bad.reason;
+    return results.map(r => r.value);
+  };
+  const readMedia = async () => {
+    const rows = [];
+    const queries = await group(tables.map(t => queryMediaTable(serial, t, run)));
+    for (let i = 0; i < tables.length; i++) {
+      const q = queries[i];
+      if (q.error) throw new Error('相册媒体库读取失败：' + q.error);
       for (const line of String(q.result.stdout || '').split(/\r?\n/)) {
-        const m = /_id=(\d+),\s*_data=(.+?)\s*$/.exec(line);
-        if (m && dirs.some(d => m[2].indexOf(d) === 0)) remaining.push(m[2]);
+        const m = /_id=(\d+),\s*_data=(.*?)\s*$/.exec(line);
+        if (m && toMediaPath(m[2]).startsWith(dir)) rows.push({ table: tables[i], id: m[1], file: m[2] });
       }
     }
-    if (remaining.length && !error) error = deleteFailures[0] + '；重试后仍有媒体记录：' + remaining.slice(0, 3).join('、');
-    if (!error) dirNote = [dirNote, '删除命令曾异常，重试并复查媒体记录已清空'].filter(Boolean).join('；');
-  }
-  if (error) return { ok: false, removed: removed, files: hit.map(h => h.file), error, forceStopped };
-  if (left) {
-    // ★★★ 2026-10-04（第三十八轮）**判据修正：看「还有没有文件」，不是「目录 listing 空不空」**。
-    //   真机实测（MuMu 12 / sdcardfs）：`mv` 换名法能把**内容**搬走、也造出了全新的空目录，
-    //   但被换名的那批垃圾目录（`X_trash_TS`）**永远删不掉**（stale 句柄跟着 inode 走，
-    //   改名后照样锁着）⇒ `ls -A` 永远非空、越清越多，父目录（Camera 根）**结构上就不可能空**。
-    //   而 `find <dir> -type f` 实测**一个文件都没有**（`du -a` 每项 0 字节）——
-    //   也就是**一个字节的媒体都没剩**。得物相册只认**文件**（空目录不进 MediaStore、相册里不显示格），
-    //   所以「目录 listing 非空」≠「相册还有素材」。
-    //   ⇒ 判据换成：**递归找不到任何文件 = 干净**；只剩空目录那堆残骸，记一条 warn 照常放行。
-    //     （若不这么判，用户设备上积了几百个空垃圾目录之后，**每一条都发不出去** —— 那才是真误杀。）
-    const fchk = await shell(serial, 'find ' + dir + ' -type f 2>/dev/null', { timeout: 30000 });
-    const filesLeft = String(fchk.stdout || '').trim();
-    if (!fchk.ok) {
-      return { ok: false, removed, files: hit.map(h => h.file), forceStopped,
-        error: String(fchk.stderr || '').trim() || 'find -type f 校验失败（读不到目录，不敢判干净）' };
-    } else if (filesLeft) {
-      return { ok: false, removed: removed, files: hit.map(h => h.file), forceStopped,
-        error: '目录里还有 ' + filesLeft.split(/\r?\n/).length + ' 个文件没删掉（前几个：'
-          + filesLeft.split(/\r?\n/).slice(0, 3).join(' , ') + '）' };
-    } else {
-      // 只剩空目录残骸（stale 句柄锁着、改名也删不掉）⇒ 不影响相册，如实记一笔放行。
-      // ★★ 2026-10-04：顺手**尽力清一次「超长垃圾目录」**（老版本换名法滚出来的那批，
-      //   名字一路加后缀到 255 字符）。清得掉最好；清不掉就把它「有多严重」如实并进 note
-      //   （而不是留一句含糊的"空目录残骸"让人猜）。
-      const n = left.split(/\r?\n/).length;
-      let note = dirNote || ('只剩 ' + n + ' 个空目录残骸（stale 句柄锁着，删不掉但不含任何素材）');
-      try {
-        const rp = await reapLongTrashDirs(serial, remoteDir);
-        if (rp.tried) {
-          note = rp.ok
-            ? `已顺手清掉 ${rp.before} 个历史遗留的超长垃圾目录；` + note
-            : `另有 ${rp.after} 个历史遗留的超长垃圾目录清不掉（${rp.why}）；` + note;
-        }
-      } catch (e) { /* 尽力而为：清残骸失败绝不能影响发布 */ }
-      return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note, forceStopped };
+    return rows;
+  };
+  const listFiles = async () => {
+    const r = await run(serial, 'find ' + dir + ' -type f', { timeout: 8000 });
+    if (!r.ok) throw new Error(String(r.stderr || r.stdout || '').trim() || '无法读取目录文件，不能当成空目录');
+    return String(r.stdout || '').trim();
+  };
+  try {
+    hit.push(...await readMedia());
+    const unique = hit.filter((h, i, all) => all.findIndex(x => x.id === h.id && x.file === h.file) === i);
+    const remove = async h => {
+      let result;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) await sleepMs(attempt * 200);
+        result = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
+        if (result.ok || /Permission Denial|SecurityException/i.test((result.stderr || '') + (result.stdout || ''))) break;
+      }
+      if (result.ok) removed++;
+      else failures.push(String(result.stderr || result.stdout || '').trim() || '媒体删除命令失败');
+    };
+    for (let i = 0; i < unique.length; i += 2) await group(unique.slice(i, i + 2).map(remove));
+    const before = await run(serial, 'ls -A ' + dir, { timeout: 8000 });
+    const missing = !before.ok && (String(before.stdout || '') + '\n' + String(before.stderr || '')).split(/\r?\n/)
+      .some(line => /^ls:/.test(line.trim()) && line.includes(dir.replace(/\/+$/, '')) && /No such file or directory/i.test(line));
+    if (!before.ok && !missing) throw new Error(String(before.stderr || before.stdout || '').trim() || '目录读取失败，不能当成空目录');
+    if (missing) {
+      const mk = await run(serial, 'mkdir -p ' + dir);
+      if (!mk.ok) throw new Error('相册目录创建失败：' + (mk.stderr || '未知原因'));
     }
+    let remaining = await listFiles();
+    if (remaining) {
+      // 只删文件，不删目录、不改名；文件名由 find 处理，不插入 shell 命令。
+      await run(serial, 'find ' + dir + ' -type f -delete', { timeout: 10000 });
+      remaining = await listFiles();
+      if (remaining && opts.forceStopPkg) {
+        const pkg = String(opts.forceStopPkg);
+        if (!/^[A-Za-z0-9_.]+$/.test(pkg)) throw new Error('释放句柄的应用包名无效');
+        const stop = await run(serial, 'am force-stop ' + pkg, { timeout: 5000 });
+        if (!stop.ok) throw new Error('无法释放得物文件句柄：' + (stop.stderr || '未知原因'));
+        forceStopped = true;
+        await sleepMs(350);
+        await run(serial, 'find ' + dir + ' -type f -delete', { timeout: 10000 });
+        remaining = await listFiles();
+      }
+    }
+    if (remaining) throw new Error('目录里还有 ' + remaining.split(/\r?\n/).length + ' 个文件未清除');
+    const mediaLeft = await readMedia();
+    if (mediaLeft.length) throw new Error((failures[0] || '删除后媒体库复查仍有残留') + '；还有 ' + mediaLeft.length + ' 条相册记录');
+    const note = [String(before.stdout || '').trim() ? '0 个文件；空目录残骸不删除、不换名' : '',
+      failures.length ? '删除命令曾异常，复查目录与媒体库已清空' : ''].filter(Boolean).join('；');
+    return { ok: true, removed, files: hit.map(h => h.file), error: '', note, forceStopped };
+  } catch (error) {
+    return { ok: false, removed, files: hit.map(h => h.file), forceStopped, error: error.message, code: error.code };
   }
-  return { ok: true, removed: removed, files: hit.map(h => h.file), error: '', note: dirNote, forceStopped };
 }
 
 /**
@@ -816,91 +560,83 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
  * 返回 { ok, removed, files, left, error, note, forceStopped }
  */
 async function clearAlbum(serial, opts = {}) {
-  const forceStopPkg = String((opts && opts.forceStopPkg) || '').trim();
-  // 表名与 clearMediaDir 保持一致（file 表在部分机型不可查，单独容忍）
   const TABLES = ['video', 'images', 'audio', 'files'];
-  let forceStopped = false;
-
+  const deadline = Math.min(Number(opts.deadline) || Infinity, Date.now() + 90000);
+  let forceStopped = false, removed = 0;
+  const all = [];
+  const run = async (device, command, options = {}) => {
+    if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
+    const left = deadline - Date.now();
+    if (left <= 0) { const e = new Error('相册清理达到本条总预算，停止本条'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
+    const r = await shell(device, command, { ...options, timeout: Math.max(1, Math.min(options.timeout || 8000, 15000, left)) });
+    if (r.killed) { const e = new Error(command.split(' ')[0] + ' 全盘相册命令超时或被终止（限时 ' + r.timeoutMs + 'ms，信号 ' + (r.signal || '未知') + '）'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
+    return r;
+  };
+  const group = async work => {
+    const result = await Promise.allSettled(work);
+    const bad = result.find(r => r.status === 'rejected');
+    if (bad) throw bad.reason;
+    return result.map(r => r.value);
+  };
   const scanAll = async () => {
-    const hit = []; let error = '';
-    const queries = await Promise.all(TABLES.map(t => queryMediaTable(serial, t)));
+    const hit = [];
+    const queries = await group(TABLES.map(t => queryMediaTable(serial, t, run)));
     for (let i = 0; i < TABLES.length; i++) {
-      const t = TABLES[i], queried = queries[i];
-      const r = queried.result;
-      if (queried.error) {
-        const e = queried.error;
-        if (t === 'files' && /no such table|Invalid|Unknown|not found/i.test(e)) continue;
-        if (!error) error = e;
-        continue;
-      }
-      for (const line of String(r.stdout || '').split(/\r?\n/)) {
+      const q = queries[i];
+      if (q.error) throw new Error('全盘媒体库复查失败：' + q.error);
+      for (const line of String(q.result.stdout || '').split(/\r?\n/)) {
         const m = /_id=(\d+),\s*_data=(.*?)\s*$/.exec(line);
-        if (m) hit.push({ table: t, id: m[1], file: m[2] });
+        if (m) hit.push({ table: TABLES[i], id: m[1], file: m[2] });
       }
     }
-    return { hit, error };
+    return hit.filter((h, i, list) => list.findIndex(x => x.id === h.id && x.file === h.file) === i);
   };
-
-  const removeAll = async (hit) => {
-    let removed = 0;
-    const seen = new Set();
-    hit = hit.filter(h => {
-      const key = h.id + ':' + h.file;
-      if (seen.has(key)) return false;
-      seen.add(key); return true;
-    });
+  const removeAll = async hit => {
     const removeOne = async h => {
-      // 只对纯安全字符路径直接删文件，其他路径交给按 ID 删除，避免文件名被当作 shell 指令。
-      if (h.file && /^\/[A-Za-z0-9_./+\-]+$/.test(h.file)) {
-        await shell(serial, 'rm -f ' + h.file, { timeout: 20000 });
+      const file = toMediaPath(h.file);
+      if (/^\/storage\/emulated\/0\/[A-Za-z0-9_./+\-]+$/.test(file) && !file.includes('/../') && !file.includes('/./')) {
+        await run(serial, 'rm -f ' + file, { timeout: 8000 });
       }
-      // ② 按 _id 删记录（`content delete --uri .../<id>` 完全不需要引号）
-      const rd = await shell(serial, 'content delete --uri content://media/external/' + h.table + '/media/' + h.id, { timeout: 30000 });
+      const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
       if (rd.ok) removed++;
     };
-    for (let i = 0; i < hit.length; i += 2) {
-      await Promise.all(hit.slice(i, i + 2).map(removeOne));
-    }
-    return { removed };
+    for (let i = 0; i < hit.length; i += 2) await group(hit.slice(i, i + 2).map(removeOne));
   };
-
   const reScan = async () => {
-    await shell(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 60000 });
+    const scan = await run(serial, 'content call --uri content://media --method scan_volume --arg external_primary', { timeout: 15000 });
+    if (!scan.ok && !(Number(scan.code) === 139 && !scan.stderr && /Result:\s*Bundle/.test(scan.stdout || ''))) {
+      throw new Error('全盘扫描失败，不能确认残留是否重新入库：' + (scan.stderr || scan.stdout || '无错误详情'));
+    }
     return scanAll();
   };
-
-  let s = await scanAll();
-  if (s.error) return { ok: false, removed: 0, files: [], left: s.hit.length, error: s.error, note: '', forceStopped };
-  if (!s.hit.length) return { ok: true, removed: 0, files: [], left: 0, error: '', note: '', forceStopped };
-
-  const all = s.hit.slice();
-  let r = await removeAll(s.hit);
-  let chk = await reScan();
-
-  // 还有残留 ⇒ 多半是句柄锁着（App 正解码）⇒ 强停一次再重来
-  if (chk.hit.length && forceStopPkg) {
-    const fsr = await forceStop(serial, forceStopPkg);
-    if (fsr.ok) {
-      forceStopped = true;
-      await sleepMs(800);
-      const r2 = await removeAll(chk.hit);
-      r.removed += r2.removed;
-      chk = await reScan();
+  try {
+    let hit = await scanAll();
+    all.push(...hit);
+    if (hit.length) {
+      await removeAll(hit);
+      hit = await reScan();
+      if (hit.length && opts.forceStopPkg) {
+        const pkg = String(opts.forceStopPkg);
+        if (!/^[A-Za-z0-9_.]+$/.test(pkg)) throw new Error('释放句柄的应用包名无效');
+        const st = await run(serial, 'am force-stop ' + pkg, { timeout: 5000 });
+        if (!st.ok) throw new Error('无法释放全盘相册文件句柄：' + (st.stderr || '未知原因'));
+        forceStopped = true;
+        await sleepMs(350);
+        await removeAll(hit);
+        hit = await reScan();
+      }
     }
+    if (!hit.length) {
+      // 再读一次，防止扫描或别的进程在第一次查询后补回记录。
+      await sleepMs(200);
+      hit = await scanAll();
+    }
+    const left = hit.length;
+    const note = left ? '复查仍有 ' + left + ' 条相册记录' : '';
+    return { ok: left === 0, removed, files: all.map(h => h.file), left, error: note, note, forceStopped };
+  } catch (error) {
+    return { ok: false, removed, files: all.map(h => h.file), left: null, error: error.message, forceStopped, code: error.code };
   }
-
-  const left = chk.hit.length;
-  const note = left
-    ? ('还有 ' + left + ' 条清不掉（前几个：' + chk.hit.slice(0, 3).map(h => h.file || (h.table + '/' + h.id)).join('、') + '）')
-    : '';
-  return {
-    ok: left === 0 && !chk.error,
-    removed: r.removed,
-    files: all.map(h => h.file).filter(Boolean),
-    left,
-    error: chk.error || (left ? (forceStopPkg ? '把得物强停之后仍然清不掉：' + note : note) : ''),
-    note, forceStopped
-  };
 }
 
 /**
@@ -1790,6 +1526,8 @@ async function uiSize(serial) {
   // 旋转过 = 当前坐标系与自然方向**不平行**（竖屏设备转成横屏，或反过来）
   out.rotated = !!(init) && ((out.initW > out.initH) !== (out.w > out.h));
   out.known = out.w > 0 && out.h > 0;
+  const density = s.match(/overrideConfig=\{[^\r\n]*?\b(\d+)dpi\b/) || s.match(/\binit=\d+x\d+\s+(\d+)dpi\b/);
+  out.density = density ? Number(density[1]) : 0;
   out.raw = (cur[0] || '') + (init ? ' ' + init[0] : '');
   return out;
 }
@@ -2154,7 +1892,7 @@ async function probe(serial) {
 }
 
 module.exports = {
-  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, queryMediaTable, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
+  execAdb, version, devices, online, shell, push, mediaScan, mediaVisible, albumMatches, queryMediaTable, clearMediaDir, clearAlbum, reapLongTrashDirs, filesMissing, screencap, forceStop,
   makeNewest, mediaNewest, toMediaPath,
   dump, dumpEx, lastDumpInfo, dumpViaDumpsys, vhToXml, tap, tapSeq, keyevent, inputText, packages, probe,
   readTextOf, unxml,

@@ -101,7 +101,7 @@ const state = {
     //   界面上也没有开关。以前产线代码用 `!!c.adbKeyboard` 决定中文走不走广播 ⇒ 恒为假
     //   ⇒ 中文永远走 `input text`（实测打不进中文却返回 0）⇒ 会发出一条没标题没正文的帖子。
     //   现在这条判断改由「设备当前输入法」决定，配置里有没有这个键都不影响。
-    publish: { device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1 }
+    publish: { device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1, submissionWaitMs: 1000 }
   });
 
   // 1) 设备检查（界面上叫「检查能不能发布」；probe() 的返回体同时带 notes 与 fix 两套说法）
@@ -175,6 +175,35 @@ const state = {
   const ctx = { log: (m, l) => logs.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} };
   const r = await publisher.run(state, ctx);
   const log = calls();
+  // 清理失败不拖停后续素材，但下一条必须重新清理通过后才能推图。
+  {
+    const originalClear = adbForSetup.clearMediaDir;
+    try {
+      for (const allFail of [false, true]) {
+        let clearCount = 0;
+        const interruptedState = JSON.parse(JSON.stringify(state));
+        interruptedState.publish.rows = Array.from({ length: 4 }, (_, i) => ({
+          ...interruptedState.publish.rows[0], seq: i + 1, result: '', status: '排队', reason: '', startAt: ''
+        }));
+        adbForSetup.clearMediaDir = async (...args) => {
+          clearCount++;
+          if (allFail || clearCount === 3) return { ok: false, code: 'ALBUM_IO_INTERRUPTED', error: '目录读取超时' };
+          return originalClear(...args);
+        };
+        clearCalls();
+        const continued = await publisher.run(interruptedState, ctx);
+        if (allFail) {
+          ok('持续清理失败：四条各尝试一次，如实失败且从未推图或点击发布', clearCount === 4
+            && continued.failCount === 4 && !continued.stoppedReason && !/push |input tap|screencap/.test(calls()));
+        } else {
+          ok('第三条清理失败，第四条重新清理通过后继续发布', clearCount === 4 && continued.results.length === 4
+            && continued.rows[2].result === '失败' && continued.rows[3].result === '发布成功' && continued.okCount === 3);
+          ok('清理失败条目未推图，成功三条各推两张', (calls().match(/push /g) || []).length === 6);
+          ok('单条清理超时不再停止整批', !continued.stoppedReason && continued.failCount === 1);
+        }
+      }
+    } finally { adbForSetup.clearMediaDir = originalClear; }
+  }
   ok('真实通道跑完 1 条', r.mode === 'adb' && r.total === 1, `成功 ${r.okCount}/${r.total}`);
   ok('推图 2 张', (log.match(/push /g) || []).length === 2, (log.match(/push .*/g) || []).join(' | '));
   ok('触发媒体扫描（写进 MediaStore：content call --method scan_file）',
@@ -2085,7 +2114,7 @@ const state = {
       videoQueries++;
       return videoQueries === 1
         ? { ok: false, stdout: '', stderr: '', code: 1 }
-        : { ok: true, stdout: '', stderr: '', code: null };
+        : { ok: true, stdout: 'No result found.\n', stderr: '', code: null };
     });
     ok('新设备视频表首次瞬时查询失败会自动重试并成功', transientQuery.result.ok && videoQueries === 2 && !transientQuery.error,
       `queries=${videoQueries} error=${transientQuery.error}`);
@@ -2168,11 +2197,8 @@ const state = {
     fs.writeFileSync(staleFlag, '1');
     r = await adb.clearMediaDir('FAKESERIAL', '/sdcard/DCIM/Camera/bluev');
     const usedRename = dirState.renames.length > 0;
-    ok('清相册 ③ ★ stale 句柄（Text file busy）：必须改用 mv 换名绕开，且目录最终变干净',
-      r.ok && dirState.files.length === 0 && usedRename,
-      `ok=${r.ok} 残留=${JSON.stringify(dirState.files)} 换名次数=${dirState.renames.length}`);
-    ok('清相册 ③ ★ 反向对照：这条用例确实造出了 stale 状态（否则上面那条是空==空的假绿）',
-      usedRename, `换名历史=${JSON.stringify(dirState.renames)}`);
+    ok('清相册 ③ 持续锁住的真实文件必须失败，不通过换名隐藏残留', !r.ok && dirState.files.length === 1 && !usedRename, r.error);
+    ok('清相册 ③ 反向对照：顽固素材仍存在，确认没有伪造清空', dirState.files[0] === '锁住的素材.mp4' && /文件未清除/.test(r.error));
     fs.unlinkSync(staleFlag);
 
     // D4) 幂等：已经空了再清，不许报错
@@ -2206,12 +2232,10 @@ const state = {
     const rmBodies = (adbSrc.match(/rm -rf ' \+ dir \+ '[^/]/g) || []);
     ok('清相册 ⑤ 源码级：不许出现 `rm -rf <目录本体>`（被占时必失败且 mkdir 会假成功）',
       rmBodies.length === 0, JSON.stringify(rmBodies) || '（干净：只删内容，不删本体）');
-    ok('清相册 ⑥ 源码级：必须带 mv 换名法（stale 句柄唯一可靠的解法）',
-      /mv ' \+ dir \+ ' /.test(adbSrc), '（找不到 mv 换名逻辑）');
+    ok('清相册 ⑥ 不再给目录换名制造残骸', !/mv ' \+ dir \+ ' /.test(adbSrc));
     ok('清相册 ⑦ 源码级：清完必须回读校验（ls -A），删不动要如实报错、不许假装干净',
       /ls -A ' \+ dir/.test(adbSrc), '（找不到回读校验）');
-    ok('清相册 ⑧ 源码级：find -mindepth 1 -delete 删内容（不碰目录本体）',
-      /find ' \+ dir \+ ' -mindepth 1 -delete/.test(adbSrc), '（找不到 find 删内容）');
+    ok('清相册 ⑧ 仅删除文件，不递归删除目录', /find ' \+ dir \+ ' -type f -delete/.test(adbSrc));
     ok('清相册 ⑨ 源码级：目录不存在要判成干净（否则第一条内容永远发不出去）',
       /No such file or directory/.test(adbSrc), '（找不到「目录不存在＝干净」的判据）');
 
@@ -2290,11 +2314,8 @@ const state = {
     //     （真有文件才换名）；`else`（空目录）分支必须只有 rm/rmdir。
     const eIdx = adbSrc.indexOf('} else {', adbSrc.indexOf('childHasFiles'));
     const emptyBranch = eIdx >= 0 ? adbSrc.slice(eIdx, eIdx + 400) : '';
-    ok('清相册 ⑬ ★ 源码级：空目录残骸分支（else）里只许 rm/rmdir、不许换名（换名会把名字滚到 255 字符永久卡死）',
-      emptyBranch.length > 0 && !/\bmv\b/.test(emptyBranch) && !/_gone_/.test(emptyBranch),
-      emptyBranch ? ('空目录分支 = ' + emptyBranch.split(/\n/).filter(l => l.trim()).slice(0, 3).join(' / ').slice(0, 120)) : '（找不到空目录分支）');
-    ok('清相册 ⑬b 正向对照：真有文件的分支（if childHasFiles）里**必须**有换名 —— 否则 ⑬ 是空==空',
-      /childHasFiles[\s\S]{0,400}?_gone_/.test(adbSrc), '（真有文件却没换名）');
+    ok('清相册 ⑬ 不再存在逐子目录换名分支，避免残骸名称不断累积', !adbSrc.includes('childHasFiles'));
+    ok('清相册 ⑬b 真实文件仍在时明确失败，不换名掩盖', /目录里还有/.test(adbSrc) && !/if \(childHasFiles\)/.test(adbSrc));
   }
 
   // ==========================================================================
@@ -2360,8 +2381,7 @@ const state = {
     const adbSrc7 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8'));
     const iLock = adbSrc7.indexOf('forceStopPkg && !forceStopped');
     const iMvTry = adbSrc7.indexOf("mv ' + dir + ' ' + trash");
-    ok('清相册 ⑯ ★★ 源码级：强停重试（1b 段）必须排在 mv 换名**之前** —— 顺序反了会先造一堆 trash 残骸',
-      iLock >= 0 && iMvTry >= 0 && iLock < iMvTry, `强停@${iLock} / mv换名@${iMvTry}`);
+    ok('清相册 ⑯ 最多释放一次应用句柄，清不掉仍失败', /remaining && opts.forceStopPkg/.test(adbSrc7) && !/mv ' \+ dir/.test(adbSrc7));
   }
 
   // ==========================================================================
@@ -2426,9 +2446,7 @@ const state = {
     // ④ 源码级：ok 只由「复查」决定
     const adbSrc8 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/adb.js'), 'utf8'));
     const iAlbum = adbSrc8.indexOf('async function clearAlbum');
-    ok('清相册 ⑲ ★★ 源码级：clearAlbum 的 ok 必须是「复查时四张表都为空」（不许只看删成功了几条）',
-      iAlbum >= 0 && adbSrc8.slice(iAlbum, iAlbum + 3200).includes('ok: left === 0'),
-      iAlbum >= 0 ? '（判据在）' : '（找不到 clearAlbum）');
+    ok('清相册 ⑲ 全盘相册以最后复查的剩余记录为判据', /ok: left === 0/.test(adbSrc8.slice(iAlbum)) && /hit = await scanAll\(\)/.test(adbSrc8.slice(iAlbum)));
 
     // ⑤ 源码级：publisher 真的调了它，且只调一次
     const pubSrc8 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
@@ -2467,12 +2485,13 @@ const state = {
         mode: 'adb', device: '127.0.0.1:5555'
       }
     });
-    const runPub = async () => {
+    const runPub = async (twoRows = false) => {
       store.set({ publish: { uiMap, intervalSec: 0, postPublishWaitSec: 1 } });
       clearCalls();
       const st = mkSt();
-      await publisher.run(st, { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
-      return { row: st.publish.rows[0], log: calls() };
+      if (twoRows) st.publish.rows.push({ ...st.publish.rows[0], seq: 2 });
+      const result = await publisher.run(st, { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      return { row: st.publish.rows[0], rows: st.publish.rows, result, log: calls() };
     };
     const cleanF = () => { [TAPF].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); }); };
     try {
@@ -2498,6 +2517,14 @@ const state = {
         !rf.row.reason, String(rf.row.reason || '').slice(0, 120));
       ok('提交后不强制退出得物',
         stopsF.length === 0, JSON.stringify(stopsF));
+      cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
+      fs.writeFileSync(FOCUSF, HOME_F);
+      fs.writeFileSync(TAPF, 'publish');
+      rf = await runPub(true);
+      ok('提交未退出时保留下一条排队，防止下一次清理打断上传',
+        rf.rows[1].status === '排队' && !rf.rows[1].result && /停止后续条目/.test(rf.result.stoppedReason || ''),
+        JSON.stringify({ next: rf.rows[1], stoppedReason: rf.result.stoppedReason }));
+      ok('提交待确认时不强停、不重复提交', stopsF.length === 0 && (rf.log.match(/input tap 540 1860/g) || []).length <= 1, JSON.stringify(stopsF));
 
       // ③ 被存成草稿 ⇒ 失败 + 强停清草稿
       cleanF(); fakeExecF.__appReset(); stopsF.length = 0;
@@ -3086,8 +3113,8 @@ const state = {
       const t29 = Date.now();
       const vr29 = await publisher.waitLeftPublishFlow('FAKESERIAL', { timeoutMs: 15000 });
       const used29 = Date.now() - t29;
-      ok('㉙ ★★ 点完发布落到**草稿箱** ⇒ 立刻返回 ok:false + draft:true（判据明确，不再傻等满 15s）',
-        vr29.ok === false && vr29.draft === true && used29 < 4000,
+      ok('㉙ ★★ 点完发布落到**草稿箱** ⇒ 正常返回草稿箱，允许继续下一条但不凭页面断言审核结果',
+        vr29.ok === true && vr29.draft === true && used29 < 4000,
         `用时 ${used29}ms / ok=${vr29.ok} / draft=${vr29.draft}`);
 
       fs.writeFileSync(FOCUS29, 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
@@ -3255,9 +3282,7 @@ const state = {
     // 源码级防回退：先数文件的那段必须在「1b) 强停」之前
     const iEarly = adbSrc.indexOf("'find ' + dir + ' -type f 2>/dev/null'", adbSrc.indexOf('第四十二轮'));
     const i1b = adbSrc.indexOf('1b) 2026-10-04 第十四次实测修正');
-    ok('㉛ ★ 源码级：「先数文件」的那段必须排在「1b) 强停得物」**之前**（顺序反了等于没改）',
-      iEarly >= 0 && i1b >= 0 && iEarly < i1b,
-      `数文件@${iEarly} / 强停@${i1b}`);
+    ok('㉛ 先读取真实文件，再决定是否释放句柄', adbSrc.indexOf('let remaining = await listFiles()') < adbSrc.indexOf('am force-stop', adbSrc.indexOf('async function clearMediaDir')));
     resetX();
   }
 

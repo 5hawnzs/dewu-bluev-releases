@@ -19,6 +19,7 @@ module.exports = {
   "screen": {
     "w": 1080,
     "h": 1920,
+    "density": 280,
     "landscape": false,
     "at": 1791011572378
   },

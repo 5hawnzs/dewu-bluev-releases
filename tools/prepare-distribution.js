@@ -13,7 +13,7 @@ function prepare(source = path.join(ROOT, 'dist')) {
   const archive = path.join(resources, 'app.asar');
   const read = file => asar.extractFile(archive, file.split('/').join(path.sep)).toString('utf8');
   const bundled = JSON.parse(read('package.json'));
-  for (const file of ['src/main/githubupdates.js', 'src/main/feedback.js', 'src/main/services/adb.js', 'src/main/services/publisher.js', 'src/main/services/cloudsync.js', 'src/renderer/app.js', 'src/renderer/styles.css', 'src/renderer/release-motion.js']) {
+  for (const file of ['src/main/githubupdates.js', 'src/main/feedback.js', 'src/main/jobs.js', 'src/main/uimapdefaults.js', 'src/main/services/uimap.js', 'src/main/services/displayrecovery.js', 'src/main/services/diagnostics.js', 'src/main/services/adb.js', 'src/main/services/publisher.js', 'src/main/services/cloudsync.js', 'src/renderer/app.js', 'src/renderer/styles.css', 'src/renderer/release-motion.js']) {
     if (read(file) !== fs.readFileSync(path.join(ROOT, file), 'utf8')) throw new Error('安装包源码不是最终版本：' + file);
   }
   if (bundled.version !== pkg.version) throw new Error('构建版本与源码不一致，请重新打包');

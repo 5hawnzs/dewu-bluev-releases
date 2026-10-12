@@ -742,23 +742,9 @@ async function dumpForCapture(serial, opts) {
 }
 
 /**
- * ★★★ 2026-10-04 新增（用户口径，原话）：「**发出去了才算成功**」。
- *
- * 为什么必须有这一步：点完「提交发布」**不等于**发出去了。真机上「没发出去」有好几种长相，
- * 而且**每一种在界面上都像成功**（脚本已经跑完、没有报错）：
- *   · 得物压根没受理，还停在发布流程里（编辑页/封面页）；
- *   · 得物把它当成**草稿**存下来了（用户原话：「我什么时候跟你说真实发布环境可以存草稿的」）；
- *   · 提交按钮被屏幕守卫跳过（那一屏不对 ⇒ 一个 tap 都没发）。
- * 前两种如果不判，台账就写着「发布成功」，而账号里其实什么都没有（或躺着一条草稿）。
- *
- * 判据（只看前台 Activity，便宜且能区分）：
- *   **必须离开发布流程** —— 既不在 `TotalPublishProcessActivity`，也不在草稿箱 `DraftActivity`。
- *   ★ 为什么不看「有没有发布成功页」：那要抓屏、且得物改版就废；而「有没有离开这一摊」
- *     是从用户诉求直接翻译过来的判据，改版也稳。
- *   ★ 读不到前台（空）时**不算离开** —— 读不到 ≠ 成功（同本项目一贯口径）。
- *
- * @returns {{ok:boolean, waited:number, focus:string, left:string, seen:string[]}}
- *   `seen` = 这段时间里前台的**变化序列**，如实带回去给人看（排查「它到底停在哪一屏」全靠它）。
+ * 提交后等待退出编辑流程，避免下一条清理或强停中断当前上传。
+ * 本机实测：从草稿发布成功后会正常返回 DraftActivity，因此草稿箱只是返回页，不能判为存草稿失败。
+ * 此函数仅判断能否安全开始下一条，不代替账号侧发布和审核结果核验。
  */
 async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, cancelled = null } = {}) {
   const t0 = Date.now();
@@ -769,12 +755,8 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
     if (f) {
       last = f;
       if (seen[seen.length - 1] !== f) seen.push(f);
-      // ★★ 2026-10-04 新增：一旦落到**草稿箱**（DraftActivity）就**当场收工**，不再傻等满超时。
-      //   真机实测：点完「发布」后 1.2s 就已经在草稿箱里了（连拍两张都在 DraftActivity），
-      //   而原来的写法会一直等到 15s 超时 —— 白等 14 秒，还把「是不是草稿」这件**很确定**的事
-      //   混进了「读不到 / 停在哪都不对」的模糊结论里。判据明确 ⇒ 结论就该明确。
       if (uimap.isDraftScreen(f)) {
-        return { ok: false, draft: true, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: f, left: '', seen };
+        return { ok: true, draft: true, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: f, left: f, seen };
       }
       if (!uimap.isPublishScreen(f) && !uimap.isDraftScreen(f)) { left = f; break; }
     }
@@ -787,6 +769,7 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
 
 async function runReal(row, item, copyRow, serial, map, ctx) {
   ctx.publishEntryReady = false;
+  ctx.submissionPending = '';
   ctx.uiMapScreen = map.screen;
   ctx.uiSize = null;
   // 每条素材独立，上一条中断时遗留的输入状态不能带到新页面。
@@ -897,16 +880,21 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   `Text file busy`，而 `am force-stop com.shizhuang.duapp` 之后同一句立刻成功。
   //   ⇒ 允许 clearMediaDir 在"清不掉"时把得物强停掉再重试（能过就不去造 trash 残骸）。
   const clearStarted = Date.now();
-  const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera', { forceStopPkg: uimap.DEWU.pkg });
+  const clearOptions = { forceStopPkg: uimap.DEWU.pkg, deadline: clearStarted + 90000, cancelled };
+  require('./diagnostics').phase('清理素材文件', row.seq);
+  const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera', clearOptions);
   if (!clRoot.ok) {
-    throw new Error('没能清干净设备相册目录（/sdcard/DCIM/Camera）：' + (clRoot.error || '未知原因')
+    const error = new Error('没能清干净设备相册目录（/sdcard/DCIM/Camera）：' + (clRoot.error || '未知原因')
       + ' —— 不清干净的话相册里会混着其他素材，选素材那一步会点到别的图。');
+    error.code = clRoot.code;
+    throw error;
   }
   // 根目录已经递归清理并核实无文件，子目录不再重复查询四张媒体表。
   const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir);
   if (!mk.ok) throw new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
   log(`${row.dir}：目录清理 ${(Date.now() - clearStarted) / 1000}s`, 'info');
   const albumStarted = Date.now();
+  require('./diagnostics').phase('清理全盘相册索引', row.seq);
   row.status = '清理全盘相册索引';
   if (ctx.onRow) ctx.onRow(row);
   // ★★★ 2026-10-04（真机实测新增）**清全盘相册** —— 上面两步只清了目录，
@@ -915,10 +903,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   ⇒「发布这一条时，调出相册只能看到它的素材」这件事，唯一靠得住的判据是
   //   **MediaStore 里没有别的素材**。清完复查四张表，一条不剩才算过。
   //   （这一步也顺手覆盖了「系统截图 / 别的 App 存的素材混进相册」那类问题。）
-  const clAll = await adb.clearAlbum(serial, { forceStopPkg: uimap.DEWU.pkg });
+  const clAll = await adb.clearAlbum(serial, clearOptions);
   if (!clAll.ok) {
-    throw new Error('没能把设备相册清到一条不剩：' + (clAll.error || '未知原因')
+    const error = new Error('没能把设备相册清到一条不剩：' + (clAll.error || '未知原因')
       + ' —— 不清干净的话相册里会混着其他素材（专属目录之外的也算），选素材那一步会点到别的图。');
+    error.code = clAll.code;
+    throw error;
   }
   if (clAll.removed) {
     log(`${row.dir}：相册里有 ${clAll.removed} 条其他素材（不在 ${remoteDir} 里，普通清目录清不掉），已一并清掉`, 'info');
@@ -1045,6 +1035,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     throw new Error(`${mediaWord}片已推到设备，但没能写进媒体库（得物相册里看不到它）：等了 ${w.waited}s`
       + (w.error ? `，${w.error}` : ''));
   }
+  const exactAlbum = await adb.albumMatches(serial, remotes);
+  if (!exactAlbum.ok) throw new Error(exactAlbum.error);
   log(`${row.dir}：已推 ${media.length} 个${mediaWord}片，并确认写进媒体库（${w.waited}s）`, 'info');
 
   // 2) 按 UI 定位表走真实界面。
@@ -1119,6 +1111,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     //   不靠推理，把每一步的**真实毫秒数**量出来。只有慢到会引起注意的（≥1.5s）才说，
     //   免得日志被一堆 0.1s 淹没。计时不含日志本身的开销（纯 runStep 前后取差值）。
     const tStep = Date.now();
+    require('./diagnostics').phase('执行发布步骤', row.seq);
     let rs;
     try {
       rs = await runStep(serial, step, data, ctx);
@@ -1139,7 +1132,14 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布');
     if (submit && /^tap(?:Id|Text|Desc|XY)$/.test(step.action)) {
       if (rs && rs.skipped) throw new Error('「提交发布」被屏幕守卫跳过，未点击发布按钮。');
-      log(`${row.dir}：已实际点击提交发布，按确认的口径记录发布成功`, 'ok');
+      log(`${row.dir}：已实际点击提交发布，等待退出编辑流程后再开始下一条`, 'info');
+      const settle = await waitLeftPublishFlow(serial, {
+        timeoutMs: Math.min(60000, Math.max(1000, Number(c.submissionWaitMs) || 30000)), cancelled
+      });
+      if (!settle.ok) {
+        ctx.submissionPending = `已点击提交，但等待 ${settle.waited}s 后尚未确认退出编辑流程；停止后续条目，避免清理或重启打断上传，不自动重复提交。`;
+        log(ctx.submissionPending, 'warn');
+      } else log(`${row.dir}：已退出编辑流程${settle.draft ? '（返回草稿箱属于正常返回路径）' : ''}，可继续下一条`, 'ok');
       return true;
     }
 
@@ -1248,7 +1248,21 @@ async function run(state, ctx = {}) {
     });
     if (!home.ok) throw new Error('发布前未能将得物拉回首页：' + (home.why || '未知原因'));
     ctx.uiMapScreen = map.screen;
-    ctx.uiSize = await stableCoordinates(serial, map.screen, ctx);
+    try {
+      ctx.uiSize = await stableCoordinates(serial, map.screen, ctx);
+    } catch (error) {
+      if (error.code !== 'UI_COORDINATES') throw error;
+      // 仅在整批开始、尚未清相册或推素材时修复一次；发布途中不改屏幕布局。
+      try {
+        ctx.uiSize = await require('./displayrecovery').repair(serial, map.screen, {
+          cancelled: ctx.cancelled, log,
+          check: target => stableCoordinates(serial, target, ctx)
+        });
+      } catch (recoveryError) {
+        error.message += '；自动恢复未通过：' + recoveryError.message;
+        throw error;
+      }
+    }
     const invalid = [false, true].flatMap(video => uimap.outOfScreenTapPoints(uimap.stepsFor(map, video), ctx.uiSize));
     if (invalid.length) {
       const error = new Error(`定位表坐标超出当前 ${ctx.uiSize.w}×${ctx.uiSize.h} 屏幕，请调整分辨率或重新导入定位表。尚未清理相册或推送素材。`);
@@ -1272,6 +1286,8 @@ async function run(state, ctx = {}) {
   let done = 0;
   const results = [];
   let stoppedReason = '';
+  let stoppedForAlbum = false;
+  let stoppedForSubmission = false;
 
   for (const row of todo) {
     if (cancelled()) break;
@@ -1333,10 +1349,14 @@ async function run(state, ctx = {}) {
     } catch (e) {
       success = false;
       reason = e.message;
+      stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED';
       if (e.code === 'UI_COORDINATES') stoppedReason = reason;
+      // 清理失败仅跳过本条；下一条仍须重新通过目录与全盘索引清理，才能推入素材。
+      if (stoppedForAlbum) log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
       // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
-      if (mode === 'adb') await saveShot(serial, `seq${row.seq}_fail`, ctx);
+      if (mode === 'adb' && !stoppedForAlbum) await saveShot(serial, `seq${row.seq}_fail`, ctx);
     }
+    if (success && ctx.submissionPending) { stoppedReason = ctx.submissionPending; stoppedForSubmission = true; }
     // ★★ 模拟通道**不许冒充真发布**：走模拟时结果记「模拟成功」。
     //   否则界面 / 台账 / 回写 Excel 全是绿的，而设备上什么都没发生（2026-10-03 实测踩到）。
     //   「模拟成功」不会被统计成真发布（统计只认「发布成功」），也不会写「审核中」。
@@ -1371,7 +1391,7 @@ async function run(state, ctx = {}) {
     done++;
     progress({ done, total: todo.length, label: row.dir, succeeded: rows.filter(r => r.result === '发布成功').length });
     if (stoppedReason) {
-      conclude('设备屏幕配置变化，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
+      conclude((stoppedForSubmission ? '本条提交尚未稳定' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
       break;
     }
   }

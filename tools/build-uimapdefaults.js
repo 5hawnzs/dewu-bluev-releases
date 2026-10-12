@@ -113,6 +113,12 @@ if (um.screen && Number(um.screen.w) && Number(um.screen.h)) {
   console.log('坐标系戳按 --screen 推断：' + w + 'x' + h + '（并已过「唯一性」自检）');
 }
 if (screen.landscape === undefined) screen.landscape = screen.w > screen.h;
+// 新抓取的表保留实测 DPI；也可用显式参数补齐经过现场核对的旧表。
+const density = Number(um.screen && um.screen.density) || Number(arg('density', 0));
+if (density) {
+  if (!Number.isInteger(density) || density < 120 || density > 640) throw new Error('DPI 参数必须在 120–640 范围内');
+  screen.density = density;
+}
 
 const out = {
   package: um.package || '',

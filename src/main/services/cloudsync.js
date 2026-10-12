@@ -35,6 +35,7 @@ const wp = require('../util/winpath');
 const CD = require('../clouddefaults');   // 内置默认值：界面上没填时用它（只有 anon/publishable key）
 const runlog = require('./runlog');
 const apiusage = require('./apiusage');
+const diagnostics = require('./diagnostics');
 
 const BATCH = 200;          // 单批最多几行（PostgREST 一次插入）
 const MAX_BATCHES = 5;      // 单次同步最多几批：台账积压很多时也要给界面留出响应
@@ -220,7 +221,8 @@ function toRunRow(e, machine, index = 0) {
     ok: e.kind === 'end' ? !!e.ok : null,
     cancelled: e.kind === 'end' ? !!e.cancelled : false,
     elapsed_sec: e.kind === 'end' ? Number(e.elapsedSec) || 0 : null,
-    error_summary: e.type === 'feedback.submit' ? safeRunText(e.feedback, 1000) : (e.kind === 'end' && !e.ok ? safeRunText(e.error) : ''),
+    error_summary: e.type === 'feedback.submit' ? safeRunText(e.feedback, 1000) : (e.kind === 'end' && !e.ok
+      ? [diagnostics.format(e.diagnostic), safeRunText(e.error, 750)].filter(Boolean).join(' ').slice(0, 1500) : ''),
     api_usage: e.kind === 'end' && e.type === 'copy.generate' ? safeApiUsage(e.apiUsage) : null
   };
 }

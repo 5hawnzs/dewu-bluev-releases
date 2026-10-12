@@ -1830,12 +1830,16 @@ function fmtDate(ts) {
 }
 
 /** 量出登录卡片的实际高度，让主进程把窗口收紧到「刚好装下卡片」 */
+let gateFitVersion = 0;
 function fitGateWindow() {
   if (!appApi.fitGate) return;
+  const version = ++gateFitVersion;
   requestAnimationFrame(() => {
+    if (version !== gateFitVersion || $('#gate').hidden || !document.body.classList.contains('locked')) return;
     const card = document.querySelector('.gate .gcard:not([hidden])');
     if (!card) return;
-    appApi.fitGate(Math.ceil(card.getBoundingClientRect().height));
+    const height = Math.ceil(card.getBoundingClientRect().height);
+    if (height > 0) appApi.fitGate(height);
   });
 }
 
@@ -1985,6 +1989,7 @@ async function prepareApp() {
   renderAll();
   renderLogs();
   // 先准备好完整主界面，再切走登录页，避免登录确认后露出空白窗口。
+  ++gateFitVersion;  // 作废尚未执行的登录卡片量高，避免主窗口恢复后又被旧回调缩小。
   if (appApi.authUiReady) {
     const ready = await appApi.authUiReady();
     if (!ready || !ready.ok) throw new Error((ready && ready.error) || '登录状态已失效，请重新登录');
