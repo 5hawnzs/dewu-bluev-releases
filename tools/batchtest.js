@@ -75,9 +75,13 @@ const ok = (label, cond, extra) => {
   const cleared = project.get().compliance;
   ok('导入新素材清除旧的 28 条人工判定、分组和检查时间', imported.ok && cleared.stats === null && cleared.rows.length === 0 && cleared.scannedAt === 0 && !cleared.groups);
   ok('尚未开始检查时不调用合规扫描', scanned === 0);
+  ok('整理结果独立保存目录、来源与条数', project.get().flattenResult.dir === imported.result.flatDir
+    && project.get().flattenResult.count === 1 && !!project.get().flattenResult.sourceDir);
   project.patch({ compliance: { rows: [{ status: 'manual' }], stats: { total: 30, manual: 28 }, scannedAt: 123 } });
   const selected = await jobs.run('flatten.plan', { sourceDir: makeBatch('仅选择新目录', 1) });
   ok('仅选择新目录、未开始整理时也清除旧合规结果', selected.ok && project.get().compliance.stats === null && project.get().items.length === 0 && !project.get().flatDir);
+  ok('选择新来源保留上次结果，本次尚未整理不冒充完成', !project.get().flattenResult
+    && project.get().previousFlattenResult.dir === imported.result.flatDir);
   // 原目录 A 与处理副本 B 必须贯通到文案报告和发布队列。
   const originalA = makeBatch('原始素材A', 2);
   const prepared = await jobs.run('flatten.run', { sourceDir: originalA });

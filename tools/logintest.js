@@ -367,7 +367,7 @@ app.whenReady().then(async () => {
       inputs: pane.querySelectorAll('[data-lx-in]').length,
       delBtns: pane.querySelectorAll('[data-lx-del]').length,
       saveDisabled: !!saveBtn && saveBtn.disabled === true,
-      localChip: /本机词库/.test(pane.textContent)
+      localChip: /本机词库|仅保存在本机/.test(pane.textContent)
     };
   })()`);
   ok('★ 普通成员**看得见**「本地词库」（不是管理员专属 —— 标题从哪些词里挑，谁都能看）',

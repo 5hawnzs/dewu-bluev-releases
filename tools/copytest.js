@@ -94,6 +94,7 @@ function makeBatch(name, leaves) {
 const seen = [];          // 每一次收到的请求体
 let srvRef = null;        // ★ 出错路径要能把它关掉，见文件末尾的 catch
 let mode = 'ok';          // ok | rejectImageOnce | modelNames
+let replyNumber = 0;
 let reply = { title: '燕麦色圆领毛衣小熊刺绣休闲风', body: '燕麦色针织毛衣，圆领设计，胸前一枚小熊刺绣，袖口和下摆是竖条罗纹收口，面料看着挺软，配浅蓝牛仔就是干净舒服的日常感。' };
 
 function startServer() {
@@ -129,7 +130,7 @@ function startServer() {
           return send(400, { error: { message: 'this model does not support image content' } });
         }
         return send(200, {
-          choices: [{ message: { content: JSON.stringify(reply) } }],
+          choices: [{ message: { content: JSON.stringify({ ...reply, title: mode === 'duplicateTitle' ? reply.title : reply.title + '示例' + (++replyNumber) }) } }],
           usage: { prompt_tokens: 100, completion_tokens: 50 }
         });
       });
@@ -693,8 +694,8 @@ function startServer() {
   /* ---- ③c 正文格式 + 重复口径 + 「颜色用本行的」也真的进了提示词（2026-10-03 第九次） ---- */
   ok('③c ★ system 里写明正文要写成 4~5 行、每行一句短句、行与行之间真的换行',
     /4~5 行/.test(sys) && /一行一句短句/.test(sys) && /真的换行/.test(sys));
-  ok('③c ★ system 里写明「相邻两条别写得一模一样」（换一个 emoji 就算不同）',
-    /相邻两条别写得一模一样/.test(sys) && /只换一个 emoji/.test(sys));
+  ok('③c system明确本机当天跨批次跨品牌标题去重，仅换表情标点不算修改',
+    /跨批次和跨品牌/.test(sys) && /不算不同/.test(sys));
   ok('③c ★ system 里写明正文结尾不带 #话题（话题由程序统一追加到**文案末尾**，2026-10-03 用户拍板改口径）',
     /正文结尾不要带任何 #话题/.test(sys) && /追加到文案末尾/.test(sys));
   ok('③c ★ 每行 user 的形状示例写明「颜色用本行的、别照抄示例」（示例写死颜色模型会照抄）',
@@ -706,7 +707,7 @@ function startServer() {
   //   这条只能证明「源码里那句兜底文案改过了」，不能证明「运行时走得到」。
   const cwSrc = fs.readFileSync(path.join(base, 'src/main', 'services', 'copywriter.js'), 'utf8');
   ok('③c 源码级：没指定格式时的兜底文案也不再要求「整批别用同一个形状」（运行时几乎走不到这条分支）',
-    /只要相邻两条不写成一模一样就行/.test(cwSrc) && !/整批别用同一个形状/.test(cwSrc));
+    /标题须与本机当天所有已生成标题不同/.test(cwSrc) && !/整批别用同一个形状/.test(cwSrc));
 
   /* ---- ④ 报告落在素材文件夹、带时间戳、能被反向导入 ---- */
   const rep1 = run1.result.reportFile;
@@ -800,13 +801,29 @@ function startServer() {
   const cD = r => (wsD.getRow(r).values || []).slice(1).map(v => (v == null ? '' : String(v)));
   const colD = hD.indexOf('文案核对') + 1;
   const dCells = [2, 3, 4].map(r => cD(r)[colD - 1]);
-  ok('⑤b ★ 相邻两条完全一样 → 报告的「文案核对」列真的写出来了（标题 + 正文各一条）',
+  ok('⑤b 不同标题不提示标题重复，相邻正文重复仍写入报告',
     !/与上一条一字不差/.test(dCells[0])
-    && /标题与上一条一字不差/.test(dCells[1]) && /正文与上一条一字不差/.test(dCells[1])
-    && /标题与上一条一字不差/.test(dCells[2]),
+    && !/标题与上一条一字不差/.test(dCells[1]) && /正文与上一条一字不差/.test(dCells[1])
+    && !/标题与上一条一字不差/.test(dCells[2]),
     dCells.map((t, i) => (i + 2) + ':' + t.slice(0, 30)).join(' || '));
   ok('⑤b ★ 重复只算「相邻」，第三条与第一条同句不算（旧口径会多报）',
     !/第 1 条|与第 1 条/.test(dCells[2]));
+
+  // 同日重复是生成失败，不能只在报告中提醒后照常输出。
+  mode = 'duplicateTitle';
+  reply = { title: '同日穿搭分享🌿', body: BODY4 };
+  seen.length = 0;
+  const dayDup = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '同日去重批', label: '同日去重批' });
+  const dayRows = dayDup.ok ? JSON.parse(fs.readFileSync(dayDup.result.file, 'utf8')).rows : [];
+  ok('同批非相邻重复标题也不能标为已生成', dayDup.ok && dayRows.filter(r => r.status === '已生成').length === 1
+    && dayRows.filter(r => r.status === '未生成').length === 2);
+  ok('重复重试把原因和旧标题传给模型，并如实计入请求用量',
+    seen.some(r => r.messages.some(m => typeof m.content === 'string' && /与本机今天的标题重复/.test(m.content)))
+    && dayDup.result.apiUsage.requests === 7);
+  reply.title = '同日，穿搭分享🧸';
+  const crossDup = await jobs.run('copy.generate', { sourceDir: batchDir, batchId: '跨批次去重批', label: '跨批次去重批' });
+  ok('同日跨批次仅换标点emoji仍拒绝，不能拿本地模板冒充', !crossDup.ok && /重复/.test(crossDup.error || ''));
+  mode = 'ok';
 
   /* ---- ⑥ 模型连不上 ⇒ 停下来报错，**不许**拿本地模板冒充 ---- */
   // ★★ 2026-10-08：出厂现在**内置了组织的模型 key**（llmdefaults.apiKey，用户拍板「装上即用」）⇒
@@ -1221,6 +1238,10 @@ function startServer() {
       ok('⑯b ★ 抽不出帧时如实不带图（不塞一张假的/空的进去）',
         !!nfReq && nfReq.images.length === 0, nfReq ? nfReq.images.length + ' 张' : '没找到视频那条');
       ok('⑯b user 里如实说「本次没有图」', !!nfReq && /"看图":"本次没有图"/.test(userText(nfReq)));
+      const nfSystem = nfReq && nfReq.messages.find(m => m.role === 'system');
+      ok('⑯b 实际无图时系统指令也按无图约束，不让品牌或示例充当商品证据',
+        !!nfSystem && /这次没有图/.test(nfSystem.content) && /颜色不能推出品类/.test(nfSystem.content)
+        && /事实约束优先/.test(nfSystem.content) && /不得编造品类/.test(nfSystem.content));
       const wbN = new ExcelJS.Workbook();
       await wbN.xlsx.readFile(wp.toLong(nf.result.reportFile));
       const wsN = wbN.getWorksheet('AI 内容报告');

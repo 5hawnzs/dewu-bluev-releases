@@ -116,7 +116,6 @@ if (!app.requestSingleInstanceLock()) {
     if (!imaging.hasHeif()) {
       logbus.info('HEIC(HEVC) 不支持：素材里的 .heic 会被标为「需先转 JPG」交人工，不阻断其它环节');
     }
-    logbus.info(`商品池：${pool.size()} 个货号（${pool.get().source}）`);
 
     // 安装包由维护者手动提供；应用启动时不访问分发服务器。
 

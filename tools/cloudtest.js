@@ -239,6 +239,8 @@ let r = null;
     && costQuery.rows[0].userId === 'u1' && costQuery.rows[0].brandId === 'brd_1'
     && costQuery.total.inputTokens === 100 && costQuery.total.estimatedCostCny === 0.0002,
     JSON.stringify(costQuery));
+    ok('费用明细保留每次任务的账号品牌与用量，不受汇总折叠影响', costQuery.details.length === 1
+      && costQuery.details[0].userId === 'u1' && costQuery.details[0].usage.inputTokens === 100);
   ok('费用查询 URL 带日期和账号筛选', calls.some(c => c.opts.method === 'GET' && /user_id=eq\.u1/.test(c.url)
     && /ts\.gte\.1760000000000/.test(decodeURIComponent(c.url)) && /ts\.lte\.1760000000400/.test(decodeURIComponent(c.url))),
     calls.filter(c => c.opts.method === 'GET').map(c => c.url).join('\n'));
@@ -341,9 +343,9 @@ let r = null;
   ok('★ reason 截断到 200（异常堆栈里常带路径）', row.reason.length === 200, row.reason.length);
   // ★ 白名单式断言：**逐个列名对**，不是只数个数 —— 偷偷加一列「素材路径」也会被这里抓住
   const want = ['org', 'ts', 'machine_id', 'machine_name', 'batch_no', 'seq', 'item_id', 'dir_name', 'kind', 'result', 'reason',
-    'elapsed', 'retries', 'mode', 'brand_id', 'brand_name', 'user_id', 'username', 'display_name'];
+      'title', 'body', 'elapsed', 'retries', 'mode', 'brand_id', 'brand_name', 'user_id', 'username', 'display_name'];
   const got = Object.keys(row);
-  ok('★ 字段就这 19 个（19 = 18 + 组织标识 org），多一个都可能是把素材/路径带出去了',
+    ok('★ 上行字段只含结果字段与用户授权的标题文案',
     got.length === want.length && want.every(k => got.includes(k)), got.join(','));
   // ★ 上面这个 row 的 machine 是**故意不带 org 的**（模拟「调用方忘了传」）——
   //   正好把兜底也一起验了：漏了 org 不是「少一列」，而是整批被 RLS 拒收，而界面只说「同步失败」。

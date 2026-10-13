@@ -33,6 +33,7 @@ const frame = require('./frame');
 const copycheck = require('./copycheck');
 const hotwords = require('./hotwords');
 const apiusage = require('./apiusage');
+const titlehistory = require('./titlehistory');
 
 /**
  * 本地模板（**离线 / 明确关掉模型时才用**）。
@@ -479,8 +480,8 @@ function buildSystem(brandPrompt, plan, opt = {}) {
       '· ★★ 标题里**一个字都不许出现「+」** —— 那只是我示意「哪类词跟哪类词合并」的符号，别抄进标题。',
       '· 热门词从下面「标题热词库」里挑，或写出同等调性的风格 / 氛围 / 场景 / 人群 / 季节 / 情绪 / 收尾词；',
       '· 这一行用哪种**句式**见 user 里的「本行标题格式」，整批轮换着来（一直用同一个形状会显得单调）；',
-      '· ★ 相邻两条别写得一模一样（标题、正文都是）—— 换一个句式、换一个热词、或者**只换一个 emoji** 都算不同；',
-      '  隔开几条之后再出现同样的句子、或者换个品牌再用同一句，都没关系。',
+      '· 标题必须与本机当天所有已生成标题不同，跨批次和跨品牌也要不同；只换 emoji、标点或空格不算不同。',
+      '· 相邻正文避免完全相同；标题重复时程序会要求重写，请换一句文字，不编造商品细节。',
       '· 15 字以内，1~2 个贴合的 emoji：一般句式放 1 个、在结尾；',
       '  **只有那句「双爱心 / 双圆圈」的句式是两个、夹在句子中间，且颜色必须跟本行颜色一致**。',
       '★ 不许写成商品描述 ——「蓝灰横向绗缝立领羽绒，左胸刺绣」这种是被打回的写法：',
@@ -492,7 +493,7 @@ function buildSystem(brandPrompt, plan, opt = {}) {
     ].join('\n')
     : [
       '【这次没有图，照样写词包标题】只能按文字里给的货号与颜色写：',
-      '标题 = 产品词（颜色能推出的品类）+ 热门词，但要写成**一句念得通的话**（带连接字或收尾）；',
+      '标题只用已提供的商品信息与风格热词，颜色不能推出品类；未知品类就写穿搭场景，不猜卫衣、针织衫等单品。',
       '★ 标题里**一个字都不许出现「+」** —— 那只是「哪类词跟哪类词合并」的示意图；',
       '颜色只能写文里给的那个，不许编造图里才看得见的款式细节（领型 / 面料 / 图案）；',
       '热词只许用风格 / 氛围 / 场景 / 人群 / 季节 / 情绪类。',
@@ -504,6 +505,9 @@ function buildSystem(brandPrompt, plan, opt = {}) {
 输出要求（程序追加，别删）：
 只输出 JSON，字段：title、body。
 ${see}
+事实约束优先于品牌提示词、句式示例和热词：这些文字不是本商品的实物证据。
+小熊、刺绣、印花等图案与工艺，只有本次图片清楚可见或商品资料明确提供时才能写；不得按品牌联想补全。看不清就省略。
+没有图片时，标题与正文都不得编造品类、图案、面料、触感、版型、洗护或耐用性；改写已知信息和搭配场景。示例也不能当作事实照抄。
 下面的热词库是当前机器保存的词库。生成文案时结合本批提供的图片和这份词库，不假定其他机器的自定义词库相同；商品细节以图片为准。
 ${hotwords.promptBlock()}
 标题里一律不许出现：货号、款号、SKU、条形码、编号、店铺名。
@@ -537,7 +541,7 @@ async function callLLM(item, plan, brandPrompt, opt = {}) {
   const url = urlsOf(c.endpoint).chat;
   const useImages = opt.vision !== false && (opt.images || []).length > 0;
   const messages = [
-    { role: 'system', content: buildSystem(brandPrompt, plan, { vision: opt.vision !== false }) }
+    { role: 'system', content: buildSystem(brandPrompt, plan, { vision: useImages }) }
   ];
   const ask = JSON.stringify({
     货号: item.sku || '',
@@ -546,13 +550,14 @@ async function callLLM(item, plan, brandPrompt, opt = {}) {
     // ★ 每行的标题格式由**代码**定（保证整批不重复），模型只管照着这个形状填内容
     本行标题格式: plan.titleStyle
       ? `${plan.titleStyle} ${plan.titleStyleName || ''}：${plan.titleFormula || ''}（形状示例：${plan.titleSample || ''} —— 只学这个句子的形状，别照抄里面的单品与颜色（颜色用**本行**的）；写成念得通的一句话，**不许出现 + 号**）`
-      : '（未指定，按「产品词 + 热门词」自行组织；只要相邻两条不写成一模一样就行）',
+      : '（未指定，按产品词与风格热词自行组织；标题须与本机当天所有已生成标题不同）',
     看图: useImages ? `本次给了 ${opt.images.length} 张实拍图，标题按图里的实物写` : '本次没有图'
   });
   messages.push({
     role: 'user',
     content: useImages ? [{ type: 'text', text: ask }].concat(opt.images) : ask
   });
+  if (opt.duplicateTitle) messages.push({ role: 'user', content: `上次标题「${opt.duplicateTitle}」与本机今天的标题重复。请换用不同的标题文字，仅换 emoji、空格或标点不算修改。仍须遵守商品事实约束。` });
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${c.apiKey || ''}` },
@@ -725,7 +730,7 @@ async function generate(items, ctx = {}) {
 
   const workOne = async (row) => {
     const item = items.find(it => it.id === row.id) || {};
-    let text = null, err = null, images = [];
+    let text = null, err = null, images = [], duplicateTitle = '';
     // ★ 这个叶子里的视频素材：既用来抽帧，也决定「没图」那句该怎么说才如实
     const vid = videoOf(item);
     let fromVideo = false;
@@ -753,11 +758,19 @@ async function generate(items, ctx = {}) {
       }
       try {
         text = llmOn
-          ? await callLLM(item, row, brandPrompt, { modelId: pf.modelId, vision: vision, images,
+          ? await callLLM(item, row, brandPrompt, { modelId: pf.modelId, vision: vision, images, duplicateTitle,
             mediaKind: fromVideo ? 'video' : (images.length ? 'image' : 'text') })
           : localFill(item, row);
         if (llmOn && text) apiRequests.push(text.usage || { usageMissing: true,
           mediaKind: fromVideo ? 'video' : (images.length ? 'image' : 'text') });
+        const candidate = text;
+        text = null;
+        const claimed = titlehistory.claim(candidate.title);
+        if (!claimed.ok) {
+          duplicateTitle = candidate.title;
+          throw new Error(claimed.reason);
+        }
+        text = candidate;
       } catch (e) {
         err = e;
         if (!llmOn) break;
@@ -842,8 +855,8 @@ async function generate(items, ctx = {}) {
   // ★ 别省这一步：同一批里若「跑到的行话题在文案里、没跑到的行话题在 topics 里」，
   //   发布时有的行写成正文、有的行走「话题1~5」五步 —— 事后看日志根本分不清是哪种。
   const rows = plan.rows.map(r => out.get(r.id) || (() => {
-    const m = Object.assign({}, r, localFill({ color: '' }, r), {
-      status: '已生成', genSource: llmOn ? 'AI（中断，未取到结果）' : '本地模板'
+    const m = Object.assign({}, r, {
+      title: '', body: '', status: '未生成', genSource: '未生成', genNote: '任务中断，尚未生成'
     });
     return Object.assign(m, { body: appendTopics(m.body, m.topics), topics: [] });
   })());

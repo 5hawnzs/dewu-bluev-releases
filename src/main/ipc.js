@@ -414,7 +414,7 @@ function register() {
     const r = await dialog.showOpenDialog(w, {
       title: (opts && opts.title) || '选择文件',
       defaultPath: (opts && opts.defaultPath) || undefined,
-      filters: (opts && opts.filters) || [{ name: '商品池', extensions: ['csv', 'tsv', 'txt', 'json'] }],
+      filters: (opts && opts.filters) || [{ name: '商品资料', extensions: ['csv', 'tsv', 'txt', 'json'] }],
       properties: ['openFile']
     });
     return r.canceled ? null : r.filePaths[0];

@@ -26,7 +26,7 @@
   .kpi b{display:block;font-size:22px;line-height:1.2;font-variant-numeric:tabular-nums}
   .kpi span{font-size:12px;color:var(--tx2)}
   table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);font-size:13px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:13px}
   th{color:var(--tx2);font-weight:600;font-size:12px}
   td.num,th.num{text-align:right}
   .bar{height:6px;border-radius:4px;background:#eceff3;overflow:hidden;min-width:70px}
@@ -41,7 +41,66 @@
   .mono{font-family:ui-monospace,Consolas,monospace}
   .err{color:var(--bad)}
   [hidden]{display:none!important}
-  .tw{overflow-x:auto}
+  .tw{overflow-x:auto;min-width:0;overscroll-behavior-inline:contain}
+  #tRows{min-width:1720px;table-layout:fixed}
+  #tRows th:nth-child(11){width:320px}
+  #tRows td:nth-child(11){white-space:normal;overflow-wrap:anywhere;vertical-align:top}
+  #tRows th,#tRows td{vertical-align:middle}
+  #tRows th:nth-child(1){width:112px}
+  #tRows th:nth-child(2){width:190px}
+  #tRows th:nth-child(3){width:110px}
+  #tRows th:nth-child(4){width:120px}
+  #tRows th:nth-child(5){width:160px}
+  #tRows th:nth-child(6){width:62px}
+  #tRows th:nth-child(7){width:58px}
+  #tRows th:nth-child(8){width:76px}
+  #tRows th:nth-child(9){width:290px}
+  #tRows th:nth-child(10){width:80px}
+  #tRows td:nth-child(1),#tRows td:nth-child(2),#tRows td:nth-child(3),#tRows td:nth-child(4),#tRows td:nth-child(6),#tRows td:nth-child(7),#tRows td:nth-child(8),#tRows td:nth-child(10){white-space:nowrap}
+  #tRows td:nth-child(5){overflow-wrap:anywhere}
+  #tRows td:nth-child(9){white-space:normal;overflow-wrap:anywhere;color:var(--tx2)}
+  #tRows .chip{display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1.4;min-width:3em}
+  .pagination{display:flex;align-items:center;gap:8px;margin:0 0 10px}
+  .pagination button{color:var(--tx2);transition:background .15s,border-color .15s,color .15s}
+  .pagination button:not(:disabled):hover{color:var(--brand);border-color:var(--brand);background:#f4f7ff}
+  .login-screen{min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at top,#eaf0ff,var(--bg) 65%)}
+  .login-screen .login-form{width:min(400px,100%);padding:32px;background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 60px #18223012}
+  .login-form{display:grid;gap:12px}
+  .login-form h2{margin:0;font-size:16px}
+  .login-form input{width:100%;padding:9px 10px}
+  .login-actions{display:flex;justify-content:flex-end;gap:8px}
+  .tabs{display:flex;gap:5px;padding:5px;margin:14px 0 12px;background:#edf0f5;border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+  .tab{flex:0 0 auto;border:0;border-radius:7px;background:transparent;color:var(--tx2);font-weight:600;padding:8px 16px;white-space:nowrap}
+  .tab:hover{background:#f8f9fb;color:var(--tx)}
+  .tab[aria-selected="true"]{background:#fff;color:var(--brand);box-shadow:0 1px 3px #1720331a}
+  .tab-panel:focus{outline:none}
+  .chip{display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1.4;min-width:3em;vertical-align:middle}
+  #tTasks{min-width:1350px;table-layout:fixed;line-height:1.45}
+  #tTasks th,#tTasks td{vertical-align:middle;height:38px}
+  #tTasks th:nth-child(1){width:112px}
+  #tTasks th:nth-child(2){width:190px}
+  #tTasks th:nth-child(3){width:120px}
+  #tTasks th:nth-child(4){width:140px}
+  #tTasks th:nth-child(5){width:220px}
+  #tTasks th:nth-child(6){width:72px}
+  #tTasks th:nth-child(7){width:82px}
+  #tTasks th:nth-child(8){width:82px}
+  #tTasks th:nth-child(9){width:330px}
+  #tTasks td:nth-child(1),#tTasks td:nth-child(2),#tTasks td:nth-child(3),#tTasks td:nth-child(4),#tTasks td:nth-child(6),#tTasks td:nth-child(7),#tTasks td:nth-child(8){white-space:nowrap}
+  #tTasks td:nth-child(5),#tTasks td:nth-child(9){white-space:nowrap;text-overflow:ellipsis}
+  #tRows td,#tTasks td{overflow:hidden;overflow-wrap:anywhere}
+  #tRows td:nth-child(2),#tRows td:nth-child(3),#tRows td:nth-child(4),#tTasks td:nth-child(2),#tTasks td:nth-child(3),#tTasks td:nth-child(4){white-space:normal}
+  #tSku{min-width:760px}
+  #tWho{min-width:720px}
+  #tAccounts,#tBrands{min-width:680px}
+  #tApiUsage{min-width:980px}
+  #panel-details .tw,#panel-tasks .tw{max-height:62vh;overflow:auto;overscroll-behavior:contain}
+  #panel-details .tw th,#panel-tasks .tw th{position:sticky;top:0;z-index:1;background:#fff}
+  .footnotes{margin:12px 2px;color:var(--tx2);font-size:12px}
+  .footnotes summary{cursor:pointer;width:max-content}
+  .footnotes p{margin:6px 0 0}
+  @media(max-width:760px){header{flex-wrap:wrap}.grow{display:none}header h1{flex:1}}
+  @media(max-width:640px){main{padding:12px 12px 28px}.tabs{margin-top:10px}.tab{padding:8px 12px}.card{padding:12px}}
 </style>
 <!-- ★ 看板自带的 Supabase SDK（同目录 vendor/supabase.js），**刻意不引 CDN**：
      同事的机器/网络未必连得上 esm.sh，一旦连不上整页就只剩「加载 SDK 失败」，等于看板打不开。
@@ -52,16 +111,32 @@
 <script src="./vendor/supabase.js"></script>
 </head>
 <body>
-<header>
+<header id="boardHeader" hidden>
   <h1>得物蓝V · 发布进度看板</h1>
   <span class="chip" id="conn">未连接</span>
   <span class="grow"></span>
   <label class="hint"><input type="checkbox" id="auto" checked> 每 30 秒自动刷新</label>
   <button id="btnRefresh">刷新</button>
+  <button id="btnAdminLogout" hidden>退出管理员</button>
   <button id="btnSetup" hidden>设置</button>
 </header>
 
-<main>
+<section id="adminLoginScreen" class="login-screen" aria-labelledby="adminLoginTitle">
+  <form id="adminLoginForm" class="login-form">
+    <h2 id="adminLoginTitle">得物蓝V · 统计看板</h2>
+    <p class="hint">请使用蓝V App 管理员账号登录</p>
+    <label class="hint" for="adminUsername">账号</label>
+    <input id="adminUsername" name="username" autocomplete="username" required maxlength="32">
+    <label class="hint" for="adminPassword">密码</label>
+    <input id="adminPassword" name="password" type="password" autocomplete="current-password" required>
+    <p class="hint err" id="adminLoginError" role="alert" hidden></p>
+    <div class="login-actions">
+      <button class="primary" id="btnAdminSubmit" type="submit">登录</button>
+    </div>
+  </form>
+</section>
+
+<main id="boardShell" hidden>
   <!-- 连接设置：**平时是藏着的** —— 看板打开就自动连内置的那份配置（与 App 是同一份）。
        只有连不上 / 读不到时才自动露出来，或在网址后加 #setup 手动打开。 -->
   <div class="card" id="setupCard" hidden>
@@ -88,7 +163,16 @@
 
   <div id="main" hidden>
     <div class="kpis" id="kpis"></div>
+    <nav class="tabs" role="tablist" aria-label="看板内容">
+      <button class="tab" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">总览</button>
+      <button class="tab" id="tab-summary" role="tab" aria-selected="false" aria-controls="panel-summary" tabindex="-1">汇总</button>
+      <button class="tab" id="tab-details" role="tab" aria-selected="false" aria-controls="panel-details" tabindex="-1">发布明细</button>
+      <button class="tab" id="tab-usage" role="tab" aria-selected="false" aria-controls="panel-usage" tabindex="-1">AI 用量</button>
+      <button class="tab" id="tab-tasks" role="tab" aria-selected="false" aria-controls="panel-tasks" tabindex="-1">任务记录</button>
+      <button class="tab" id="tab-feedback" role="tab" aria-selected="false" aria-controls="panel-feedback" tabindex="-1">用户反馈</button>
+    </nav>
 
+    <section class="tab-panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
     <div class="card">
       <h2>款进度（只统计真实发布结果 · 每款目标篇数可改，默认 150）</h2>
       <div class="rowbtns">
@@ -112,17 +196,26 @@
       <div class="tw"><table id="tSku"></table></div>
     </div>
 
+    </section>
+
+    <section class="tab-panel" id="panel-summary" role="tabpanel" aria-labelledby="tab-summary" tabindex="0" hidden>
     <div class="card">
       <h2>按机器 / 执行人（同名的多个机器标识已合并）</h2>
       <div class="tw"><table id="tWho"></table></div>
     </div>
+    <div class="card"><h2>账号汇总</h2><div class="tw"><table id="tAccounts"></table></div></div>
+    <div class="card"><h2>品牌汇总</h2><div class="tw"><table id="tBrands"></table></div></div>
+    </section>
 
+    <section class="tab-panel" id="panel-details" role="tabpanel" aria-labelledby="tab-details" tabindex="0" hidden>
     <div class="card">
-      <h2>账号汇总</h2><div class="tw"><table id="tAccounts"></table></div>
+      <h2>发布明细</h2>
+      <div class="pagination"><button id="prevRows">上一页</button><span id="rowsPage" class="hint"></span><button id="nextRows">下一页</button></div>
+      <div class="tw"><table id="tRows"></table></div>
     </div>
-    <div class="card">
-      <h2>品牌汇总</h2><div class="tw"><table id="tBrands"></table></div>
-    </div>
+    </section>
+
+    <section class="tab-panel" id="panel-usage" role="tabpanel" aria-labelledby="tab-usage" tabindex="0" hidden>
     <div class="card" id="apiUsageCard">
       <h2>AI 用量（按上方筛选条件）</h2>
       <div class="kpis" id="apiKpis"></div>
@@ -130,21 +223,22 @@
       <div class="tw"><table id="tApiUsage"></table></div>
       <p class="hint">Token 数来自模型接口返回；费用是按客户端记录的模型与费率估算，不能替代服务商账单。旧版任务、未返回用量的请求或未知费率不会被当作 0 元。</p>
     </div>
-    <div class="card">
-      <h2>发布明细</h2>
-      <div><button id="prevRows">上一页</button> <span id="rowsPage"></span> <button id="nextRows">下一页</button></div>
-      <div class="tw"><table id="tRows"></table></div>
-    </div>
+    </section>
 
+    <section class="tab-panel" id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" tabindex="0" hidden>
     <div class="card">
       <h2>任务运行记录（最近 200 条）</h2>
       <p class="hint">显示任务开始、完成/失败、耗时和脱敏后的错误摘要；与上方设备、执行人、品牌、时间筛选联动。</p>
       <p class="hint err" id="runLogNotice" hidden></p>
       <div class="tw"><table id="tTasks"></table></div>
     </div>
+    </section>
+  <section class="tab-panel" id="panel-feedback" role="tabpanel" aria-labelledby="tab-feedback" tabindex="0" hidden>
+    <div class="card"><h2>用户反馈</h2><p class="hint">来自 App 设置中的反馈窗口；与时间、设备和账号筛选联动。</p><div class="tw"><table id="tFeedback"></table></div></div>
+  </section>
   </div>
+  <details class="footnotes"><summary>统计口径说明</summary><p class="hint" id="foot"></p></details>
 
-  <p class="hint" id="foot"></p>
 </main>
 
 <script src="metrics.js"></script>
@@ -152,7 +246,20 @@
 /** 只读看板：只做 select，没有任何写操作。数字取不到就显示「—」，绝不拿 0 冒充。 */
 const $ = s => document.querySelector(s);
 const LS = 'bluev-board';
-let sb = null, timer = null, rows = [], taskRows = [], dupFold = 0, taskLoadError = '';
+let sb = null, timer = null, rows = [], taskRows = [], dupFold = 0, taskLoadError = '', adminSession = null;
+const LS_SESSION = 'bluev-board-session';
+
+/* 会话落盘：以前只存在内存变量里，刷新页面或一次网络抖动就退回登录页。
+   现在把 token 存到本机，刷新后自动恢复；只有服务器**明确**判定失效才清除。 */
+function saveSession(s){ try { localStorage.setItem(LS_SESSION, JSON.stringify(s)); } catch {} }
+function clearSession(){ try { localStorage.removeItem(LS_SESSION); } catch {} }
+function loadSession(){ try { const s = JSON.parse(localStorage.getItem(LS_SESSION) || 'null'); return s && s.token ? s : null; } catch { return null; } }
+
+/* 网络类错误（断网、超时、连接被重置、DNS 失败）**不是**登录失效，绝不能因此登出。
+   之前 30 秒自动刷新时，只要一次 auth_status 抖动就 lockBoard()，表现成「没一会就被登出」。 */
+function isNetworkError(message){
+  return /failed to fetch|networkerror|network request failed|econnreset|timeout|timed out|load failed|fetch failed|network/i.test(String(message || ''));
+}
 
 /**
  * ★ 内置的组织默认值 —— 与 App 的 src/main/clouddefaults.js 是**同一份**，改一处必须同时改另一处。
@@ -196,7 +303,8 @@ const REAL = new Set(['发布成功', '失败']);
 const isProbe = r => String(r.machine_id || '') === '__probe__conn__' || /探针/.test(String(r.machine_name || ''));
 const isReal = r => REAL.has(String(r.result || '')) && !isProbe(r);
 const isNonReal = r => !isReal(r);
-const kindOf = r => (/模拟/.test(String(r.result || '')) || String(r.mode || '') === 'mock') ? '模拟'
+const kindOf = r => ['已取消', '未执行'].includes(String(r.result || '')) ? r.result
+  : (/模拟/.test(String(r.result || '')) || String(r.mode || '') === 'mock') ? '模拟'
   : (isProbe(r) ? '探针' : '其他');
 
 /* ★★ 去重 —— 为什么云上会有重复行：
@@ -258,25 +366,49 @@ async function connect(persist){
     $('#setupErr').hidden = true;
     $('#btnSetup').hidden = true;
   }
-  await load();
+  // 已有本机会话就直接恢复，省掉重复登录；没有才停在登录页。
+  const saved = loadSession();
+  if(!saved || !(await resumeSession(saved))) await load();
 }
 
 let loading = false, detailPage = 0;
 async function load(){
-  if(!sb) return;
+  if(!sb || !adminSession) return;
   if(loading) return;
   loading = true;
+  const session = adminSession;
+  try {
+  const {data: checked, error: authError} = await sb.rpc('bluev_auth_status', {p_token: session.token});
+  if(adminSession !== session) return;
+  // ★ 只有服务器**明确**回答「登录已过期 / 身份无效」才登出；网络抖动一律保留会话并等下次重试。
+  if(authError && isNetworkError(authError.message)){
+    conn('wait','网络中断，正在重试…');
+    return;
+  }
+  if(authError || !checked || checked.ok !== true || checked.user?.role !== 'admin'){
+    clearSession();
+    lockBoard('登录已失效，请重新登录。');
+    return;
+  }
+  if(checked.expiresAt && Date.now() > Number(checked.expiresAt)){
+    clearSession();
+    lockBoard('登录已过期，请重新登录。');
+    return;
+  }
+  // 服务器顺带刷新了用户资料（品牌权限可能被改），同步到已存会话里。
+  saveSession({ token: session.token, user: checked.user });
   conn('wait','读取中…');
   $('#btnRefresh').disabled = true;
   const [{ data, error }, { data: tasks, error: taskError }] = await Promise.all([
-    BoardMetrics.readAll(sb, ORG, 'publish_log', 'ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_id,brand_name,user_id,username,display_name'),
+    BoardMetrics.readAll(sb, ORG, 'publish_log', 'ts,machine_id,machine_name,batch_no,seq,item_id,dir_name,kind,result,reason,elapsed,brand_id,brand_name,user_id,username,display_name,title,body'),
     BoardMetrics.readAll(sb, ORG, 'run_log', 'event_id,ts,machine_id,machine_name,task_id,event_kind,task_type,task_label,batch_no,brand_id,brand_name,user_id,username,display_name,ok,cancelled,elapsed_sec,error_summary,api_usage')
   ]);
-  loading = false;
+  if(adminSession !== session) return;
   $('#btnRefresh').disabled = false;
   if(error){
     conn('bad','读取失败');
     $('#foot').innerHTML = `<span class="err">读取失败：${esc(error.message)}</span>`;
+    $('#foot').closest('details').open = true;
     $('#btnSetup').hidden = false;   // 读不到时给个出口，但不把设置卡片糊到人脸上
     return;
   }
@@ -288,6 +420,9 @@ async function load(){
   conn('ok', `已连接 · 发布 ${rows.length} 条 · 任务 ${taskRows.length} 条`);
   $('#main').hidden = false;
   render();
+  } catch(error){
+    if(adminSession === session) conn('bad','读取失败，请刷新重试');
+  } finally { loading = false; $('#btnRefresh').disabled = false; }
 }
 
 function filtered(){
@@ -296,7 +431,7 @@ function filtered(){
   const m = $('#fMachine').value, u = $('#fUser').value, b = $('#fBrand').value;
   return rows.filter(r => (!cut || Number(r.ts) >= cut)
     && (!m || mkey(r) === m) && (!u || ukey(r) === u)
-    && (!b || brandKey(r) === b));
+    && (!b || brandName(r) === b));
 }
 
 function fillFilters(){
@@ -307,13 +442,15 @@ function fillFilters(){
   };
   const combined = rows.concat(taskRows);
   const accounts = new Map(combined.filter(r => ukey(r)).map(r => [ukey(r), [r.username, r.display_name].filter(Boolean).join(' / ') || ukey(r)]));
-  const b = [...new Map(combined.map(r => [brandKey(r), (r.brand_name || '').trim()]).filter(([id, name]) => id && name))]
-    .sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
+  // ★ 品牌下拉按**名称**去重：同一个「日志测试品牌」可能对应多个 brand_id，
+  //   以前按 id 去重就会出现一长串同名项。筛选时改按名称匹配。
+  const brandNames = [...new Set(combined.map(r => (r.brand_name || '').trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
   const userSel = $('#fUser'), currentUser = userSel.value;
   userSel.innerHTML = '<option value="">全部</option>' + [...accounts].map(([id, label]) => `<option value="${esc(id)}" ${id === currentUser ? 'selected' : ''}>${esc(label)}</option>`).join('');
   const brandSel = $('#fBrand'), currentBrand = brandSel.value;
-  brandSel.innerHTML = '<option value="">全部</option>' + b.map(([id, label]) =>
-    `<option value="${esc(id)}" ${id === currentBrand ? 'selected' : ''}>${esc(label)}</option>`).join('');
+  brandSel.innerHTML = '<option value="">全部</option>' + brandNames.map(name =>
+    `<option value="${esc(name)}" ${name === currentBrand ? 'selected' : ''}>${esc(name)}</option>`).join('');
   // ★ 机器按**名字**列（不是 machine_id）：同一台电脑换过 id 时只出现一次
   const names = [...new Set(combined.map(mkey))].sort();
   const el = $('#fMachine');
@@ -329,10 +466,11 @@ function filteredTasks(){
   return taskRows.filter(r => (!cut || Number(r.ts) >= cut)
     && (!m || mkey(r) === m)
     && (!u || ukey(r) === u)
-    && (!b || brandKey(r) === b));
+    && (!b || brandName(r) === b));
 }
 
 const brandKey = r => String(r.brand_id || r.brand_name || '');
+const brandName = r => String(r.brand_name || '').trim();
 const accountKey = r => String(r.user_id || r.username || r.display_name || '');
 const intVal = n => Math.max(0, Math.floor(Number(n) || 0));
 function emptyUsage(){ return { requests:0, unreportedRequests:0, inputTokens:0, outputTokens:0, cachedInputTokens:0,
@@ -459,16 +597,20 @@ function render(){
   $('#prevRows').disabled = detailPage === 0;
   $('#nextRows').disabled = detailPage >= pages - 1;
   // ★ 明细列**全部**行（all，不是 list）：模拟/探针不参与统计，但**不许藏起来**，只是标成灰橙色的「模拟 / 探针」。
-  $('#tRows').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>款</th><th class="num">篇号</th><th>类型</th><th>结果</th><th>原因</th><th class="num">耗时</th></tr></thead><tbody>` +
+  $('#tRows').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>款</th><th class="num">篇号</th><th>类型</th><th>结果</th><th>原因</th><th class="num">耗时</th><th>发布内容</th></tr></thead><tbody>` +
     (all.slice(detailPage * 200, (detailPage + 1) * 200).map(r => `<tr>
       <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
       <td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.brand_name||'')}</td>
       <td>${esc(r.dir_name||'')}</td><td class="num">${esc(r.seq==null?'':r.seq)}</td>
       <td>${esc(r.kind||'')}</td>
       <td>${r.result==='发布成功'?'<span class="chip ok">成功</span>':(r.result==='失败'?'<span class="chip bad">失败</span>':`<span class="chip wait" title="${esc(r.result||'')}">${esc(kindOf(r))}</span>`)}</td>
-      <td class="hint">${esc(r.reason||'')}</td><td class="num">${r.elapsed==null?'—':Number(r.elapsed).toFixed(1)+'s'}</td></tr>`).join('') || `<tr><td colspan="10" class="hint">—</td></tr>`) + '</tbody>';
+      <td class="hint">${esc(r.reason||'')}</td><td class="num">${r.elapsed==null?'—':Number(r.elapsed).toFixed(1)+'s'}</td>
+      <td>${r.title || r.body ? `<details><summary>${esc(r.title || '查看文案')}</summary><div style="white-space:pre-wrap"><b>标题</b>：${esc(r.title || '未记录')}<br><b>文案</b>：<br>${esc(r.body || '未记录')}</div></details>` : '<span class="hint">历史记录未保存标题与文案</span>'}</td></tr>`).join('') || `<tr><td colspan="11" class="hint">—</td></tr>`) + '</tbody>';
 
-  const tasks = filteredTasks();
+  const feedback = filteredTasks().filter(r => r.task_type === 'feedback.submit');
+  $('#tFeedback').innerHTML = '<thead><tr><th>时间</th><th>设备</th><th>账号</th><th>版本</th><th>反馈内容</th></tr></thead><tbody>' +
+    (feedback.map(r => `<tr><td>${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td><td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.batch_no||'')}</td><td style="white-space:pre-wrap;min-width:300px;overflow-wrap:anywhere">${esc(r.error_summary||'')}</td></tr>`).join('') || '<tr><td colspan="5" class="hint">暂无反馈</td></tr>') + '</tbody>';
+  const tasks = filteredTasks().filter(r => r.task_type !== 'feedback.submit');
   renderApiUsage(tasks);
   $('#tTasks').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>任务</th><th>批次</th><th>状态</th><th class="num">耗时</th><th>错误摘要</th></tr></thead><tbody>` +
     (tasks.slice(0,200).map(r => `<tr>
@@ -476,7 +618,7 @@ function render(){
       <td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.brand_name||'')}</td>
       <td>${esc(r.task_label||r.task_type||'')}</td><td>${esc(r.batch_no||'')}</td>
       <td>${r.event_kind==='start'?'<span class="chip">开始</span>':(r.cancelled?'<span class="chip wait">已取消</span>':(r.ok?'<span class="chip ok">完成</span>':'<span class="chip bad">失败</span>'))}</td>
-      <td class="num">${r.elapsed_sec==null?'—':Number(r.elapsed_sec).toFixed(1)+'s'}</td><td class="hint">${esc(r.error_summary||'')}</td></tr>`).join('') || `<tr><td colspan="9" class="hint">—</td></tr>`) + '</tbody>';
+      <td class="num">${r.elapsed_sec==null?'—':Number(r.elapsed_sec).toFixed(1)+'s'}</td><td class="hint" title="${esc(r.error_summary||'')}">${esc(r.error_summary||'')}</td></tr>`).join('') || `<tr><td colspan="9" class="hint">—</td></tr>`) + '</tbody>';
   $('#runLogNotice').hidden = !taskLoadError;
   $('#runLogNotice').textContent = taskLoadError
     ? (/PGRST205|Could not find the table/i.test(taskLoadError)
@@ -487,7 +629,7 @@ function render(){
     : '';
 
   $('#foot').innerHTML = `数据来自各台机器上行的<b>发布结果</b>（本轮全量取回 ${rows.length + dupFold} 行）。
-    <br>· <b>统计口径：只算真实发布结果</b>（发布成功 / 失败）；另有 <b>${others.length}</b> 条「模拟 / 探针」<b>未计入</b>，
+    <br>· <b>统计口径：只算真实发布结果</b>（发布成功 / 失败）；另有 <b>${others.length}</b> 条取消、未执行、模拟或探针记录<b>未计入</b>，
       它们仍列在「最近明细」里（灰色标签），不会凭空消失。
     <br>· 已折叠 <b>${dupFold}</b> 条重复行 —— 同一台电脑换过机器标识后会把整本台账重推一遍（唯一键含机器标识，去不掉），
       按「机器名＋时间＋篇号＋款」折叠。
@@ -498,22 +640,115 @@ function render(){
 $('#btnSave').onclick = () => connect(true);
 $('#btnSetup').onclick = () => { $('#setupCard').hidden = !$('#setupCard').hidden; };
 $('#btnRefresh').onclick = load;
+function lockBoard(message = ''){
+  adminSession = null;
+  clearInterval(timer); timer = null;
+  rows = []; taskRows = []; dupFold = 0; taskLoadError = ''; detailPage = 0;
+  $('#boardHeader').hidden = true;
+  $('#boardShell').hidden = true;
+  $('#main').hidden = true;
+  $('#adminLoginScreen').hidden = false;
+  document.querySelectorAll('#main table,#main .kpis').forEach(el => el.replaceChildren());
+  $('#foot').textContent = '';
+  $('#adminPassword').value = '';
+  $('#adminLoginError').textContent = message;
+  $('#adminLoginError').hidden = !message;
+  $('#adminUsername').focus();
+}
+
+/* 恢复上次登录：token 还在且未过期时直接进看板，不再要求重新输入。
+   服务器若已判失效，load() 里的 auth_status 会把它清掉并退回登录页。 */
+async function resumeSession(session){
+  if(!sb || !session || !session.token) return false;
+  adminSession = session;
+  $('#adminLoginScreen').hidden = true;
+  $('#boardHeader').hidden = false;
+  $('#boardShell').hidden = false;
+  $('#btnAdminLogout').hidden = false;
+  const u = session.user || {};
+  $('#btnAdminLogout').textContent = `退出：${u.displayName || u.username || '管理员'}`;
+  await load();
+  if(adminSession && $('#auto').checked) timer = setInterval(load, 30000);
+  return !!adminSession;
+}
+$('#adminLoginForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const errorEl = $('#adminLoginError'), submit = $('#btnAdminSubmit');
+  errorEl.hidden = true;
+  if(!sb){ errorEl.textContent = '统计服务尚未连接，请稍后重试。'; errorEl.hidden = false; return; }
+  submit.disabled = true;
+  try {
+    const { data, error } = await sb.rpc('bluev_auth_login', {
+      p_username: $('#adminUsername').value.trim(), p_password: $('#adminPassword').value
+    });
+    if(error || !data || data.ok !== true || !data.token){
+      throw new Error(data && data.error || error && error.message || '账号或密码不正确。');
+    }
+    if(!data.user || data.user.role !== 'admin'){
+      await sb.rpc('bluev_auth_logout', { p_token: data.token });
+      throw new Error('只有管理员可以登录。');
+    }
+    const { data: verified, error: verifyError } = await sb.rpc('bluev_auth_status', { p_token: data.token });
+    if(verifyError || !verified || verified.ok !== true || !verified.user || verified.user.role !== 'admin'){
+      await sb.rpc('bluev_auth_logout', { p_token: data.token });
+      throw new Error('管理员身份校验失败，请重新登录。');
+    }
+    adminSession = { token: data.token, user: verified.user };
+    saveSession(adminSession);
+    $('#adminLoginScreen').hidden = true;
+    $('#boardHeader').hidden = false;
+    $('#boardShell').hidden = false;
+    $('#btnAdminLogout').hidden = false;
+    $('#btnAdminLogout').textContent = `退出：${verified.user.displayName || verified.user.username}`;
+    $('#adminPassword').value = '';
+    if(setupPinned) showSetup('');
+    await load();
+    if(adminSession && $('#auto').checked) timer = setInterval(load, 30000);
+  } catch(error){
+    errorEl.textContent = error && error.message || '登录失败，请稍后重试。';
+    errorEl.hidden = false;
+  } finally { submit.disabled = false; }
+});
+$('#btnAdminLogout').onclick = async () => {
+  const session = adminSession;
+  clearSession();
+  lockBoard();
+  if(session && sb) await sb.rpc('bluev_auth_logout', { p_token: session.token });
+};
+const tabButtons = [...document.querySelectorAll('[role="tab"]')];
+function activateTab(tab, focus = false){
+  tabButtons.forEach(button => {
+    const active = button === tab;
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+    document.getElementById(button.getAttribute('aria-controls')).hidden = !active;
+  });
+  if(focus) tab.focus();
+}
+tabButtons.forEach(button => button.addEventListener('click', () => activateTab(button)));
+$('.tabs').addEventListener('keydown', event => {
+  const current = tabButtons.indexOf(document.activeElement);
+  if(current < 0) return;
+  let next = current;
+  if(event.key === 'ArrowRight') next = (current + 1) % tabButtons.length;
+  else if(event.key === 'ArrowLeft') next = (current - 1 + tabButtons.length) % tabButtons.length;
+  else if(event.key === 'Home') next = 0;
+  else if(event.key === 'End') next = tabButtons.length - 1;
+  else return;
+  event.preventDefault();
+  activateTab(tabButtons[next], true);
+});
 $('#prevRows').onclick = () => { detailPage = Math.max(0, detailPage - 1); render(); };
 $('#nextRows').onclick = () => { detailPage++; render(); };
 ['#fMachine','#fUser','#fBrand','#fDays','#goal'].forEach(s => { $(s).onchange = render; $('#goal').oninput = render; });
 $('#auto').onchange = () => {
   clearInterval(timer); timer = null;
-  if($('#auto').checked) timer = setInterval(load, 30000);
+  if(adminSession && $('#auto').checked) timer = setInterval(load, 30000);
 };
-timer = setInterval(load, 30000);
 
-// ★★ 打开即连 —— 不需要点任何按钮。
-//   以前这里写的是「本机存过配置才自动连」，结果新访客第一次打开只看到一张空的「连接设置」卡片，
-//   等于给一个本该零配置的看板加了道门槛（实测反馈：打开不是看板、还要先设置）。
-//   现在：本机存过的 → 内置的，一律自动连；只在**连不上 / 读不到**时才把设置露出来。
-//   想主动改项目地址：网址后面加 #setup（这种情况下设置会一直开着，不会被自动连关掉）。
+// 初始化登录服务；管理员登录成功后才加载并显示看板数据。
+// 管理员需要调整项目地址时可在网址后加 #setup。
 const setupPinned = /#setup/.test(location.hash) || /[?&]setup\b/.test(location.search);
-if(setupPinned) showSetup('');
 connect(false);
 </script>
 </body>

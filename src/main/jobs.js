@@ -37,7 +37,7 @@ const PARALLEL_TYPES = new Set(['copy.generate']);
 
 /**
  * 产出「可发布内容」的任务 —— 这几个必须有品牌归属，否则发出去的东西查不到是谁做的、算哪个品牌的。
- * 素材整理 / 合规 / 校验 / 商品池属于准备动作，归属可有可无（没有就记「未标品牌」）。
+ * 素材整理 / 合规 / 校验 / 商品资料属于准备动作，归属可有可无（没有就记「未标品牌」）。
  * 归属规则与提示语都在 brands.resolveFor 里，这里只声明「哪些任务必须有」。
  */
 const BRAND_SCOPED = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
@@ -51,7 +51,7 @@ const TYPE_LABEL = {
   'verify.check': '好物货号颜色预检',
   'sheet.export': '导出发布单', 'report.import': '导入 AI 内容报告',
   'publish.run': '自动发布', 'publish.rerun': '发布重跑',
-  'publish.exportLog': '重导出日志', 'pool.import': '导入商品池'
+  'publish.exportLog': '重导出日志', 'pool.import': '导入商品资料'
 };
 
 /** 批次级产物目录：每个批次一个文件夹，互不覆盖 */
@@ -155,6 +155,7 @@ async function dispatch(type, args, ctx) {
       const dir = needSourceDir(args.sourceDir || st().sourceDir);
       // 选择了新来源，即使尚未点击整理，也不能继续展示上一批检查结果。
       if (dir !== st().sourceDir) {
+        project.patch({ previousFlattenResult: st().flattenResult || st().previousFlattenResult || (st().flatDir ? { dir: st().flatDir } : null), flattenResult: null });
         project.patch({ sourceDir: dir, flatDir: '', items: [], compliance: { rows: [], stats: null, scannedAt: 0 }, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: 0, colCount: 26, locked: false, exportedAt: 0 } });
       }
       const plan = await flatten.plan(dir, ctx);
@@ -168,8 +169,11 @@ async function dispatch(type, args, ctx) {
       if (res.reused) {
         ctx.conclude(res.summary);
         if (st().flatDir !== res.flatDir) throw new Error('这份素材已整理，请打开已有目录：' + res.flatDir + '；为避免覆盖后续处理，本次没有重建工程');
+        if (!st().flattenResult) project.patch({ flattenResult: { dir: res.flatDir, sourceDir: dir, count: res.items.length, at: Date.now(), reused: true } });
         return res;
       }
+      project.patch({ previousFlattenResult: st().flattenResult || st().previousFlattenResult || (st().flatDir ? { dir: st().flatDir } : null),
+        flattenResult: { dir: res.flatDir, sourceDir: dir, count: res.items.length, at: Date.now() } });
       project.patch({ sourceDir: dir, flatDir: res.flatDir, items: res.items, compliance: { rows: [], stats: null, scannedAt: 0 }, verify: { rows: [], checkedAt: 0 }, copyRows: [], sheet: { file: '', rowCount: res.items.length, colCount: 26, locked: false, exportedAt: 0 } });
       // 大结论（2026-10-05）：一行说清这次整理出来多少
       ctx.conclude(`素材整理完成【${res.summary}】`);
@@ -638,14 +642,16 @@ async function dispatch(type, args, ctx) {
           logbus.info(`本次结果没有可回写的报告行（${mr.skipped} 条不是从这份报告导进来的），跳过回写`);
         }
       }
-      notify('发布批次结束', `成功 ${r.okCount} / ${r.total} 条，记得回查审核状态`);
+      notify(r.cancelled ? '发布批次已停止' : '发布批次结束', `成功 ${r.okCount} / ${r.total} 条${r.cancelled ? '，其余已取消或未执行' : '，记得回查审核状态'}`);
       // ★ 大结论（2026-10-05 用户要的格式）：一行说完「目标 / 成功 / 失败」。
       //   三种情况分开说，**既不许拿绿灯盖红字、也不许拿「成功 0」糊弄**：
       //     · 真机全成功 → 发布成功【目标 N 条，成功 N 条，失败 0 条】
       //     · 真机有失败 → 发布结束（有失败）【…】＋ 去哪看逐条原因
       //     · 模拟通道   → 模拟发布完成【…】：模拟本来就没真发出去，报「成功 K 条」会被当成发出去了
       const failCount = r.failCount || 0;
-      if (failCount) {
+      if (r.cancelled) {
+        ctx.conclude(`批次已停止【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 ${failCount} 条】· 其余已取消或未执行`, 'info');
+      } else if (failCount) {
         ctx.conclude(`发布结束（有失败）【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 ${failCount} 条】`, 'warn');
         ctx.conclude(`这 ${failCount} 条为什么没发出去：逐条原因见「发布单」的结果列（失败截图在输出目录的 failures 文件夹）`, 'warn');
       } else if (r.mode === 'mock') {
@@ -654,7 +660,7 @@ async function dispatch(type, args, ctx) {
           + '· 模拟通道不接触设备，**不算真发布**（要真发请先「连接模拟器」并点「检查能不能发布」通过）', 'warn');
       } else {
         ctx.conclude(`发布成功【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 0 条】`
-          + '· 发完 ≠ 发出去了，记得回查审核状态', 'ok');
+          + '· 内容展示与审核结果请在得物查看', 'ok');
       }
       const failed = (r.rows || []).filter(row => row && row.result === '失败');
       const failureSummary = failed.slice(0, 5).map(row => `第${row.seq}条：${row.reason || '未知原因'}`).join('；');
@@ -677,7 +683,7 @@ async function dispatch(type, args, ctx) {
       if (s.sheet.file) await sheet.mergeResults(s.sheet.file, r.results);
       if (s.publish.reportFile) await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
       // 大结论（2026-10-05）：与整批发布同一个口径（重跑就是「只发这一条」的一批）
-      ctx.conclude(r.okCount >= 1
+      ctx.conclude(r.cancelled ? '重跑已停止，保留已完成的结果' : r.okCount >= 1
         ? `重跑成功【目标 1 条，成功 1 条，失败 0 条】`
         : `重跑结束（失败）【目标 1 条，成功 0 条，失败 1 条】`, r.okCount >= 1 ? 'ok' : 'warn');
       const failed = (r.rows || []).find(row => row && row.result === '失败');
@@ -685,7 +691,7 @@ async function dispatch(type, args, ctx) {
     }
     case 'pool.import': {
       const r = pool.importFile(args.file);
-      logbus.ok(`商品池已导入：${Object.keys(r.skus).length} 个货号（来源 ${r.source}）`);
+      logbus.ok(`商品资料已导入：${Object.keys(r.skus).length} 个货号（来源 ${r.source}）`);
       return { count: Object.keys(r.skus).length, source: r.source };
     }
     case 'project.reset': {

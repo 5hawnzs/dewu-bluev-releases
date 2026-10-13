@@ -241,6 +241,29 @@ const state = {
     } finally { adbForSetup.clearAlbum = originalClear; }
   }
   ok('真实通道跑完 1 条', r.mode === 'adb' && r.total === 1, `成功 ${r.okCount}/${r.total}`);
+  {
+    const originalClear = adbForSetup.clearAlbum;
+    let cancelled = false, clears = 0;
+    const stoppedState = JSON.parse(JSON.stringify(state));
+    stoppedState.publish.rows = Array.from({ length: 4 }, (_, i) => ({ ...stoppedState.publish.rows[0],
+      seq: i + 1, result: i === 0 ? '发布成功' : '', status: i === 0 ? '发布成功' : '排队', reason: '', startAt: '' }));
+    const stopLogs = [];
+    adbForSetup.clearAlbum = async () => { clears++; cancelled = true; return { ok: false, error: '相册清理已取消' }; };
+    clearCalls();
+    let stopped;
+    try { stopped = await publisher.run(stoppedState, { ...ctx, cancelled: () => cancelled,
+      log: msg => stopLogs.push(msg) }); } finally { adbForSetup.clearAlbum = originalClear; }
+    ok('清相册时停止：已成功行保留、当前行已取消、后续行未执行，不计失败', stopped.cancelled && stopped.okCount === 1
+      && stopped.failCount === 0 && stopped.rows.map(x => x.result).join(',') === '发布成功,已取消,未执行,未执行');
+    ok('主动停止只记取消原因和批次停止，不伪装清理失败或批次发布完成', stopped.rows[1].reason === '任务已取消'
+      && stopLogs.some(s => s.includes('批次已停止')) && !stopLogs.some(s => /发布失败|发布结束：/.test(s)));
+    ok('停止后不执行后续清理、推送、截图或提交动作', clears === 1 && !/push |screencap|input tap/.test(calls()));
+    clearCalls();
+    let inputCancel = '';
+    try { await publisher.runStep('127.0.0.1:5555', { action:'input',value:'不应输入',name:'填正文' }, {}, {cancelled:()=>true}); }
+    catch(e) {inputCancel=e.message;}
+    ok('步骤刚开始已取消时不得继续输入、补话题或点击',/已取消/.test(inputCancel)&&!calls().trim());
+  }
   ok('推图 2 张', (log.match(/push /g) || []).length === 2, (log.match(/push .*/g) || []).join(' | '));
   ok('触发媒体扫描（写进 MediaStore：content call --method scan_file）',
     /content call --uri content:\/\/media\/external\/file --method scan_file/.test(log));

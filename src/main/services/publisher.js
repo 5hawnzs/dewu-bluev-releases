@@ -360,9 +360,12 @@ async function openPublishEntry(serial, ctx = {}) {
 }
 
 async function runStep(serial, step, data, ctx) {
+  const checkCancelled = () => { if (ctx && ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消'); };
+  checkCancelled();
   if (ctx.publishEntryReady && step.action === 'tapId' && /:(?:id)\/(?:tvGoHomePage|rlPublish)$/.test(step.value || '')) return { skipped: true, why: '已由备用入口进入发布流程' };
   // 离开话题输入段前先结束最后一个话题，必须早于点击关联好物或提交发布。
   if (!step.topicInput) await topicinput.finish(serial, ctx);
+  checkCancelled();
   // ★ 屏幕守卫先判：不成立就**一个像素都不碰**，如实返回 skipped（交给调用方写日志）。
   //   reusedXml = 守卫刚抓到的那份结构；同一步的点击可以在**第 1 次尝试**直接用它，
   //   省掉第二次抓屏（实测一次 dump ~1-2s）。中间没有任何动作 ⇒ 结构一定新鲜。
@@ -381,6 +384,7 @@ async function runStep(serial, step, data, ctx) {
     //   （实测相册页那类屏，不关动画每轮白等 ~11s；关掉后 ~2s 就抓到）。
     if (g.animOff && animOffSteps && stepKey && !animOffSteps[stepKey]) animOffSteps[stepKey] = true;
   }
+  checkCancelled();
   switch (step.action) {
     case 'videoCover':
       return require('./videocover').select(serial, ctx);
@@ -395,6 +399,7 @@ async function runStep(serial, step, data, ctx) {
       // ★ 「点前 N 个匹配」用的：want = 要一次点几个，hit = 这一屏实际找到几个
       let want = 1, hit = [], lastFound = -1;
       for (let attempt = 0; attempt < 3; attempt++) {
+        checkCancelled();
         // ★ 必须带包名：发布页是**动画页**，uiautomator 抓不到时只有带上包名才会退到 dumpsys。
         //   （以前这里不传 pkg ⇒ 备用通道永远走不到 ⇒ 真机上按 id 点「关联好物」直接失败；
         //    而「抓取页面结构」那条路一直带着包名，所以这个洞一直没被暴露。）
@@ -540,6 +545,7 @@ async function runStep(serial, step, data, ctx) {
       //   比「一条一条发 + JS 侧 sleep」少 N-1 次往返（实测 3 击 380ms → 127ms）。
       //   250ms 间隔的原因没变：相册点中一格会出现选中角标、右下角按钮会变成「下一步 (2)」，
       //   连着点太快有被系统当成同一次手势的风险。间隔值可调（见定位表 count 那段注释）。
+      checkCancelled();
       const r = await adb.tapSeq(serial,
         pickList.map(n0 => ({ x: n0.center.x, y: n0.center.y })),
         pickList.length > 1 ? 250 : 0);
@@ -584,6 +590,7 @@ async function runStep(serial, step, data, ctx) {
         error.code = 'UI_COORDINATES';
         throw error;
       }
+      checkCancelled();
       const r = await adb.tapSeq(serial, pts, pts.length > 1 ? 250 : 0);
       if (!r.ok) throw new Error('点击失败：' + (r.stderr || '').trim());
       if (pts.length > 1 && ctx && ctx.log) {
@@ -639,7 +646,8 @@ async function runStep(serial, step, data, ctx) {
       return;
     }
     case 'wait':
-      await sleep(Math.max(0, Number(step.value) || 1000));
+      await sleep(Math.max(0, Number(step.value) || 1000), ctx && ctx.cancelled);
+      checkCancelled();
       return;
     case 'waitId': {
       // ★★ 2026-10-03 真机实测加：等到**某一块出现**再往下走（两屏之间的转场）。
@@ -651,6 +659,7 @@ async function runStep(serial, step, data, ctx) {
       const tmo = Math.max(1000, Number(step.timeout) || 10000);
       const t0 = Date.now();
       for (;;) {
+        checkCancelled();
         const d = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff }, ctx);
         if (d.ok && uimap.parseNodes(d.xml).some(n => String(n.id) === wantId)) return;
         const waited = Date.now() - t0;
@@ -660,7 +669,7 @@ async function runStep(serial, step, data, ctx) {
             + ' —— 要么前一屏那一下没点动，要么得物改版了。不硬点下一步。');
         }
         if (ctx && ctx.log) ctx.log(`等「${wantId}」出现…（已等 ${Math.round(waited / 1000)}s）`, 'info');
-        await sleep(400);
+        await sleep(400, ctx && ctx.cancelled);
       }
     }
     case 'back':
@@ -1270,6 +1279,7 @@ async function runBatch(state, ctx = {}) {
   const copyById = new Map((state.copyRows || []).map(r => [r.id, r]));
   let done = 0;
   const results = [];
+  const settledRows = new Set();
   let stoppedReason = '';
   let stoppedForAlbum = false;
   let stoppedForSubmission = false;
@@ -1283,7 +1293,7 @@ async function runBatch(state, ctx = {}) {
     // ★ 拦不拦看 `verify.isBlocked()`，**不是** `pass === false`：
     //   前者只拦「有据可判的不一致」（颜色不匹配 / 多色漏填 / 主色不符）；
     //   「货号查不到颜色」属于**没有数据**，按真机口径只告警、照常发布 ——
-    //   否则商品池没导全时会**整批静默不发布**，而界面只显示「校验未通过」。
+    //   否则商品资料没导全时会**整批静默不发布**，而界面只显示「校验未通过」。
     const blocked = (state.verify.rows || []).find(v => v.id === row.id);
     if (blocked && verifySvc.isBlocked(blocked)) {
       row.status = '未发布'; row.result = '校验未通过'; row.reason = blocked.note || blocked.conclusion;
@@ -1328,18 +1338,18 @@ async function runBatch(state, ctx = {}) {
         success = await runReal(row, item, copyById.get(row.id), serial, map, ctx);
       } else {
         const r = await runMock(row, ctx);
-        if (r === 'cancelled') break;   // 取消：不标失败，直接跳出整批
-        success = !!r;
+        success = r === 'cancelled' ? false : !!r;
+        if (r === 'cancelled') reason = '任务已取消';
       }
     } catch (e) {
       success = false;
-      reason = e.message;
+      reason = cancelled() ? '任务已取消' : e.message;
       stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED';
       if (e.code === 'UI_COORDINATES') stoppedReason = reason;
       // 清理失败仅跳过本条；下一条仍须重新通过目录与全盘索引清理，才能推入素材。
       if (stoppedForAlbum) log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
       // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
-      if (mode === 'adb' && !stoppedForAlbum) await saveShot(serial, `seq${row.seq}_fail`, ctx);
+      if (mode === 'adb' && !stoppedForAlbum && !cancelled()) await saveShot(serial, `seq${row.seq}_fail`, ctx);
     }
     if (success && ctx.submissionPending) { stoppedReason = ctx.submissionPending; stoppedForSubmission = true; }
     require('./diagnostics').phase('条目结束');
@@ -1349,17 +1359,21 @@ async function runBatch(state, ctx = {}) {
     row.status = success ? (mode === 'adb' ? '发布成功' : '模拟成功') : '失败';
     row.result = success ? (mode === 'adb' ? '发布成功' : '模拟成功') : '失败';
     if (!success && cancelled()) { row.status = '已取消'; row.result = '已取消'; }
+    const rowCancelled = row.result === '已取消';
+    settledRows.add(row);
     // ★ 2026-10-03：模拟通道不再随机失败 ⇒ 这里不需要「编一个失败原因」的分支了（拔掉假原因）。
     row.reason = success ? '' : (reason || '未知');
-    if (!success) log(`${row.dir} 发布失败，原因${row.reason}`, 'warn');
+    if (!success) log(rowCancelled ? `${row.dir}：任务已取消，未继续发布` : `${row.dir} 发布失败，原因${row.reason}`, rowCancelled ? 'info' : 'warn');
     const tag = rowKind(row, item) === 'video' ? '视频' : '图文';
     row.elapsed = +((Date.now() - t0) / 1000).toFixed(1);
     onRow(row);
     if (success) log(`行 ${row.seq}[${tag}] 发布完成，已回填时间 ${row.startAt}（耗时 ${row.elapsed}s）`, 'ok');
-    else log(`行 ${row.seq}[${tag}] 发布失败，原因${row.reason}（耗时 ${row.elapsed}s）`, 'warn');
+    else log(rowCancelled ? `行 ${row.seq}[${tag}] 已取消（耗时 ${row.elapsed}s）` : `行 ${row.seq}[${tag}] 发布失败，原因${row.reason}（耗时 ${row.elapsed}s）`, rowCancelled ? 'info' : 'warn');
 
     sheet.appendLog({
       batch, seq: row.seq, id: row.id, dir: row.dir, at: row.startAt, result: row.result, reason: row.reason,
+      title: String((copyById.get(row.id) || {}).title || ''),
+      body: topicinput.prepare(copyById.get(row.id) || {}).body,
       // ★ 不再写 retries：失败不再重试 ⇒ 它恒为 0。旧台账里那一列照原样读（sheet 导出时仍认它）。
       elapsed: row.elapsed, mode, kind: tag,
       // 品牌 + 执行人：统计按品牌聚合、管理员追责，全靠这两个字段。
@@ -1383,10 +1397,19 @@ async function runBatch(state, ctx = {}) {
     }
   }
 
+  if (cancelled()) {
+    for (const row of todo) {
+      if (settledRows.has(row) || row.result === '校验未通过') continue;
+      row.status = '未执行'; row.result = '未执行'; row.reason = '本批次已停止，尚未执行';
+      row.startAt = ''; row.startedAtMs = null; row.elapsed = null;
+      onRow(row);
+    }
+  }
   const okCount = rows.filter(r => r.result === '发布成功').length;
   const failCount = rows.filter(r => r.result === '失败').length;
   log(`批量发布完成，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s`, 'info');
-  log(`发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。发完 ≠ 发出去了，还要回查审核状态`, 'ok');
+  log(cancelled() ? `批次已停止：成功 ${okCount} 条，失败 ${failCount} 条，其余已取消或未执行`
+    : `发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。内容展示与审核结果请在得物查看`, cancelled() ? 'info' : 'ok');
   return { rows, results, okCount, total: todo.length, failCount, batch, mode, stoppedReason, cancelled: !!cancelled() };
 }
 

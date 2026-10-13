@@ -398,7 +398,7 @@ app.whenReady().then(async () => {
       inputs: pane.querySelectorAll('[data-lx-in]').length,
       addBtns: pane.querySelectorAll('[data-lx-add]').length,
       delBtns: pane.querySelectorAll('[data-lx-del]').length,
-      hasXlsxHint: /Excel 工作簿（\.xlsx）/.test(txt),
+      hasXlsxHint: /Excel(?: 工作簿)?（\.xlsx）/.test(txt),
       transferActions: [...document.querySelectorAll('#head [data-act^="lex:"]')].map(b => b.dataset.act),
       transferLabels: [...document.querySelectorAll('#head .lx-transfer')].map(b => b.textContent.trim()),
       statusText: (document.querySelector('#lxStatus') || {}).textContent || ''
@@ -415,7 +415,7 @@ app.whenReady().then(async () => {
     lexPage.inputs === 8 && lexPage.addBtns === 8 && lexPage.delBtns > 0,
     `inputs=${lexPage.inputs} add=${lexPage.addBtns} del=${lexPage.delBtns}`);
   ok('★ 词库页明确标出仅在本机生效',
-    /本机词库/.test(lexPage.statusText), lexPage.statusText.slice(0, 70));
+    /本机词库|仅保存在本机/.test(lexPage.statusText), lexPage.statusText.slice(0, 70));
   ok('★ 本地词库导入导出明确使用 Excel 工作簿',
     lexPage.hasXlsxHint && lexPage.transferActions.includes('lex:export') && lexPage.transferActions.includes('lex:import'),
     JSON.stringify({ hint: lexPage.hasXlsxHint, actions: lexPage.transferActions }));
@@ -920,6 +920,23 @@ app.whenReady().then(async () => {
   ok('筛选条件改动后必须重新查询才能导出，统计页已精简多余说明',
     statsRangeUi.exportsDisabled && !/共享位置|数据文件：|只追加、不自动裁剪/.test(statsRangeUi.text),
     `exportDisabled=${statsRangeUi.exportsDisabled} verbose=${/共享位置|数据文件：|只追加、不自动裁剪/.test(statsRangeUi.text)}`);
+
+  const usageSwitch = await win.webContents.executeJavaScript(`(() => {
+    const saved={stats:state.stats,view:state.usageView,account:state.usageAccount,page:state.usagePage};
+    state.tab=8;
+    const usage={requests:1,inputTokens:120,outputTokens:30,estimatedCostCny:.001,costKnown:true,models:['test-model']};
+    state.stats=Object.assign({},state.stats,{apiUsage:{ok:true,total:usage,
+      rows:[{userId:'u1',username:'account1',displayName:'同名',brandName:'品牌甲',usage,media:{}}],
+      details:[{id:'task1',ts:Date.now(),userId:'u1',username:'account1',displayName:'同名',brandName:'品牌甲',label:'批次测试',usage}]}});
+    state.usageView='summary';state.usageAccount='';renderAll();
+    const boxCount=document.querySelectorAll('#pane .box').length;
+    document.querySelector('[data-act="stats:usageAccount"]').click();
+    document.querySelector('[data-act="stats:usageView"][data-id="details"]').click();
+    const text=document.querySelector('#pane').textContent;
+    const result={filtered:state.usageAccount==='u1',detail:state.usageView==='details'&&text.includes('批次测试')&&text.includes('test-model')&&text.includes('account1 / 同名'),sameBoxes:boxCount===document.querySelectorAll('#pane .box').length};
+    state.stats=saved.stats;state.usageView=saved.view;state.usageAccount=saved.account;state.usagePage=saved.page;renderAll();return result;
+  })()`);
+  ok('AI用量可点击账号筛选并切换任务明细，同名账号显示登录名，不增加卡片',usageSwitch.filtered&&usageSwitch.detail&&usageSwitch.sameBoxes,JSON.stringify(usageSwitch));
 
   // ---- 左侧「运行日志」页：与底部日志栏**同一份内容**、能筛、能真导出 ----
   // 用户原话是「同步 app 下端的日志」⇒ 必须验两处**内容逐行一致**。
@@ -2641,6 +2658,30 @@ app.whenReady().then(async () => {
     ok('28 行风格建议不会被页面报成 28 行待核对', /文案已生成/.test(buttonState.suggestionsOnly) && !/待核对|自动核对一致/.test(buttonState.suggestionsOnly));
     ok('报告真实字段错误具体显示原因和数量', /缺货号 1 行/.test(buttonState.actualErrors) && /正文为空 2 行/.test(buttonState.actualErrors) && !/文案已生成|待核对/.test(buttonState.actualErrors));
   } finally {shell.openPath = originalOpenPath;shell.showItemInFolder = originalReveal;}
+  const flatFixture = path.join(TMP, '本次整理结果');
+  const oldFlatFixture = path.join(TMP, '上次整理结果');
+  fs.mkdirSync(flatFixture, {recursive:true});fs.mkdirSync(oldFlatFixture,{recursive:true});
+  let openedFlat = '';
+  shell.openPath = async file => { openedFlat = file;return ''; };
+  try {
+    const flatUi = await win.webContents.executeJavaScript(`(async()=>{
+      const saved={project:state.project,tab:state.tab};
+      try {
+        state.project={...state.project,sourceDir:'来源A',flatDir:${JSON.stringify(flatFixture)},
+          flattenResult:{dir:${JSON.stringify(flatFixture)},sourceDir:'来源A',count:3},previousFlattenResult:{dir:${JSON.stringify(oldFlatFixture)},sourceDir:'旧来源',count:30},items:Array(99).fill({})};
+        state.tab=1;renderAll();
+        const text=document.querySelector('#pane').textContent;
+        const button=document.querySelector('[data-act="flatten:openFlat"]');
+        await ACTS['flatten:openFlat'](button);
+        state.project.publish={reportFile:${JSON.stringify(reportFixture)},rows:[]};
+        const container=document.createElement('div');container.innerHTML=TABS[6].render();
+        return {current:text.includes('本次整理结果')&&text.includes('共 3 个叶子目录'),previous:text.includes('上次整理结果')&&text.includes('共 30 个叶子目录'),noMix:!text.includes('共 99'),reportTop:container.querySelector('.box h3').textContent==='当前批次 AI 内容报告',noOldPlaceholder:!container.textContent.includes('还没导出过发布单')};
+      } finally {state.project=saved.project;state.tab=saved.tab;renderAll();}
+    })()`);
+    ok('整理结果按钮实际调用系统打开目录，路径来自当前结果快照',openedFlat===flatFixture);
+    ok('本次与上次结果分别显示独立条数，不混用报告导入的items',flatUi.current&&flatUi.previous&&flatUi.noMix,JSON.stringify(flatUi));
+    ok('发布页当前AI报告置顶，旧发布单空状态不再占主入口',flatUi.reportTop&&flatUi.noOldPlaceholder);
+  } finally {shell.openPath=originalOpenPath;}
   const rowRefresh = await win.webContents.executeJavaScript(`(() => {
     const keep = { project: state.project, tab: state.tab };
     try {

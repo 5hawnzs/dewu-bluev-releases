@@ -18,6 +18,7 @@ const state = {
   brandsMeta: null,   // { isAdmin, brands:[{id,name,enabled}], mine:[id], defaultBrandId }
   brandId: '',        // 标题栏那个「当前品牌」的值；产出类任务都带上它，主进程还会再校验一次权限
   stats: null,        // 品牌统计查询结果
+  usageView: 'summary', usageAccount: '', usagePage: 0,
   statsOpts: { days: 30, brandId: '', userId: '', rangeMode: 'preset', fromAt: '', toAt: '' },
   statsQueryOpts: null,
   statsBusy: false,
@@ -478,13 +479,13 @@ function reportBoxHtml() {
   const blocked = rows.filter(r => r.result === '校验未通过').length;
   const done = rows.filter(r => r.result === '发布成功').length;
   return `<div class="box">
-    <h3>当前批次来自 AI 内容报告</h3>
+    <h3>当前批次 AI 内容报告</h3>
     <div class="row">
       <input class="inp mono" value="${esc(pub.reportFile)}" readonly>
       <span class="chip">表「${esc(pub.reportSheet || '')}」</span>
       ${pub.reportDir ? `<span class="chip" title="报告的「素材路径」是空的，用的是这次选的素材目录">素材目录 ${esc(pub.reportDir)}</span>` : ''}
       <span class="chip">${rows.length} 条</span>
-      ${done ? `<span class="chip">已发 ${done}</span>` : ''}
+      ${done ? `<span class="chip">已提交 ${done}</span>` : ''}
       ${blocked ? `<span class="chip warn">${blocked} 条暂不发布</span>` : ''}
       <button class="btn sm" data-act="sheet:openReport">打开报告</button>
     </div>
@@ -539,6 +540,9 @@ TABS[1] = {
     const plan = state.plan;
     const before = plan ? plan.rows.slice(0, 8).map(r => esc(r.from.replace(dir, '').replace(/^[/\\]/, '')) + ` <s>(${r.fileCount} 个文件)</s>`).join('<br>') : '点「生成清单」查看（秒级，只读元数据）';
     const after = plan ? plan.rows.slice(0, 8).map(r => `<b>${esc(r.name)}</b> <s>(${r.fileCount})</s>`).join('<br>') : '—';
+    const current = p.flattenResult && p.flattenResult.sourceDir === dir ? p.flattenResult : null;
+    const previous = p.previousFlattenResult || (!current && p.flattenResult) || (!current && p.flatDir ? { dir: p.flatDir } : null);
+    const resultHtml = (label, result) => `<div class="box"><h3>${label}</h3>${result && result.dir ? `<div class="row"><input class="inp mono" value="${esc(result.dir)}" readonly><button class="btn sm" data-act="flatten:openFlat" data-path="${esc(result.dir)}">打开目录</button></div><p class="hint">${Number.isFinite(result.count) ? '共 ' + result.count + ' 个叶子目录' : '旧记录未保存目录数量'}${result.sourceDir ? ' · 来源：' + esc(result.sourceDir) : ''}</p>` : '<p class="hint">本次尚未完成整理；完成后会显示实际输出目录。</p>'}</div>`;
     return `
       <div class="box">
         <h3>源目录</h3>
@@ -553,10 +557,8 @@ TABS[1] = {
         <div class="box"><h3>整理前（多层嵌套）</h3><div class="tree">${before}</div></div>
         <div class="box"><h3>整理后（扁平 + 时间戳）</h3><div class="tree">${esc(dir ? dir.split(/[\\/]/).slice(-1)[0] + '_时间戳（原目录保留）' : '')}<br>${after}</div></div>
       </div>
-      ${p.flatDir ? `<div class="box"><h3>上次整理结果</h3>
-        <div class="row"><input class="inp mono" value="${esc(p.flatDir)}" readonly>
-        <button class="btn sm" data-act="flatten:openFlat">打开目录</button></div>
-        <p class="hint">共 ${p.items.length} 个叶子目录${p.items[0] && p.items[0].absDir ? ' · ' + esc(p.items[0].absDir.split(/[\\/]/).slice(0, -1).join('/')) : ''}</p></div>` : ''}
+      ${resultHtml('本次整理结果', current)}
+      ${previous && (!current || previous.dir !== current.dir) ? resultHtml('上次整理结果', previous) : ''}
       <p class="hint">整理后保留原目录，只生成扁平副本。</p>`;
   }
 };
@@ -701,15 +703,15 @@ TABS[3] = {
 TABS[4] = {
   title: '货号颜色校验',
   hidden: true,
-  desc: '对照商品池检查货号与颜色',
+  desc: '核对货号、目录颜色与图片主色',
   actions: () => [
-    { act: 'verify:pool', label: '同步商品池' },
+    { act: 'verify:pool', label: '导入商品资料' },
     { act: 'verify:run', label: '开始校验', primary: true }
   ],
   render() {
     const v = state.project.verify || {};
     const s = v.stats;
-    if (!s) return `<div class="empty">还没有校验记录。点「开始校验」会比对商品池，并用图片实际提出的主色反查目录里填的色名。</div>`;
+    if (!s) return `<div class="empty">还没有校验记录。点「开始校验」会核对货号，并用图片实际提出的主色反查目录里填的色名。</div>`;
     return `
       <div class="stats">
         <div class="stat good"><b>${n(s.pass)}</b><span>通过</span></div>
@@ -719,7 +721,7 @@ TABS[4] = {
       </div>
       ${running('verify.check') ? progHtml(progFor('verify.check')) : ''}
       <div class="tw"><table>
-        <thead><tr><th>货号</th><th>目录填的颜色</th><th>商品池颜色</th><th>图片实取主色</th><th>结论</th></tr></thead>
+        <thead><tr><th>货号</th><th>目录填的颜色</th><th>参考颜色</th><th>图片实取主色</th><th>结论</th></tr></thead>
         <tbody>${(v.rows || []).map(r => `<tr class="${r.level === 'bad' ? 'flag' : (r.level === 'warn' ? 'warnrow' : '')}">
           <td class="mono">${esc(r.sku)}</td>
           <td>${r.swatch ? `<span class="sw" style="background:${esc(r.swatch)}"></span>` : ''}${esc(r.declared || '（空）')}</td>
@@ -727,10 +729,10 @@ TABS[4] = {
           <td>${esc(r.imageColor)}</td>
           <td>${badge(r.conclusion, kindOf(r.conclusion))}${r.note ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.note)}</div>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>
-      <p class="hint">多了一道保险：<b>用图片实际提出的主色反查目录里填的色名</b>。目录写「冠军白」但图是黑的，立刻就能发现。商品池：${state.info ? state.info.pool.size : 0} 个货号（${esc(state.info ? state.info.pool.source : '')}）。</p>
+      <p class="hint">多了一道保险：<b>用图片实际提出的主色反查目录里填的色名</b>。目录写「冠军白」但图是黑的，立刻就能发现。</p>
       <p class="hint">★ 这一页<b>只提示、不拦发布</b>：颜色对不上时，发布端会按货号搜出来的<b>第一件商品</b>发（详见「模拟器发布」页）。</p>
       <p class="hint">用「AI 内容报告」那一批时：先在「<b>模拟器发布</b>」页点「导入 AI 内容报告」，再回本页点「开始校验」——
-        报告里空着的货号/颜色会先按叶子文件夹名（「货号+颜色」）补齐，再拿去跟商品池比对。</p>`;
+        报告里空着的货号/颜色会先按叶子文件夹名（「货号+颜色」）补齐，再按可用商品资料核对。</p>`;
   }
 };
 
@@ -770,19 +772,15 @@ TABS[6] = {
     //   现在这一页只显示**已经发生的事实**（运行中计时 / 结束后写入的实耗），不再给数字承诺。
     const okCount = rows.filter(r => r.result === '发布成功').length;
     return `
+      ${reportBoxHtml()}
       <div class="box">
-        <h3>装置与节奏</h3>
-        <div class="row" style="margin-bottom:10px">
-          <span class="lbl">发布单</span>
-          <input class="inp mono" value="${esc(sh.file || '（还没导出过发布单）')}" readonly>
-          <span class="chip">${sh.rowCount || 0} 行 · ${sh.colCount || 26} 列</span>
-          <span class="chip">${sh.locked ? '被占用' : '未占用'}</span>
-          <button class="btn sm" data-act="sheet:open" ${sh.file ? '' : 'disabled'}>打开文件</button>
-          <button class="btn sm" data-act="sheet:dir">打开目录</button>
-        </div>
+        <h3>设备与发布间隔</h3>
         <details style="margin-bottom:10px"><summary>导出文件</summary><div class="row" style="margin-top:8px">
           <button class="btn sm" data-act="sheet:export">导出发布单</button>
           <button class="btn sm" data-act="pub:exportLog">导出发布日志</button>
+          <button class="btn sm" data-act="sheet:open" ${sh.file ? '' : 'disabled'}>打开导出表</button>
+          <button class="btn sm" data-act="sheet:dir">打开导出目录</button>
+          ${sh.file ? `<span class="hint mono">${esc(sh.file)}</span>` : ''}
         </div></details>
         ${devicesHtml()}
         <div class="row" style="margin-top:10px">
@@ -810,7 +808,6 @@ TABS[6] = {
         <p>每个账号均需手动检查，重装后请重新确认；本工具不检测开关状态。</p>
       </details>
       </div>
-      ${reportBoxHtml()}
       ${batchesHtml('', '运行中的批次 / 任务')}
       ${rows.length ? `<div class="tw publish-rows"><table>
         <colgroup><col style="width:40px"><col><col style="width:48px"><col style="width:48px"><col style="width:88px"><col style="width:70px"><col style="width:180px"><col style="width:64px"></colgroup>
@@ -822,13 +819,13 @@ TABS[6] = {
           <td data-publish-action>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">还没有发布队列，请先导入 AI 内容报告。</div>`}
-      <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与商品池对不上，<b>都不会拦住发布</b> ——
+      <p class="hint">★ <b>颜色校验不是必需项</b>：没做过校验、或目录里的颜色与参考资料对不上，<b>都不会拦住发布</b> ——
       发布时按货号搜索，<b>默认选第一件商品</b>。</p>
       <p class="hint"><b>内容主图</b>：默认用这个叶子里<b>排在最前面那张</b>（你实拍一般就是先拍的正面照）。
       想让某一张当主图，把它的文件名改成以 <code>1</code> 开头（如 <code>1_微信图片_2026-10-05_031033_240.jpg</code>）——
       程序会把那张排到相册第 1 格（<b>得物取相册第 1 格当内容主图</b>）；<code>10</code>/<code>12</code> 这种编号不会被误认。
       排不成就<b>不发这一条</b>（不会闷着头把主图放错）。</p>
-      <p class="hint">已发 ${okCount} / ${rows.length}。发布完还要<b>回查审核状态</b>（创作中心 → 等级权益），发完 ≠ 发出去了。
+      <p class="hint">已提交 ${okCount} / ${rows.length} 条。已提交内容的展示与审核结果请在得物查看。
       可在「导出文件」中导出发布日志。</p>`;
   }
 };
@@ -1032,13 +1029,13 @@ TABS[11] = {
       ${advBox('货号颜色查询方式', false,
         `<div class="row" style="margin-bottom:9px"><span class="lbl">方式</span>
           <select class="inp" data-cfg="verify.mode">
-            <option value="local" ${c.verify.mode === 'local' ? 'selected' : ''}>本地商品池（导入 CSV）</option>
+            <option value="local" ${c.verify.mode === 'local' ? 'selected' : ''}>本地资料（导入 CSV）</option>
             <option value="api" ${c.verify.mode === 'api' ? 'selected' : ''}>接口查询（得物后台）</option>
           </select>
         </div>
         <div class="row" style="margin-bottom:9px"><span class="lbl">SKU 接口</span><input class="inp mono" value="${esc(c.verify.api.endpoint)}" data-cfg="verify.api.endpoint" placeholder="https://…/sku-colors"></div>
         <div class="row"><span class="lbl">API Key</span><input class="inp mono" type="password" value="${esc(c.verify.api.apiKey)}" data-cfg="verify.api.apiKey"></div>`,
-        '出厂 = 本地商品池')}
+        '默认使用本地资料')}
       ${advBox('外部依赖路径（一般留空）', false,
         `<div class="row" style="margin-bottom:9px"><span class="lbl">adb 路径</span>
           <input class="inp mono" value="${esc(pub.adbPath || '')}" data-cfg="publish.adbPath"
@@ -1247,10 +1244,12 @@ TABS[8] = {
       ? (u.costKnown ? `¥${Number(u.estimatedCostCny).toFixed(4)}`
         : (Number(u.estimatedCostCny) > 0 ? `≈¥${Number(u.estimatedCostCny).toFixed(4)}（部分未计价）` : '未识别价格'))
       : '未识别价格';
-    const usageRows = api && api.ok && api.rows && api.rows.length ? `<div class="tw"><table>
+    const accountKey = x => x.userId || x.username || '未标账号';
+    const usageAccountLabel = x => [x.username, x.displayName].filter((v, i, a) => v && a.indexOf(v) === i).join(' / ') || '未标账号';
+    const usageSummary = api && api.ok && api.rows && api.rows.length ? `<div class="tw"><table>
       <thead><tr><th>账号</th><th>品牌</th><th>图文请求</th><th>视频请求</th><th>纯文本</th><th>输入 token</th><th>输出 token</th><th>估算费用</th></tr></thead>
-      <tbody>${api.rows.map(x => `<tr>
-        <td>${esc(x.displayName || x.username || '未记录')}</td><td>${esc(x.brandName || '未标品牌')}</td>
+      <tbody>${api.rows.filter(x => !state.usageAccount || accountKey(x) === state.usageAccount).map(x => `<tr>
+        <td><button class="btn sm" data-act="stats:usageAccount" data-id="${esc(accountKey(x))}">${esc(usageAccountLabel(x))}</button></td><td>${esc(x.brandName || '未标品牌')}</td>
         <td class="num">${usageNumber(x.media.image && x.media.image.requests)}</td>
         <td class="num">${usageNumber(x.media.video && x.media.video.requests)}</td>
         <td class="num">${usageNumber(x.media.text && x.media.text.requests)}</td>
@@ -1258,7 +1257,11 @@ TABS[8] = {
         <td class="num">${usageCost(x.usage)}</td></tr>`).join('')}</tbody></table></div>`
       : (api && api.ok ? '<p class="hint">当前筛选范围内还没有已记录的 AI 用量。</p>'
         : `<p class="hint">${esc(api && api.error || '云端 AI 用量暂不可用')}</p>`);
-    const usageBox = `<div class="box"><h3>AI 用量与费用（${esc(s.range.label)}）</h3>${api && api.ok
+    const usageDetails = ((api && api.details) || []).filter(x => !state.usageAccount || accountKey(x) === state.usageAccount);
+    state.usagePage = Math.max(0, Math.min(state.usagePage, Math.ceil(usageDetails.length / 100) - 1));
+const usageDetailHtml = `<div class="tw"><table><thead><tr><th>时间</th><th>账号</th><th>品牌 / 任务</th><th>模型</th><th>请求</th><th>输入 token</th><th>输出 token</th><th>估算费用</th></tr></thead><tbody>${usageDetails.slice(state.usagePage * 100, (state.usagePage + 1) * 100).map(x => `<tr><td>${esc(fmtDate(x.ts))}</td><td>${esc(usageAccountLabel(x))}</td><td>${esc(x.brandName)}<div class="hint">${esc(x.label)}</div></td><td>${esc((x.usage.models || []).join(' / ') || '未记录')}</td><td>${usageNumber(x.usage.requests)}</td><td>${usageNumber(x.usage.inputTokens)}${x.usage.unreportedRequests ? '<div class="hint">部分用量未返回</div>' : ''}</td><td>${usageNumber(x.usage.outputTokens)}</td><td>${usageCost(x.usage)}</td></tr>`).join('') || '<tr><td colspan="8">当前筛选范围没有记录</td></tr>'}</tbody></table></div><div class="row"><button class="btn sm" data-act="stats:usagePrev" ${state.usagePage ? '' : 'disabled'}>上一页</button><span>第 ${state.usagePage + 1} 页 · ${usageDetails.length} 次任务</span><button class="btn sm" data-act="stats:usageNext" ${(state.usagePage + 1) * 100 < usageDetails.length ? '' : 'disabled'}>下一页</button></div>`;
+    const usageRows = state.usageView === 'details' ? usageDetailHtml : usageSummary;
+    const usageBox = `<div class="box"><h3>AI 用量与费用（${esc(s.range.label)}）</h3><div class="row"><button class="btn sm ${state.usageView === 'summary' ? 'primary' : ''}" data-act="stats:usageView" data-id="summary">汇总</button><button class="btn sm ${state.usageView === 'details' ? 'primary' : ''}" data-act="stats:usageView" data-id="details">明细</button>${state.usageAccount ? '<button class="btn sm" data-act="stats:usageAccount" data-id="">全部账号</button>' : ''}</div>${api && api.ok
       ? `<div class="stats">
         <div class="stat good"><b>${usageCost(api.total)}</b><span>估算费用</span></div>
         <div class="stat"><b>${usageNumber(api.total && api.total.requests)}</b><span>模型请求</span></div>
@@ -1305,8 +1308,9 @@ function lexStatusHtml() {
       <span class="chip ${L.isCustom ? 'warn' : 'run'}">${esc(src)}</span>
       <span class="chip">全库 ${L.wordTotal} 词 · ${L.groups.length} 组</span>
       ${state.lexDirty ? '<span class="chip warn">有未保存的改动</span>' : ''}
-      <span class="chip">本机词库 · 修改仅在本机生效</span>
-    </div>`;
+      <span class="chip">仅保存在本机 · 保存后下次生成生效</span>
+    </div>
+    <p class="hint">导入 / 导出使用 Excel（.xlsx），可编辑「分组」「热词」两列后重新导入。</p>`;
 }
 
 // 历史仅保留当前运行中的最近一百步；撤销恢复草稿，点保存后才写入本机。
@@ -1394,10 +1398,6 @@ TABS[12] = {
     const lockeds = L.groups.filter(g => g.locked);
     return `
       <div id="lxStatus">${lexStatusHtml()}</div>
-      <div class="box">
-        <h3>使用说明</h3><p class="hint">词库仅保存在本机，保存后下次生成生效。</p>
-        <p class="hint">导入和导出使用 Excel 工作簿（.xlsx）：表格的「分组 / 热词」两列可直接编辑，改好后再导入。</p>
-      </div>
       <div class="box">
         <h3>三条红线</h3>
         <p class="hint">${L.redlines.map(s => '· ' + esc(s)).join('<br>')}</p>
@@ -2790,6 +2790,12 @@ const ACTS = {
     if (r.ok) { state.plan = r.result; toast(`清单已生成：${r.result.total} 个叶子目录`, 'ok'); }
     renderAll();
   },
+  'flatten:openFlat': async el => {
+    const dir = el.dataset.path || '';
+    if (!dir) { toast('没有可打开的整理结果目录', 'err'); return; }
+    const result = await appApi.openPath(dir);
+    if (result !== true) toast(typeof result === 'string' && result ? result : '无法打开整理结果：目录可能已被移动或删除，请核对路径', 'err');
+  },
   'flatten:run': async () => {
     if (state.flattenSubmitting) return;
     state.flattenSubmitting = true;
@@ -3056,10 +3062,10 @@ const ACTS = {
 
   'verify:run': async () => { await runJob('verify.check'); },
   'verify:pool': async () => {
-    const f = await appApi.pickFile({ title: '导入商品池（CSV/TSV/JSON：货号 + 颜色）' });
+    const f = await appApi.pickFile({ title: '导入商品资料（CSV/TSV/JSON：货号 + 颜色）' });
     if (!f) return;
     const r = await appApi.run('pool.import', brandArgs('pool.import', { file: f }));
-    if (r.ok) { state.info = await appApi.info(); toast(`商品池已导入：${r.result.count} 个货号`, 'ok'); }
+    if (r.ok) { state.info = await appApi.info(); toast(`商品资料已导入：${r.result.count} 个货号`, 'ok'); }
     renderAll();
   },
 
@@ -3351,6 +3357,10 @@ const ACTS = {
     state.userModal = { view: 'statsUsers', id: el.dataset.id };
     renderUserModal();
   },
+  'stats:usageView': el => { state.usageView = el.dataset.id === 'details' ? 'details' : 'summary'; state.usagePage = 0; renderAll(); },
+  'stats:usageAccount': el => { state.usageAccount = el.dataset.id || ''; state.usagePage = 0; renderAll(); },
+  'stats:usagePrev': () => { state.usagePage = Math.max(0, state.usagePage - 1); renderAll(); },
+  'stats:usageNext': () => { state.usagePage++; renderAll(); },
   'stats:refresh': async () => {
     if (state.statsOpts.rangeMode === 'custom') {
       const from = new Date(state.statsOpts.fromAt || '').getTime();

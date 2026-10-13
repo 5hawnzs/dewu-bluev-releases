@@ -265,6 +265,7 @@ async function queryApiUsageImpl(opts = {}) {
   const selectedUser = String(opts.userId || '');
   if (selectedUser) params.set('user_id', `eq.${selectedUser}`);
   const groups = new Map();
+  const details = [];
   // 先固定本轮最大主键，再按 id 游标分页；服务端即使把每页限制调小，也不会漏掉后续记录。
   const topParams = new URLSearchParams(params);
   topParams.set('select', 'id'); topParams.set('order', 'id.desc'); topParams.set('limit', '1');
@@ -288,7 +289,7 @@ async function queryApiUsageImpl(opts = {}) {
   const pageSize = 1000;
   while (cursor < maxId) {
     const pageParams = new URLSearchParams(params);
-    pageParams.set('select', 'id,api_usage,ts,brand_id,brand_name,user_id,username,display_name');
+    pageParams.set('select', 'id,api_usage,ts,brand_id,brand_name,user_id,username,display_name,task_label,batch_no,event_id');
     pageParams.set('order', 'id.asc'); pageParams.set('limit', String(pageSize));
     pageParams.set('and', `(${dateFilters.concat([`id.gt.${cursor}`, `id.lte.${maxId}`]).join(',')})`);
     const res = await fetch(`${cfg.url}/rest/v1/run_log?${pageParams.toString()}`, {
@@ -309,12 +310,15 @@ async function queryApiUsageImpl(opts = {}) {
     for (const row of page) {
       if (scope && !scope.includes(String(row.brand_id || ''))) continue;
       if (opts.brandId === '__none__' && row.brand_id) continue;
-      const key = `${row.user_id || ''}\n${row.brand_id || ''}`;
+      const key = `${row.user_id || row.username || ''}\n${row.brand_id || ''}`;
       if (!groups.has(key)) groups.set(key, { userId: row.user_id || '', username: row.username || '', displayName: row.display_name || '',
         brandId: row.brand_id || '', brandName: row.brand_name || '未标品牌', usage: null, media: {} });
       const group = groups.get(key);
       const usage = safeApiUsage(row.api_usage);
       if (!usage) continue;
+      details.push({ id: row.event_id || row.id, ts: Number(row.ts) || 0, userId: row.user_id || '',
+        username: row.username || '', displayName: row.display_name || '', brandId: row.brand_id || '',
+        brandName: row.brand_name || '未标品牌', label: safeRunText(row.task_label || row.batch_no), usage });
       group.usage = sumUsage(group.usage, usage);
       for (const kind of ['image', 'video', 'text']) {
         const entry = usage.byMedia && usage.byMedia[kind];
@@ -331,7 +335,7 @@ async function queryApiUsageImpl(opts = {}) {
   }));
   const total = rows.reduce((acc, row) => sumUsage(acc, row.usage), null) || apiusage.aggregate([]);
   total.estimatedCostCny = Number(total.estimatedCostCny.toFixed(8));
-  return { ok: true, available: true, total, rows };
+  return { ok: true, available: true, total, rows, details: details.sort((a, b) => b.ts - a.ts) };
 }
 
 /**
@@ -357,6 +361,8 @@ function toRow(e, machine) {
     kind: String(e.kind || ''),
     result: String(e.result || ''),
     reason: String(e.reason || '').slice(0, 200),
+    title: String(e.title || ''),
+    body: String(e.body || ''),
     elapsed: Number(e.elapsed) || 0,
     retries: Number(e.retries) || 0,
     mode: String(e.mode || ''),

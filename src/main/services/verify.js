@@ -2,7 +2,7 @@
 /**
  * ④ 货号颜色校验
  * PRD 要点：
- *   - 比对得物商品池；多颜色货号必须填对应颜色
+ *   - 比对得物商品资料；多颜色货号必须填对应颜色
  *   - 多一道保险：用图片实际提出的主色反查目录里填的色名
  *   - 词表外色名只标「需人工确认」，机器不替人决定
  */
@@ -62,7 +62,7 @@ async function check(items, ctx = {}) {
     // ★★ `level`（严重度，给界面染色）和 `block`（要不要拦住不发布）**是两回事**，别再用一个字段表达。
     //  2026-10-02 之前只有 `level`，发布侧拿 `pass === false` 一把抓 ⇒
     //  「查不到货号」（**没有数据**，不是有错）和「颜色不匹配 / 主色不符」（**确实有错**）
-    //  被当成同一件事一起拦住。后果：商品池只导了一部分时，凡是池里没有的货号全被判 warn
+    //  被当成同一件事一起拦住。后果：商品资料只导了一部分时，凡是池里没有的货号全被判 warn
     //  ⇒ 整批一条都发不出去，而界面只显示「校验未通过」。这与本文件与真机的口径
     //  「接口查不到的货号**仅告警不阻断**」直接矛盾。
     //  ⇒ 所以：**无数据只告警（block=false），有据可判的不一致才阻断（block=true）**。
@@ -73,7 +73,7 @@ async function check(items, ctx = {}) {
     let conclusion = '通过', note = '', level = 'ok', block = false;
     if (!poolColors) {
       conclusion = `货号 ${item.sku} 未查到颜色信息，请核对`;
-      note = apiMode ? '接口查不到该货号，仅告警不阻断' : '商品池里查不到该货号，请核对';
+      note = apiMode ? '接口查不到该货号，仅告警不阻断' : '本地资料查不到该货号，请核对';
       level = 'warn';                 // 只告警：查不到 ≠ 错，照常发布，但这行会一直提醒你核对
     } else if (!declared) {
       if (poolColors.length > 1) {
@@ -81,12 +81,12 @@ async function check(items, ctx = {}) {
         note = `共 ${poolColors.length} 色：${poolColors.join(' / ')}`;
         level = 'bad'; block = true;  // 多色不填色 ⇒ 发出去就是错的，必须拦
       } else {
-        conclusion = '单色货号，颜色可空'; note = `商品池仅 ${poolColors[0]}`; level = 'ok';
+        conclusion = '单色货号，颜色可空'; note = `参考颜色仅 ${poolColors[0]}`; level = 'ok';
       }
     } else if (!poolColors.includes(declared)) {
       // 颜色对不上**不拦发布**（2026-10-02 用户拍板）：仍标 warn 让人看得见，但照发。
       conclusion = '颜色不匹配';
-      note = `商品池：${poolColors.join(' / ')} → 发布时按货号搜出来的第一件商品发`;
+      note = `参考颜色：${poolColors.join(' / ')} → 发布时按货号搜出来的第一件商品发`;
       level = 'warn'; block = false;
     } else if (imageColor) {
       const declaredCoarse = colors.coarseOfName(declared);

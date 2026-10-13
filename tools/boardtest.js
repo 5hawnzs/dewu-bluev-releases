@@ -7,6 +7,8 @@ app.disableHardwareAcceleration();
 let fail = 0, pages = 0;
 const ok = (label, cond) => { console.log((cond ? 'PASS ' : 'FAIL ') + label); if (!cond) fail++; };
 const rows = Array.from({ length: 6151 }, (_, i) => ({ id:i+1,ts:Date.now()-i*1000,machine_id:'m1',machine_name:'电脑',user_id:'u'+i%2,username:'账号'+i%2,display_name:'同名',brand_id:'b'+i%2,brand_name:'品牌'+i%2,seq:i+1,result:i%2?'失败':'发布成功' }));
+rows[0].title = '白色Polo衫 <测试>';
+rows[0].body = '第一行文案\n第二行文案<script>window.injected=true</script>';
 const runRows = [
   { id:1,event_id:'r1',ts:Date.now()-1000,machine_id:'m1',machine_name:'电脑',event_kind:'end',task_type:'copy.generate',brand_id:'b0',brand_name:'品牌0',user_id:'u0',username:'账号0',display_name:'同名',ok:true,
     api_usage:{ version:1,requests:2,unreportedRequests:0,inputTokens:1200,outputTokens:400,cachedInputTokens:0,estimatedCostCny:0.005,costKnown:true,byMedia:{image:{requests:2,unreportedRequests:0,inputTokens:1200,outputTokens:400,cachedInputTokens:0,estimatedCostCny:0.005,costKnown:true}} } },
@@ -18,6 +20,10 @@ const runRows = [
 ];
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname.startsWith('/rest/v1/rpc/bluev_auth_')) {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ ok:true, token:'test-admin-token', user:{id:'test-admin',role:'admin',username:'admin',displayName:'测试管理员'} })); return;
+  }
   if (url.pathname.startsWith('/rest/v1/')) {
     let data = url.pathname.endsWith('/publish_log') ? rows.slice() : (url.pathname.endsWith('/run_log') ? runRows.slice() : []);
     for (const v of url.searchParams.getAll('id')) { const n=Number(v.slice(v.indexOf('.')+1)); data=data.filter(e=>v.startsWith('gt.')?e.id>n:e.id<=n); }
@@ -34,7 +40,9 @@ const server = http.createServer((req, res) => {
 app.whenReady().then(async () => {
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const win = new BrowserWindow({ show:false, width:1280,height:1000, webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false} });
+  win.webContents.on('console-message', (_event, level, message) => { if(level >= 2) console.error(message); });
   await win.loadURL('http://127.0.0.1:'+server.address().port);
+  await win.webContents.executeJavaScript("document.querySelector('#adminUsername').value='admin';document.querySelector('#adminPassword').value='test-password';document.querySelector('#adminLoginForm').requestSubmit();");
   for(let i=0;i<100;i++) { if(await win.webContents.executeJavaScript("!document.querySelector('#main').hidden")) break; await new Promise(r=>setTimeout(r,100)); }
   const result = await win.webContents.executeJavaScript(`(() => {
     const $=s=>document.querySelector(s);
@@ -48,6 +56,8 @@ app.whenReady().then(async () => {
       lastCount:$('#tRows tbody').rows.length, nextDisabled:$('#nextRows').disabled, label:$('#rowsPage').textContent };
   })()`);
   ok('网页实际加载全部分页，超过 5000 条',result.visible && pages>=7);
+const content = await win.webContents.executeJavaScript(`(() => { for(let i=0;i<35;i++)document.querySelector('#prevRows').click();const d=document.querySelector('#tRows tbody tr td:last-child details');if(!d)throw Error(JSON.stringify({html:document.querySelector('#tRows tbody tr').outerHTML}));d.open=true;return {text:d.textContent,open:d.open,injected:window.injected===true}; })()`);
+  ok('发布内容可展开完整标题文案，并按文本转义防止脚本执行',content.open && content.text.includes('白色Polo衫 <测试>') && content.text.includes('第二行文案<script>') && !content.injected);
   ok('网页全部账号汇总合计 6151',result.accounts===2 && result.accountSum===6151);
   ok('网页全部品牌汇总合计 6151',result.brands===2 && result.brandSum===6151);
   ok('明细实际点击下一页显示第 201 条',result.first==='1' && result.second==='201');
@@ -67,7 +77,7 @@ app.whenReady().then(async () => {
     const all={kpis:total(),rows:table(),notice:$('#apiUsageNotice').textContent};
     $('#fUser').value='u0'; $('#fUser').dispatchEvent(new Event('change'));
     const user={rows:table(),notice:$('#apiUsageNotice').textContent};
-    $('#fUser').value=''; $('#fBrand').value='b1'; $('#fBrand').dispatchEvent(new Event('change'));
+    $('#fUser').value=''; $('#fBrand').value='品牌1'; $('#fBrand').dispatchEvent(new Event('change'));
     const brand={rows:table(),notice:$('#apiUsageNotice').textContent};
     $('#fBrand').value=''; $('#fDays').value='1'; $('#fDays').dispatchEvent(new Event('change'));
     const day={rows:table()};
@@ -78,7 +88,7 @@ app.whenReady().then(async () => {
     && api.all.rows.some(r=>r[0]==='同名 / 账号1 / 品牌1' && r[1]==='1' && r[8]==='未计价'),JSON.stringify(api.all.rows));
   ok('旧任务与未返回用量分别标注，不伪装成 0 元',/1 个任务没有用量记录/.test(api.all.notice) && /1 个请求未返回 token 用量/.test(api.all.notice));
   ok('账号筛选同步过滤 AI token 用量',api.user.rows.length===1 && api.user.rows[0][1]==='3');
-  ok('品牌筛选按品牌 ID 过滤 AI token 用量',api.brand.rows.length===1 && api.brand.rows[0][0].endsWith('品牌1'));
+  ok('品牌筛选沿用线上按品牌名称合并的规则，过滤 AI token 用量',api.brand.rows.length===1 && api.brand.rows[0][0].endsWith('品牌1'));
   ok('时间筛选同步过滤 AI token 用量',api.day.rows.length===2);
   ok('部分请求未知费率时仍保留其余请求的已估算费用',api.all.rows.some(r=>r[0]==='同名 / 账号0 / 品牌0' && r[8]==='至少 ¥0.0080'));
   await win.webContents.executeJavaScript("document.querySelector('#prevRows').click()");
