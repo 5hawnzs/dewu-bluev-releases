@@ -72,6 +72,7 @@ const SUITES = [
   ['mediaquerytest', 'node', ['tools/mediaquerytest.js']],
   ['publish-sequencetest', 'node', ['tools/publish-sequencetest.js']],
   ['diagnosticstest', 'node', ['tools/diagnosticstest.js']],
+  ['sleepguardtest', 'node', ['tools/sleepguardtest.js']],
   ['displayrecoverytest', 'node', ['tools/displayrecoverytest.js']],
   ['mediapermissiontest', 'node', ['tools/mediapermissiontest.js']],
   ['pendingtest', 'node', ['tools/pendingtest.js']],

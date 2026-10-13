@@ -155,5 +155,6 @@ app.on('window-all-closed', () => {
  * （顺带把窗口尺寸、品牌选择等所有 250ms 内的改动一起救回来。）
  */
 app.on('before-quit', () => {
+  for (const error of require('./services/sleepguard').releaseAll()) logbus.warn(`退出时解除防睡眠保护失败：${error}`);
   try { store.flush(); } catch (e) { /* ignore */ }
 });

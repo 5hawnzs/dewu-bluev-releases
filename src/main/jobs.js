@@ -20,6 +20,7 @@ const dewuapk = require('./services/dewuapk');   // 内置的得物 App 安装�
 const pool = require('./services/pool');
 const runlog = require('./services/runlog');
 const diagnostics = require('./services/diagnostics');
+const sleepguard = require('./services/sleepguard');
 const wp = require('./util/winpath');
 
 /**
@@ -809,7 +810,10 @@ async function run(type, args = {}) {
       elapsedSec: stage.elapsedSec, diagnostic: { ...stage, commands: [], failures: [] } }, brandInfo, actorInfo)) });
   runlog.append(Object.assign({ kind: 'start', jobId: id, label, type, batch: job.batch }, brandInfo, actorInfo));
   if (picked.auto) logbus.info(`[${label}] 你的品牌权限只有一个，本次归属「${who}」`, Object.assign({ jobId: id, type, label }, brandInfo, actorInfo));
+  let releaseSleep;
   try {
+    try { releaseSleep = sleepguard.acquire(); }
+    catch (error) { emit(`未能启用任务防睡眠保护：${error.message}；本次请保持电脑不进入睡眠`, 'warn', { ui: true }); }
     const res = await diagnostics.run(diagnosticState, () => dispatch(type, args, ctx));
     diagnostics.flush(diagnosticState);
     const runOutcome = publishRunOutcome(type, res);
@@ -833,6 +837,8 @@ async function run(type, args = {}) {
     if (!running.size) taskbar(-1);
     return { ok: false, error: msg, cancelled: job.token.cancel, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } finally {
+    try { if (releaseSleep) releaseSleep(); }
+    catch (error) { logbus.warn(`任务已结束，但防睡眠请求解除失败：${error.message}`); }
     running.delete(id);
     const s = byType.get(type);
     if (s) { s.delete(id); if (!s.size) byType.delete(type); }

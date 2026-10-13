@@ -17,6 +17,7 @@ function prepare(source = path.join(ROOT, 'dist')) {
     if (read(file) !== fs.readFileSync(path.join(ROOT, file), 'utf8')) throw new Error('安装包源码不是最终版本：' + file);
   }
   if (bundled.version !== pkg.version) throw new Error('构建版本与源码不一致，请重新打包');
+  if (read('src/main/services/sleepguard.js') !== fs.readFileSync(path.join(ROOT, 'src/main/services/sleepguard.js'), 'utf8')) throw new Error('安装包防睡眠保护不是最终版本');
   if (bundled.build?.publish) throw new Error('安装包仍配置自动更新源');
   if (/updater\.(init|scheduleStartupCheck)/.test(read('src/main/index.js'))) throw new Error('安装包仍调度自动检查');
   if (!/githubupdates/.test(read('src/main/ipc.js'))) throw new Error('安装包缺少 GitHub 更新入口');

@@ -1,0 +1,24 @@
+'use strict';
+const assert = require('assert');
+const { create } = require('../src/main/services/sleepguard');
+const ids = new Set(), types = [];
+let seq = 0, stopFails = false;
+const api = { start(type) { types.push(type); ids.add(++seq); return seq; },
+  isStarted: id => ids.has(id), stop(id) { if (!stopFails) ids.delete(id); } };
+const guard = create(() => api);
+const releaseA = guard.acquire(), releaseB = guard.acquire();
+assert.deepEqual(types, ['prevent-app-suspension', 'prevent-app-suspension']);
+console.log('PASS 仅阻止系统自动睡眠，不请求显示器保持亮屏');
+releaseA();assert.equal(ids.size, 1);releaseA();assert.equal(ids.size, 1);
+console.log('PASS 单任务释放幂等，不解除其他并发任务的保护');
+releaseB();assert.equal(ids.size, 0);assert.equal(guard.count(), 0);
+console.log('PASS 最后任务释放后无遗留请求');
+guard.acquire();guard.acquire();assert.deepEqual(guard.releaseAll(), []);assert.equal(ids.size, 0);
+console.log('PASS 退出清理解除全部残留请求');
+assert.throws(() => create(() => undefined).acquire(), /接口不可用/);
+assert.throws(() => create(() => ({start() {throw new Error('系统拒绝');}})).acquire(), /系统拒绝/);
+assert.throws(() => create(() => ({start:()=>1,isStarted:()=>false})).acquire(), /未接受/);
+console.log('PASS 接口不可用、系统拒绝及未生效不能冒充保护成功');
+const release = guard.acquire();stopFails = true;assert.throws(release, /未解除/);assert.equal(guard.count(), 1);
+stopFails = false;assert.deepEqual(guard.releaseAll(), []);assert.equal(ids.size, 0);
+console.log('PASS 释放失败保留记录，退出时能再次清理');

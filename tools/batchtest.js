@@ -12,7 +12,10 @@ const path = require('path');
 const os = require('os');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bluev-batch-'));
+const sleepRequests = new Set();
+let sleepId = 0;
 const fake = {
+  powerSaveBlocker: { start(type) { if (type !== 'prevent-app-suspension') throw new Error('不应阻止显示器熄屏'); const id = ++sleepId; sleepRequests.add(id); return id; }, isStarted: id => sleepRequests.has(id), stop: id => sleepRequests.delete(id) },
   app: { getPath: () => TMP, getVersion: () => '1.0.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => Promise.resolve(), quit() {}, setAppUserModelId() {} },
   BrowserWindow: { getAllWindows: () => [], getFocusedWindow: () => null },
   ipcMain: { handle() {}, on() {} }, dialog: {}, shell: {},
@@ -127,6 +130,7 @@ const ok = (label, cond, extra) => {
   //   没显式给、工程里也没存过，必须**明确报错**；不许拿一个默认目录静默凑合，
   //   更不许把 undefined 一路传下去（那会冒出一句没人看得懂的 path 类型错）。
   const noDir = await jobs.run('flatten.plan', {});
+  ok('失败任务已解除防睡眠请求', sleepRequests.size === 0);
   ok('⓪ 没选素材目录时明确报错（不再有出厂默认目录兜底）',
     noDir.ok === false && /还没选素材目录/.test(noDir.error), noDir.error);
 
@@ -137,6 +141,7 @@ const ok = (label, cond, extra) => {
   const afterA = jobs.list();
   const pB = jobs.run('copy.generate', { sourceDir: dirB, batchId: '种草0625-7月第一批', label: '种草0625-7月第一批' });
   const afterB = jobs.list();
+  ok('并发任务各有独立防睡眠请求', sleepRequests.size === 2);
   ok('① 第一个批次已实例化', afterA.length === 1 && afterA[0].label === '7月第六批', JSON.stringify(afterA.map(j => j.label)));
   ok('① 两个批次同时运行（真机：任务列表里能同时「处理中」）',
     afterB.length === 2 && afterB.map(j => j.label).sort().join('|') === '7月第六批|种草0625-7月第一批',
@@ -144,6 +149,7 @@ const ok = (label, cond, extra) => {
   ok('① 每个实例有独立 id', afterB[0].id !== afterB[1].id, afterB.map(j => j.id).join(' / '));
 
   const [rA, rB] = await Promise.all([pA, pB]);
+  ok('全部任务完成后不再阻止自动睡眠', sleepRequests.size === 0);
   ok('① 两个批次都跑完', rA.ok && rB.ok, `${rA.ok ? 'A ok' : 'A 失败:' + rA.error} / ${rB.ok ? 'B ok' : 'B 失败:' + rB.error}`);
   ok('① 产物各写各的目录（不互相覆盖）',
     rA.result.file !== rB.result.file && fs.existsSync(rA.result.file) && fs.existsSync(rB.result.file),
@@ -180,12 +186,14 @@ const ok = (label, cond, extra) => {
   const id1 = live.find(j => j.label === '慢批次甲').id;
   ok('③ 逐个取消：按 job id 取消 1 个', jobs.cancel(id1) === 1, 'cancel(' + id1 + ') 命中 1 个');
   const r1 = await p1;
+  ok('取消一个批次后，仍为另一个批次保留防睡眠保护', sleepRequests.size === 1);
   ok('③ 被取消的批次：日志有停止痕迹、结果统一报「任务已取消」',
     logbus.history().some(e => e.meta && e.meta.batch === '慢批次甲' && /已取消/.test(e.msg)) && r1.ok === false && r1.error === '任务已取消',
     r1.error + ' / 日志里出现 慢批次甲 的取消记录');
   ok('③ 取消不影响另一个批次（仍在运行）', jobs.busy('copy.generate') === true && jobs.list().some(j => j.label === '慢批次乙'), JSON.stringify(jobs.list().map(j => j.label)));
   ok('④ 全部取消：按类型一次停掉剩下的', jobs.cancel('copy.generate') === 1, '还剩 1 个（慢批次乙）被停');
   const r2 = await p2;
+  ok('最后一个取消任务收尾后解除防睡眠保护', sleepRequests.size === 0);
   ok('④ 另一个批次也按「任务已取消」收尾，没有假装成功', r2.ok === false && r2.error === '任务已取消', r2.error);
   copywriter.generate = realGenerate;
 
