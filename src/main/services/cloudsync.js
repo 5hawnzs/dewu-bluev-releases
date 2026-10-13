@@ -221,7 +221,7 @@ function toRunRow(e, machine, index = 0) {
     ok: e.kind === 'end' ? !!e.ok : null,
     cancelled: e.kind === 'end' ? !!e.cancelled : false,
     elapsed_sec: e.kind === 'end' ? Number(e.elapsedSec) || 0 : null,
-    error_summary: e.type === 'feedback.submit' ? safeRunText(e.feedback, 1000) : (e.kind === 'end' && !e.ok
+    error_summary: e.type === 'feedback.submit' ? safeRunText(e.feedback, 1000) : (e.kind === 'end' && (!e.ok || e.type === 'publish.phase')
       ? [diagnostics.format(e.diagnostic), safeRunText(e.error, 750)].filter(Boolean).join(' ').slice(0, 1500) : ''),
     api_usage: e.kind === 'end' && e.type === 'copy.generate' ? safeApiUsage(e.apiUsage) : null
   };

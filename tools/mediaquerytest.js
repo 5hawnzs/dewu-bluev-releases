@@ -56,6 +56,15 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
       ({ ok: false, code: 139, stdout, stderr, killed }));
     ok(label + '仍阻止清理放行', !!q.error);
   }
+  for (const [label, broken] of [
+    ['首次无输出', { ok: true, stdout: '', stderr: '', code: 0 }],
+    ['首次记录截断', { ok: true, stdout: 'Row: 0 _id=1, _data=', stderr: '', code: 0 }]
+  ]) {
+    let attempts = 0;
+    const q = await driver(() => ({})).adb.queryMediaTable('FAKE', 'images', async () => ++attempts === 1
+      ? broken : { ok: true, stdout: 'No result found.\n', stderr: '', code: 0 });
+    ok(label + '、第二次恢复明确空表时自动继续，不误拦截', !q.error && attempts === 2);
+  }
   const recovery = driver(cmd => cmd.startsWith('content query ')
     ? { code: 1, stderr: 'cannot connect to daemon' } : {}, 50);
   const recovered = await recovery.adb.shell('127.0.0.1:16384', 'content query --uri content://media/external/video/media --projection _id:_data',
@@ -105,13 +114,15 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
     ['设备未找到', { code: 1, stderr: "adb: device 'FAKE' not found" }, false],
     ['ls 命令不存在', { code: 127, stderr: '/system/bin/sh: ls: not found' }, false],
     ['其他路径不存在', { code: 1, stderr: 'ls: /another/path: No such file or directory' }, false],
-    ['空输出超时', { killed: true, signal: 'SIGTERM' }, false]
+    ['空输出超时后独立核验成功', { killed: true, signal: 'SIGTERM' }, true]
   ]) {
     const d = driver(cmd => cmd.startsWith('ls -A ') ? failure : { stdout: cmd.startsWith('content query ') ? 'No result found.\n' : '' });
     const result = await d.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
-    ok(label + '：仅目标目录明确不存在时允许继续并建目录', result.ok === allowed
+    ok(label + '：目录不存在或备用双重复查通过才继续', result.ok === allowed
       && d.calls.some(c => c.startsWith('mkdir -p ')) === allowed);
-    if (failure.killed) ok('空输出超时八秒内停止并保留终止信号，不能被当成清理成功', /8000ms/.test(result.error) && /SIGTERM/.test(result.error));
+    if (failure.killed) ok('ls超时不能独自代表清空，必须完成独立递归和四表复查',
+      /双重复查/.test(result.note) && d.calls.some(c => /^find .* -type f$/.test(c))
+      && d.calls.filter(c => c.startsWith('content query ')).length === 8);
   }
   for (const code of [0, 139]) {
     const d = driver(() => ({ code, stdout: cloudRows }));
@@ -159,8 +170,9 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
     return {};
   });
   const cleaned = await unsafeName.adb.clearAlbum('FAKE');
-  ok('带 shell 控制符的文件名只按媒体 ID 清理，不拼成设备指令',cleaned.ok
-    && unsafeName.calls.some(c=>c.startsWith('content delete ')) && !unsafeName.calls.some(c=>c.startsWith('rm -f ')));
+  ok('带 shell 控制符的文件名完整单引号引用，不可成为额外设备指令',cleaned.ok
+    && unsafeName.calls.some(c=>c.startsWith('content delete '))
+    && unsafeName.calls.filter(c=>c.startsWith('rm -f ')).every(c=>c === "rm -f '/storage/emulated/0/DCIM/evil;touch.jpg'"));
   for (const mode of ['实际删净', '残留视频']) {
     let removed = false, count = 0;
     const d = driver(cmd => {
@@ -217,6 +229,17 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
     ok(mode + '：139提示不能代替全盘清空判据', mode === '扫描返回完整结果' ? result.ok : !result.ok);
   }
   let albumGone = false, albumDeletes = 0;
+  let discovered = false, unindexedGone = false;
+  const unindexed = driver(cmd => {
+    if (cmd.includes('--method scan_volume')) { discovered = true; return { stdout: 'Result: Bundle[{}]\n' }; }
+    if (cmd.startsWith('rm -f ')) { unindexedGone = true; return {}; }
+    if (cmd.startsWith('content query ')) return { stdout: discovered && !unindexedGone
+      ? 'Row: 0 _id=23, _data=/storage/emulated/0/Movies/not-indexed.png\n' : 'No result found.\n' };
+    return {};
+  });
+  const unindexedResult = await unindexed.adb.clearAlbum('FAKE');
+  ok('初始四表为空仍重扫，目录外未入库素材必须删除后再次核实',
+    unindexedResult.ok && discovered && unindexedGone && unindexedResult.removed === 1);
   const albumDedup = driver(cmd => {
     if (cmd.startsWith('content delete ')) { albumGone = true; albumDeletes++; return {}; }
     if (cmd.startsWith('content query ')) return { stdout: albumGone ? 'No result found.\n' : `Row: 0 _id=9, _data=${camera}\n` };
@@ -225,7 +248,48 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
   const albumResult = await albumDedup.adb.clearAlbum('FAKE');
   ok('全盘相册清理也合并四张表的重复媒体记录', albumResult.ok && albumDeletes === 1);
   let deletes = 0;
+  let physicalRemoved = false, indexedRemoved = false;
+  const specialPath = "/storage/emulated/0/Movies/中文 空格'封面.png";
+  const special = driver(cmd => {
+    if (cmd.startsWith('rm -f ')) { physicalRemoved = cmd === "rm -f '/storage/emulated/0/Movies/中文 空格'\\''封面.png'"; return {}; }
+    if (cmd.startsWith('content delete ')) { indexedRemoved = true; return {}; }
+    if (cmd.includes('--method scan_volume')) { if (!physicalRemoved) indexedRemoved = false; return { stdout: 'Result: Bundle[{}]\n' }; }
+    if (cmd.startsWith('content query ')) return { stdout: indexedRemoved ? 'No result found.\n' : `Row: 0 _id=31, _data=${specialPath}\n` };
+    return {};
+  });
+  const specialResult = await special.adb.clearAlbum('FAKE');
+  ok('中文、空格、单引号的物理素材必须安全删除，重扫不得复活', specialResult.ok && physicalRemoved && indexedRemoved);
+  const cancelDriver = driver(() => ({}));
+  const cancelled = await cancelDriver.adb.clearAlbum('FAKE', { cancelled: () => true });
+  ok('取消后的清理不再派发任何设备命令，不能冒充已清空', !cancelled.ok && /取消/.test(cancelled.error) && cancelDriver.calls.length === 0);
+  for (const mode of ['备用核验空目录', '备用核验仍有文件', '备用核验也超时', '备用核验权限不足']) {
+    const d = driver(cmd => {
+      if (cmd.startsWith('ls -A ')) return { killed: true, signal: 'SIGTERM' };
+      if (cmd.startsWith('find ')) {
+        if (mode === '备用核验仍有文件') return { stdout: camera + '\n' };
+        if (mode === '备用核验也超时') return { killed: true, signal: 'SIGTERM' };
+        if (mode === '备用核验权限不足') return { code: 1, stderr: 'Permission denied' };
+      }
+      return {};
+    });
+    const result = await d.adb.clearMediaDir('FAKE', '/sdcard/DCIM/Camera');
+    ok(mode + '：ls超时后依据独立递归与媒体库复查决定结果',
+      mode === '备用核验空目录' ? result.ok && /双重复查/.test(result.note)
+        && d.calls.filter(c => c.startsWith('content query ')).length === 8 : !result.ok && !!result.error);
+  }
   const rows = Array.from({ length: 12 }, (_, i) => `Row: ${i} _id=${i + 1}, _data=/storage/emulated/0/DCIM/Camera/${i}.jpg`).join('\n');
+  for (let round = 1; round <= 5; round++) {
+    const morning = driver(cmd => {
+      if (/^(ls |find )/.test(cmd)) return { killed: true, signal: 'SIGTERM' };
+      if (cmd.startsWith('content query ')) return { code: 139, stdout: 'No result found.\n', stderr: 'Segmentation fault\n' };
+      return {};
+    });
+    const result = await morning.adb.clearAlbum('FAKE');
+    ok('早晨故障注入第' + round + '轮：目录命令永久超时、查询退出139仍须重扫复查', result.ok
+      && !morning.calls.some(c => /^(ls |find )/.test(c))
+      && morning.calls.some(c => c.includes('--method scan_volume'))
+      && morning.calls.filter(c => c.startsWith('content query ')).length >= 8);
+  }
   const timing = driver(cmd => {
     if (cmd.startsWith('content query ')) return { stdout: deletes < 12 && /\/images\/media|\/external\/file /.test(cmd) ? rows : 'No result found.\n' };
     if (cmd.startsWith('content delete ')) deletes++;

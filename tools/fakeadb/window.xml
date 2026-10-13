@@ -8,4 +8,5 @@
   <node index="4" text="" resource-id="com.shizhuang.duapp:id/et_content" class="android.widget.EditText" package="com.shizhuang.duapp" clickable="true" bounds="[40,520][1040,700]" />
   <node index="5" text="关联好物" resource-id="com.shizhuang.duapp:id/tv_goods" class="android.widget.TextView" package="com.shizhuang.duapp" clickable="true" bounds="[40,1500][400,1580]" />
   <node index="6" text="" resource-id="com.shizhuang.duapp:id/et_topic" class="android.widget.EditText" package="com.shizhuang.duapp" clickable="true" bounds="[40,900][1040,980]" />
+  <node index="7" text="" resource-id="com.shizhuang.duapp:id/ivVideoCover" class="android.widget.ImageView" package="com.shizhuang.duapp" enabled="true" bounds="[0,0][256,256]" />
 </hierarchy>

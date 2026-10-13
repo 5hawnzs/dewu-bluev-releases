@@ -1278,9 +1278,16 @@ app.whenReady().then(async () => {
   ok('★ 界面自洽：连续发布档下，提示换成"不再叠加等待"，且不再出现「93% 的时间是在等间隔」',
     hintCont.includes('不再等待') && !hintCont.includes('93% 的时间是在等间隔'),
     JSON.stringify({ hasNew: hintCont.includes('不再叠加等待'), hasOld: hintCont.includes('93% 的时间是在等间隔') }));
-  ok('固定间隔也显示预计耗时，删除无依据的 93% 描述',
-    hintFix.includes('预计约') && !hintFix.includes('93% 的时间是在等间隔'),
-    JSON.stringify({ hasOld: hintFix.includes('93% 的时间是在等间隔'), hasNew: hintFix.includes('不再叠加等待') }));
+  // ★★ 2026-10-13 用户口径：「预估耗时都不准，比如图文 30s 那些，直接删了吧。」
+  //   ⇒ 这一页不许再出现任何整批/单条秒数承诺（「预计约 N 分钟」「≈30 秒」都要消失）。
+  //   反向对照：上面那条「连续发布」的说明必须还在（证明这页不是被整段删空）。
+  ok('★ 预估耗时已删除：两个档位都不再出现「预计约」或「≈30 秒」这类承诺',
+    !hintCont.includes('预计约') && !hintFix.includes('预计约')
+    && !hintCont.includes('≈30 秒') && !hintFix.includes('≈30 秒')
+    && !hintFix.includes('93% 的时间是在等间隔'),
+    JSON.stringify({ cont预计: hintCont.includes('预计约'), fix预计: hintFix.includes('预计约'),
+      cont30: hintCont.includes('≈30 秒'), fix30: hintFix.includes('≈30 秒'),
+      fix连续: hintFix.includes('连续发布') }));
 
   // ---- 文案提示词弹窗：点「提示词配置」要直接弹出来 ----
   // 改之前它只是把页签跳到设置页，露出两个从来没被代码读过的输入框 —— 看不懂也改不动

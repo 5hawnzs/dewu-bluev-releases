@@ -73,7 +73,9 @@ const walk = (dir, out) => {
   ok('asar 内 name 正确', pkg.name === 'dewu-bluev-publisher', pkg.name);
 
   const srcVer = (() => { try { return JSON.parse(read('package.json')).version; } catch (e) { return ''; } })();
-  const fname = fs.existsSync(path.join(ROOT, 'dist')) ? (fs.readdirSync(path.join(ROOT, 'dist')).find(n => n.endsWith('.exe')) || '') : '';
+  // 安装包与当前核验的 win-unpacked 同级，不能误读默认 dist 中的旧版本。
+  const outputDir = path.dirname(path.resolve(WINUNPACKED));
+  const fname = fs.existsSync(outputDir) ? (fs.readdirSync(outputDir).find(n => n.endsWith('.exe')) || '') : '';
   ok('版本三处一致（源码 / asar 内 / 产物文件名）',
     srcVer === EXPECT_VER && (!fname || fname.includes(EXPECT_VER)),
     `源码 ${EXPECT_VER} · asar ${srcVer} · 产物 ${fname || '(未找到 exe)'}`);

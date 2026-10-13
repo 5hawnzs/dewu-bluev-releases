@@ -79,6 +79,7 @@ function typeIds(type) { return byType.get(type) || new Set(); }
 /** 发布器会把单条素材失败作为批次结果返回（而非 throw）。任务云日志需要沿用逐条结果，避免整批有失败仍记成成功。 */
 function publishRunOutcome(type, result) {
   if (!['publish.run', 'publish.rerun'].includes(type)) return { ok: true, error: '' };
+  if (result && result.cancelled) return { ok: false, cancelled: true, error: '任务已取消' };
   const failCount = Math.max(0, Number(result && result.failCount) || 0);
   if (!failCount) return { ok: true, error: '' };
   const detail = String(result && result.failureSummary || '').trim();
@@ -657,7 +658,7 @@ async function dispatch(type, args, ctx) {
       }
       const failed = (r.rows || []).filter(row => row && row.result === '失败');
       const failureSummary = failed.slice(0, 5).map(row => `第${row.seq}条：${row.reason || '未知原因'}`).join('；');
-      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary };
+      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary, cancelled: r.cancelled };
     }
     case 'publish.exportLog': {
       // 「重导出日志」：按批次把 publish-log.jsonl 导成可读的 .log + .csv
@@ -680,7 +681,7 @@ async function dispatch(type, args, ctx) {
         ? `重跑成功【目标 1 条，成功 1 条，失败 0 条】`
         : `重跑结束（失败）【目标 1 条，成功 0 条，失败 1 条】`, r.okCount >= 1 ? 'ok' : 'warn');
       const failed = (r.rows || []).find(row => row && row.result === '失败');
-      return { okCount: r.okCount, total: 1, failCount: r.failCount, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
+      return { okCount: r.okCount, total: 1, failCount: r.failCount, cancelled: r.cancelled, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
     }
     case 'pool.import': {
       const r = pool.importFile(args.file);
@@ -796,20 +797,26 @@ async function run(type, args = {}) {
   };
 
   send('job:started', { id, type, label, batch: job.batch, startedAt: job.startedAt, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
-  const diagnosticState = diagnostics.create({ version: require('electron').app.getVersion(), build: require('./githubupdates').BUILD });
+  const diagnosticState = diagnostics.create({ version: require('electron').app.getVersion(), build: require('./githubupdates').BUILD,
+    onPhase: stage => runlog.append(Object.assign({ kind: 'end', ok: true, jobId: id,
+      type: 'publish.phase', label: `第${stage.row}条 · ${stage.phase}`, batch: job.batch,
+      elapsedSec: stage.elapsedSec, diagnostic: { ...stage, commands: [], failures: [] } }, brandInfo, actorInfo)) });
   runlog.append(Object.assign({ kind: 'start', jobId: id, label, type, batch: job.batch }, brandInfo, actorInfo));
   if (picked.auto) logbus.info(`[${label}] 你的品牌权限只有一个，本次归属「${who}」`, Object.assign({ jobId: id, type, label }, brandInfo, actorInfo));
   try {
     const res = await diagnostics.run(diagnosticState, () => dispatch(type, args, ctx));
+    diagnostics.flush(diagnosticState);
     const runOutcome = publishRunOutcome(type, res);
     const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
-    send('job:done', { id, type, label, batch: job.batch, ok: true, busy: false, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
-    runlog.append(Object.assign({ kind: 'end', ok: runOutcome.ok, error: runOutcome.error, jobId: id, label, type, batch: job.batch, elapsedSec,
+    send('job:done', { id, type, label, batch: job.batch, ok: runOutcome.ok, cancelled: !!runOutcome.cancelled,
+      error: runOutcome.error, busy: false, elapsedSec, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
+    runlog.append(Object.assign({ kind: 'end', ok: runOutcome.ok, cancelled: !!runOutcome.cancelled, error: runOutcome.error, jobId: id, label, type, batch: job.batch, elapsedSec,
       diagnostic: diagnostics.snapshot(diagnosticState), apiUsage: type === 'copy.generate' ? (res && res.apiUsage) || null : null }, brandInfo, actorInfo));
     if (!running.size) taskbar(-1);
     return { ok: true, result: res, jobId: id, batch: job.batch, brandId: brandInfo.brandId, brandName: brandInfo.brandName };
   } catch (e) {
     // 被取消的任务统一报「任务已取消」：否则各步骤自己的报错（如「没找到叶子目录」）会误导人
+    diagnostics.flush(diagnosticState);
     const msg = job.token.cancel ? '任务已取消' : e.message;
     const elapsedSec = +((Date.now() - job.startedAt) / 1000).toFixed(1);
     if (job.token.cancel) logbus.warn(`[${label}] 任务已取消`, { jobId: id, batch: job.batch, label, type });

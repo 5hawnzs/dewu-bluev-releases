@@ -81,10 +81,17 @@ const state = {
   const left = publisher.removeDevice(d1.id);
   ok('④ 删除设备', left.length === 1 && left[0].serial === 'emulator-5556', JSON.stringify(left));
 
-  // ⑤ 固定间隔与预估（真实节奏：60s 间隔 + 单条 ≈30s）
+  // ⑤ 预估耗时已按用户口径删除（2026-10-13）——留下的只有**间隔取值**这一件事。
+  //   为什么删：真机实测单条 65–99s 都出现过，固定系数（图文 30s / 视频 60s）必然骗人；
+  //   界面上的实耗才是唯一可信数字（结束时写入，落台账与云端）。
   store.set({ publish: { intervalSec: 60 } });
-  const est = publisher.estimate(100);
-  ok('⑤ 固定 60s 间隔预估（100 条 = 150 分钟）', est.minutes === 150, est.minutes + ' 分钟');
+  ok('⑤ 预估耗时已删除（不再给「图文 30s」这类数字）',
+    publisher.estimate === undefined, 'publisher.estimate=' + String(publisher.estimate));
+  ok('⑤ 对照：间隔本身没被误删（60 秒仍在，0 = 连续发布）',
+    publisher.gapSecFor('image', { intervalSec: 60 }) === 60
+    && publisher.gapSecFor('image', { intervalSec: 0 }) === 0,
+    JSON.stringify([publisher.gapSecFor('image', { intervalSec: 60 }),
+      publisher.gapSecFor('image', { intervalSec: 0 })]));
 
   // ---- ⑥ 发布前的「这个 Excel 现在能不能写」探测（wp.probeWritable） ----
   // ★ 为什么单独测它：assertExcelClosed 的拦/不拦 100% 由这一个返回值决定。

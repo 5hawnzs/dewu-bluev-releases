@@ -221,7 +221,7 @@ async function queryMediaTable(serial, table, run = shell, projection = '_id:_da
 }
 
 /** /sdcard/... 与 /storage/emulated/0/... 是同一处，但 MediaStore 的 _data 记的是后者 */
-async function albumMatches(serial, remoteFiles) {
+async function albumMatches(serial, remoteFiles, scopeDir = '') {
   const wanted = new Set(remoteFiles.map(toMediaPath));
   const present = new Set();
   const reads = await Promise.all(['images', 'video'].map(t => queryMediaTable(serial, t, shell, '_data')));
@@ -229,7 +229,7 @@ async function albumMatches(serial, remoteFiles) {
     if (q.error) return { ok: false, error: '选素材前相册复查失败：' + q.error };
     for (const line of String(q.result.stdout || '').split(/\r?\n/)) {
       const m = /^Row:\s*\d+\s+_data=(.*?)\s*$/.exec(line);
-      if (m) present.add(toMediaPath(m[1]));
+      if (m && (!scopeDir || toMediaPath(m[1]).startsWith(toMediaPath(scopeDir).replace(/\/+$/, '') + '/'))) present.add(toMediaPath(m[1]));
     }
   }
   const extra = [...present].filter(p => !wanted.has(p));
@@ -515,7 +515,18 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
       else failures.push(String(result.stderr || result.stdout || '').trim() || '媒体删除命令失败');
     };
     for (let i = 0; i < unique.length; i += 2) await group(unique.slice(i, i + 2).map(remove));
-    const before = await run(serial, 'ls -A ' + dir, { timeout: 8000 });
+    let before, listingRecovered = false;
+    try {
+      before = await run(serial, 'ls -A ' + dir, { timeout: 8000 });
+    } catch (error) {
+      // ls 只负责目录说明；读取超时不等于文件未删除。等待它退出后，
+      // 改用下方独立的递归文件核验和媒体库复查，二者都通过才允许推图。
+      if (error.code !== 'ALBUM_IO_INTERRUPTED' || Date.now() >= deadline) throw error;
+      const mk = await run(serial, 'mkdir -p ' + dir);
+      if (!mk.ok) throw new Error('备用核验无法访问相册目录：' + (mk.stderr || mk.stdout || '未知原因'));
+      before = { ok: true, stdout: '' };
+      listingRecovered = true;
+    }
     const missing = !before.ok && (String(before.stdout || '') + '\n' + String(before.stderr || '')).split(/\r?\n/)
       .some(line => /^ls:/.test(line.trim()) && line.includes(dir.replace(/\/+$/, '')) && /No such file or directory/i.test(line));
     if (!before.ok && !missing) throw new Error(String(before.stderr || before.stdout || '').trim() || '目录读取失败，不能当成空目录');
@@ -542,7 +553,8 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
     if (remaining) throw new Error('目录里还有 ' + remaining.split(/\r?\n/).length + ' 个文件未清除');
     const mediaLeft = await readMedia();
     if (mediaLeft.length) throw new Error((failures[0] || '删除后媒体库复查仍有残留') + '；还有 ' + mediaLeft.length + ' 条相册记录');
-    const note = [String(before.stdout || '').trim() ? '0 个文件；空目录残骸不删除、不换名' : '',
+    const note = [listingRecovered ? '目录列表读取超时，已通过递归文件与媒体库双重复查' : '',
+      String(before.stdout || '').trim() ? '0 个文件；空目录残骸不删除、不换名' : '',
       failures.length ? '删除命令曾异常，复查目录与媒体库已清空' : ''].filter(Boolean).join('；');
     return { ok: true, removed, files: hit.map(h => h.file), error: '', note, forceStopped };
   } catch (error) {
@@ -611,9 +623,13 @@ async function clearAlbum(serial, opts = {}) {
   const removeAll = async hit => {
     const removeOne = async h => {
       const file = toMediaPath(h.file);
-      if (/^\/storage\/emulated\/0\/[A-Za-z0-9_./+\-]+$/.test(file) && !file.includes('/../') && !file.includes('/./')) {
-        await run(serial, 'rm -f ' + file, { timeout: 8000 });
+      // 中文、空格和单引号都是合法素材名；必须先安全引用删除物理文件，防止重扫复活。
+      if (!file.startsWith('/storage/emulated/0/') || /[\r\n\0]/.test(file)
+        || file.split('/').some(part => part === '..' || part === '.')) {
+        throw new Error('媒体文件路径不在允许的共享存储范围内，未执行删除');
       }
+      const quoted = "'" + file.replace(/'/g, "'\\''") + "'";
+      await run(serial, 'rm -f ' + quoted, { timeout: 8000 });
       const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
       if (rd.ok) removed++;
     };
@@ -628,6 +644,9 @@ async function clearAlbum(serial, opts = {}) {
   };
   try {
     let hit = await scanAll();
+    // 空索引不代表共享存储没有素材。先重扫一次，捕获目录外尚未入库的文件，
+    // 避免后续推图触发扫描时旧素材突然混入相册。
+    if (!hit.length) hit = await reScan();
     all.push(...hit);
     if (hit.length) {
       await removeAll(hit);

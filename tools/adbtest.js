@@ -123,7 +123,8 @@ const state = {
   // 2) 界面结构解析
   const xml = fs.readFileSync(FAKE_WINDOW, 'utf8');
   const nodes = uimap.parseNodes(xml);
-  ok('dump 解析出节点', nodes.length === 8, nodes.length + ' 个');
+  ok('dump 解析出节点，含视频封面控件', nodes.length === 9
+    && nodes.some(n => n.id === 'com.shizhuang.duapp:id/ivVideoCover'), nodes.length + ' 个');
   const pub = uimap.findNode(nodes, { text: '发布' });
   ok('按文本定位到节点', !!pub && pub.center.x === 162 && pub.center.y === 160, pub && JSON.stringify(pub.center));
   const sug = uimap.suggest(nodes);
@@ -173,11 +174,24 @@ const state = {
   clearCalls();
   const logs = [];
   const ctx = { log: (m, l) => logs.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} };
+  {
+    const savedKeyboard = adbForSetup.ensureKeyboard;
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    adbForSetup.ensureKeyboard = async () => { await held; return { ok: false, error: '测试释放', step: 'test' }; };
+    const first = publisher.run(state, ctx).catch(e => e.message);
+    let concurrentError = '';
+    try { await publisher.run(state, ctx); } catch (e) { concurrentError = e.message; }
+    ok('同一设备的发布与重跑不能并发清理，当前任务完成前不接管设备', /已有发布任务/.test(concurrentError));
+    release();
+    await first;
+    adbForSetup.ensureKeyboard = savedKeyboard;
+  }
   const r = await publisher.run(state, ctx);
   const log = calls();
   // 清理失败不拖停后续素材，但下一条必须重新清理通过后才能推图。
   {
-    const originalClear = adbForSetup.clearMediaDir;
+    const originalClear = adbForSetup.clearAlbum;
     try {
       for (const allFail of [false, true]) {
         let clearCount = 0;
@@ -185,7 +199,7 @@ const state = {
         interruptedState.publish.rows = Array.from({ length: 4 }, (_, i) => ({
           ...interruptedState.publish.rows[0], seq: i + 1, result: '', status: '排队', reason: '', startAt: ''
         }));
-        adbForSetup.clearMediaDir = async (...args) => {
+        adbForSetup.clearAlbum = async (...args) => {
           clearCount++;
           if (allFail || clearCount === 3) return { ok: false, code: 'ALBUM_IO_INTERRUPTED', error: '目录读取超时' };
           return originalClear(...args);
@@ -202,7 +216,7 @@ const state = {
           ok('单条清理超时不再停止整批', !continued.stoppedReason && continued.failCount === 1);
         }
       }
-    } finally { adbForSetup.clearMediaDir = originalClear; }
+    } finally { adbForSetup.clearAlbum = originalClear; }
   }
   ok('真实通道跑完 1 条', r.mode === 'adb' && r.total === 1, `成功 ${r.okCount}/${r.total}`);
   ok('推图 2 张', (log.match(/push /g) || []).length === 2, (log.match(/push .*/g) || []).join(' | '));
@@ -1957,7 +1971,7 @@ const state = {
     const c24c = calls();
     ok('多个素材扫描失败仅统一整卷兜底一次，仍拦截未入库素材',
       (c24c.match(/--method scan_file/g) || []).length === 2
-      && (c24c.match(/--method scan_volume/g) || []).length === 1
+      && (c24c.slice(c24c.indexOf('push ')).match(/--method scan_volume/g) || []).length === 1
       && r24c.rows[0].result === '失败');
     fs.unlinkSync(SCANFAIL);
     ok('㉔ ★ 扫不进库 ⇒ 如实失败（不许硬点界面，硬点只会点空）',
@@ -1966,16 +1980,17 @@ const state = {
       (c24c.match(/input tap .*/g) || []).join(' | ') || '（一次都没点）');
     videoItem.files = bakFiles24;
 
-    // --- B5) 间隔：视频跟随用户设置，不再偷偷放宽到 90 / ×1.5 ---
+    // --- B5) 预估耗时已按用户口径整套删除（2026-10-13）：见下面 ㉔ 的两条断言 ---
     store.set({ publish: { intervalSec: 60, videoIntervalSec: 0 } });
-    const e24a = publisher.estimate(0, { image: 0, video: 30 });
-    ok('㉔ 视频间隔跟随用户设置：30 条 ×(60 间隔 + 60 单条) = 60 分钟',
-      e24a.minutes === 60, '预估=' + e24a.minutes + ' 分钟（' + e24a.seconds + ' 秒）');
-    store.set({ publish: { videoIntervalSec: 90 } });
-    const e24b = publisher.estimate(0, { image: 0, video: 30 });
-    ok('㉔ 对照：显式给视频间隔 90 ⇒ 仍按 90 算 = 75 分钟（用户当初看到的就是这个数）',
-      e24b.minutes === 75, '预估=' + e24b.minutes + ' 分钟（' + e24b.seconds + ' 秒）');
-    store.set({ publish: { videoIntervalSec: 0 } });
+    ok('㉔ 预估耗时已从发布器移除（删掉不靠谱的「图文 30s / 视频 60s」口径）',
+      publisher.estimate === undefined, 'publisher.estimate=' + String(publisher.estimate));
+    ok('㉔ 对照：间隔取值仍然保留（0 = 连续发布，60 = 固定 60 秒）',
+      publisher.gapSecFor('image', { intervalSec: 0 }) === 0
+      && publisher.gapSecFor('image', { intervalSec: 60 }) === 60
+      && publisher.gapSecFor('video', { intervalSec: 60, videoIntervalSec: 90 }) === 90,
+      JSON.stringify([publisher.gapSecFor('image', { intervalSec: 0 }),
+        publisher.gapSecFor('image', { intervalSec: 60 }),
+        publisher.gapSecFor('video', { intervalSec: 60, videoIntervalSec: 90 })]));
   }
 
   // ==========================================================================
@@ -2622,8 +2637,8 @@ const state = {
       ok('根目录递归清理后不再重复清理 bluev 子目录',
         rE.okCount === 1 && !/find .*Camera\/bluev\/? -mindepth/.test(logE),
         (logE.match(/.*find .*mindepth.*/g) || []).join(' | '));
-      ok('清理过程分别记录目录和全盘媒体库实际耗时',
-        lgE.some(l => /目录清理 [\d.]+s/.test(l)) && lgE.some(l => /全盘媒体库清理 [\d.]+s/.test(l)));
+      ok('清理记录媒体库实际耗时，发布流程不再读取目录列表或递归目录',
+        lgE.some(l => /相册已清空.*耗时 [\d.]+s/.test(l)) && !/ls -A |find .* -type f/.test(logE));
       // ★ 断言要看**语义**：真的调了 `am start -n <得物>/<启动页>`。
       //   第一版把正则写成 `com\.shizhuang\.duapp\/\.modules`（带点）⇒ 命令里是斜杠后直接跟
       //   包内路径（`duapp/modules.home...`，不带点）⇒ 匹配 0 次，是**假红**（测试写法错，不是产品错）。
@@ -2764,8 +2779,8 @@ const state = {
       // E5) 源码级：守卫必须在**清相册之前** —— 顺序反了会在「App 根本没起来」时白推一遍素材
       const pubSrcE = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
       const iGuard = pubSrcE.indexOf('ensureApp(');
-      const iClear = pubSrcE.indexOf('clearMediaDir(');
-      ok('回主线 ⑤ 源码级：守卫（ensureApp）必须在清相册（clearMediaDir）**之前**',
+      const iClear = pubSrcE.indexOf('clearAlbum(');
+      ok('回主线 ⑤ 源码级：守卫（ensureApp）必须在清相册（clearAlbum）之前',
         iGuard >= 0 && iClear >= 0 && iGuard < iClear, `ensureApp@${iGuard} / clearMediaDir@${iClear}`);
       // ★★ ⑤b **行为级**（写反向验证时补的）：只看源码里两行的先后**证明不了**执行顺序 ——
       //   B3 实测：把守卫那一整段挪到清相册之后，源码里 `ensureApp(` 依然排在 `clearMediaDir(`
@@ -3356,7 +3371,7 @@ const state = {
         fs.utimesSync(p, t, t);
       });
     };
-    const rem3 = n => '/sdcard/DCIM/Camera/bluev/' + n;
+    const rem3 = n => '/sdcard/DCIM/Camera/' + n;
     const devMt = n => fakeExec.__mtimes.get(fakeExec.__mtKey(rem3(n)));
     const devDb = n => fakeExec.__dbTimes.get(fakeExec.__mtKey(rem3(n)));
     const files3 = async () => (await wp3.readdirSafe(dir3)).filter(e => e.isFile())
@@ -3404,7 +3419,7 @@ const state = {
     ok('㉜ ★ 顺序：touch 必须排在**所有 push 之后**（反了的话"最新"会少算一个文件 ⇒ 主图可能排错）',
       iTouchA > 0 && iPushA > 0 && iTouchA > iPushA, '最后一次 push@' + iPushA + ' / touch@' + iTouchA);
     const scanRe = new RegExp('content call --uri content://media/external/file --method scan_file --arg '
-      + "'/storage/emulated/0/DCIM/Camera/bluev/01_front\\.jpg'");
+      + "'/storage/emulated/0/DCIM/Camera/01_front\\.jpg'");
     ok('㉜ ★ 顺序：touch 完必须**重扫**那张（不重扫库里的值不变 ⇒ 相册顺序不会动，这条真机实测过）',
       scanRe.test(call31.slice(iTouchA)),
       (call31.slice(iTouchA).match(/content call.*/g) || []).join(' | ').slice(0, 200));

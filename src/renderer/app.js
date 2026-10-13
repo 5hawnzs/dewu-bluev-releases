@@ -402,6 +402,14 @@ function batchesHtml(type, title) {
  *   所以「重跑」那个按钮（publish.rerun）依旧保留：那是**人点的新任务**，不会自己发生。
  */
 
+/*
+ * 单条「耗时」列。
+ * 运行中：按 startedAtMs 现算（每秒刷新一次，见 refreshPublishElapsed）——它是**同一份事实**
+ *   的连续显示，不是估算；跑完就换成主进程写入的实耗（row.elapsed，落台账/云端的那一个）。
+ * ★ 2026-10-13 用户指出「计时器有时候跳秒、速度变快」：跳的原因是**刷新频率**（原来只在进度
+ *   事件到达时更新，一条 60 多秒的内容要等下一次事件才跳一大格），不是数字本身算错。
+ *   ⇒ 刷新改成每秒一次，数字连续走；口径不变（都是「这一条从开始到现在」）。
+ */
 function publishElapsedText(row) {
   const start = Number(row.startedAtMs);
   const elapsed = !row.result && Number.isFinite(start) && start > 0
@@ -440,6 +448,24 @@ function refreshPublishElapsed() {
     const el = publishRowElement(row.id);
     if (el) el.querySelector('[data-publish-elapsed]').textContent = publishElapsedText(row);
   }
+}
+
+/**
+ * 「运行中的批次 / 任务」那张表的耗时，同样每秒刷新。
+ * ★ 2026-10-13 用户指出「跳秒、速度变快」：它的 elapsedSec 原来只在 job:progress 事件里重算，
+ *   而一条内容中途可能几十秒不发一次进度 ⇒ 数字从 5s 直接跳到 66s，看起来像突然变快。
+ *   这里按 startedAt 每秒算一次（同一事实，只是显示连续）；没有 startedAt 的（历史/异常）不动。
+ */
+function refreshRunningElapsed() {
+  if (document.hidden) return;
+  let touched = false;
+  for (const j of state.jobs || []) {
+    if (!j || !j.startedAt) continue;
+    const next = (Date.now() - j.startedAt) / 1000;
+    if (!Number.isFinite(next)) continue;
+    if (Math.abs(next - (Number(j.elapsedSec) || 0)) >= 0.5) { j.elapsedSec = next; touched = true; }
+  }
+  if (touched && (state.tab === 3 || state.tab === 6)) refreshBatches();
 }
 
 /** 「AI 内容报告」：导入后直接发布，结果回写它的 B/C 列。 */
@@ -738,15 +764,10 @@ TABS[6] = {
     const ivRaw = Number(cfg.intervalSec);
     const ivNow = (cfg.intervalSec === '' || cfg.intervalSec === null || cfg.intervalSec === undefined
       || !Number.isFinite(ivRaw)) ? 0 : ivRaw;
-    // ★ 与主进程 publisher.estimate 同一口径（gapSecFor）：图文「间隔+30s」、视频「间隔+60s」
-    //   （视频推得久，还要等媒体库索引）。
-    //   视频间隔只在 >0 时单独生效；0 的含义是「跟随主间隔」，与主间隔的 0 = 连续不是一回事。
-    const vRaw = Number(cfg.videoIntervalSec);
-    const vSec = Number.isFinite(vRaw) && vRaw > 0 ? vRaw : ivNow;
-    const est = Math.round(rows.reduce((a, r) => {
-      const isV = r.kind === 'video';
-      return a + (isV ? vSec : ivNow) + (isV ? 60 : 30);
-    }, 0) / 60);
+    // ★★ 2026-10-13 用户口径：「你的预估耗时都不准，比如图文 30s 那些，直接删了吧。」
+    //   为什么删而不是调系数：单条耗时由设备、网络、素材体积、好物识别等待共同决定 ——
+    //   真机实测同一批图文 65–99s、视频 66–85s 全属正常 ⇒ 任何固定系数都会骗人。
+    //   现在这一页只显示**已经发生的事实**（运行中计时 / 结束后写入的实耗），不再给数字承诺。
     const okCount = rows.filter(r => r.result === '发布成功').length;
     return `
       <div class="box">
@@ -774,9 +795,8 @@ TABS[6] = {
                失败只影响那一条（写「发布失败，原因xxx」），要再发一次就点行尾的「重跑」——那是人点的新任务。 -->
         </div>
         ${ivNow === 0 ? '<p class="hint" style="margin-top:6px">★ 已选 <b>连续发布</b>：上一条发完直接发下一条，中间<b>不再等待</b>。'
-          + '注意单条本身仍要花 ≈30 秒（视频 ≈60 秒）—— 那是设备上的真实耗时（推素材 / 上传 / 填内容），不是间隔。</p>' : ''}
+          + '单条本身仍要花时间（推素材 / 上传 / 填内容），具体多少看下面每一行的实耗 —— 不给固定秒数，免得与实际差太多。</p>' : ''}
         ${running('publish.run') || running('publish.rerun') ? progHtml(progFor(running('publish.run') ? 'publish.run' : 'publish.rerun')) : ''}
-        <p class="hint">预计约 <b>${est} 分钟</b>，包含发布操作及所选间隔，实际耗时受网络和设备影响。</p>
         <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
           报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
           并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
@@ -3610,6 +3630,7 @@ async function boot() {
 
 setInterval(() => {
   refreshPublishElapsed();
+  refreshRunningElapsed();
   if (state.tab === 6 && !document.hidden && Date.now() - deviceScanAt >= 10000) refreshDevices();
 }, 1000);
 

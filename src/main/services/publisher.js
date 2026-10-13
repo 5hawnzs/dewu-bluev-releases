@@ -225,31 +225,6 @@ function rowKind(row, item = {}) {
   return '';
 }
 
-/**
- * 预估耗时。
- * 单条技术下限：图文 ≈30 秒（真机实测 65–80s，含固定间隔）；视频 push 抖动大、上传久，
- * 还要多等一段「媒体库索引到相册」，所以按 60 秒算 —— 以前拿图文那一套算视频，预估会明显偏短。
- * kinds 传 { image, video } 可分别计；不传就全按图文算（保持老调用方式）。
- */
-function estimate(count, kinds = null) {
-  const c = cfg();
-  const per = kind => {
-    const isV = kind === 'video';
-    // ★ 这里原来有一支 `c.mock ? 5 秒` 的「演示节奏」——2026-10-02 按用户要求删掉：
-    //   它是个纯演示开关，却会让**真实发布**也用 5 秒间隔。现在只按真实配置算。
-    // ★ 2026-10-03：视频间隔【跟随用户在界面上设的那个】，不再自作主张放宽到 90 秒 ——
-    //   用户设 60 秒却跑出 90 秒，界面上还查不到原因（设置页根本没有「视频间隔」这一项）。
-    //   真需要单独放宽时，显式配置 videoIntervalSec 即可（>0 才生效）。
-    // ★ 与真实发布同一个取法（gapSecFor）：0 = 连续发布 ⇒ 预估里也不该加那 60 秒。
-    const avg = gapSecFor(isV ? 'video' : 'image', c);
-    return avg + (isV ? 60 : 30);
-  };
-  const nImg = kinds ? (Number(kinds.image) || 0) : count;
-  const nVid = kinds ? (Number(kinds.video) || 0) : 0;
-  const seconds = nImg * per('image') + nVid * per('video');
-  return { minutes: Math.round(seconds / 60), seconds: Math.round(seconds), image: nImg, video: nVid };
-}
-
 /* ---------------- 真实通道 ---------------- */
 
 async function connect(device) {
@@ -407,6 +382,8 @@ async function runStep(serial, step, data, ctx) {
     if (g.animOff && animOffSteps && stepKey && !animOffSteps[stepKey]) animOffSteps[stepKey] = true;
   }
   switch (step.action) {
+    case 'videoCover':
+      return require('./videocover').select(serial, ctx);
     case 'tapText': case 'tapId': case 'tapDesc': case 'tapCardText': {
       const cond = (step.action === 'tapText' || step.action === 'tapCardText') ? { text: step.value }
         : step.action === 'tapId' ? { id: step.value } : { desc: step.value };
@@ -768,6 +745,7 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
 }
 
 async function runReal(row, item, copyRow, serial, map, ctx) {
+  require('./diagnostics').phase('准备发布', row.seq);
   ctx.publishEntryReady = false;
   ctx.submissionPending = '';
   ctx.uiMapScreen = map.screen;
@@ -790,15 +768,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   // 1) 推素材 + 把素材**写进媒体库**（不写库，得物相册里根本看不到这条）
   const media = (item.files || []).filter(f => f.type === (isVideo ? 'video' : 'image'));
   if (!media.length) throw new Error(`这条按「${isVideo ? '视频' : '图文'}」发，但没有可推的${mediaWord}片文件`);
-  // ★★ 2026-10-03（第三十四轮）：素材推到**本工具专属目录**，并在推之前把它清空。
-  //   为什么：得物相册读 MediaStore，而相册页顶部的「所有照片」是个**聚合**视图 —— 设备上
-  //   所有目录的素材都混在里面，「点前 N 格」就只是「碰巧对」（上一条的素材、系统截图、
-  //   僵尸记录都会把次序顶歪）。推到专属目录之后，得物相册下拉里会多出一个独立相册
-  //   （真机实测：新建 DCIM/Camera/bluevtst 推 2 张 ⇒ 下拉里出现「bluevtst 2」，选中后
-  //   页面里只有这 2 格），定位表再切到这个相册 ⇒ 这一屏上**只有本条要发的素材**，
-  //   于是「全选」就是名副其实的全选。
-  //   ★ 只换目录不清空是不够的：目录里会累着上一条的素材，相册里照样混在一起。
-  const remoteDir = '/sdcard/DCIM/Camera/bluev';
+  // 专用发布模拟器：复用相机目录，不创建或切换工作相册。
+  const remoteDir = '/sdcard/DCIM/Camera';
   const remotes = [];
 
   // ★★ 2026-10-04（第四十轮）**0b) 「回主线」守卫 —— 必须排在清相册之前**。
@@ -869,76 +840,40 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     }
   }
 
-  // ★ 清空必须在 push **之前**：push 完再清会把这一条刚推的也一起清掉。
-  row.status = '清理素材文件';
+  // 只以媒体库与扫描后回读确认清空；目录列表不是发布正确性的判据。
+  // 全盘初查为空时仍须扫描，覆盖尚未入库的上一条素材。
+  row.status = '清理相册';
   if (ctx.onRow) ctx.onRow(row);
-  // ★★ 2026-10-04（第四十轮）用户口径：「删除完所有其他不相关的素材后，不要 bluev 了」
-  //   ⇒ 清相册的**范围**从「专属目录」扩到**整个 DCIM/Camera**（得物相册的聚合视图读的就是它）。
-  //   两步走：先清相册根（把别处来的、上一条的、系统截图全扫掉），再清专属目录本身。
-  // ★★★ 2026-10-04（第十四次实测）**传 forceStopPkg**：
-  //   得物停在发布页/相册页时**自己拿着这批 mp4 的硬解码句柄**，此时 rm/find/mv 全报
-  //   `Text file busy`，而 `am force-stop com.shizhuang.duapp` 之后同一句立刻成功。
-  //   ⇒ 允许 clearMediaDir 在"清不掉"时把得物强停掉再重试（能过就不去造 trash 残骸）。
   const clearStarted = Date.now();
-  const clearOptions = { forceStopPkg: uimap.DEWU.pkg, deadline: clearStarted + 90000, cancelled };
-  require('./diagnostics').phase('清理素材文件', row.seq);
-  const clRoot = await adb.clearMediaDir(serial, '/sdcard/DCIM/Camera', clearOptions);
-  if (!clRoot.ok) {
-    const error = new Error('没能清干净设备相册目录（/sdcard/DCIM/Camera）：' + (clRoot.error || '未知原因')
-      + ' —— 不清干净的话相册里会混着其他素材，选素材那一步会点到别的图。');
-    error.code = clRoot.code;
+  require('./diagnostics').phase('清理相册', row.seq);
+  const cleared = await adb.clearAlbum(serial, {
+    forceStopPkg: uimap.DEWU.pkg, deadline: clearStarted + 90000, cancelled
+  });
+  if (!cleared.ok) {
+    const error = new Error('上一条相册素材未清净：' + (cleared.error || '未知原因'));
+    error.code = cleared.code;
     throw error;
   }
-  // 根目录已经递归清理并核实无文件，子目录不再重复查询四张媒体表。
-  const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { deadline: clearOptions.deadline, timeout: 8000 });
-  if (!mk.ok) {
-    const error = new Error('创建设备素材目录失败：' + (mk.stderr || '未知原因'));
-    if (mk.killed) error.code = 'ALBUM_IO_INTERRUPTED';
-    throw error;
-  }
-  log(`${row.dir}：目录清理 ${(Date.now() - clearStarted) / 1000}s`, 'info');
-  const albumStarted = Date.now();
-  require('./diagnostics').phase('清理全盘相册索引', row.seq);
-  row.status = '清理全盘相册索引';
-  if (ctx.onRow) ctx.onRow(row);
-  // ★★★ 2026-10-04（真机实测新增）**清全盘相册** —— 上面两步只清了目录，
-  //   而得物相册顶部那个「所有照片」是**全盘聚合视图**：把一条 mp4 放进 /sdcard/Movies
-  //   （不在 DCIM/Camera 下），它照样出现在得物相册里、和专属目录里的并排显示（已截图对照）。
-  //   ⇒「发布这一条时，调出相册只能看到它的素材」这件事，唯一靠得住的判据是
-  //   **MediaStore 里没有别的素材**。清完复查四张表，一条不剩才算过。
-  //   （这一步也顺手覆盖了「系统截图 / 别的 App 存的素材混进相册」那类问题。）
-  const clAll = await adb.clearAlbum(serial, clearOptions);
-  if (!clAll.ok) {
-    const error = new Error('没能把设备相册清到一条不剩：' + (clAll.error || '未知原因')
-      + ' —— 不清干净的话相册里会混着其他素材（专属目录之外的也算），选素材那一步会点到别的图。');
-    error.code = clAll.code;
-    throw error;
-  }
-  if (clAll.removed) {
-    log(`${row.dir}：相册里有 ${clAll.removed} 条其他素材（不在 ${remoteDir} 里，普通清目录清不掉），已一并清掉`, 'info');
-  }
-
-  // ★★ 强停过得物 ⇒ 它现在是**死的**，必须重新拉起来并确认回到首页（否则后面全是点空气）。
-  log(`${row.dir}：全盘媒体库清理 ${(Date.now() - albumStarted) / 1000}s`, 'info');
-  if (clRoot.forceStopped || clAll.forceStopped) {
-    log(`${row.dir}：清相册时得物正占着素材文件（Text file busy），已强制停掉它腾出句柄 —— 现在重新拉回首页`, 'warn');
-    await pullHome('清相册时强停过得物');
-  }
-  // ★★ 2026-10-04（第四十轮）：空目录残骸（stale 句柄锁着、删不掉也不含任何素材）**不阻断发布**，
-  //   但要**如实记一笔**让人知道（否则用户看到相册目录里一堆怪名字，不知道是什么）。
-  if (clRoot.note) {
-    log(`${row.dir}：相册目录里有清不掉的空目录残骸（不含任何素材，不影响发布；需要彻底清掉要重启模拟器）：`
-      + clRoot.note, 'info');
-  }
-  if (clRoot.removed) log(`${row.dir}：相册目录已清空，删除 ${clRoot.removed} 条记录`, 'info');
+  if (cleared.forceStopped) await pullHome('释放上一条素材句柄后');
+  const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { timeout: 8000 });
+  if (!mk.ok) throw new Error('相机目录无法写入：' + (mk.stderr || mk.stdout || '未知原因'));
+  log(`${row.dir}：相册已清空，回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s`, 'info');
 
   const pushStarted = Date.now();
+  require('./diagnostics').phase('推送及索引素材', row.seq);
   let needsVolumeScan = false;
+  const safeNames = media.map(f => String(f.name).replace(/[^\w.\-+]/g, '_'));
+  const usedNames = new Set();
   for (const [index, f] of media.entries()) {
     row.status = `推送素材 ${index + 1}/${media.length}`;
     if (ctx.onRow) ctx.onRow(row);
     const abs = path.join(item.absDir || item.dir, f.name);
-    const remote = `${remoteDir}/${String(f.name).replace(/[^\w.\-+]/g, '_')}`;
+    let remoteName = safeNames[index];
+    if (safeNames.filter(n => n === remoteName).length > 1) {
+      do { remoteName = index + '_' + remoteName; } while (safeNames.includes(remoteName) || usedNames.has(remoteName));
+    }
+    usedNames.add(remoteName);
+    const remote = `${remoteDir}/${remoteName}`;
     const r = await adb.push(serial, abs, remote);
     if (!r.ok) throw new Error(`推${mediaWord}片失败 ${f.name}：${(r.stderr || '').trim()}`);
     remotes.push(remote);
@@ -971,6 +906,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   ★★ 排不成 ⇒ **这一条就不发**（抛错，不默默发一条主图放错的帖子）：主图放错是用户明确报过
   //     的损失，而「发不出去」他当场就能看见；含糊过去等于让界面骗人。
   if (!isVideo) {
+    require('./diagnostics').phase('核实主图顺序', row.seq);
     const pick = mainimg.pickMainImage(item.files);
     if (pick.main && media.length > 1) {
       const idx = media.findIndex(f => f && f.name === pick.main.name);
@@ -1029,6 +965,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //    没有任何接收者，这才是「视频已推到设备，但等了 182.9s 媒体库还没索引到」的真根因。
   //  ★ 图文同样要走这条：图片不进库，得物相册里一样看不到它。
   row.status = '写媒体库';
+  require('./diagnostics').phase('核实媒体库', row.seq);
   if (ctx.onRow) ctx.onRow(row);
   const sec = Number(c.videoIndexTimeoutSec) > 0 ? Number(c.videoIndexTimeoutSec) : 20;
   const w = await adb.mediaVisible(serial, remotes, {
@@ -1095,7 +1032,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   let lastTapId = '';
   for (const raw of steps) {
     if (cancelled()) throw new Error('已取消');
-    const step = topicinput.mark(raw, uimap.fill(raw, data));
+    let step = topicinput.mark(raw, uimap.fill(raw, data));
+    // 老用户定位表同样升级，不能只改出厂表让已安装的机器继续跳过封面。
+    if (isVideo && ((step.action === 'tapXY' && String(step.value).replace(/\s/g, '') === '820,1857')
+      || (step.action === 'tapId' && /:id\/tv_skip$/.test(step.value || '')))) {
+      step = { name: '选择并核验视频封面', action: 'videoCover' };
+    }
     // ★ 条件步骤（when / whenNot）：发布单里「好物2 / 好物3」常常是空的，而「点关联好物 → 搜货号 → 选商品」
     //   是一整段 ⇒ 空着不跳过会把搜索页打开却不选商品，后面每一步全崩。
     //   跳过必须**说出来**：静默少点一步，真机上表现为「下一条莫名失败」，最难查。
@@ -1115,9 +1057,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     //   不靠推理，把每一步的**真实毫秒数**量出来。只有慢到会引起注意的（≥1.5s）才说，
     //   免得日志被一堆 0.1s 淹没。计时不含日志本身的开销（纯 runStep 前后取差值）。
     const tStep = Date.now();
-    require('./diagnostics').phase('执行发布步骤', row.seq);
+    require('./diagnostics').phase('界面步骤 ' + String(step.name || step.action).replace(/[^\u4e00-\u9fffA-Za-z0-9 ·_-]/g, '').slice(0, 45), row.seq);
     let rs;
     try {
+      const submittingVideo = isVideo && (/^提交发布/.test(step.name || '') || step.submit === true
+        || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布'));
+      if (submittingVideo) await require('./videocover').verify(serial);
       rs = await runStep(serial, step, data, ctx);
     } finally {
       const used = Date.now() - tStep;
@@ -1137,13 +1082,16 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     if (submit && /^tap(?:Id|Text|Desc|XY)$/.test(step.action)) {
       if (rs && rs.skipped) throw new Error('「提交发布」被屏幕守卫跳过，未点击发布按钮。');
       log(`${row.dir}：已实际点击提交发布，等待退出编辑流程后再开始下一条`, 'info');
+      require('./diagnostics').phase('等待提交退出', row.seq);
       const settle = await waitLeftPublishFlow(serial, {
         timeoutMs: Math.min(60000, Math.max(1000, Number(c.submissionWaitMs) || 30000)), cancelled
       });
       if (!settle.ok) {
         ctx.submissionPending = `已点击提交，但等待 ${settle.waited}s 后尚未确认退出编辑流程；停止后续条目，避免清理或重启打断上传，不自动重复提交。`;
         log(ctx.submissionPending, 'warn');
-      } else log(`${row.dir}：已退出编辑流程${settle.draft ? '（返回草稿箱属于正常返回路径）' : ''}，可继续下一条`, 'ok');
+      } else {
+        log(`${row.dir}：已退出编辑流程${settle.draft ? '（返回草稿箱属于正常返回路径）' : ''}，可继续下一条`, 'ok');
+      }
       return true;
     }
 
@@ -1178,7 +1126,17 @@ async function runMock(row, ctx) {
 
 /* ---------------- 主流程 ---------------- */
 
+const activeDevices = new Set();
 async function run(state, ctx = {}) {
+  const publish = state.publish || {};
+  const serial = publish.mode === 'adb' ? (publish.device || cfg().device || '') : '';
+  if (serial && activeDevices.has(serial)) throw new Error('这台设备已有发布任务，等待当前任务完成后再发布，避免清理打断另一批素材');
+  if (serial) activeDevices.add(serial);
+  try { return await runBatch(state, ctx); }
+  finally { if (serial) activeDevices.delete(serial); }
+}
+
+async function runBatch(state, ctx = {}) {
   const log = ctx.log || (() => {});
   // ★ 2026-10-05 用户口径「给用户只看大结论」：`log`（= ctx.log）现在一律是**过程明细**，
   //   界面不显示；只有 `conclude`（= ctx.conclude）那几句会出现在用户眼前。
@@ -1274,15 +1232,17 @@ async function run(state, ctx = {}) {
       throw error;
     }
   }
-  // 预估要按图文/视频分开算：视频单条更慢（推得久 + 还要等媒体库索引），混着算会明显偏短
+  // ★★ 2026-10-13 用户口径：「预估耗时都不准（图文 30 秒那套），直接删了吧」。
+  //   为什么删而不是调参数：单条耗时由设备、网络、素材体积、好物识别等待共同决定 ——
+  //   真机实测同一批图文 65–99s、视频 66–85s 全属正常范围 ⇒ 任何固定系数都会骗人。
+  //   与其给一个会被当成承诺的数字，不如只报「几条待发」，把真实耗时交给逐条实耗。
   const itemById = new Map((state.items || []).map(it => [String(it.id), it]));
-  const estKinds = todo.reduce((a, r) => {
+  const kindCount = todo.reduce((a, r) => {
     if (rowKind(r, itemById.get(String(r.id)) || {}) === 'video') a.video++; else a.image++;
     return a;
   }, { image: 0, video: 0 });
-  const est = estimate(todo.length, estKinds);
-  const mix = estKinds.video ? `（图文 ${estKinds.image} · 视频 ${estKinds.video}）` : '';
-  conclude(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条${mix}，预计 ${est.minutes} 分钟`, mode === 'adb' ? 'ok' : 'warn');
+  const mix = kindCount.video ? `（图文 ${kindCount.image} · 视频 ${kindCount.video}）` : '';
+  conclude(`开始发布（${mode === 'adb' ? '真实设备通道' : '模拟通道'}）：${todo.length} 条${mix}`, mode === 'adb' ? 'ok' : 'warn');
   if (mode === 'mock') conclude('模拟通道不接触设备，只演练节奏/回写；要真发请先「连接模拟器」并点「检查能不能发布」通过', 'warn');
   log('发布期间不占用发布单文件，结果先写 publish-log.jsonl', 'info');
 
@@ -1361,11 +1321,13 @@ async function run(state, ctx = {}) {
       if (mode === 'adb' && !stoppedForAlbum) await saveShot(serial, `seq${row.seq}_fail`, ctx);
     }
     if (success && ctx.submissionPending) { stoppedReason = ctx.submissionPending; stoppedForSubmission = true; }
+    require('./diagnostics').phase('条目结束');
     // ★★ 模拟通道**不许冒充真发布**：走模拟时结果记「模拟成功」。
     //   否则界面 / 台账 / 回写 Excel 全是绿的，而设备上什么都没发生（2026-10-03 实测踩到）。
     //   「模拟成功」不会被统计成真发布（统计只认「发布成功」），也不会写「审核中」。
     row.status = success ? (mode === 'adb' ? '发布成功' : '模拟成功') : '失败';
     row.result = success ? (mode === 'adb' ? '发布成功' : '模拟成功') : '失败';
+    if (!success && cancelled()) { row.status = '已取消'; row.result = '已取消'; }
     // ★ 2026-10-03：模拟通道不再随机失败 ⇒ 这里不需要「编一个失败原因」的分支了（拔掉假原因）。
     row.reason = success ? '' : (reason || '未知');
     if (!success) log(`${row.dir} 发布失败，原因${row.reason}`, 'warn');
@@ -1404,12 +1366,12 @@ async function run(state, ctx = {}) {
   const failCount = rows.filter(r => r.result === '失败').length;
   log(`批量发布完成，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s`, 'info');
   log(`发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。发完 ≠ 发出去了，还要回查审核状态`, 'ok');
-  return { rows, results, okCount, total: todo.length, failCount, batch, mode, stoppedReason };
+  return { rows, results, okCount, total: todo.length, failCount, batch, mode, stoppedReason, cancelled: !!cancelled() };
 }
 
 module.exports = {
   sleep,
-  connect, run, estimate, saveShot, dumpForCapture,
+  connect, run, saveShot, dumpForCapture,
   // ★★ 2026-10-03：把**步骤引擎**也导出来。理由：真机上要逐屏验证某一步（选图 N 张、点颜色格）
   //    时，只有拿这套真代码跑才算数 —— 自己另写一份「差不多的」点在真机上，验的就不是发布器了。
   runStep,

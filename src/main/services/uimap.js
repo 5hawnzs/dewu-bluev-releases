@@ -439,7 +439,7 @@ function fill(step, data) {
 //     所以它只适合版式固定、且下一步能立刻发现异常的格子；动态结果（相册格子 / 颜色卡片 /
 //     商品结果图）**必须**继续用 tapId / tapCardText。要保险就给这一步配 whenOn 屏幕守卫
 //     （守卫本身要抓一次屏，但一屏抓一次，仍比每步都抓便宜）。
-const STEP_ACTIONS = ['tapText', 'tapId', 'tapDesc', 'tapCardText', 'tapXY', 'input', 'wait', 'waitId', 'back', 'screenshot'];
+const STEP_ACTIONS = ['tapText', 'tapId', 'tapDesc', 'tapCardText', 'tapXY', 'input', 'wait', 'waitId', 'back', 'screenshot', 'videoCover'];
 
 /**
  * ★ 条件步骤（when / whenNot）—— 2026-10-03 加。

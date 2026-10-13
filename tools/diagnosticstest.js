@@ -44,4 +44,27 @@ const adb = moduleBox.exports;
     commands: [{ op: 'input PASSWORD_SECRET', stdout: 'SECRET' }], failures: [{ op: 'find', ms: 1, signal: 'SECRET', source: 'C:\\secret' }] });
   assert(!/SECRET|private|C:/.test(malicious));
   console.log('PASS 格式化只接受白名单字段，恶意标签和多余输出不会进入云端');
+  const phases = [];
+  const staged = diagnostics.create({ version: '1.1.1', build: 2026101302, onPhase: p => phases.push(p) });
+  await diagnostics.run(staged, async () => {
+    diagnostics.phase('清理素材文件', 1);
+    await new Promise(r => setTimeout(r, 25));
+    diagnostics.record(['shell', 'find /private'], { ok: true }, 20, 'bundled');
+    diagnostics.phase('推送及索引素材', 1);
+    await new Promise(r => setTimeout(r, 15));
+    diagnostics.phase('条目结束');
+  });
+  assert.equal(phases.length, 2); assert.equal(phases[0].commandCount, 1);
+  assert(phases[0].elapsedSec >= .02 && phases[1].elapsedSec >= .01);
+  assert.equal(phases[0].row, 1); assert.equal(phases[1].phase, '推送及索引素材');
+  assert(!JSON.stringify(phases).includes('/private'));
+  console.log('PASS 阶段实际耗时独立记录，行号、构建和命令数完整，不含命令参数');
+  for (const [stderr, kind] of [['Permission denied /secret', 'permission'], ['Segmentation fault', 'segfault'], ['device offline', 'offline'], ['', 'timeout']]) {
+    const state = diagnostics.create({ version: '1.1.1', build: 2026101302 });
+    diagnostics.run(state, () => diagnostics.record(['shell', 'ls /secret'],
+      { ok: false, killed: true, signal: 'SIGTERM', stdout: '', stderr, timeoutMs: 8000 }, 8001, 'bundled'));
+    const report = diagnostics.format(diagnostics.snapshot(state));
+    assert(report.includes('/out=' + kind) && report.includes('/bytes=0:') && !report.includes('/secret'));
+  }
+  console.log('PASS 云端区分权限、崩溃、离线与无输出超时，保留输出长度而不泄露原文');
 })().catch(error => { console.error(error); process.exitCode = 1; });

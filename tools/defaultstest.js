@@ -107,8 +107,8 @@ const cfgRaw = () => (fs.existsSync(store.file()) ? fs.readFileSync(store.file()
     builtin.screen && builtin.screen.w === 1080 && builtin.screen.h === 1920 && builtin.screen.landscape === false,
     JSON.stringify(builtin.screen));
   const pts = uimap.tapPointsOf(builtin.steps).concat(uimap.tapPointsOf(builtin.videoSteps));
-  ok('⑥ 表里 8 个写死的 tapXY 坐标，全部落在 1080x1920 内（戳对得上，不误拦）',
-    pts.length === 8 && uimap.outOfScreenTapPoints(builtin.steps.concat(builtin.videoSteps),
+  ok('⑥ 表里 7 个写死的 tapXY 坐标，封面使用控件定位，其余全部落在 1080x1920 内',
+    pts.length === 7 && uimap.outOfScreenTapPoints(builtin.steps.concat(builtin.videoSteps),
       { known: true, w: 1080, h: 1920 }).length === 0,
     '坐标数=' + pts.length + ' 越界=' + uimap.outOfScreenTapPoints(builtin.steps.concat(builtin.videoSteps), { known: true, w: 1080, h: 1920 }).length);
   // 反向对照：同一张表放到横屏 1920x1080 上，必须能认出越界（证明上面那条不是恒真）

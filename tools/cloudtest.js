@@ -197,19 +197,26 @@ let r = null;
       byMedia: { image: { requests: 1, inputTokens: 100, outputTokens: 50, cachedInputTokens: 10, estimatedCostCny: 0.0002, costKnown: true } },
       prompt: 'must not upload', apiKey: 'must-not-upload' },
     brandId: 'brd_1', brandName: '示例品牌', userId: 'u1', username: 'zhangsan', displayName: '张三' });
+  appendRun({ eventId: 'phase-end-1', ts: 1760000000320, kind: 'end', ok: true, jobId: 'j1', type: 'publish.phase',
+    label: '第1条 · 推送及索引素材', elapsedSec: 2.3, brandId: 'brd_1', brandName: '示例品牌',
+    diagnostic: { version: '1.1.1', build: 2026101302, phase: '推送及索引素材', row: 1, commands: [], failures: [] } });
   calls = [];
   r = await cs.syncOnce();
   const runCall = calls.find(c => /\/run_log\?/.test(c.url));
   const uploadedTasks = runCall ? JSON.parse(runCall.opts.body) : [];
-  ok('发布结果无新增时仍会独立同步任务日志', r.ok && r.uploaded === 0 && r.runUploaded === 3 && r.pendingRun === 0, JSON.stringify(r));
+  ok('发布结果无新增时仍会独立同步任务日志', r.ok && r.uploaded === 0 && r.runUploaded === 4 && r.pendingRun === 0, JSON.stringify(r));
   ok('运行日志走独立表与幂等键', !!runCall && runCall.url.endsWith('/run_log?on_conflict=machine_id,event_id')
     && /resolution=ignore-duplicates/.test(runCall.opts.headers.Prefer || ''), runCall && runCall.url);
-  ok('只上传 start/end，不上传逐步过程 log', uploadedTasks.length === 3
+  ok('只上传 start/end，不上传逐步过程 log', uploadedTasks.length === 4
     && uploadedTasks.every(x => x.event_kind === 'start' || x.event_kind === 'end'), JSON.stringify(uploadedTasks.map(x => x.event_kind)));
   ok('错误摘要已过滤绝对路径与 bearer 凭据并保留定位信息',
     uploadedTasks[1].error_summary.includes('[本机路径]') && uploadedTasks[1].error_summary.includes('Bearer [已隐藏]')
       && !uploadedTasks[1].error_summary.includes('C:\\Users\\Alice') && uploadedTasks[1].username === 'zhangsan'
       && uploadedTasks[1].machine_name === '测试机', uploadedTasks[1].error_summary);
+  const phase = uploadedTasks.find(x => x.task_type === 'publish.phase');
+  ok('成功阶段也上传真实耗时、构建、行号和阶段，不再只有失败诊断',
+    phase && phase.elapsed_sec === 2.3 && /2026101302/.test(phase.error_summary)
+    && /推送及索引素材/.test(phase.error_summary));
   const spacedPathError = cs.safeRunText("打开失败 'C:\\Users\\Alice Smith\\private file.txt'");
   ok('含空格且被引号包住的 Windows 路径也会整体脱敏',
     spacedPathError.includes('[本机路径]') && !spacedPathError.includes('Alice Smith'), spacedPathError);
