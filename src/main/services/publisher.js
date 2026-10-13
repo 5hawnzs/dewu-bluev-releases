@@ -1071,7 +1071,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     try {
       const submittingVideo = isVideo && (/^提交发布/.test(step.name || '') || step.submit === true
         || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布'));
-      if (submittingVideo) await require('./videocover').verify(serial);
+      if (submittingVideo) await require('./videocover').verify(serial, ctx);
       rs = await runStep(serial, step, data, ctx);
     } finally {
       const used = Date.now() - tStep;
@@ -1343,6 +1343,7 @@ async function runBatch(state, ctx = {}) {
       }
     } catch (e) {
       success = false;
+      require('./diagnostics').fail();
       reason = cancelled() ? '任务已取消' : e.message;
       stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED';
       if (e.code === 'UI_COORDINATES') stoppedReason = reason;

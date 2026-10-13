@@ -29,15 +29,16 @@ function flush(state) {
   // 分阶段记录独立上传，批次再长也不会被末尾几条命令或摘要长度截掉。
   if (state.row > 0 && typeof state.onPhase === 'function') {
     try { state.onPhase({ phase: state.phase, row: state.row, elapsedSec,
-      commandCount: state.count - state.phaseCount, version: state.version, build: state.build }); } catch (_) {}
+      commandCount: state.count - state.phaseCount, version: state.version, build: state.build, ok: state.phaseOk !== false }); } catch (_) {}
   }
   state.phaseAt = now;
   state.phaseCount = state.count;
 }
 function phase(name, row = 0) {
   const state = storage.getStore();
-  if (state) { flush(state); state.phase = String(name).slice(0, 60); state.row = Number(row) || 0; }
+  if (state) { flush(state); state.phase = String(name).slice(0, 60); state.row = Number(row) || 0; state.phaseOk = true; }
 }
+function fail() { const state = storage.getStore(); if (state) state.phaseOk = false; }
 function category(args) {
   const cmd = String(args[args.length - 1] || '');
   if (cmd.startsWith('content query ')) return 'query';
@@ -90,4 +91,4 @@ function format(value) {
   const recent = (Array.isArray(value.commands) ? value.commands : []).slice(-3).map(encode).filter(Boolean);
   return `[诊断 ${version}/${value.build} 步骤=${name} 行=${Number(value.row) || 0} 失败=${failures.join(',') || '无'} 最近=${recent.join(',') || '无'}]`.slice(0, 700);
 }
-module.exports = { create, run: (state, fn) => storage.run(state, fn), phase, flush, record, snapshot, format };
+module.exports = { create, run: (state, fn) => storage.run(state, fn), phase, fail, flush, record, snapshot, format };

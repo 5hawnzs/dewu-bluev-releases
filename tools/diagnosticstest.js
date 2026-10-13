@@ -59,6 +59,14 @@ const adb = moduleBox.exports;
   assert.equal(phases[0].row, 1); assert.equal(phases[1].phase, '推送及索引素材');
   assert(!JSON.stringify(phases).includes('/private'));
   console.log('PASS 阶段实际耗时独立记录，行号、构建和命令数完整，不含命令参数');
+  const outcomes=[];
+  const failedStage=diagnostics.create({onPhase:p=>outcomes.push(p)});
+  diagnostics.run(failedStage,()=>{
+    diagnostics.phase('选择视频封面',1);diagnostics.fail();diagnostics.phase('条目结束');
+    diagnostics.phase('准备发布',2);diagnostics.phase('条目结束');
+  });
+  assert.equal(outcomes.length,2);assert.equal(outcomes[0].ok,false);assert.equal(outcomes[1].ok,true);
+  console.log('PASS 封面失败阶段如实记失败，下一条正常阶段恢复成功状态');
   for (const [stderr, kind] of [['Permission denied /secret', 'permission'], ['Segmentation fault', 'segfault'], ['device offline', 'offline'], ['', 'timeout']]) {
     const state = diagnostics.create({ version: '1.1.1', build: 2026101302 });
     diagnostics.run(state, () => diagnostics.record(['shell', 'ls /secret'],

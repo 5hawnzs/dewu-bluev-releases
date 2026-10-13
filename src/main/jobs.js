@@ -804,7 +804,7 @@ async function run(type, args = {}) {
 
   send('job:started', { id, type, label, batch: job.batch, startedAt: job.startedAt, brandId: brandInfo.brandId, brandName: brandInfo.brandName });
   const diagnosticState = diagnostics.create({ version: require('electron').app.getVersion(), build: require('./githubupdates').BUILD,
-    onPhase: stage => runlog.append(Object.assign({ kind: 'end', ok: true, jobId: id,
+    onPhase: stage => runlog.append(Object.assign({ kind: 'end', ok: stage.ok !== false, jobId: id,
       type: 'publish.phase', label: `第${stage.row}条 · ${stage.phase}`, batch: job.batch,
       elapsedSec: stage.elapsedSec, diagnostic: { ...stage, commands: [], failures: [] } }, brandInfo, actorInfo)) });
   runlog.append(Object.assign({ kind: 'start', jobId: id, label, type, batch: job.batch }, brandInfo, actorInfo));
