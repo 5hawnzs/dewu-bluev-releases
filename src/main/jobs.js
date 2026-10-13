@@ -21,6 +21,7 @@ const pool = require('./services/pool');
 const runlog = require('./services/runlog');
 const diagnostics = require('./services/diagnostics');
 const sleepguard = require('./services/sleepguard');
+const publishresults = require('./services/publishresults');
 const wp = require('./util/winpath');
 
 /**
@@ -619,30 +620,7 @@ async function dispatch(type, args, ctx) {
         onRow: row => send('publish:row', row)
       }));
       project.patch({ publish: Object.assign({}, s.publish, { rows: r.rows, batch: r.batch, running: false }) });
-      if (s.sheet.file) {
-        const m = await sheet.mergeResults(s.sheet.file, r.results);
-        if (m.busy) {
-          logbus.warn(`Excel 仍被占用，${m.pending} 条结果已暂存，下次再试（可只读打开但不建议编辑保存）`);
-        } else if (m.error) {
-          logbus.error(`回写发布单失败：${m.error}`);   // 不是「被占用」，别假装写进去了
-        } else {
-          logbus.ok(`已合并回写发布单：${m.updated} 行${m.flushed ? `（含补写上次的 ${m.flushed} 条）` : ''}`);
-        }
-      }
-      // 从「AI 内容报告」导入的批次：回写它的 B（实际执行时间）/ C（执行结果）列
-      if (s.publish.reportFile) {
-        const mr = await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
-        if (mr.busy) {
-          logbus.warn(`报告仍被占用，${mr.pending} 条已暂存，下次导入/发布时先补写`);
-        } else if (mr.error) {
-          logbus.error(`回写报告失败：${mr.error}`);     // 例如报告表头缺列：不可恢复，必须直说
-        } else if (mr.updated) {
-          logbus.ok(`已回写报告：${mr.updated} 行${mr.flushed ? `（含补写上次的 ${mr.flushed} 条）` : ''} → ${path.basename(s.publish.reportFile)}`);
-        } else if (mr.skipped) {
-          // 这条以前会打成「已回写报告：0 行」——看着像成功，其实一条都没写
-          logbus.info(`本次结果没有可回写的报告行（${mr.skipped} 条不是从这份报告导进来的），跳过回写`);
-        }
-      }
+      const writeback = await publishresults.finish(s, r.results);
       notify(r.cancelled ? '发布批次已停止' : '发布批次结束', `成功 ${r.okCount} / ${r.total} 条${r.cancelled ? '，其余已取消或未执行' : '，记得回查审核状态'}`);
       // ★ 大结论（2026-10-05 用户要的格式）：一行说完「目标 / 成功 / 失败」。
       //   三种情况分开说，**既不许拿绿灯盖红字、也不许拿「成功 0」糊弄**：
@@ -659,13 +637,15 @@ async function dispatch(type, args, ctx) {
         const mockOk = (r.rows || []).filter(x => x.result === '模拟成功').length;
         ctx.conclude(`模拟发布完成【目标 ${r.total} 条，模拟成功 ${mockOk} 条，失败 0 条】`
           + '· 模拟通道不接触设备，**不算真发布**（要真发请先「连接模拟器」并点「检查能不能发布」通过）', 'warn');
+      } else if (!writeback.ok) {
+        ctx.conclude(`发布已完成（回写待处理）【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 0 条】· 请查看回写错误或暂存提示，不要重复发布`, 'warn');
       } else {
         ctx.conclude(`发布成功【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 0 条】`
           + '· 内容展示与审核结果请在得物查看', 'ok');
       }
       const failed = (r.rows || []).filter(row => row && row.result === '失败');
       const failureSummary = failed.slice(0, 5).map(row => `第${row.seq}条：${row.reason || '未知原因'}`).join('；');
-      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary, cancelled: r.cancelled };
+      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary, cancelled: r.cancelled, writeback };
     }
     case 'publish.exportLog': {
       // 「重导出日志」：按批次把 publish-log.jsonl 导成可读的 .log + .csv
@@ -681,14 +661,23 @@ async function dispatch(type, args, ctx) {
       const subset = Object.assign({}, s, { publish: Object.assign({}, s.publish, { rows: [row] }) });
       const r = await publisher.run(subset, Object.assign({}, ctx, { onRow: rw => send('publish:row', rw) }));
       project.patch({ publish: Object.assign({}, s.publish, { rows: s.publish.rows }) });
-      if (s.sheet.file) await sheet.mergeResults(s.sheet.file, r.results);
-      if (s.publish.reportFile) await report.mergeResults(s.publish.reportFile, r.results, { sheetName: s.publish.reportSheet });
+      const writeback = await publishresults.finish(s, r.results);
       // 大结论（2026-10-05）：与整批发布同一个口径（重跑就是「只发这一条」的一批）
-      ctx.conclude(r.cancelled ? '重跑已停止，保留已完成的结果' : r.okCount >= 1
-        ? `重跑成功【目标 1 条，成功 1 条，失败 0 条】`
-        : `重跑结束（失败）【目标 1 条，成功 0 条，失败 1 条】`, r.okCount >= 1 ? 'ok' : 'warn');
+      const writebackNote = writeback.ok ? '' : ' · 回写待处理，请查看错误或暂存提示；回写不会自动重发内容';
+      if (r.cancelled) {
+        ctx.conclude('重跑已停止，保留已完成的结果' + writebackNote, 'info');
+      } else if (r.mode === 'mock') {
+        const mockOk = (r.rows || []).filter(row => row.result === '模拟成功').length;
+        ctx.conclude(`模拟重跑完成【目标 1 条，模拟成功 ${mockOk} 条，失败 ${r.failCount || 0} 条】· 模拟通道不接触设备，不算真发布` + writebackNote, 'warn');
+      } else if (r.okCount < 1) {
+        ctx.conclude('重跑结束（失败）【目标 1 条，成功 0 条，失败 1 条】' + writebackNote, 'warn');
+      } else if (!writeback.ok) {
+        ctx.conclude('重跑已完成（回写待处理）【目标 1 条，成功 1 条，失败 0 条】· 请查看回写错误或暂存提示，不要重复发布', 'warn');
+      } else {
+        ctx.conclude('重跑成功【目标 1 条，成功 1 条，失败 0 条】', 'ok');
+      }
       const failed = (r.rows || []).find(row => row && row.result === '失败');
-      return { okCount: r.okCount, total: 1, failCount: r.failCount, cancelled: r.cancelled, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
+      return { okCount: r.okCount, total: 1, failCount: r.failCount, cancelled: r.cancelled, writeback, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
     }
     case 'pool.import': {
       const r = pool.importFile(args.file);

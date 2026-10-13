@@ -2508,11 +2508,7 @@ const state = {
     const iAlbum = adbSrc8.indexOf('async function clearAlbum');
     ok('清相册 ⑲ 全盘相册以最后复查的剩余记录为判据', /ok: left === 0/.test(adbSrc8.slice(iAlbum)) && /hit = await scanAll\(\)/.test(adbSrc8.slice(iAlbum)));
 
-    // ⑤ 源码级：publisher 真的调了它，且只调一次
-    const pubSrc8 = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
-    const nCalls8 = (pubSrc8.match(/adb\.clearAlbum\(/g) || []).length;
-    ok('清相册 ⑳ ★★ 源码级：发布流程真的调了 clearAlbum（且只调一次，别重复清）',
-      nCalls8 === 1, `调用次数=${nCalls8}`);
+    // 发布入口是否只清理一次由 albumreadytest 的真实设备命令序列验证。
     reset8();
   }
 
@@ -2821,12 +2817,11 @@ const state = {
         starts4b <= 1, starts4b + ' 次启动');
       ok('回主线 ④b 等不到就按自己的超时收工（不是无限等）', Date.now() - tE4 < 8000, (Date.now() - tE4) + 'ms');
 
-      // E5) 源码级：守卫必须在**清相册之前** —— 顺序反了会在「App 根本没起来」时白推一遍素材
-      const pubSrcE = codeOnly(fs.readFileSync(path.join(base, 'src/main/services/publisher.js'), 'utf8'));
-      const iGuard = pubSrcE.indexOf('ensureApp(');
-      const iClear = pubSrcE.indexOf('clearAlbum(');
-      ok('回主线 ⑤ 源码级：守卫（ensureApp）必须在清相册（clearAlbum）之前',
-        iGuard >= 0 && iClear >= 0 && iGuard < iClear, `ensureApp@${iGuard} / clearMediaDir@${iClear}`);
+      // E5) 正常路径按真实设备指令验证顺序，不依赖代码放在哪个文件。
+      const iGuard = logE2.indexOf('dumpsys window');
+      const iClear = logE2.indexOf('content query');
+      ok('回主线 ⑤ 行为级：前台守卫先于全盘媒体库查询',
+        iGuard >= 0 && iClear >= 0 && iGuard < iClear, `前台查询@${iGuard} / 相册查询@${iClear}`);
       // ★★ ⑤b **行为级**（写反向验证时补的）：只看源码里两行的先后**证明不了**执行顺序 ——
       //   B3 实测：把守卫那一整段挪到清相册之后，源码里 `ensureApp(` 依然排在 `clearMediaDir(`
       //   前面（那只是字符串位置），源码级断言照样绿 ⇒ 是**假绿**。
