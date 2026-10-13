@@ -1126,13 +1126,34 @@ async function runMock(row, ctx) {
 
 /* ---------------- 主流程 ---------------- */
 
-const activeDevices = new Set();
+const activeDevices = new Map();
+let deviceRunSequence = 0;
 async function run(state, ctx = {}) {
   const publish = state.publish || {};
   const serial = publish.mode === 'adb' ? (publish.device || cfg().device || '') : '';
   if (serial && activeDevices.has(serial)) throw new Error('这台设备已有发布任务，等待当前任务完成后再发布，避免清理打断另一批素材');
-  if (serial) activeDevices.add(serial);
-  try { return await runBatch(state, ctx); }
+  const token = { order: ++deviceRunSequence };
+  if (serial) activeDevices.set(serial, token);
+  try {
+    // MuMu 会把同一实例暴露为多个端口。仅在另有批次运行时核对身份，
+    // 普通单批次不增加设备命令；后来的任务不能通过更换端口接管同一相册。
+    const earlier = serial ? [...activeDevices.entries()].filter(([s, t]) => s !== serial && t.order < token.order) : [];
+    if (earlier.length) {
+      const identity = async device => {
+        const r = await adb.shell(device, 'settings get secure android_id', { timeout: 3000 });
+        const value = String(r && r.stdout || '').trim().toLowerCase();
+        return r && r.ok && /^[0-9a-f]{8,}$/.test(value) ? value : '';
+      };
+      const ids = await Promise.all([serial, ...earlier.map(([s]) => s)].map(identity));
+      if (!ids[0] || earlier.some(([s, t], i) => activeDevices.get(s) === t && !ids[i + 1])) {
+        throw new Error('另有发布任务运行，暂时无法确认两个端口是否属于独立设备；等待当前任务结束后再发布，避免相册互相清理');
+      }
+      if (ids[0] && earlier.some(([s, t], i) => activeDevices.get(s) === t && ids[i + 1] === ids[0])) {
+        throw new Error('这台设备已有发布任务，另一个ADB端口属于同一模拟器，等待当前任务完成后再发布');
+      }
+    }
+    return await runBatch(state, ctx);
+  }
   finally { if (serial) activeDevices.delete(serial); }
 }
 

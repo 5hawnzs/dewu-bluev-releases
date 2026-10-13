@@ -666,6 +666,24 @@ button.btn.lx-transfer:active:not(:disabled){transform:scale(.96)}
 .changelog-note h3{font-size:11px;color:var(--tx2);margin:0 0 8px}
 .changelog-note p{margin:0;font-size:11px;line-height:1.9}
 .changelog-orbit{animation:release-breathe 4s ease-in-out infinite}
+/* 更新日志采用日期卡片与时间侧栏，跟随当前主题。 */
+.release-journal{max-width:1160px;margin:22px auto 40px;display:grid;gap:22px}
+.journal-day{background:var(--panel);border:1px solid var(--bd);border-radius:16px;padding:28px 32px;box-shadow:0 1px 3px #00000005}
+.journal-date{display:flex;align-items:baseline;gap:16px;border-bottom:1px solid var(--bd);padding-bottom:22px;margin-bottom:26px}
+.journal-date h2{margin:0;font-size:25px;letter-spacing:.5px;line-height:1.5}
+.journal-date>span{color:var(--tx3);font-size:15px}
+.journal-entry{display:grid;grid-template-columns:136px minmax(0,1fr);padding:0 0 28px}
+.journal-entry:last-child{padding-bottom:0}
+.journal-meta{display:flex;flex-direction:column;gap:14px;color:var(--tx2);font-size:13px;padding:4px 24px 0 0;font-variant-numeric:tabular-nums}
+.journal-kind{display:flex;align-items:center;gap:8px}
+.journal-kind::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--teal)}
+.journal-kind[data-kind="修复"]::before{background:var(--amber)}
+.journal-body{border-left:1px solid var(--bd);padding-left:32px;min-width:0}
+.journal-body h3{font-size:19px;line-height:1.6;margin:0 0 12px;font-weight:700}
+.journal-body p,.journal-body li{font-size:15px;line-height:1.95;color:var(--tx2);overflow-wrap:anywhere}
+.journal-body p{margin:0 0 12px}.journal-body ul{margin:0;padding-left:19px}.journal-body li+li{margin-top:7px}.journal-body strong{color:var(--tx)}
+@media(max-width:850px){.journal-day{padding:22px}.journal-date h2{font-size:21px}.journal-entry{grid-template-columns:100px minmax(0,1fr)}.journal-body{padding-left:22px}.journal-body h3{font-size:17px}.journal-body p,.journal-body li{font-size:14px}}
+@media(max-width:560px){.journal-date{gap:10px}.journal-date h2{font-size:18px}.journal-entry{display:block}.journal-meta{flex-direction:row;padding:0;margin-bottom:12px}.journal-body{border-left:0;padding-left:0}}
 @keyframes release-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 @keyframes release-breathe{50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.changelog-entry,.changelog-orbit{animation:none}.changelog-filter,.changelog-node{transition:none}}

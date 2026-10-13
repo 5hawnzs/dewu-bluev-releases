@@ -1747,9 +1747,9 @@ function bindLogPane() {
 const PROJ_KEYS = ['items', 'compliance', 'verify', 'sheet', 'publish'];      // 真值一定带（主进程 blank() 保证）
 const CFG_KEYS = ['paths', 'flatten', 'compliance', 'copy', 'verify', 'publish']; // 真值一定带（store.defaults() 保证）
 
-// 更新日志按日期集中展示，动画资源随包保存。
+// 更新日志按日期分组，左侧时间与类型，右侧标题及要点。
 TABS[13] = {
-  title: '更新日志', desc: '版本更新、重要修复与实测记录。', actions: () => [],
+  title: '更新日志', desc: '新功能、调整、修复，都写在这里。', actions: () => [],
   render: () => updatePanelHtml() + window.releaseMotion.render()
 };
 

@@ -277,6 +277,24 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
       mode === '备用核验空目录' ? result.ok && /双重复查/.test(result.note)
         && d.calls.filter(c => c.startsWith('content query ')).length === 8 : !result.ok && !!result.error);
   }
+  let slowQueries = 0;
+  const slowHost = driver(cmd => cmd.startsWith('content query ') && ++slowQueries === 1
+    ? { killed: true, signal: 'SIGTERM' } : {});
+  const slowResult = await slowHost.adb.clearAlbum('FAKE');
+  ok('慢主机首次只读查询超时后给予一次20秒恢复机会，仍完成重扫与回读', slowResult.ok
+    && slowHost.executions[0].timeout === 8000
+    && slowHost.executions.some(e => e.command.startsWith('content query ') && e.timeout === 20000));
+  const frozenHost = driver(cmd => cmd.startsWith('content query ') ? { killed: true, signal: 'SIGTERM' } : {});
+  const frozenResult = await frozenHost.adb.clearAlbum('FAKE');
+  ok('持续超时仅每表恢复一次，停止后不执行扫描或删除，不假装成功', !frozenResult.ok
+    && frozenHost.calls.length === 8 && frozenHost.calls.every(c => c.startsWith('content query ')));
+  let interruptedDeletes = 0;
+  const slowDelete = driver(cmd => cmd.startsWith('content query ')
+    ? { stdout: 'Row: 0 _id=1, _data=/storage/emulated/0/DCIM/Camera/a.png\n' }
+    : cmd.startsWith('rm -f ') ? (++interruptedDeletes, { killed: true, signal: 'SIGTERM' }) : {});
+  const deleteResult = await slowDelete.adb.clearAlbum('FAKE');
+  ok('写入类删除超时不套用慢主机读取重试，不能继续新素材操作', !deleteResult.ok && interruptedDeletes === 1
+    && !slowDelete.calls.some(c => c.startsWith('content delete ') || c.includes('scan_volume')));
   const rows = Array.from({ length: 12 }, (_, i) => `Row: ${i} _id=${i + 1}, _data=/storage/emulated/0/DCIM/Camera/${i}.jpg`).join('\n');
   for (let round = 1; round <= 5; round++) {
     const morning = driver(cmd => {

@@ -597,7 +597,13 @@ async function clearAlbum(serial, opts = {}) {
     if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
     const left = deadline - Date.now();
     if (left <= 0) { const e = new Error('相册清理达到本条总预算，停止本条'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
-    const r = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(options.timeout || 8000, 15000, left)) });
+    let r = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(options.timeout || 8000, 15000, left)) });
+    // 低性能主机可能只是暂时没完成只读查询。只给读取一次较长恢复机会，
+    // 不延长总预算、不自动重发删除命令，正常设备也不增加命令或等待。
+    if (r.killed && command.startsWith('content query ') && deadline > Date.now()
+      && !(opts.cancelled && opts.cancelled())) {
+      r = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(20000, deadline - Date.now())) });
+    }
     if (r.killed) { const e = new Error(command.split(' ')[0] + ' 全盘相册命令超时或被终止（限时 ' + r.timeoutMs + 'ms，信号 ' + (r.signal || '未知') + '）'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
     return r;
   };

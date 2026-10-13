@@ -177,14 +177,36 @@ const state = {
   {
     const savedKeyboard = adbForSetup.ensureKeyboard;
     let release;
+      let keyboardEntries = 0;
     const held = new Promise(resolve => { release = resolve; });
-    adbForSetup.ensureKeyboard = async () => { await held; return { ok: false, error: '测试释放', step: 'test' }; };
+      adbForSetup.ensureKeyboard = async () => { keyboardEntries++; await held; return { ok: false, error: '测试释放', step: 'test' }; };
     const first = publisher.run(state, ctx).catch(e => e.message);
     let concurrentError = '';
     try { await publisher.run(state, ctx); } catch (e) { concurrentError = e.message; }
     ok('同一设备的发布与重跑不能并发清理，当前任务完成前不接管设备', /已有发布任务/.test(concurrentError));
+      const savedShell = adbForSetup.shell;
+      adbForSetup.shell = async (serial, cmd, opts) => cmd === 'settings get secure android_id'
+        ? { ok: true, stdout: '927145746ae845d6' } : savedShell(serial, cmd, opts);
+      const aliasState = { ...state, publish: { ...state.publish, device: 'FAKE_ALIAS' } };
+      let aliasError = '';
+      const aliasRun = publisher.run(aliasState, ctx).catch(e => { aliasError = e.message; });
+      // 正确版本在任何输入法、清理和推送操作之前拒绝同一实例的另一端口。
+      await Promise.race([aliasRun, new Promise(resolve => setTimeout(resolve, 100))]);
+      ok('同一模拟器的不同ADB端口也不能并发接管相册', /已有发布任务/.test(aliasError));
+      adbForSetup.shell = async (serial, cmd, opts) => cmd === 'settings get secure android_id'
+        ? { ok: true, stdout: serial === 'FAKE_UNKNOWN' ? '' : serial === 'FAKE_OTHER' ? '827145746ae845d6' : '927145746ae845d6' }
+        : savedShell(serial, cmd, opts);
+      let unknownError = '';
+      await publisher.run({ ...state, publish: { ...state.publish, device: 'FAKE_UNKNOWN' } }, ctx).catch(e => { unknownError = e.message; });
+      ok('并发时身份读取失败不能假装属于独立设备，不执行相册操作', /无法确认/.test(unknownError) && keyboardEntries === 1);
+      const otherRun = publisher.run({ ...state, publish: { ...state.publish, device: 'FAKE_OTHER' } }, ctx).catch(() => {});
+      await Promise.race([otherRun, new Promise(resolve => setTimeout(resolve, 100))]);
+      ok('不同身份的设备仍可并发，不把全部设备串行化', keyboardEntries === 2);
     release();
     await first;
+      await aliasRun;
+      await otherRun;
+      adbForSetup.shell = savedShell;
     adbForSetup.ensureKeyboard = savedKeyboard;
   }
   const r = await publisher.run(state, ctx);

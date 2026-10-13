@@ -2681,43 +2681,23 @@ app.whenReady().then(async () => {
   // IntersectionObserver 在完全隐藏的窗口里会暂停画布；短暂显示测试窗口验证真实可见播放。
   win.showInactive();
   const releaseCheck = await win.webContents.executeJavaScript(`(async () => {
-    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
     state.tab = 13; renderAll();
     document.querySelector('#pane').scrollTop = 0;
-    document.querySelector('[data-release-canvas]').scrollIntoView({ block: 'center' });
-    await new Promise(r => setTimeout(r, 500));
-    const c = document.querySelector('[data-release-canvas]');
-    const first = c.toDataURL();
-    const flow = document.querySelector('.release-flow');
-    const offset = getComputedStyle(flow).strokeDashoffset;
-    await new Promise(r => setTimeout(r, 500));
-    const second = c.toDataURL();
-    const pipelineAnimated = offset !== getComputedStyle(flow).strokeDashoffset;
-    await new Promise(r => setTimeout(r, 500));
-    const animated = first !== second && second !== c.toDataURL();
-    const media = window.matchMedia;
-    let reducedAnimated = false;
-    try {
-      window.matchMedia = query => query.includes('prefers-reduced-motion') ? { matches: true } : media.call(window, query);
-      window.releaseMotion.mount();
-      await new Promise(r => setTimeout(r, 300));
-      const reducedFirst = c.toDataURL();
-      await new Promise(r => setTimeout(r, 500));
-      reducedAnimated = reducedFirst !== c.toDataURL();
-    } finally { window.matchMedia = media; }
-    if (hiddenDescriptor) Object.defineProperty(document, 'hidden', hiddenDescriptor); else delete document.hidden;
-    const stations = document.querySelectorAll('.release-pipeline li').length;
-    const dateGroups = document.querySelectorAll('.release-date').length;
+    const cards = [...document.querySelectorAll('.journal-day')];
+    const entries = [...document.querySelectorAll('.journal-entry')];
+    const twoColumns = entries.every(e => getComputedStyle(e).gridTemplateColumns.split(' ').length === 2);
+    const dateGroups = cards.length;
+    const hasDetails = entries.every(e => e.querySelector('.journal-meta time') && e.querySelector('.journal-kind') && e.querySelector('h3') && e.querySelector('li'));
+    const fits = entries.every(e => e.scrollWidth <= e.clientWidth);
     state.tab = 12; renderAll();
     if (!state.lex) await loadLexicon();
     const cells = [...document.querySelectorAll('.skeleton-table tbody td:nth-child(2)')];
     const namesFit = cells.length === 15 && cells.every(c => c.scrollWidth <= c.clientWidth);
     state.tab = 13; renderAll();
-    return { animated, pipelineAnimated, reducedAnimated, canvasFrames: c.dataset.frame, canvasSize: [c.width,c.height], stations, dateGroups, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
+    return { twoColumns, dateGroups, hasDetails, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
   })()`);
   win.hide();
-  ok('更新日志轮廓连续变化、流程动画移动，减少动态效果模式仍缓慢播放', releaseCheck.animated && releaseCheck.pipelineAnimated && releaseCheck.reducedAnimated && releaseCheck.stations === 5 && releaseCheck.dateGroups === 1, JSON.stringify(releaseCheck));
+  ok('更新日志按日期卡片分组，左侧时间和类型、右侧标题与要点，无横向溢出', releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits && releaseCheck.dateGroups === 2, JSON.stringify(releaseCheck));
   ok('句式名称完整显示、更新日志页提供检查更新', releaseCheck.namesFit && releaseCheck.updatePanel, JSON.stringify(releaseCheck));
   const updateNotice = await win.webContents.executeJavaScript(`(() => {
     const saved = { update: state.update, auth: state.auth, tab: state.tab };
