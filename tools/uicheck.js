@@ -2661,26 +2661,31 @@ app.whenReady().then(async () => {
   const flatFixture = path.join(TMP, '本次整理结果');
   const oldFlatFixture = path.join(TMP, '上次整理结果');
   fs.mkdirSync(flatFixture, {recursive:true});fs.mkdirSync(oldFlatFixture,{recursive:true});
-  let openedFlat = '';
-  shell.openPath = async file => { openedFlat = file;return ''; };
+  const openedFlat = [];
+  shell.openPath = async file => { openedFlat.push(file);return ''; };
   try {
     const flatUi = await win.webContents.executeJavaScript(`(async()=>{
       const saved={project:state.project,tab:state.tab};
       try {
-        state.project={...state.project,sourceDir:'来源A',flatDir:${JSON.stringify(flatFixture)},
+        state.project={...state.project,sourceDir:'来源A',flatDir:'',
           flattenResult:{dir:${JSON.stringify(flatFixture)},sourceDir:'来源A',count:3},previousFlattenResult:{dir:${JSON.stringify(oldFlatFixture)},sourceDir:'旧来源',count:30},items:Array(99).fill({})};
         state.tab=1;renderAll();
         const text=document.querySelector('#pane').textContent;
-        const button=document.querySelector('[data-act="flatten:openFlat"]');
-        await ACTS['flatten:openFlat'](button);
+        const buttons=[...document.querySelectorAll('[data-act="flatten:openFlat"]')];
+        buttons[0].click();await new Promise(resolve=>setTimeout(resolve,150));
+        state.project.flatDir='不能使用这个无关路径';
+        buttons[1].click();await new Promise(resolve=>setTimeout(resolve,150));
         state.project.publish={reportFile:${JSON.stringify(reportFixture)},rows:[]};
         const container=document.createElement('div');container.innerHTML=TABS[6].render();
-        return {current:text.includes('本次整理结果')&&text.includes('共 3 个叶子目录'),previous:text.includes('上次整理结果')&&text.includes('共 30 个叶子目录'),noMix:!text.includes('共 99'),reportTop:container.querySelector('.box h3').textContent==='当前批次 AI 内容报告',noOldPlaceholder:!container.textContent.includes('还没导出过发布单')};
+        const report=container.querySelector('.publish-report');
+        return {current:text.includes('本次整理结果')&&text.includes('共 3 个叶子目录'),previous:text.includes('上次整理结果')&&text.includes('共 30 个叶子目录'),noMix:!text.includes('共 99'),reportTop:container.querySelector('.box h3').textContent==='当前批次 AI 内容报告',merged:!!report&&!report.classList.contains('box')&&report.parentElement.classList.contains('box')&&[...report.parentElement.children].some(el=>el.tagName==='H3'&&el.textContent==='设备与发布间隔'),noOldPlaceholder:!container.textContent.includes('还没导出过发布单')};
       } finally {state.project=saved.project;state.tab=saved.tab;renderAll();}
     })()`);
-    ok('整理结果按钮实际调用系统打开目录，路径来自当前结果快照',openedFlat===flatFixture);
+    ok('本次按钮点击经IPC打开结果快照，即使flatDir为空',openedFlat[0]===flatFixture);
+    ok('上次按钮点击打开独立旧目录，不误用当前flatDir',openedFlat.length===2&&openedFlat[1]===oldFlatFixture);
     ok('本次与上次结果分别显示独立条数，不混用报告导入的items',flatUi.current&&flatUi.previous&&flatUi.noMix,JSON.stringify(flatUi));
     ok('发布页当前AI报告置顶，旧发布单空状态不再占主入口',flatUi.reportTop&&flatUi.noOldPlaceholder);
+    ok('AI报告与设备间隔合并为同一卡片',flatUi.merged);
   } finally {shell.openPath=originalOpenPath;}
   const rowRefresh = await win.webContents.executeJavaScript(`(() => {
     const keep = { project: state.project, tab: state.tab };

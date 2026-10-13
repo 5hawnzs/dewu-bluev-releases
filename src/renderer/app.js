@@ -478,7 +478,7 @@ function reportBoxHtml() {
   const rows = pub.rows || [];
   const blocked = rows.filter(r => r.result === '校验未通过').length;
   const done = rows.filter(r => r.result === '发布成功').length;
-  return `<div class="box">
+  return `<section class="publish-report">
     <h3>当前批次 AI 内容报告</h3>
     <div class="row">
       <input class="inp mono" value="${esc(pub.reportFile)}" readonly>
@@ -491,7 +491,7 @@ function reportBoxHtml() {
     </div>
     <p class="hint">发布完会回写报告的 <b>实际执行时间（B）/ 执行结果（C）</b> 两列；报告被 WPS 占用时整批暂存，
       下次导入或发布时先补写。</p>
-  </div>`;
+  </section>`;
 }
 
 /** 只重绘批次面板：进度是按行推进的，整页重排会把大任务拖慢 */
@@ -772,8 +772,8 @@ TABS[6] = {
     //   现在这一页只显示**已经发生的事实**（运行中计时 / 结束后写入的实耗），不再给数字承诺。
     const okCount = rows.filter(r => r.result === '发布成功').length;
     return `
-      ${reportBoxHtml()}
       <div class="box">
+        ${reportBoxHtml()}
         <h3>设备与发布间隔</h3>
         <details style="margin-bottom:10px"><summary>导出文件</summary><div class="row" style="margin-top:8px">
           <button class="btn sm" data-act="sheet:export">导出发布单</button>
@@ -2830,7 +2830,6 @@ const ACTS = {
     const r = await appApi.updateInstall();
     if (!r.ok) toast(r.error, 'err');
   },
-  'flatten:openFlat': async () => { if (state.project.flatDir) await appApi.openPath(state.project.flatDir); },
 
   'comp:scan': async () => { await runJob('compliance.scan'); },
   'comp:parent': async () => {

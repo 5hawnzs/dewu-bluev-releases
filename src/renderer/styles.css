@@ -544,6 +544,7 @@ button.btn.lx-transfer:active:not(:disabled){transform:scale(.96)}
 .publish-setup-items strong{font-size:12px;font-weight:500;line-height:1.6}
 .publish-setup-off{font-size:11px;border-radius:5px;padding:3px 8px;background:var(--teal-bg);color:var(--teal)}
 .publish-setup p{margin:10px 0 0;font-size:11px;color:var(--tx3)}
+.publish-report{border-bottom:1px solid var(--bd);padding-bottom:16px;margin-bottom:16px}
 .device-probe{border-top:1px solid var(--bd);margin-top:10px;padding-top:10px}
 .skeleton-table{table-layout:fixed;width:100%;min-width:650px}
 .skeleton-table th,.skeleton-table td{height:44px;box-sizing:border-box;padding:10px 12px;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

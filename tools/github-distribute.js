@@ -27,7 +27,8 @@ async function main() {
   if (repository.private || repository.full_name !== REPO) throw Error('仓库身份或可见性不符合要求');
   console.log(JSON.stringify({ repository: repository.html_url, private: repository.private }));
   if (process.argv.includes('--create-only')) return;
-  const dir = path.resolve(__dirname, '../distribution/v1.1.1');
+  const version = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')).version;
+  const dir = path.resolve(__dirname, '../distribution/v' + version);
   const m = JSON.parse(fs.readFileSync(path.join(dir, 'distribution.json'), 'utf8'));
   const exe = fs.readFileSync(path.join(dir, m.file));
   if (crypto.createHash('sha256').update(exe).digest('hex') !== m.sha256) throw Error('本地安装包校验失败');
@@ -35,7 +36,7 @@ async function main() {
   const releases = await api('/repos/' + REPO + '/releases?per_page=100');
   let release = releases.find(x => x.tag_name === tag);
   if (release && !release.draft) throw Error('此构建已发布，禁止覆盖');
-  if (!release) release = await api('/repos/' + REPO + '/releases', 'POST', { tag_name: tag, name: '得物蓝V素材发布工具 ' + m.version, draft: true, body: '专用发布模拟器改用媒体库删除、重扫和回读清理，不再依赖目录ls检查，不新建或切换相册；补齐未索引素材重扫和特殊文件名删除。视频显式选择并核验非黑封面；云端增加逐阶段实测耗时；修复计时刷新与取消状态，同一设备避免发布和重跑并发。\n\n安装前请保存编辑内容并退出应用。\nSHA-256：' + m.sha256 });
+  if (!release) release = await api('/repos/' + REPO + '/releases', 'POST', { tag_name: tag, name: '得物蓝V素材发布工具 ' + m.version, draft: true, body: 'Windows 10/11 x64 安装包。安装前请保存编辑内容并退出应用。\nSHA-256：' + m.sha256 });
   for (const name of [m.file, 'SHA256SUMS.txt', 'distribution.json']) {
     const binaryName = `bluev-publisher-${m.version}-x64-win.exe`;
     const remoteName = name === m.file ? binaryName : name;
