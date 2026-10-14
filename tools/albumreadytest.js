@@ -307,6 +307,32 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
     await adb.clearAlbum('FAKE');
     ok('占用释放后待回收文件被真正删掉（隔离不是永久占着磁盘）',
       ![...fakeAdb.__physicalMedia].some(p=>/复活验证|旧版本残留|根上残留/.test(p)));
+
+    // ========================================================================
+    // ★★★ 2026-10-15 新增（rich 的**第二种现场**，与上面「删索引成功」那条不同）：
+    //   `content delete` 回 139 且**空输出**（真机长期现象：得物内容提供者删完就崩），
+    //   与此同时文件还**被句柄占住**（`rm` 报 Text file busy）。这两件事在 rich 的日志里是
+    //   同时出现的，而旧收尾逻辑只看「物理文件在不在」、不看「隔离标记是否已确认」：
+    //   隔离明明写进去了、四表复查也是空的，它仍然以「物理文件缺失未确认」停批。
+    //   新口径：**隔离已确认 = 相册确实看不到它**（重扫不会复活），物理文件删不掉只记
+    //   「待回收」，本条照常发布；只有隔离**没**确认时，「物理文件还在」才真的意味着会被扫回来。
+    // ========================================================================
+    await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/bluev/139占用残留.mp4');
+    await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/bluev/139占用残留.mp4');
+    fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'139占用残留');
+    fs.writeFileSync(path.join(dir,'DELETE_EXIT_139'),'after');
+    const comboStart=calls().length;
+    const combo=await publisher.run(state());
+    const comboTrace=calls().slice(comboStart);
+    ok('139空输出 + 句柄占用同时出现：隔离已确认时照常发布，物理文件如实记待回收，不强停得物',
+      combo.okCount===1&&combo.failCount===0
+      && comboTrace.some(c=>/touch '\/storage\/emulated\/0\/DCIM\/Camera\/bluev\/\.nomedia'/.test(c))
+      && !comboTrace.some(c=>/am force-stop/.test(c)));
+    fs.unlinkSync(path.join(dir,'DELETE_EXIT_139'));
+    fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+    await adb.clearAlbum('FAKE');
+    ok('139+占用组合解除后：物理文件被真正删掉、隔离标记被撤（不靠假成功掩盖磁盘残留）',
+      ![...fakeAdb.__physicalMedia].some(p=>/139占用残留/.test(p)));
   }
 
 })().catch(e => { console.error(e); process.exitCode = 1; });

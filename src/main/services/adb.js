@@ -954,9 +954,20 @@ async function clearAlbum(serial, opts = {}) {
     if(!left)for(const file of uncertainDeletes) {
       const quote=value=>"'"+value.replace(/'/g,"'\\''")+"'";
       const parent=path.posix.dirname(file);
+      // ★★ 2026-10-15（rich 的第二种现场，别再改回去）：这条守卫防的是「139 回执没生效、
+      //   库里其实还留着记录，而查询又恰好什么都没回」——那时物理文件还在 ⇒ 下一次扫描会把它
+      //   连同别的素材一起扫回相册。但**隔离已确认（该目录的 .nomedia 写过并回读成功）**时，
+      //   物理文件在不在都不影响相册：重扫不会复活它（真机实测，可复算）。
+      //   旧写法只看物理文件在不在，于是「139 空输出 + 句柄占用」这一对同时出现时必然停批 ——
+      //   而这正是 rich 长期的现象：隔离明明生效、四表复查也是空的，却一直卡在「物理文件缺失未确认」。
+      //   ★ 放宽必须**只**针对「我们自己观测到句柄占用、因而进了待回收清单」的文件：
+      //     那种文件留在盘上是已知且可解释的。若 rm 回执谎报成功（文件其实还在）而恰好有别的
+      //     `.nomedia` 在，就绝不能放行 —— 那才是「以空库伪装清理成功」（有对应用例盯着）。
+      const isolated = isolatedDirs.has(parent) && physicalPending.has(file);
+      if(isolated)continue;
       const physical=await run(serial,`if [ -e ${quote(file)} ] || [ -L ${quote(file)} ]; then echo EXISTS; elif [ -d ${quote(parent)} ] && [ -r ${quote(parent)} ]; then echo MISSING; else echo UNKNOWN; fi`,{timeout:8000});
       if(!physical.ok||String(physical.stdout||'').trim()!=='MISSING') {
-        const error=new Error('删除命令退出139后，媒体库为空但物理文件缺失未确认，未放行推送');
+        const error=new Error('删除命令退出139后，媒体库为空但物理文件缺失未确认（该目录的隔离标记也没有确认，重扫会把记录扫回来），未放行推送');
         error.code='ALBUM_PHYSICAL_UNCONFIRMED';throw error;
       }
     }

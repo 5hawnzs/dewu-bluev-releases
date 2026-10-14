@@ -1,4 +1,4 @@
-# v1.1.2 / 2026101307 验证记录
+# v1.1.2 / 2026101503 验证记录
 
 本文件是当前验证结论入口。旧版诊断与测试记录保持为历史，不重复维护新版结论。
 
@@ -162,3 +162,53 @@ rich 任务 `jmv824y2468t6`（客户端 2026101404）连续四条失败，第 1�
 - 完整回归2288项全通过，退出码0；最新界面专项311项通过。包内18项检查与64份src逐字节比对通过。
 - 包262805677字节，SHA-256 `684b07b93b7010fe894ae4c829be607464c50cb5d705bb497b4220da89dcfab3`；路径 `dist-1.1.2-build1404/得物蓝V素材发布工具-1.1.2-build2026101404-x64-win.exe`。未自动安装、未变更线上更新清单。
 - 本机Android只读验证EXISTS/MISSING/UNKNOWN三态通过，不当作rich连续发布验收。用户表示可在rich安装新版本测试；等待该设备验证后才关闭P0。
+
+## 2026-10-15 相册清理真因修复 / 2026101503（本轮）
+
+rich 连续多条失败的**真因**不是「等得不够久」，而是删不掉时**跳过了删记录**：`clearAlbum` 的 `removeOne` 里 `rm` 报 `Text file busy` 就当场 `return`，后面的 `content delete` 从未执行 ⇒ 库记录留在 MediaStore、文件留在磁盘，下一轮再忙、再 return。1405 只是把这个死循环多跑了几遍，所以「5 秒和 90 秒没有区别」。1307 那版连发成功不是因为处理了占用，而是那几天**没撞上占用**。
+
+本机 MuMu（127.0.0.1:16384 / Android 12）对照实验（全部可复算）：
+
+- 文件被句柄占住：`rm -f` ❌ `Text file busy`；`mv <目录> <.目录>` ❌ `Operation not permitted`；`touch <目录>/.nomedia` ✅ 成功；`content delete` ✅ 成功。
+- 无 `.nomedia` 时 `scan_volume` 必复活（`_id` 变号）；有 `.nomedia` 时重复扫不复活；把 `.nomedia` 删掉再扫立刻复活。
+- 因此「相册里有没有它」的判据是**索引为空且重扫不复活**，不是「磁盘文件删掉了没有」。
+
+修复内容：
+
+- `removeOne`：`rm` 失败不再 `return`，改为记录原因 + 给**文件所在目录**写 `.nomedia`（写入后 `[ -f ]` 回读确认）+ 记待回收清单，然后**无论如何**执行 `content delete`；删索引的边界是 `physical.ok || iso.ok`。隔离没确认时保留记录并如实报 `ALBUM_ISOLATION_FAILED`。
+- 防误伤：素材落地区及其上层（`Movies/BlueV`、`Movies`、`DCIM`、`/storage/emulated/0`）**禁止**写 `.nomedia` —— 实测写根目录会把本条新素材一起隐藏（`scan_file` 只回 `file/993`）。命中时如实停批。
+- 跨条回收：进程内存登记隔离目录（不再发设备遍历命令，rich 的目录命令本身就是历史故障点）；回收**只删清单里记着的路径**，绝不遍历目录删；顺序固定「先删文件、再撤标记」，撤不掉就继续隔离。
+- **139 + 占用同时出现**（rich 的长期现象）：删记录回 139 空输出、文件又被占住时，旧收尾只看「物理文件在不在」⇒ 隔离明明已确认也停批。现在先看隔离：**已确认隔离且该文件确属我们观测到占用而进入待回收**时放行（物理文件如实记待回收）；隔离没确认、或 `rm` 回执谎报成功导致文件其实还在时，照旧拦住 —— 不放宽「不以空库伪装清理成功」。
+- `managedalbum.retire` 的 `degraded` 补上消费者（上一批目录两级隔离都没成功时打 warn，由全盘复核兜底）；成功日志区分「相册已清空」与「另有 N 个物理文件仍被占用、待回收（已隔离，不影响本条发布）」。
+
+测试（先红后绿，可复算）：
+
+- 新增 `139空输出 + 句柄占用同时出现：隔离已确认时照常发布…` 与 `139+占用组合解除后：物理文件被真正删掉、隔离标记被撤`。改实现前该用例 FAIL（`AssertionError`），改后 PASS。
+- 同时保留反面对照并保持绿：`139且库暂空但物理文件仍在，不以空库伪装清理成功`（隔离**没**确认时必须拦住，断言 `物理文件缺失未确认`）、`素材落在本批落地目录时绝不写根 .nomedia：如实停批`、`隔离后重扫不复活`、`占用释放后延后回收真的删掉物理文件、撤掉 .nomedia`。
+- 完整回归 **2306 项全部通过，退出码 0**；其中 `albumreadytest` 30 项、`adbtest` 444 项、真实界面 `uicheck` 311 项。改动前基线 2304，多出的 2 项即上面两条新用例。
+
+交付包：
+
+- `dist-1.1.2-build1503/得物蓝V素材发布工具-1.1.2-build2026101503-x64-win.exe`，262814533 字节，SHA-256 `38a8e5f22ede89e8a36a484ac82b566d5f013481a327868f08154c0947a301e7`。
+- 包内核验 23/23 通过（含 `.nomedia` / `physicalPending` / `isolateFile` / `ALBUM_ISOLATION_FAILED` / `ls -1A` / `degraded` / `physicalPending.has(file)`）；`app.asar` 与工作树 `src/` **65/65 逐字节一致**。
+- 线上更新清单未变更前，rich 未验收；`remoteP0Verified` 保持 false。**本机通过不等于 rich 已恢复** —— 远端 P0 仍只能由 rich 的实际任务日志关闭。
+
+### 本机 MuMu 真机复算（三条命令级证据 + 一次反证）
+
+设备 127.0.0.1:16384（MuMu 12 / Android 12），素材放在 rich 的老路径 `/sdcard/DCIM/Camera/bluev/`，
+全程调用**真实产品代码** `adb.clearAlbum`（探针 `node tools/album-isolation-verify.js [serial] [holdSeconds]`，
+产物 `.local-album-1503/result.json`；它只碰自己创建的探针文件与标记）。
+
+1. **占用下的原语**（用真实 open 句柄占住文件）：`rm -f` → `Text file busy`（rc=1）；
+   `mv <目录> <新名>` → `Operation not permitted`；`touch <目录>/.nomedia` → 成功。
+2. **修复后的结果**：`clearAlbum` 在 **5829ms** 内返回 `ok=true`、`removed=1`、`physicalPending=1`、
+   `isolatedDirs=['/storage/emulated/0/DCIM/Camera/bluev']`；随后四表复查 **0 条**、
+   `scan_volume` 重扫后**仍是 0 条**（不复活），`.nomedia` = EXISTS、物理文件 = EXISTS（如实待回收）。
+   返回文案就是设计口径：`已从相册移除；1 个物理文件待回收（仍在设备磁盘上，已用 .nomedia 隔离，不参与相册显示）`。
+3. **句柄释放后的延后回收**：释放后 `rm` 不再 busy；再跑一次 `clearAlbum` ⇒ `pending=0`、
+   物理文件 MISSING、`.nomedia` MISSING（文件真删掉、标记真撤掉，隔离不是永久占着磁盘）。
+4. **反证（把修复逐字还原成旧行为再跑同一条探针）**：在 `removeOne` 的 `rm` 失败分支后面插回 `return;`
+   （只改动这一行，先备份再破坏），同一现场得到
+   `ok=false / code=ALBUM_RESIDUAL / left=1 / 恢复=4次 / 删除异常=rm:busy`，耗时 17640ms ——
+   **与 rich 云端日志的错误形态逐字一致**。恢复源码后 SHA-256 与破坏前一致
+   （`081dceda…cc760`），探针重新全绿。这一对正反结果说明：修复正是结论变化的唯一原因，不是环境巧合。
