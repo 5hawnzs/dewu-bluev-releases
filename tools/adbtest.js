@@ -37,6 +37,7 @@ for (const file of fs.readdirSync(path.join(__dirname, 'fakeadb'))) {
   fs.copyFileSync(path.join(__dirname, 'fakeadb', file), path.join(FDB, file));
 }
 const FAKE_WINDOW = path.join(FDB, 'window.xml');
+fs.writeFileSync(path.join(FDB, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 const CALLS = path.join(FDB, 'calls.log');
 const calls = () => { try { return fs.readFileSync(CALLS, 'utf8'); } catch (e) { return ''; } };
 const clearCalls = () => fs.writeFileSync(CALLS, '');
@@ -852,7 +853,7 @@ const state = {
   const dNo = await publisher.dumpForCapture('127.0.0.1:5555');
   ok('⑰ 读不到前台是哪一屏时照常抓（「检查没做成」≠「抓错页面」，不能把用户堵死）',
     dNo.ok === true && dNo.focus === '', JSON.stringify({ ok: dNo.ok, focus: dNo.focus }));
-  fs.unlinkSync(FOCUS);
+  fs.writeFileSync(FOCUS, 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 
   // 13b) 候选表第一步：dump 里只有「没有文字的相机图标」时，必须产出 tapId，而不是按文字瞎猜
   const camXml = '<hierarchy rotation="0" width="1080" height="2400">'
@@ -1321,7 +1322,7 @@ const state = {
     cap17.ok === true && cap17.via === 'dumpsys' && /没有文字/.test(cap17.viaNote || ''),
     String(cap17.viaNote).slice(0, 62));
   fs.unlinkSync(NOT_IDLE17);
-  fs.unlinkSync(FOCUS17);
+  fs.writeFileSync(FOCUS17, 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 
   // 17e) 两条入口路线：常量 + 候选表优先用「有文字」的那条（用户 2026-10-02 提供的路径）
   ok('⑱ DEWU.route 记下了推荐路线三步（「我」→「主页」→「发布新动态」）',
@@ -2642,7 +2643,7 @@ const state = {
     const stashE = fs.readFileSync(FAKE_WINDOW, 'utf8');
     try {
       // E1) 停在**发布页**（＝发完一条之后最可能的残状）⇒ 必须拉回首页，且起点是「底部我」
-      fs.writeFileSync(FOCUSE, PUB_FOCUS);
+      fs.writeFileSync(FOCUSE, 'com.android.launcher/com.android.launcher2.Launcher');
       store.set({ publish: { uiMap, ensureAppTimeoutMs: null } });
       clearCalls();
       const stE = mkAlbumState(2);
@@ -2704,13 +2705,15 @@ const state = {
       //   E1b-1：前台是**得物的非首页**（个人主页）⇒ 守卫**必须去拉**、不许当成「已经在首页放行」。
       //     （把 isHomeScreen 放宽成「在得物里就行」⇒ 这一步就不会拉 ⇒ 这条红。）
       const ME_FOCUS = 'com.shizhuang.duapp/.modules.user.ui.MyActivity';
+      fs.writeFileSync(path.join(FDB, 'BACK_HOME'), '1');
       fs.writeFileSync(FOCUSE, ME_FOCUS);
       store.set({ publish: { uiMap, ensureAppTimeoutMs: 0 } });
       clearCalls();
       const rE1b = await publisher.run(mkAlbumState(2),
         { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
+      fs.unlinkSync(path.join(FDB, 'BACK_HOME'));
       ok('回主线 ①b ★ 前台是得物的**非首页**（个人主页）⇒ 必须拉回首页，不许当成「已经在首页」放行',
-        /am start -n com\.shizhuang\.duapp/.test(calls()) && rE1b.rows[0].result === '发布成功',
+        /input keyevent 4/.test(calls()) && !/am start|am force-stop/.test(calls()) && rE1b.rows[0].result === '发布成功',
         (calls().match(/.*am start.*/g) || []).join(' | ') || '（没拉 ⇒ 判据被放太宽了）');
 
       //   E1b-2：前台是**首页的短名写法**（`pkg/.modules.home.ui.HomeActivity` —— 得物首页
@@ -2742,7 +2745,7 @@ const state = {
       //    ★ 超时用**产品真的会读**的那个配置（`ensureAppTimeoutMs`）调到 1.2 秒，
       //      而不是在这里干等 30 秒 —— 等 30 秒既慢，又会让「超时逻辑本身」没被测到
       //      （改坏 `timeoutMs` 的读取点，这条断言不该照旧绿）。
-      fs.writeFileSync(FOCUSE, PUB_FOCUS);
+      fs.writeFileSync(FOCUSE, 'com.shizhuang.duapp/.modules.home.ui.SplashActivity');
       fs.writeFileSync(stuckE, '1');
       store.set({ publish: { uiMap, ensureAppTimeoutMs: 1200 } });
       clearCalls();
@@ -2772,12 +2775,14 @@ const state = {
       const hadT4 = fs.existsSync(TAPF4);
       fs.writeFileSync(TAPF4, 'leave');
       fs.writeFileSync(FOCUSE, '-');
+      fs.writeFileSync(path.join(FDB, 'TOP_FOCUS'), HOME_FOCUS);
       store.set({ publish: { uiMap, ensureAppTimeoutMs: 8000 } });
       clearCalls();
       const rE4a = await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
       const logE4a = calls();
+      fs.unlinkSync(path.join(FDB, 'TOP_FOCUS'));
       if (!hadT4) fs.unlinkSync(TAPF4);
-      ok('回主线 ④a 转场瞬间读不到一次前台 ⇒ 不当成「App 不在」而瞎启动，照常往下走',
+      ok('回主线 ④a 转场瞬间读不到一次前台，备用通道确认首页后不瞎启动',
         !/am start|monkey/.test(logE4a) && rE4a.rows[0].result === '发布成功',
         (logE4a.match(/.*(am start|monkey).*/g) || []).join(' | ') + ' / ' + rE4a.rows[0].result);
 
@@ -2834,7 +2839,7 @@ const state = {
       // E6) 超时**行为级**：把 `ensureAppTimeoutMs` 配大 ⇒ 同一条路径真的等更久。
       //   为什么不用源码级：我自己的规矩是「源码里有这行字 ≠ 它真解决了问题」——
       //   改坏 timeoutMs 的读取点（比如硬编码 1000）时，源码级断言照样绿，行为级会红。
-      fs.writeFileSync(FOCUSE, PUB_FOCUS);
+      fs.writeFileSync(FOCUSE, 'com.shizhuang.duapp/.modules.home.ui.SplashActivity');
       fs.writeFileSync(stuckE, '1');
       const tE6a = Date.now();
       await publisher.run(mkAlbumState(2), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
@@ -3397,6 +3402,7 @@ const state = {
       }
     }
     store.set({ publish: { uiMap, device: '127.0.0.1:5555', intervalMinSec: 1, intervalMaxSec: 1 } });
+    fs.writeFileSync(path.join(FDB, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 
     const dir3 = path.join(TMP, 'flat3', '26FW-YB160+煤黑+1');
     fs.mkdirSync(dir3, { recursive: true });

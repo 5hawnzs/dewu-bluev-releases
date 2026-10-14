@@ -290,6 +290,10 @@ function makeFakeAdb(dir) {
     // ★★ 2026-10-04 新增：定位表里的 tapXY / tapId 最终都落到 `input tap`。
     //   现场开关 TAP_FOCUS：点完之后前台落到哪一屏（publish / draft / leave，见文件顶部说明）。
     //   提交后仍在编辑流程与正常返回草稿箱是不同情形；发布流程不得强停得物。
+    if (/^input keyevent (?:4|KEYCODE_BACK)$/.test(cmd) && fs.existsSync(path.join(dir, 'BACK_HOME'))) {
+      fs.writeFileSync(path.join(dir, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
+      return okOut('');
+    }
     if (/^input (tap|keyevent|text) /.test(cmd)) {
       if (fs.existsSync(TAP_FOCUS)) {
         const v = read(TAP_FOCUS, Buffer.from('')).toString('utf8').trim();
@@ -854,6 +858,9 @@ function makeFakeAdb(dir) {
         //   从而判成功 —— 那是**产品代码的正确行为**，不是漏拦（写测试时实测踩到：
         //   第一版只挡了 window，结果这三条一直假红）。
         if (fs.existsSync(path.join(dir, 'FOCUS_UNREADABLE'))) return okOut('');
+        if (pat === 'ACTIVITY ' && fs.existsSync(path.join(dir, 'TOP_FOCUS'))) {
+          return okOut('  ACTIVITY ' + read(path.join(dir, 'TOP_FOCUS'), Buffer.from('')).toString('utf8').trim() + ' abc pid=9560\n');
+        }
         const lines = [
           'TASK null id=2 userId=0',
           '  ACTIVITY com.android.settings/.Settings 1a2b3c4 pid=1000',

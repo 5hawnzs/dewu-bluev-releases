@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const REPO = 'wfjdyhmtr2-glitch/dewu-bluev-releases';
-const BUILD = 2026101401;
+const BUILD = 2026101402;
 const FEED = `https://raw.githubusercontent.com/${REPO}/main/latest.json`;
 let manifest, file, pending;
 let state = { status: 'idle', current: app.getVersion(), build: BUILD, percent: 0, message: '尚未检查更新' };

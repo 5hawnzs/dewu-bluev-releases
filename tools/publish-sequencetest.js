@@ -10,6 +10,7 @@ Module._load = function(name) {
 const dir = path.join(tmp, 'fakeadb'); fs.mkdirSync(dir);
 for (const file of fs.readdirSync(path.join(__dirname, 'fakeadb'))) fs.copyFileSync(path.join(__dirname, 'fakeadb', file), path.join(dir, file));
 fs.writeFileSync(path.join(dir, 'IME_ACTIVE'), '1');
+fs.writeFileSync(path.join(dir, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 require('child_process').execFile = require('./fakeadb/adb').makeFakeAdb(dir);
 const store = require('../src/main/store');
 const adb = require('../src/main/services/adb');

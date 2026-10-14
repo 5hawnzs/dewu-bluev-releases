@@ -13,15 +13,18 @@ fs.writeFileSync(path.join(dir, 'IME_ACTIVE'), '1');
 const HOME = 'com.shizhuang.duapp/.modules.home.ui.HomeActivity';
 const DRAFT = 'com.shizhuang.duapp/media.activity.DraftActivity';
 const PUB = 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity';
+const PERSONAL = 'com.shizhuang.duapp/com.shizhuang.duapp.modules.personal.ui.home.PersonalActivity';
 const focus = path.join(dir, 'FOCUS');
 const windowFile = path.join(dir, 'window.xml');
 const baseXml = fs.readFileSync(windowFile, 'utf8');
 const draftXml = baseXml.replace('</hierarchy>', '<node resource-id="com.shizhuang.duapp:id/iv_draft_title" text="草稿箱" enabled="true" bounds="[0,0][1080,100]"/><node resource-id="com.shizhuang.duapp:id/fl_publish" text="发布新动态" enabled="true" bounds="[400,2250][680,2350]"/></hierarchy>');
 const setPage = value => { fs.writeFileSync(focus, value); fs.writeFileSync(windowFile, value === DRAFT ? draftXml : baseXml); };
-let submitted = 0, returns = [];
+let submitted = 0, returns = [], personalStart = false, backPages = [];
 const fake = require('./fakeadb/adb').makeFakeAdb(dir);
 require('child_process').execFile = (bin, args, opts, cb) => fake(bin, args, opts, (error, stdout, stderr) => {
   const command = args.join(' ');
+  if (personalStart && /am start/.test(command)) setPage(PERSONAL);
+  if (personalStart && /input keyevent (?:4|KEYCODE_BACK)\b/.test(command)) setPage(backPages.shift() || HOME);
   if (!error && /input tap 101 101/.test(command)) setPage(DRAFT);
   if (!error && /input tap 540 2300/.test(command)) setPage(PUB);
   if (!error && /input tap 162 160/.test(command)) setPage(returns[submitted++] || HOME);
@@ -42,6 +45,57 @@ const state = () => ({ items: [{ id: 'A', dir: itemDir, absDir: itemDir, files: 
 const calls = () => fs.readFileSync(path.join(dir,'calls.log'),'utf8');
 const ok = (label,value) => { assert(value,label); console.log('PASS '+label); };
 (async()=>{
+  store.set({ publish: { ensureAppTimeoutMs: 1200 } });
+  personalStart = true; setPage(PERSONAL); returns = [HOME,HOME,HOME];
+  const personal = await publisher.run(state()).catch(error => ({ error: error.message }));
+  ok('云端个人主页起步：启动命令不改变旧任务栈时，App内返回首页并完成，不强停或重启', personal.okCount===3
+    && /input keyevent (?:4|KEYCODE_BACK)\b/.test(calls()) && !/am force-stop|am start|monkey/.test(calls()));
+  for (const start of ['com.shizhuang.duapp/.modules.product.ui.ProductDetailActivity', 'com.shizhuang.duapp/.modules.search.ui.SearchActivity',
+    'com.shizhuang.duapp/com.shizhuang.cloudpix.main.CloudPixActivity']) {
+    const before = calls().length;
+    submitted = 0; setPage(start); backPages = [start, PERSONAL, HOME];
+    const s = state(); s.publish.rows = s.publish.rows.slice(0,1);
+    const result = await publisher.run(s); const trace = calls().slice(before);
+    ok('其他浏览起点及同Activity内层返回收敛入口：'+start, result.okCount===1
+      && (trace.match(/input keyevent 4/g)||[]).length===3 && !/am start|am force-stop|monkey/.test(trace));
+  }
+  for (const start of [PUB, 'com.shizhuang.duapp/.media.VideoEditActivity', 'com.shizhuang.duapp/.media.UploadActivity']) {
+    const before = calls().length; setPage(start);
+    const result = await publisher.run(state()).catch(error=>({error:error.message}));
+    const trace = calls().slice(before);
+    ok('未完成内容或上传页面不盲退、不保存草稿、不提交：'+start, !!result.error
+      && /未完成内容/.test(result.error) && !/input |am start|am force-stop|\bpush /.test(trace));
+  }
+  {
+    const before = calls().length; setPage(PERSONAL);
+    fs.writeFileSync(windowFile, baseXml.replace('</hierarchy>', '<node text="是否继续编辑" resource-id="dialog" bounds="[0,0][100,100]"/></hierarchy>'));
+    const result = await publisher.run(state()).catch(error=>({error:error.message}));
+    ok('浏览Activity上的内容确认弹窗也不能盲退或选放弃', /确认弹窗/.test(result.error||'')
+      && !/input |am start|am force-stop|\bpush /.test(calls().slice(before)));
+  }
+  {
+    const before = calls().length; setPage(PERSONAL); backPages = Array(9).fill(PERSONAL);
+    const result = await publisher.run(state()).catch(error=>({error:error.message}));
+    ok('返回无效受时间及次数限制，不原地等待30秒或降级强停', /App内返回后未确认/.test(result.error||'')
+      && (calls().slice(before).match(/input keyevent 4/g)||[]).length<=8
+      && !/am start|am force-stop|\bpush /.test(calls().slice(before))); backPages=[];
+  }
+  {
+    const before = calls().length; setPage('com.android.settings/.Settings'); submitted=0;
+    const s=state();s.publish.rows=s.publish.rows.slice(0,1);
+    const result=await publisher.run(s);const trace=calls().slice(before);
+    ok('外部App起步只唤起一次得物，旧栈仍在浏览页则App内返回', result.okCount===1
+      && (trace.match(/am start/g)||[]).length===1 && /input keyevent 4/.test(trace) && !/am force-stop/.test(trace));
+  }
+  personalStart = false; submitted = 0; fs.writeFileSync(path.join(dir,'calls.log'),'');
+  {
+    setPage('-'); fs.writeFileSync(path.join(dir,'TOP_FOCUS'), PUB);
+    const result=await publisher.run(state()).catch(error=>({error:error.message}));
+    ok('窗口焦点缺失时只认实际栈顶，后台首页不能绕过编辑页保护', /未完成内容/.test(result.error||'')
+      && !/input |am start|am force-stop|\bpush /.test(calls()));
+    fs.unlinkSync(path.join(dir,'TOP_FOCUS')); fs.writeFileSync(path.join(dir,'calls.log'),'');
+  }
+  store.set({ publish: { ensureAppTimeoutMs: 30000 } });
   setPage(HOME); returns = [DRAFT,DRAFT,HOME];
   const result = await publisher.run(state());
   let trace = calls();

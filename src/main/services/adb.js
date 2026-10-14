@@ -1651,7 +1651,8 @@ async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000
   const readFocus = async () => {
     let f = await currentFocus(serial);
     if (!f && want) {
-      const top = await topActivityMatching(serial, want);
+      // 发布导航只认实际栈顶，不能在后台栈里搜到首页就当作当前首页。
+      const top = allowForceStop ? await topActivityMatching(serial, want) : await frontActivity(serial);
       const m = /ACTIVITY\s+([^\s]+)/.exec(top);
       if (m) f = m[1];
     }
@@ -1690,8 +1691,39 @@ async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000
   if (isWant(focus)) return { ok: true, focus, started: false, from: '', why: '' };
   // ★ 起手那次是「读不到」⇒ 这一趟**不启动 App**（不知道自己在哪一屏时，am start 是瞎启动）。
   //   直接放行：后续每一步自己的 `whenOn/whenNotOn` 屏幕守卫仍会在真错屏上拦住乱点。
-  if (firstReadEmpty) return { ok: true, focus, started: false, from: '', why: '' };
+  if (firstReadEmpty && allowForceStop) return { ok: true, focus, started: false, from: '', why: '' };
   const before = focus;
+
+  // 禁止强停的发布调用必须通过App内部返回收敛入口，不能删掉硬恢复后只原地等超时。
+  // 每一步重新观察；涉及未完成内容、上传或交易的页面不猜测退出/保存按钮。
+  const inTargetApp = value => !!pkg && String(value || '').split('/')[0] === pkg;
+  const navigateInside = async () => {
+    for (let backs = 0; backs < 8 && Date.now() - t0 < timeout;) {
+      if (isWant(focus)) return { ok: true, focus, started: false, from: before, why: '' };
+      if (!focus || /(?:Splash|Launch|Loading)Activity/.test(focus)) {
+        await sleepMs(300); focus = await readFocus(); continue;
+      }
+      if (!inTargetApp(focus)) break;
+      if (/(?:publish|edit|camera|album|upload|payment|cashier|login)/i.test(focus)) {
+        return { ok: false, focus, started: false, from: before,
+          why: `当前停在可能含未完成内容的页面「${focus}」，不能自动返回以免保存草稿、丢弃内容或中断上传` };
+      }
+      const page = await dumpEx(serial, { pkg, retries: 0, allowAnimOff: false });
+      if (!page.ok || /保存草稿|放弃编辑|放弃发布|正在上传|是否退出|是否继续编辑|确认支付|确认付款|退出登录/.test(page.xml || '')) {
+        return { ok: false, focus, started: false, from: before,
+          why: page.ok ? '当前存在内容或交易确认弹窗，不能自动选择保存、放弃或确认' : '返回前读不到当前页面结构：' + page.why };
+      }
+      const back = await keyevent(serial, 4);
+      backs++;
+      if (!back.ok) return { ok: false, focus, started: false, from: before, why: 'App内返回命令失败' };
+      await sleepMs(300);
+      focus = await readFocus();
+    }
+    if (isWant(focus)) return { ok: true, focus, started: false, from: before, why: '' };
+    return { ok: false, focus, started: false, from: before,
+      why: `App内返回后未确认目标入口，当前「${focus || '读不到'}」；未强停或重启得物` };
+  };
+  if (!allowForceStop && inTargetApp(focus)) return navigateInside();
 
   // ③ 需要拉：先试 am start（带前导点）；报 does not exist 就点名报错
   let started = false;
@@ -1726,6 +1758,9 @@ async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000
   for (;;) {
     focus = await readFocus();
     if (isWant(focus)) return { ok: true, focus, started, from: before, why: '' };
+    if (!allowForceStop && inTargetApp(focus) && !/(?:Splash|Launch|Loading)Activity/.test(focus)) {
+      return { ...await navigateInside(), started };
+    }
     if (allowForceStop && !hardTried && focus && isFocusOf(focus, pkg) && Date.now() - t0 >= hardAfterMs) {
       hardTried = true;
       await forceStop(serial, pkg);

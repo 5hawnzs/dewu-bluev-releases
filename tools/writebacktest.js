@@ -17,6 +17,7 @@ Module._load = function(name) {
 const deviceDir = path.join(tmp, 'fakeadb'); fs.mkdirSync(deviceDir);
 for (const file of fs.readdirSync(path.join(__dirname, 'fakeadb'))) fs.copyFileSync(path.join(__dirname, 'fakeadb', file), path.join(deviceDir, file));
 fs.writeFileSync(path.join(deviceDir, 'IME_ACTIVE'), '1');
+fs.writeFileSync(path.join(deviceDir, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 const fakeAdb = require('./fakeadb/adb').makeFakeAdb(deviceDir);
 require('child_process').execFile = (bin, args, options, callback) => {
   if (rejectQuery && args.some(arg => String(arg).startsWith('content query '))) {
