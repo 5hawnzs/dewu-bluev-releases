@@ -879,23 +879,36 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   let preparation;
   if(canOverlap) {
     let aborted=false, navigationError=null;
+    // ★★★ 2026-10-14（rich 四连失败后收紧）：导航**不在清理期间并行**。
+    //   旧写法在 clearAlbum 还在 rm 的时候就点「我/主页」，而上一条已发布视频可能正在
+    //   个人主页自动播放、握着解码句柄 —— 清理期间一碰界面，句柄就被继续拉住，
+    //   rm 永远 busy（现场：0.3~0.7s 就报 busy，四连失败）。
+    //   现在：清理收敛后才启动导航，与推送/索引重叠，进发布入口前统一等待。
+    //   省时效果不变（导航 6~11s 覆盖在推送索引里），但清理阶段绝不发界面动作。
     const branchCancelled=()=>cancelled()||aborted||!!navigationError;
-    const navigation=require('./diagnostics').isolatedPhase('准备个人主页',row.seq,async()=>{
-      for(const step of navSteps) {
-        if(branchCancelled())throw new Error('发布已取消');
-        await runStep(serial,step,{}, {...ctx,cancelled:branchCancelled});
-        preparedSteps.add(step);
-      }
-      for(const step of absentDialogs)preparedSteps.add(step);
-    }).catch(error=>{navigationError=error;});
+    let navigation=null;
+    const startNavigation=()=>{
+      if(navigation)return navigation;
+      navigation=require('./diagnostics').isolatedPhase('准备个人主页',row.seq,async()=>{
+        for(const step of navSteps) {
+          if(branchCancelled())throw new Error('发布已取消');
+          await runStep(serial,step,{}, {...ctx,cancelled:branchCancelled});
+          preparedSteps.add(step);
+        }
+        for(const step of absentDialogs)preparedSteps.add(step);
+      }).catch(error=>{navigationError=error;});
+      return navigation;
+    };
+    const awaitNavigation=async()=>{ if(navigation)await navigation; if(navigationError)throw navigationError; };
     try {
       preparation=await albumready.prepare(serial,item,row,{...ctx,publishConfig:c,cancelled:branchCancelled,
-        beforePush:async()=>{await navigation;if(navigationError)throw navigationError;}});
+        startNavigation,awaitNavigation});
     } catch(error) {
       const primaryNavigationError=navigationError;
-      aborted=true;await navigation;throw primaryNavigationError&&!cancelled()?primaryNavigationError:error;
+      aborted=true;if(navigation)await navigation;
+      throw primaryNavigationError&&!cancelled()?primaryNavigationError:error;
     }
-    log(`${row.dir}：相册清理与个人主页导航已并行完成，之后才进入发布入口`, 'info');
+    log(`${row.dir}：相册清理完成，个人主页导航已收敛，之后才进入发布入口`, 'info');
   } else preparation=await albumready.prepare(serial,item,row,{...ctx,publishConfig:c});
   const { remotes, remoteDir } = preparation;
 

@@ -122,7 +122,9 @@ const ok = (label,value) => { assert(value,label); console.log('PASS '+label); }
     && !/am force-stop|am start|monkey/.test(trace));
   const lockedStart=calls().length;
   fake.__appReset();fs.writeFileSync(path.join(dir,'DIR_LOCKED_BY_APP'),'1');setPage(HOME);
-  const locked=await publisher.run(state());trace=calls().slice(lockedStart);
+  // 占用不解开时走「预算耗尽→如实失败」分支。生产默认撑满 90 秒，
+  // 回归用短退避预算跑同一条行为，不空耗 3×90 秒（否则会撞 run-all 的 240 秒超时）。
+  const locked=await publisher.run(state(),{busyRetryDelays:[1,2,3],busyRetryBudgetMs:12});trace=calls().slice(lockedStart);
   ok('上一条文件被占用时不以强停解锁、不推混杂素材，失败原因保留且后续条目仍处理',locked.failCount===3
     && locked.rows.every(row=>/未清净/.test(row.reason)) && !/am force-stop|\bpush |input tap /.test(trace));
   fs.unlinkSync(path.join(dir,'DIR_LOCKED_BY_APP'));

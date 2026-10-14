@@ -68,11 +68,28 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
   ok('上一条物理文件短暂占用：不先删索引掩盖失败，自然恢复后才推送提交', recovered.okCount===1
     && secondRm>firstRm && !busyTrace.slice(firstRm+1,secondRm).some(c=>/content delete|\bpush /.test(c))
     && !busyTrace.some(c=>/am force-stop/.test(c)));
+  // rich 现场：得物握着上一条视频的解码句柄，释放时刻晚于旧版 500/1500/3000 三次恢复（约 5 秒）。
+  // 旧版第 5 次 rm 之前就判残留失败 —— 这条必须红，然后靠“总预算内有界退避”转绿。
+  // ★ 先清空前几轮留下的库记录，让这一条只剩「上一条.jpg」一个被占句柄，
+  //   MEDIA_BUSY_ROUNDS=4 才精确对应「前 4 次 rm 全 busy、第 5 次成功」。
+  const preclean = await adb.clearAlbum('FAKE');
+  assert(preclean.ok, '前置清空失败：' + preclean.error);
+  await adb.push('FAKE', path.join(itemDir,'1.jpg'), '/sdcard/DCIM/Camera/上一条.jpg');
+  await adb.mediaScan('FAKE', '/sdcard/DCIM/Camera/上一条.jpg');
+  fs.writeFileSync(path.join(dir,'MEDIA_BUSY_ROUNDS'),'4');
+  const lateStart = calls().length;
+  const late = await publisher.run(state());
+  const lateTrace = calls().slice(lateStart);
+  const lateRmTries = lateTrace.filter(c=>/rm -f .*上一条/.test(c)).length;
+  ok('句柄晚于旧版约5秒预算才释放：仍在总预算内退避收敛，之后才推送提交', late.okCount===1
+    && late.failCount===0 && lateRmTries>=5 && !lateTrace.some(c=>/am force-stop/.test(c)));
   fs.writeFileSync(path.join(dir,'DIR_LOCKED_BY_APP'),'1');
   const lockedStart=calls().length;
-  const locked=await publisher.run(state());
-  ok('持续占用不会被伪装为成功：有限恢复后如实保留busy原因，不推送、不提交、不强停',locked.failCount===1
-    && /rm:busy/.test(locked.rows[0].reason) && /恢复=3次/.test(locked.rows[0].reason)
+  // 一直占用分支用短退避跑：断言的是「预算内清不掉就如实失败」这条行为，
+  // 不必在回归里真空跑满 90 秒。生产默认仍是 500ms 起、封顶 5s、撑满 90s 预算。
+  const locked=await publisher.run(state(), { busyRetryDelays: [1, 2, 3], busyRetryBudgetMs: 12 });
+  ok('持续占用不会被伪装为成功：预算内反复退避仍清不掉就如实保留busy原因，不推送、不提交、不强停',locked.failCount===1
+    && /rm:busy/.test(locked.rows[0].reason)
     && !calls().slice(lockedStart).some(c=>/\bpush |input tap|am force-stop/.test(c)));
   fs.unlinkSync(path.join(dir,'DIR_LOCKED_BY_APP'));
   fs.writeFileSync(path.join(dir,'DELETE_LAG_ROUNDS'),'1');
@@ -100,18 +117,25 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
   const overlapStart=calls().length;
   const overlap=await publisher.run(state());
   const overlapTrace=calls().slice(overlapStart);
+  const overlapFirstRm=overlapTrace.findIndex(c=>/rm -f /.test(c));
+  const lastScan=overlapTrace.map((c,i)=>/--method scan_volume/.test(c)?i:-1).reduce((a,b)=>Math.max(a,b),-1);
   const navIndex=overlapTrace.findIndex(c=>/input tap 150 150/.test(c));
-  const scanIndex=overlapTrace.map((c,i)=>/--method scan_volume/.test(c)?i:-1).reduce((a,b)=>Math.max(a,b),-1);
   const entryIndex=overlapTrace.findIndex(c=>/input tap 200 200/.test(c));
-  ok('清理期间仅并行进入个人主页，发布新动态及素材推送必须等待清理收敛',overlap.okCount===1
-    && navIndex>=0&&navIndex<scanIndex&&entryIndex>scanIndex
-    && overlapTrace.findIndex(c=>/\bpush /.test(c))>scanIndex);
+  const lastPush=overlapTrace.map((c,i)=>/\bpush /.test(c)?i:-1).reduce((a,b)=>Math.max(a,b),-1);
+  // ★★ 2026-10-14 rich 四连失败后收紧：清理相册期间**一个界面动作都不许发**。
+  //   原因：上一条已发布视频可能还挂在得物里（个人主页/播放器持解码句柄）⇒ 清理时点界面
+  //   会把它继续拉住，rm 永远 busy。导航改到「清理收敛之后」再启动，与推送/索引重叠，
+  //   省时效果保留；发布新动态仍留在最后一道屏障之后。
+  ok('清理相册期间不触碰得物界面，主页导航在清理收敛后才启动',overlap.okCount===1
+    && overlapFirstRm>=0&&lastScan>overlapFirstRm
+    && !overlapTrace.slice(overlapFirstRm,lastScan+1).some(c=>/input tap /.test(c))
+    && navIndex>lastScan&&entryIndex>navIndex&&entryIndex>lastPush);
   fs.writeFileSync(path.join(dir,'MEDIA_PERMISSION_DENIED'),'1');
   const overlapFailStart=calls().length;
   const overlapFailed=await publisher.run(state());
-  ok('并行清理失败保留首个真实原因，取消导航不覆盖permission且不进发布入口',overlapFailed.failCount===1
+  ok('清理失败时一个界面动作都不发、不推素材、不进发布入口',overlapFailed.failCount===1
     && /permission/.test(overlapFailed.rows[0].reason)
-    && !calls().slice(overlapFailStart).some(c=>/input tap 200 200|\bpush /.test(c)));
+    && !calls().slice(overlapFailStart).some(c=>/input tap |\bpush /.test(c)));
   fs.unlinkSync(path.join(dir,'MEDIA_PERMISSION_DENIED'));
   store.set({publish:{uiMap:originalMap}});fs.writeFileSync(xmlFile,originalXml);
   fs.writeFileSync(path.join(dir,'DELETE_EXIT_139'),'after');

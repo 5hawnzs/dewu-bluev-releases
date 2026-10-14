@@ -692,12 +692,32 @@ async function clearAlbum(serial, opts = {}) {
         await removeAll(discovered);
         hit = await reScan();
       }
-      // 仅异常残留进入有限恢复。物理删除失败不先删索引；重扫后以当前真实残留重试，
-      // 不强停应用、不按路径是否曾见过放弃恢复，全部操作仍受同一90秒截止预算限制。
-      for (const delay of [500, 1500, 3000]) {
+      // ★★★ 2026-10-14（rich 四连失败真因）：**busy 恢复必须撑满总预算，不能只试 3 次约 5 秒**。
+      //   现场：得物停在上一条已发布视频上握着**硬解码句柄**，rm 连续报 `Text file busy`；
+      //   旧版只退避 [500,1500,3000] 三次就下结论「未清净」⇒ 用户看到连续四条失败，
+      //   而真相只是句柄还没释放（设备侧每条清理实际只花 21.9~23.8s，离 90s 预算还远）。
+      //   现在改成：只要总预算没走完、取消没触发，就按 idx*600ms 封顶 5s 的间隔继续，
+      //   每轮重扫后以**当前真实残留**重试。仍然是**如实判据** —— 物理文件与四表复查都干净才放行，
+      //   预算走完仍清不掉就把 busy 原因原样带回，绝不假成功、绝不强停得物。
+      const busyDelays = Array.isArray(opts.busyRetryDelays) && opts.busyRetryDelays.length
+        ? opts.busyRetryDelays.map(Number).filter(v => Number.isFinite(v) && v >= 0)
+        : null;
+      const nextBusyDelay = () => {
+        if (busyDelays) return busyDelays[Math.min(recoveryAttempts, busyDelays.length - 1)];
+        return Math.min(500 + recoveryAttempts * 600, 5000);
+      };
+      // 退避间隔本身也要留出一次删除+重扫的时间，否则预算是假的。
+      const recoveryReserve = 12000;
+      // 回归可用 busyRetryBudgetMs 收紧这段恢复的总时长；生产不传，直接吃满 90 秒总预算。
+      const busyBudget = Number.isFinite(Number(opts.busyRetryBudgetMs)) && Number(opts.busyRetryBudgetMs) >= 0
+        ? Number(opts.busyRetryBudgetMs) : null;
+      const recoveryEnd = busyBudget == null ? deadline : Math.min(deadline, Date.now() + busyBudget);
+      for (;;) {
         if (!hit.length) break;
         if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
-        if (deadline - Date.now() <= delay) break;
+        const delay = nextBusyDelay();
+        const reserve = busyBudget == null ? recoveryReserve : 0;
+        if (!(delay >= 0) || recoveryEnd - Date.now() <= delay + reserve) break;
         await sleepMs(delay);
         recoveryAttempts++;
         await removeAll(hit);

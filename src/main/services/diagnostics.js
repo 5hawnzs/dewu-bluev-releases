@@ -100,7 +100,13 @@ function format(value) {
   };
   const failures = (Array.isArray(value.failures) ? value.failures : []).slice(-3).map(encode).filter(Boolean);
   const recent = (Array.isArray(value.commands) ? value.commands : []).slice(-3).map(encode).filter(Boolean);
-  return `[诊断 ${version}/${value.build} 步骤=${name} 行=${Number(value.row) || 0} 失败=${failures.join(',') || '无'} 最近=${recent.join(',') || '无'}]`.slice(0, 700);
+  // ★★★ 2026-10-14：**阶段最终成功的**，里面的异常回执是已经用回读确认过、恢复了的瞬时故障，
+  //   不能再挂「失败=」——现场第1/2/4条清理相册 ok=1，云端摘要却写「失败=query…rc=139…」，
+  //   用户看到的「139 一直出现」有相当一部分就是这么来的。判据没变（ok 仍由复查决定），
+  //   只是把「已恢复」和「本阶段真失败」分开说明。
+  const okPhase = value.ok !== false;
+  const label = okPhase ? '已恢复' : '失败';
+  return `[诊断 ${version}/${value.build} 步骤=${name} 行=${Number(value.row) || 0} ${label}=${failures.join(',') || '无'} 最近=${recent.join(',') || '无'}]`.slice(0, 700);
 }
 async function isolatedPhase(name, row, work) {
   const parent=storage.getStore();

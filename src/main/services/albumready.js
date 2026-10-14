@@ -26,7 +26,11 @@ async function prepare(serial, item, row, ctx = {}) {
   const clearStarted = Date.now();
   require('./diagnostics').phase('清理相册', row.seq);
   const cleared = await adb.clearAlbum(serial, {
-    deadline: clearStarted + 90000, cancelled
+    deadline: clearStarted + 90000, cancelled,
+    // 退避间隔是可注入 seam：生产走默认（500ms 起、封顶 5s、撑满 90s 预算），
+    // 回归用短间隔覆盖「句柄晚释放 / 一直占用」两条分支，不必空跑满 90 秒。
+    busyRetryDelays: ctx.busyRetryDelays,
+    busyRetryBudgetMs: ctx.busyRetryBudgetMs
   });
   if (!cleared.ok) {
     const error = new Error('上一条相册素材未清净：' + (cleared.error || '未知原因'));
@@ -35,11 +39,12 @@ async function prepare(serial, item, row, ctx = {}) {
   }
   checkCancelled();
   log(`${row.dir}：相册已清空，回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s`, 'info');
-  // 并行的主页导航必须完成；任一分支失败都不能提前推送素材。
-  if (ctx.beforePush) {
-    require('./diagnostics').phase('等待个人主页导航', row.seq);
-    await ctx.beforePush();
-  }
+  // ★★★ 2026-10-14（rich 四连失败后收紧）：**清理期间一个界面动作都不发**。
+  //   上一条已发布视频可能还挂在得物里（个人主页/播放器正在解码）⇒ 清理时点界面会把它继续拉住，
+  //   `rm` 永远报 `Text file busy`。导航改到清理**收敛之后**再启动，与推送/索引重叠，
+  //   省时效果保留；发布新动态、草稿处置、输入仍留在最后一道屏障之后。
+  //   这里只启动不等待：等推送与索引做完再统一等它，任一分支失败都不进发布入口。
+  if (ctx.startNavigation) ctx.startNavigation();
   checkCancelled();
   const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { timeout: 8000 });
   if (!mk.ok) throw new Error('相机目录无法写入：' + (mk.stderr || mk.stdout || '未知原因'));
@@ -178,6 +183,12 @@ async function prepare(serial, item, row, ctx = {}) {
   if (!exactAlbum.ok) throw new Error(exactAlbum.error);
   log(`${row.dir}：已推 ${media.length} 个${mediaWord}片，并确认写进媒体库（${w.waited}s）`, 'info');
 
+  // 推送与索引期间并行推进的主页导航必须在这里收敛；任一分支失败都不进发布入口。
+  if (ctx.awaitNavigation) {
+    require('./diagnostics').phase('等待个人主页导航', row.seq);
+    await ctx.awaitNavigation();
+  }
+  checkCancelled();
   return { remotes, remoteDir };
 }
 module.exports = { prepare };

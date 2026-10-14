@@ -728,7 +728,14 @@ function makeFakeAdb(dir) {
         const left=Number(read(lagRounds,Buffer.from('0')).toString());
         if(left>0){fs.writeFileSync(lagRounds,String(left-1));return okOut('Deleted 0 rows.\n');}
       }
-      if (appLocked()) return fail('content delete: Text file busy');
+      // ★★★ 2026-10-14 真机实测修正（务必别再改回去）：
+      //   文件被句柄占住时 —— `rm -f` / `mv` 报 `Text file busy`（FUSE 层拦住物理删除/改名），
+      //   但 `content delete` **照样成功**：MediaProvider 先把库记录删掉（相册里立刻看不到它），
+      //   物理文件留在原地 ⇒ 下一次 `scan_volume` 会把它**重新扫进库**（本机实测，可复算）。
+      //   旧夹具把 content delete 也判成 busy，等于把「记录能隐藏」这条唯一可行的退路测死了，
+      //   于是产品只能在 busy 时整条失败 —— rich 设备连续四条失败就是踩在这里。
+      if (fs.existsSync(path.join(dir,'CONTENT_DELETE_FAIL'))) return fail('content delete: Permission Denial');
+      const locked=appLocked();
       // ★★ 2026-10-04 新增：按 _id 删库记录（clearMediaDir 用的就是这条）。
       //   真机语义：删掉记录的同时**物理文件也一起消失**（见 adb.js 顶部实测注释）。
       //   夹具要同步把 scanned / pushed 里的对应项去掉 —— 否则 content query 还看得见，
@@ -739,11 +746,12 @@ function makeFakeAdb(dir) {
         const idx = scanned.findIndex(p => mediaIdOf(p) === id);   // 按**稳定 id** 反查（不再用下标推算）
         if (idx >= 0) {
           const gone = scanned[idx];
-          if(!fs.existsSync(path.join(dir,'RM_SILENT_KEEP')))for(const media of physicalMedia)if(toCmp(media)===toCmp(gone))physicalMedia.delete(media);
+          // 只有**没被占用**时物理文件才会跟着记录一起消失；被占用时物理仍在，扫卷会复活它。
+          if(!locked&&!fs.existsSync(path.join(dir,'RM_SILENT_KEEP')))for(const media of physicalMedia)if(toCmp(media)===toCmp(gone))physicalMedia.delete(media);
           scanned.splice(idx, 1);
           mediaIds.delete(String(gone));
           dbTimes.delete(mtKey(gone));
-          for (let i = pushed.length - 1; i >= 0; i--) {
+          if(!locked)for (let i = pushed.length - 1; i >= 0; i--) {
             if (norm(pushed[i]).replace(/^\/storage\/emulated\/0\//, '/sdcard/') ===
                 norm(gone).replace(/^\/storage\/emulated\/0\//, '/sdcard/')) pushed.splice(i, 1);
           }

@@ -96,4 +96,21 @@ const adb = moduleBox.exports;
   });
   assert(diagnostics.format(mixedPhases[0]).includes('delete:1ms/rc=139'));
   console.log('PASS 连续查询139也不能挤掉删除139回执，远端验收可确认是否覆盖同一故障');
+  // ★★★ 2026-10-14（用户反复看到 139 的直接原因）：**阶段最终成功的**，那些 139/busy
+  //   是用回读确认过、已经恢复的瞬时故障，不能再写进「失败=」。
+  //   现场：第1/2/4条清理相册 ok=1，云端摘要却写着 `失败=query:1318ms/rc=139...` ——
+  //   用户看到的「139 出现不止 5 次」有相当一部分是这些**已恢复**的回执。
+  //   判据不变（ok 仍由复查决定），只是把「已恢复」和「本阶段真失败」分开表述。
+  const recoveredPhases=[];const recovered=diagnostics.create({version:'1.1.2',build:2026101405,onPhase:p=>recoveredPhases.push(p)});
+  diagnostics.run(recovered,()=>{
+    diagnostics.phase('清理相册',1);
+    diagnostics.record(['shell','content delete --uri secret'],{ok:false,code:139,stdout:'',stderr:''},10,'bundled');
+    diagnostics.record(['shell','content query --uri secret'],{ok:false,code:139,stdout:'No result found.\n'},12,'bundled');
+    diagnostics.phase('条目结束');
+  });
+  const recoveredText=diagnostics.format(recoveredPhases[0]);
+  assert(recoveredPhases[0].ok===true);
+  assert(recoveredText.includes('已恢复=')&&!recoveredText.includes('失败='));
+  assert(recoveredText.includes('delete:10ms/rc=139'));
+  console.log('PASS 阶段成功的瞬时139回执标注为「已恢复」，不再冒充「失败」');
 })().catch(error => { console.error(error); process.exitCode = 1; });
