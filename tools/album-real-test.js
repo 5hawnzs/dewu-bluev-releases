@@ -28,7 +28,8 @@ async function main() {
     }
   }
   await ensureOnlyFixtures();
-  await adb.forceStop(serial, 'com.shizhuang.duapp');
+  const pidBefore=(await adb.shell(serial,'pidof com.shizhuang.duapp')).stdout.trim();
+  assert(pidBefore,'测试前得物必须保持运行，禁止以强停后的现场验收连续发布');
   for (let round = 1; round <= 4; round++) {
     const files = fixtures;
     for (const file of files) {
@@ -44,7 +45,7 @@ async function main() {
     }
     if (indexed) assert(files.every(file => before.join('\n').includes(adb.toMediaPath(file))));
     const started = Date.now();
-    const opts = { forceStopPkg: 'com.shizhuang.duapp', deadline: Date.now() + 90000 };
+    const opts = { deadline: Date.now() + 90000 };
     const all = await adb.clearAlbum(serial, opts); assert(all.ok, all.error);
     const populatedMs = Date.now() - started;
     for (const file of files) {
@@ -58,6 +59,7 @@ async function main() {
     const result = { round, indexed, populatedMs, emptyMs: Date.now() - emptyStart, removed: all.removed,
       physicalMissing: true, rescanRevived: false, emptyOk: true };
     summary.push(result); console.log(JSON.stringify(result));
+    assert.strictEqual((await adb.shell(serial,'pidof com.shizhuang.duapp')).stdout.trim(),pidBefore,'得物进程变化，不能作为保持运行的验收证据');
     fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify(summary, null, 2));
   }
 }

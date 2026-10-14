@@ -114,4 +114,28 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
     && !calls().slice(overlapFailStart).some(c=>/input tap 200 200|\bpush /.test(c)));
   fs.unlinkSync(path.join(dir,'MEDIA_PERMISSION_DENIED'));
   store.set({publish:{uiMap:originalMap}});fs.writeFileSync(xmlFile,originalXml);
+  fs.writeFileSync(path.join(dir,'DELETE_EXIT_139'),'after');
+  fs.writeFileSync(path.join(dir,'QUERY_EXIT_139'),'1');
+  fs.writeFileSync(path.join(dir,'SCAN_EXIT_139_AFTER_WRITE'),'1');
+  const crashAfter=await publisher.run(state());
+  ok('生产入口：删除已生效但命令139空输出，必须通过扫描回读确认后继续',crashAfter.okCount===1&&crashAfter.failCount===0);
+  fs.unlinkSync(path.join(dir,'DELETE_EXIT_139'));
+  fs.writeFileSync(path.join(dir,'DELETE_EXIT_139'),'before');
+  const crashStart=calls().length;
+  const crashBefore=await publisher.run(state());
+  ok('同样139但索引持续残留时绝不推送或提交',crashBefore.failCount===1
+    && /cli-139-unknown/.test(crashBefore.rows[0].reason)
+    && !calls().slice(crashStart).some(c=>/\bpush |input tap/.test(c)));
+  fs.writeFileSync(path.join(dir,'DELETE_EXIT_139'),'before-once');
+  const crashRetry=await publisher.run(state());
+  ok('139未生效后恢复：同一路径复查收敛才继续',crashRetry.okCount===1);
+  fs.writeFileSync(path.join(dir,'DELETE_EXIT_139'),'after');
+  fs.writeFileSync(path.join(dir,'RM_SILENT_KEEP'),'1');
+  const physicalStart=calls().length;
+  const physicalLeft=await publisher.run(state());
+  ok('139且库暂空但物理文件仍在，不以空库伪装清理成功',physicalLeft.failCount===1
+    && /物理文件缺失未确认/.test(physicalLeft.rows[0].reason)
+    && !calls().slice(physicalStart).some(c=>/\bpush |input tap/.test(c)));
+  fs.unlinkSync(path.join(dir,'DELETE_EXIT_139'));fs.unlinkSync(path.join(dir,'RM_SILENT_KEEP'));
+  fs.unlinkSync(path.join(dir,'QUERY_EXIT_139'));fs.unlinkSync(path.join(dir,'SCAN_EXIT_139_AFTER_WRITE'));
 })().catch(e => { console.error(e); process.exitCode = 1; });

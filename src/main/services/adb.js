@@ -594,8 +594,17 @@ async function clearAlbum(serial, opts = {}) {
   let forceStopped = false, removed = 0;
   const all = [];
   const issues = [];
+  const uncertainDeletes = new Set();
   let recoveryAttempts = 0;
-  const failedDelete = (result, operation) => {
+  const failedDelete = (result, operation, file) => {
+    const normalized=normalizeContentCrash(result);
+    if(operation==='delete'&&Number(result.code)===139&&!result.killed
+      && !String(normalized.stderr||'').trim()
+      && /^(?:\s*|Deleted\s+\d+\s+rows?\.?\s*)$/i.test(String(result.stdout||''))) {
+      issues.push({operation,kind:'cli-139-unknown'});
+      uncertainDeletes.add(file);
+      return;
+    }
     const text = String(result.stderr || '') + String(result.stdout || '');
     const kind = /busy|temporarily unavailable|try again/i.test(text) ? 'busy'
       : /permission|denied|SecurityException/i.test(text) ? 'permission'
@@ -653,7 +662,7 @@ async function clearAlbum(serial, opts = {}) {
       const physical = await run(serial, 'rm -f ' + quoted, { timeout: 8000 });
       if (!physical.ok) { failedDelete(physical, 'rm'); return; }
       const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
-      if (!rd.ok) failedDelete(rd, 'delete');
+      if (!rd.ok) failedDelete(rd, 'delete', file);
       else removed++;
     };
     for (let i = 0; i < hit.length; i += 2) await group(hit.slice(i, i + 2).map(removeOne));
@@ -711,6 +720,15 @@ async function clearAlbum(serial, opts = {}) {
       hit = await scanAll();
     }
     const left = hit.length;
+    if(!left)for(const file of uncertainDeletes) {
+      const quote=value=>"'"+value.replace(/'/g,"'\\''")+"'";
+      const parent=path.posix.dirname(file);
+      const physical=await run(serial,`if [ -e ${quote(file)} ] || [ -L ${quote(file)} ]; then echo EXISTS; elif [ -d ${quote(parent)} ] && [ -r ${quote(parent)} ]; then echo MISSING; else echo UNKNOWN; fi`,{timeout:8000});
+      if(!physical.ok||String(physical.stdout||'').trim()!=='MISSING') {
+        const error=new Error('删除命令退出139后，媒体库为空但物理文件缺失未确认，未放行推送');
+        error.code='ALBUM_PHYSICAL_UNCONFIRMED';throw error;
+      }
+    }
     const categories = [...new Set(issues.map(issue => issue.operation + ':' + issue.kind))];
     const residualTypes = [...new Set(hit.map(h => h.table))];
     const note = left ? '复查仍有 ' + left + ' 条相册记录；类型=' + residualTypes.join(',')

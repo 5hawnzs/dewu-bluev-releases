@@ -741,10 +741,13 @@ async function waitLeftPublishFlow(serial, { timeoutMs = 15000, pollMs = 600, ca
     if (f) {
       last = f;
       if (seen[seen.length - 1] !== f) seen.push(f);
-      if (uimap.isDraftScreen(f)) {
+      const inDewu=f.split('/')[0]===uimap.DEWU.pkg;
+      if (inDewu && uimap.isDraftScreen(f)) {
         return { ok: true, draft: true, waited: +((Date.now() - t0) / 1000).toFixed(1), focus: f, left: f, seen };
       }
-      if (uimap.isDewuFocus(f) && !uimap.isPublishScreen(f) && !uimap.isDraftScreen(f)) { left = f; break; }
+      // 只接受已核实的正常返回页；其他得物Activity可能仍是剪辑、上传或加载。
+      if (inDewu && (uimap.isHomeScreen(f)
+        || /(?:modules\.personal\.ui\.home\.PersonalActivity|modules\.user\.ui\.MyActivity)$/.test(f))) { left = f; break; }
     }
     if (Date.now() - t0 >= timeoutMs) break;
     if (typeof cancelled === 'function' && cancelled()) break;
@@ -1314,10 +1317,10 @@ async function runBatch(state, ctx = {}) {
     }
   }
 
-  if (cancelled()) {
+  if (cancelled() || stoppedReason) {
     for (const row of todo) {
       if (settledRows.has(row) || row.result === '校验未通过') continue;
-      row.status = '未执行'; row.result = '未执行'; row.reason = '本批次已停止，尚未执行';
+      row.status = '未执行'; row.result = '未执行'; row.reason = '本批次已停止，尚未执行' + (stoppedReason ? '：' + stoppedReason : '');
       row.startAt = ''; row.startedAtMs = null; row.elapsed = null;
       onRow(row);
     }

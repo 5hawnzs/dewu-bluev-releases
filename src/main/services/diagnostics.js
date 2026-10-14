@@ -71,7 +71,11 @@ function record(args, result, ms, source) {
     if (!entry.ok) { state.failures.push(entry); if (state.failures.length > 4) state.failures.shift(); }
     if (!entry.ok) {
       state.phaseFailures.push(entry);
-      if (state.phaseFailures.length > 3) state.phaseFailures.splice(1,1);
+      if (state.phaseFailures.length > 3) {
+        const mutation=e=>['rm','delete','push','scan'].includes(e.op);
+        const read=state.phaseFailures.findIndex((e,i)=>i>0&&!mutation(e));
+        state.phaseFailures.splice(read>=0?read:!mutation(state.phaseFailures[0])?0:1,1);
+      }
     }
   } catch (_) { /* 诊断记录失败不能影响发布。 */ }
 }

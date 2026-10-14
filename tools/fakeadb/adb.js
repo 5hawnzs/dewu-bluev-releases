@@ -143,6 +143,7 @@ function makeFakeAdb(dir) {
   // 关键语义（真机实测）：uiautomator dump **成功才写文件**；失败时目标文件一字不动。
   // 所以失败时若不清掉旧文件，cat 出来的就是**上一个页面**的结构。
   const devFiles = new Map();
+  const physicalMedia = new Set();
 
   // ★★ 2026-10-04 新增：模拟「受管相册目录」的真实文件系统语义。
   //   为什么必须加：清相册那一步（adb.js#clearMediaDir）走的是
@@ -340,6 +341,7 @@ function makeFakeAdb(dir) {
       return okOut('Broadcast completed: result=0\n');
     }
     if (/^rm -f /.test(cmd)) {
+      if(fs.existsSync(path.join(dir,'RM_SILENT_KEEP'))&&/\.(?:mp4|jpg|png)/i.test(cmd))return okOut('');
       if (fs.existsSync(path.join(dir,'MEDIA_PERMISSION_DENIED')) && /\.(?:mp4|jpg|png)/i.test(cmd)) return fail('rm: Permission denied');
       const busyRounds = path.join(dir, 'MEDIA_BUSY_ROUNDS');
       if (fs.existsSync(busyRounds) && /\.(?:mp4|jpg|png)/i.test(cmd)) {
@@ -352,6 +354,7 @@ function makeFakeAdb(dir) {
       if (files.some(p => /^\/(?:sdcard|storage\/emulated\/0)\//.test(p) && /\.(?:mp4|jpg|png)$/i.test(p))
         && (appLocked() || fs.existsSync(DIR_STALE))) return fail('rm: Text file busy');
       files.forEach(p => {
+        for(const media of physicalMedia)if(toCmp(media)===toCmp(p))physicalMedia.delete(media);
         devFiles.delete(p);
         for (let i = pushed.length - 1; i >= 0; i--) if (toCmp(pushed[i]) === toCmp(p)) pushed.splice(i, 1);
         for (const d of DIRS) dirs[d].files = dirs[d].files.filter(name => toCmp(d + '/' + name) !== toCmp(p));
@@ -653,6 +656,11 @@ function makeFakeAdb(dir) {
     // ★ 2026-10-03 新增：推完素材的「落地确认」（adb.js#filesMissing 发的命令）。
     //   真机语义就是「文件在磁盘上吗」。夹具里「在不在」= 有没有真实 push 过 ——
     //   这样「推完却在设备上找不到」这种失败才测得到（不会恒为 EXISTS 造成假绿）。
+    if (cmd.startsWith('if [ -e ')) {
+      const quoted=(cmd.slice(8).match(/'(?:[^']|'\\'')*'/)||[])[0];
+      const file=quoted?quoted.slice(1,-1).replace(/'\\''/g,"'"):'';
+      return okOut([...physicalMedia].some(p=>toCmp(p)===toCmp(file))?'EXISTS\n':'MISSING\n');
+    }
     if (/^\[ -f /.test(cmd)) {
       const m = cmd.match(/^\[ -f '([^']*)' \]/);
       if (!m) return fail('bad test');
@@ -709,6 +717,12 @@ function makeFakeAdb(dir) {
       return okOut(out || 'No result found.\n');
     }
     if (/^content delete /.test(cmd)) {
+      const deleteExitFile=path.join(dir,'DELETE_EXIT_139');
+      const deleteExit=fs.existsSync(deleteExitFile)?read(deleteExitFile,Buffer.from('')).toString().trim():'';
+      if(deleteExit==='before'||deleteExit==='before-once') {
+        if(deleteExit==='before-once')fs.unlinkSync(deleteExitFile);
+        return {out:'',code:139};
+      }
       const lagRounds=path.join(dir,'DELETE_LAG_ROUNDS');
       if(fs.existsSync(lagRounds)) {
         const left=Number(read(lagRounds,Buffer.from('0')).toString());
@@ -725,6 +739,7 @@ function makeFakeAdb(dir) {
         const idx = scanned.findIndex(p => mediaIdOf(p) === id);   // 按**稳定 id** 反查（不再用下标推算）
         if (idx >= 0) {
           const gone = scanned[idx];
+          if(!fs.existsSync(path.join(dir,'RM_SILENT_KEEP')))for(const media of physicalMedia)if(toCmp(media)===toCmp(gone))physicalMedia.delete(media);
           scanned.splice(idx, 1);
           mediaIds.delete(String(gone));
           dbTimes.delete(mtKey(gone));
@@ -734,7 +749,7 @@ function makeFakeAdb(dir) {
           }
         }
       }
-      return okOut('');
+      return deleteExit==='after'?{out:'',code:139}:okOut('');
     }
     // ★★ 2026-10-04 新增：`input tap` 的现场开关 TAP_FOCUS 见上面第 24x 行 ——
     //   它**必须**写在已有的 `input (tap|keyevent|text)` 那一支里；另起一个分支就是死代码
@@ -940,6 +955,7 @@ function makeFakeAdb(dir) {
       const local = args[1];
       const remote = args[args.length - 1];
       if (remote && !pushed.includes(remote)) pushed.push(remote);
+      if(remote)physicalMedia.add(remote);
       // ★★★ 2026-10-05：真机 `adb push` **保留源文件时间**（实测）⇒ 夹具照抄本地文件的 mtime。
       //   这一条不照抄的话，「相册按时间倒序」与「主图靠设备端 touch 置顶」都测不出来。
       let mt = null;

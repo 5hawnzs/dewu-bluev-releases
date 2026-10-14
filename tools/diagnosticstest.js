@@ -86,4 +86,14 @@ const adb = moduleBox.exports;
   const retainedText=diagnostics.format(retained[0]);
   assert(retainedText.includes('rm:')&&retainedText.includes('/out=busy')&&!/private|material|secret/.test(retainedText));
   console.log('PASS 清理阶段原始失败经十二次成功查询后仍可在阶段云端摘要定位，且不泄露路径');
+  const mixedPhases=[],mixed=diagnostics.create({version:'1.1.2',build:2026101404,onPhase:p=>mixedPhases.push(p)});
+  diagnostics.run(mixed,()=>{
+    diagnostics.phase('清理相册',1);
+    diagnostics.record(['shell','content query --uri secret'],{ok:false,code:139,stdout:'No result found.\n'},1,'bundled');
+    diagnostics.record(['shell','content delete --uri secret'],{ok:false,code:139,stdout:''},1,'bundled');
+    for(let i=0;i<12;i++)diagnostics.record(['shell','content query --uri secret'],{ok:false,code:139,stdout:'No result found.\n'},1,'bundled');
+    diagnostics.phase('条目结束');
+  });
+  assert(diagnostics.format(mixedPhases[0]).includes('delete:1ms/rc=139'));
+  console.log('PASS 连续查询139也不能挤掉删除139回执，远端验收可确认是否覆盖同一故障');
 })().catch(error => { console.error(error); process.exitCode = 1; });

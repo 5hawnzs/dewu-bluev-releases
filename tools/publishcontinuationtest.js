@@ -125,4 +125,11 @@ const ok = (label,value) => { assert(value,label); console.log('PASS '+label); }
   const locked=await publisher.run(state());trace=calls().slice(lockedStart);
   ok('上一条文件被占用时不以强停解锁、不推混杂素材，失败原因保留且后续条目仍处理',locked.failCount===3
     && locked.rows.every(row=>/未清净/.test(row.reason)) && !/am force-stop|\bpush |input tap /.test(trace));
+  fs.unlinkSync(path.join(dir,'DIR_LOCKED_BY_APP'));
+  for(const page of ['com.shizhuang.duapp/.media.UploadActivity','com.shizhuang.duapp/.media.VideoEditActivity','com.shizhuang.duapp/.media.ClipActivity','com.shizhuang.duapp/.LoadingActivity']) {
+    const before=calls().length;submitted=0;returns=[page];setPage(HOME);
+    const result=await publisher.run(state());const trace=calls().slice(before);
+    ok('提交落到非确定返回页不能宣布可继续或清下一条：'+page,!!result.stoppedReason&&submitted===1
+      && result.rows[1].result==='未执行'&&(trace.match(/--method scan_volume/g)||[]).length===1);
+  }
 })().catch(e=>{console.error(e);process.exitCode=1;});

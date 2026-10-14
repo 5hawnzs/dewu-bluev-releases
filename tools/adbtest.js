@@ -2578,8 +2578,8 @@ const state = {
       fs.writeFileSync(FOCUSF, HOME_F);
       fs.writeFileSync(TAPF, 'publish');
       rf = await runPub(true);
-      ok('提交未退出时保留下一条排队，防止下一次清理打断上传',
-        rf.rows[1].status === '排队' && !rf.rows[1].result && /停止后续条目/.test(rf.result.stoppedReason || ''),
+      ok('提交未退出时明确下一条未执行，防止下一次清理打断上传',
+        rf.rows[1].status === '未执行' && rf.rows[1].result === '未执行' && /停止后续条目/.test(rf.result.stoppedReason || ''),
         JSON.stringify({ next: rf.rows[1], stoppedReason: rf.result.stoppedReason }));
       ok('提交待确认时不强停、不重复提交', stopsF.length === 0 && (rf.log.match(/input tap 540 1860/g) || []).length <= 1, JSON.stringify(stopsF));
 

@@ -36,6 +36,8 @@ store.set({ brandsSeeded: true, brands: [{ id: 'test', name: '回写测试', ena
     uiMap: { package: 'com.shizhuang.duapp', steps: [{ name: '提交发布', action: 'tapText', value: '发布' }] } } });
 const ok = (name, value) => { assert(value, name); console.log('PASS ' + name); };
 async function runCase(type, fault, mode = 'mock') {
+  const originalWrite=fs.writeFileSync;
+  const pendingFile=path.join(store.get('paths.output'),'pending-results.json');
   const callsFile = path.join(deviceDir, 'calls.log');
   const beforeCalls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').length : 0;
   const reportFile = path.join(tmp, type.replace('.', '-') + '-' + fault + '.xlsx');
@@ -46,18 +48,26 @@ async function runCase(type, fault, mode = 'mock') {
   const sh = await sheet.exportSheet({ items: [item], copyRows: [], verify: { rows: [] } });
   project.patch({ items: [item], copyRows: [], verify: { rows: [] }, sheet: { file: sh.file },
     publish: { mode, device: 'FAKE', batch: type + fault, reportFile, reportSheet: 'AI 内容报告',
-      rows: [{ seq: 1, id: 'A', dir: 'A', reportRow: 2, result: '' }] } });
+      rows: Array.from({length:fault==='submission-wait'?2:1},(_,i)=>({ seq: i+1, id: 'A', dir: 'A', reportRow: 2, result: '' })) } });
+  if(fault==='submission-wait')fs.writeFileSync(path.join(deviceDir,'TAP_FOCUS'),'publish');
   let published = 0;
   afterPublished = () => {
     published++;
     if (fault === 'corrupt') fs.writeFileSync(sh.file, '损坏的工作簿');
     if (fault === 'locked') { fs.chmodSync(sh.file, 0o444); fs.chmodSync(reportFile, 0o444); }
     if (fault === 'report-corrupt') fs.writeFileSync(reportFile, '损坏的报告');
+    if(fault==='pending-write'||fault==='pending-corrupt') {
+      fs.chmodSync(sh.file,0o444);fs.chmodSync(reportFile,0o444);
+      if(fault==='pending-corrupt')originalWrite(pendingFile,'{损坏的暂存');
+      else fs.writeFileSync=function(file,...args){if(String(file).includes('pending-results.json'))throw Object.assign(new Error('暂存磁盘已满'),{code:'ENOSPC'});return originalWrite.call(this,file,...args);};
+    }
   };
   const start = logs.history().length;
   let result;
   try { result = await jobs.run(type, { seq: 1 }); }
-  finally { afterPublished = () => {}; fs.chmodSync(sh.file, 0o644); fs.chmodSync(reportFile, 0o644); }
+  finally { afterPublished = () => {};fs.writeFileSync=originalWrite; fs.chmodSync(sh.file, 0o644); fs.chmodSync(reportFile, 0o644);
+    if(fault==='pending-corrupt')originalWrite(pendingFile,'[]');
+    if(fault==='submission-wait'){fs.unlinkSync(path.join(deviceDir,'TAP_FOCUS'));fs.writeFileSync(path.join(deviceDir,'FOCUS'),'com.shizhuang.duapp/.modules.home.ui.HomeActivity');} }
   const commands = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').slice(beforeCalls) : '';
   return { result, entries: logs.history().slice(start), published, reportFile, sheetFile: sh.file, commands };
 }
@@ -148,4 +158,15 @@ async function runCase(type, fault, mode = 'mock') {
     && !/input tap /.test(failed.commands)
     && failed.entries.some(e => /重跑结束（失败）/.test(e.msg))
     && !failed.entries.some(e => /重跑已完成/.test(e.msg)));
+  const waiting=await runCase('publish.run','submission-wait','adb');
+  const end=require('../src/main/services/runlog').read().filter(e=>e.jobId===waiting.result.jobId&&e.kind==='end'&&e.type==='publish.run').at(-1);
+  ok('实际任务入口：提交未稳定停批不是全成功，剩余行未执行、云端状态一致',!!waiting.result.result.stoppedReason
+    && project.get().publish.rows[1].result==='未执行'&&end.ok===false
+    && waiting.entries.some(e=>/批次已停止/.test(e.msg))&&!waiting.entries.some(e=>/^发布成功【/.test(e.msg)));
+  for(const fault of ['pending-write','pending-corrupt']) {
+    const result=await runCase('publish.run',fault);
+    ok('任务入口暂存异常必须可见、不虚称已暂存：'+fault,!result.result.result.writeback.ok
+      && result.entries.some(e=>/暂存/.test(e.msg)&&/失败|磁盘|损坏/.test(e.msg))
+      && !result.entries.some(e=>/条结果已暂存/.test(e.msg)));
+  }
 })().catch(e => { console.error(e); process.exitCode = 1; });

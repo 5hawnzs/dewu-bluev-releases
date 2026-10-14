@@ -193,13 +193,25 @@ async function exportPublishLog(opts = {}) {
 function pendingFile() { return path.join(store.get('paths.output'), 'pending-results.json'); }
 
 function loadPending() {
-  try { return JSON.parse(fs.readFileSync(wp.toLong(pendingFile()), 'utf8')); } catch (e) { return []; }
+  try {
+    const list=JSON.parse(fs.readFileSync(wp.toLong(pendingFile()),'utf8'));
+    if(!Array.isArray(list))throw new Error('暂存文件内容不是结果列表');
+    return list;
+  } catch(e) {
+    if(e.code==='ENOENT')return [];
+    throw new Error('暂存文件读取失败（原文件已保留，请勿重复发布）：'+e.message);
+  }
 }
 function savePending(list) {
+  const file=pendingFile(),temp=file+'.tmp-'+process.pid+'-'+Math.random().toString(16).slice(2);
   try {
-    fs.mkdirSync(wp.toLong(path.dirname(pendingFile())), { recursive: true });
-    fs.writeFileSync(wp.toLong(pendingFile()), JSON.stringify(list, null, 2), 'utf8');
-  } catch (e) { /* ignore */ }
+    fs.mkdirSync(wp.toLong(path.dirname(file)), { recursive: true });
+    fs.writeFileSync(wp.toLong(temp), JSON.stringify(list, null, 2), 'utf8');
+    fs.renameSync(wp.toLong(temp),wp.toLong(file));
+  } catch (e) {
+    try{fs.unlinkSync(wp.toLong(temp));}catch(_){}
+    throw new Error('结果暂存失败，未确认落盘（已有暂存保留，请勿重复发布）：'+e.message);
+  }
 }
 function pendingCount() { return loadPending().length; }
 

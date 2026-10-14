@@ -82,6 +82,7 @@ function typeIds(type) { return byType.get(type) || new Set(); }
 function publishRunOutcome(type, result) {
   if (!['publish.run', 'publish.rerun'].includes(type)) return { ok: true, error: '' };
   if (result && result.cancelled) return { ok: false, cancelled: true, error: '任务已取消' };
+  if (result && result.stoppedReason) return { ok: false, error: '批次已停止：' + result.stoppedReason };
   const failCount = Math.max(0, Number(result && result.failCount) || 0);
   if (!failCount) return { ok: true, error: '' };
   const detail = String(result && result.failureSummary || '').trim();
@@ -630,6 +631,8 @@ async function dispatch(type, args, ctx) {
       const failCount = r.failCount || 0;
       if (r.cancelled) {
         ctx.conclude(`批次已停止【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 ${failCount} 条】· 其余已取消或未执行`, 'info');
+      } else if(r.stoppedReason) {
+        ctx.conclude(`批次已停止【目标 ${r.total} 条，已提交 ${r.okCount} 条，失败 ${failCount} 条】· ${r.stoppedReason}；其余未执行，不自动重复提交`, 'warn');
       } else if (failCount) {
         ctx.conclude(`发布结束（有失败）【目标 ${r.total} 条，成功 ${r.okCount} 条，失败 ${failCount} 条】`, 'warn');
         ctx.conclude(`这 ${failCount} 条为什么没发出去：逐条原因见「发布单」的结果列（失败截图在输出目录的 failures 文件夹）`, 'warn');
@@ -645,7 +648,7 @@ async function dispatch(type, args, ctx) {
       }
       const failed = (r.rows || []).filter(row => row && row.result === '失败');
       const failureSummary = failed.slice(0, 5).map(row => `第${row.seq}条：${row.reason || '未知原因'}`).join('；');
-      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary, cancelled: r.cancelled, writeback };
+      return { okCount: r.okCount, total: r.total, failCount: r.failCount, batch: r.batch, failureSummary, cancelled: r.cancelled, stoppedReason:r.stoppedReason, writeback };
     }
     case 'publish.exportLog': {
       // 「重导出日志」：按批次把 publish-log.jsonl 导成可读的 .log + .csv
@@ -666,6 +669,8 @@ async function dispatch(type, args, ctx) {
       const writebackNote = writeback.ok ? '' : ' · 回写待处理，请查看错误或暂存提示；回写不会自动重发内容';
       if (r.cancelled) {
         ctx.conclude('重跑已停止，保留已完成的结果' + writebackNote, 'info');
+      } else if(r.stoppedReason) {
+        ctx.conclude('重跑提交状态待确认：'+r.stoppedReason+'；不自动重复提交'+writebackNote,'warn');
       } else if (r.mode === 'mock') {
         const mockOk = (r.rows || []).filter(row => row.result === '模拟成功').length;
         ctx.conclude(`模拟重跑完成【目标 1 条，模拟成功 ${mockOk} 条，失败 ${r.failCount || 0} 条】· 模拟通道不接触设备，不算真发布` + writebackNote, 'warn');
@@ -677,7 +682,7 @@ async function dispatch(type, args, ctx) {
         ctx.conclude('重跑成功【目标 1 条，成功 1 条，失败 0 条】', 'ok');
       }
       const failed = (r.rows || []).find(row => row && row.result === '失败');
-      return { okCount: r.okCount, total: 1, failCount: r.failCount, cancelled: r.cancelled, writeback, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
+      return { okCount: r.okCount, total: 1, failCount: r.failCount, cancelled: r.cancelled, stoppedReason:r.stoppedReason, writeback, failureSummary: failed ? `第${failed.seq}条：${failed.reason || '未知原因'}` : '' };
     }
     case 'pool.import': {
       const r = pool.importFile(args.file);
