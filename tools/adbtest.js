@@ -2465,7 +2465,7 @@ const state = {
     const appStops8 = fakeExec8.__appStops;
     const adbS8 = require(path.join(base, 'src/main/services/adb.js'));
     const DEWU8 = 'com.shizhuang.duapp';
-    const reset8 = () => { fakeExec8.__appReset(); appStops8.length = 0; };
+    const reset8 = () => { fakeExec8.__appReset(); fakeExec8.__resetMedia(); appStops8.length = 0; };
     const libCount = async () => {
       const r = await adbS8.shell('FAKESERIAL',
         'content query --uri content://media/external/video/media --projection _id:_data');
@@ -2679,8 +2679,8 @@ const state = {
       ok('根目录递归清理后不再重复清理 bluev 子目录',
         rE.okCount === 1 && !/find .*Camera\/bluev\/? -mindepth/.test(logE),
         (logE.match(/.*find .*mindepth.*/g) || []).join(' | '));
-      ok('清理记录媒体库实际耗时，发布流程不再读取目录列表或递归目录',
-        lgE.some(l => /相册已清空.*耗时 [\d.]+s/.test(l)) && !/ls -A |find .* -type f/.test(logE));
+      ok('清理记录媒体库实际耗时，回收仅限工具归属批次目录',
+        lgE.some(l => /相册已清空.*耗时 [\d.]+s/.test(l)) && !/ls -A |find .*Camera.* -type f/.test(logE));
       // ★ 断言要看**语义**：真的调了 `am start -n <得物>/<启动页>`。
       //   第一版把正则写成 `com\.shizhuang\.duapp\/\.modules`（带点）⇒ 命令里是斜杠后直接跟
       //   包内路径（`duapp/modules.home...`，不带点）⇒ 匹配 0 次，是**假红**（测试写法错，不是产品错）。
@@ -3417,7 +3417,7 @@ const state = {
         fs.utimesSync(p, t, t);
       });
     };
-    const rem3 = n => '/sdcard/DCIM/Camera/' + n;
+    const rem3 = n => [...fakeExec.__physicalMedia].filter(p=>p.startsWith('/sdcard/Movies/BlueV/batch_')&&p.endsWith('/'+n)).at(-1)||'';
     const devMt = n => fakeExec.__mtimes.get(fakeExec.__mtKey(rem3(n)));
     const devDb = n => fakeExec.__dbTimes.get(fakeExec.__mtKey(rem3(n)));
     const files3 = async () => (await wp3.readdirSafe(dir3)).filter(e => e.isFile())
@@ -3464,10 +3464,9 @@ const state = {
     const iTouchA = call31.indexOf('touch -d @');
     ok('㉜ ★ 顺序：touch 必须排在**所有 push 之后**（反了的话"最新"会少算一个文件 ⇒ 主图可能排错）',
       iTouchA > 0 && iPushA > 0 && iTouchA > iPushA, '最后一次 push@' + iPushA + ' / touch@' + iTouchA);
-    const scanRe = new RegExp('content call --uri content://media/external/file --method scan_file --arg '
-      + "'/storage/emulated/0/DCIM/Camera/01_front\\.jpg'");
+    const scanPath="--arg '"+rem3('01_front.jpg').replace(/^\/sdcard\//,'/storage/emulated/0/')+"'";
     ok('㉜ ★ 顺序：touch 完必须**重扫**那张（不重扫库里的值不变 ⇒ 相册顺序不会动，这条真机实测过）',
-      scanRe.test(call31.slice(iTouchA)),
+      call31.slice(iTouchA).includes(scanPath),
       (call31.slice(iTouchA).match(/content call.*/g) || []).join(' | ').slice(0, 200));
     ok('㉜ 日志如实写了主图是哪张、以及凭什么挑的',
       logs3.some(l => /主图 = 01_front\.jpg/.test(l) && /没有 1 标记/.test(l)),

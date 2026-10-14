@@ -1352,6 +1352,27 @@ T10 26FW-KW02 驼    驼色针织毛衣自带少年感🧶
 > · 定位表第 5/6 步切到 `bluev` 相册 ⇒ 这一屏上只有本条素材 ⇒「全选」名副其实。
 > · 12 条断言盯着它（adbtest「清相册 ①~⑨」），三组定点破坏都能让它红（见 §6）。
 >
+> **第二轮（2026-10-15，每批独立目录）**：共用目录 `DCIM/Camera/bluev` 的隐患是「上一条被得物占用的 mp4
+> 删不掉 ⇒ 下一条永远推不进去」。现在改为 `/sdcard/Movies/BlueV/batch_<32位hex>`：每批一个目录，
+> 发布前先把上一批写 `.nomedia` **从相册索引里摘掉**（隔离），旧目录的物理回收放到后台按 3 秒预算尽力做；
+> 回收失败就保留隔离标记，**如实报告“物理文件待回收”，绝不宣称已删除**。相册判据仍然是
+> `adb.albumMatches` 全盘四表复核 —— 隔离不等于删除，两级状态在界面/日志里分开显示。
+> 涉及模块：`services/managedalbum.js`（`retire`/`create`）、`services/albumready.js`、`services/adb.js`。
+>
+> **第三轮（2026-10-15 深夜~次日凌晨，rich 连续四条失败的真因）**：真因不是「等得不够久」，而是
+> `adb.js#clearAlbum` 的 `removeOne` 里 `rm` 失败**当场 return** —— 后面的 `content delete` 从来没执行过，
+> 库记录一直在，下一轮又忙、又 return（1405 只是把这个死循环从 3 轮扩到「预算内循环」⇒ 单条拖到 76 秒）。
+> 本机 MuMu 对照实验（可复算）：文件被句柄占住时 `rm -f` = `Text file busy`、`mv <目录> <.目录>` =
+> `Operation not permitted`，但 `touch <目录>/.nomedia` **成功**；占用中 `content delete` 能把记录删掉，
+> 但没有 `.nomedia` 时重扫必复活（`_id` 变号），有 `.nomedia` 时重扫不复活；把 `.nomedia` 删掉再扫立刻复活。
+> ⇒ 现在的顺序：`rm` →（失败才）写 `.nomedia` + `.bluev-isolated` 归属标记 + `.bluev-pending` 待回收清单
+> → **无论如何都执行** `content delete` → 重扫四表复查。只有在「物理文件还在 **且** 隔离已回读确认」时才允许删索引；
+> 隔离没确认就如实报 `ALBUM_ISOLATION_FAILED`（绝不静默失效）。物理文件删不掉只算「待回收」，
+> 句柄释放后**只删 `.bluev-pending` 里记着的那几条**（绝不遍历目录删，防误删用户同目录的私人照片），
+> 顺序必须先删文件再撤标记。`NOMEDIA_FORBIDDEN` 保护 `Movies/BlueV` 根及上层（在那里写标记会把本条新素材一起藏掉）。
+> 跨条回收靠**进程内存**登记表（`isolatedRegistry`），不额外发 `find` 遍历命令 —— rich 的目录命令本身就是历史故障点。
+> 回归：`albumreadytest`（29 项，含 rich 旧路径 `DCIM/Camera/bluev`、防误伤、重扫复活三组现场）
+> + `publishcontinuationtest`（单条失败不拖累整批、持续占用不再停批）。
 > **后续任何改动都必须保住这条**：改清相册 / 改推素材 / 改定位表前后，都要跑 `node tools/adbtest.js`
 > 确认「清相册」那 12 条绿；**清不干净必须报错停发**（宁可停下，也不许把上一条的素材混进去发出去）。
 > 尚未做完的部分（继续按 P0 对待）：**发布完自动回到主线**（发完第 2 条起 App 可能停在个人主页/相册页/详情页，

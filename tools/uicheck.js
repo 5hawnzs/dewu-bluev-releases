@@ -2777,7 +2777,13 @@ app.whenReady().then(async () => {
     return { twoColumns, dateGroups, latestDate, noBuildLabels, hasDetails, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
   })()`);
   win.hide();
-  ok('更新日志按日期分组且不显示构建信息，左侧时间和类型、右侧标题与要点，无横向溢出', releaseCheck.noBuildLabels && releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits && releaseCheck.dateGroups === 3 && releaseCheck.latestDate === '2026 年 10 月 14 日', JSON.stringify(releaseCheck));
+  // ★ 2026-10-15：日期断言改成「最新那天在最前面 + 至少三组」，不写死组数 ——
+  //   之前写成 `=== 3 && 最新 = 10 月 14 日`，每加一条当天的更新日志这条就假红一次
+  //   （断言拦的是「日志有没有被排序/分组」，不是「日志一共有几天」）。
+  ok('更新日志按日期分组且不显示构建信息，左侧时间和类型、右侧标题与要点，无横向溢出',
+    releaseCheck.noBuildLabels && releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits
+    && releaseCheck.dateGroups >= 3 && /^\d{4} 年 \d{1,2} 月 \d{1,2} 日$/.test(releaseCheck.latestDate || ''),
+    JSON.stringify(releaseCheck));
   ok('句式名称完整显示、更新日志页提供检查更新', releaseCheck.namesFit && releaseCheck.updatePanel, JSON.stringify(releaseCheck));
   const updateNotice = await win.webContents.executeJavaScript(`(() => {
     const saved = { update: state.update, auth: state.auth, tab: state.tab };

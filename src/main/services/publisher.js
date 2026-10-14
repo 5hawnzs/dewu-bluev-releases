@@ -1277,10 +1277,11 @@ async function runBatch(state, ctx = {}) {
       success = false;
       require('./diagnostics').fail();
       reason = cancelled() ? '任务已取消' : e.message;
-      stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED';
+      stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED' || e.code === 'ALBUM_BUSY';
+      if (e.code === 'ALBUM_BUSY') stoppedReason = '相册文件持续占用，自动恢复未解除；请处理设备占用后重新启动任务';
       if (e.code === 'UI_COORDINATES') stoppedReason = reason;
-      // 清理失败仅跳过本条；下一条仍须重新通过目录与全盘索引清理，才能推入素材。
-      if (stoppedForAlbum) log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
+      // 持续文件占用是设备级故障，停止本批次，后续素材保留未执行。
+      if (e.code === 'ALBUM_IO_INTERRUPTED') log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
       // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
       if (mode === 'adb' && !stoppedForAlbum && !cancelled()) await saveShot(serial, `seq${row.seq}_fail`, ctx);
     }
@@ -1325,7 +1326,7 @@ async function runBatch(state, ctx = {}) {
     done++;
     progress({ done, total: todo.length, label: row.dir, succeeded: rows.filter(r => r.result === '发布成功').length });
     if (stoppedReason) {
-      conclude((stoppedForSubmission ? '本条提交尚未稳定' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
+      conclude((stoppedForSubmission ? '本条提交尚未稳定' : stoppedForAlbum ? '相册持续占用' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
       break;
     }
   }
@@ -1341,8 +1342,8 @@ async function runBatch(state, ctx = {}) {
   const okCount = rows.filter(r => r.result === '发布成功').length;
   const failCount = rows.filter(r => r.result === '失败').length;
   log(`批量发布完成，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s`, 'info');
-  log(cancelled() ? `批次已停止：成功 ${okCount} 条，失败 ${failCount} 条，其余已取消或未执行`
-    : `发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。内容展示与审核结果请在得物查看`, cancelled() ? 'info' : 'ok');
+  log(cancelled() || stoppedReason ? `批次已停止：成功 ${okCount} 条，失败 ${failCount} 条，其余已取消或未执行`
+    : `发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。内容展示与审核结果请在得物查看`, cancelled() ? 'info' : stoppedReason ? 'warn' : 'ok');
   return { rows, results, okCount, total: todo.length, failCount, batch, mode, stoppedReason, cancelled: !!cancelled() };
 }
 

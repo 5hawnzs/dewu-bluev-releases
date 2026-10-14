@@ -33,8 +33,8 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
     && r.rows[49].result === '失败' && r.rows[50].result === '发布成功' && r.rows[99].result === '发布成功');
   const pushes = calls.split('\n').filter(c => /\bpush /.test(c));
   ok('失败条目从未推素材，99条成功各推一次', pushes.length === 99);
-  ok('百条复用相机目录，不创建逐条目录，不读取ls或递归find',
-    pushes.every(c => c.includes('/sdcard/DCIM/Camera/1.jpg')) && !/ls -A |find .* -type f|DCIM\/Camera\/bluev/.test(calls));
-  const indexed = await adb.albumMatches('FAKE', ['/sdcard/DCIM/Camera/1.jpg']);
+  const remotes=pushes.map(c=>(c.match(/\/sdcard\/Movies\/BlueV\/batch_[a-f0-9]{32}\/1\.jpg/)||[])[0]);
+  ok('百条使用99个独立批次目录，不复用上一批素材路径',remotes.every(Boolean)&&new Set(remotes).size===99);
+  const indexed = await adb.albumMatches('FAKE', [remotes.at(-1)]);
   ok('百条结束后相册仅剩最后一条素材，不累积前99条', indexed.ok);
 })().catch(e => { console.error(e); process.exitCode = 1; });

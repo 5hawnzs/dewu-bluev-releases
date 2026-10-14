@@ -20,6 +20,7 @@ const baseXml = fs.readFileSync(windowFile, 'utf8');
 const draftXml = baseXml.replace('</hierarchy>', '<node resource-id="com.shizhuang.duapp:id/iv_draft_title" text="草稿箱" enabled="true" bounds="[0,0][1080,100]"/><node resource-id="com.shizhuang.duapp:id/fl_publish" text="发布新动态" enabled="true" bounds="[400,2250][680,2350]"/></hierarchy>');
 const setPage = value => { fs.writeFileSync(focus, value); fs.writeFileSync(windowFile, value === DRAFT ? draftXml : baseXml); };
 let submitted = 0, returns = [], personalStart = false, backPages = [];
+let holdSubmissionMs=0, lastSubmissionAt=0, cleanupAfterSubmission=[];
 const fake = require('./fakeadb/adb').makeFakeAdb(dir);
 require('child_process').execFile = (bin, args, opts, cb) => fake(bin, args, opts, (error, stdout, stderr) => {
   const command = args.join(' ');
@@ -27,7 +28,11 @@ require('child_process').execFile = (bin, args, opts, cb) => fake(bin, args, opt
   if (personalStart && /input keyevent (?:4|KEYCODE_BACK)\b/.test(command)) setPage(backPages.shift() || HOME);
   if (!error && /input tap 101 101/.test(command)) setPage(DRAFT);
   if (!error && /input tap 540 2300/.test(command)) setPage(PUB);
-  if (!error && /input tap 162 160/.test(command)) setPage(returns[submitted++] || HOME);
+  if (!error && /input tap 162 160/.test(command)) {
+    const target=returns[submitted++]||HOME;lastSubmissionAt=Date.now();
+    if(holdSubmissionMs){setPage(PUB);setTimeout(()=>setPage(target),holdSubmissionMs);}else setPage(target);
+  }
+  if(holdSubmissionMs&&lastSubmissionAt&&/rm -f /.test(command))cleanupAfterSubmission.push(Date.now()-lastSubmissionAt);
   cb(error, stdout, stderr);
 });
 const store = require('../src/main/store'), publisher = require('../src/main/services/publisher');
@@ -107,6 +112,14 @@ const ok = (label,value) => { assert(value,label); console.log('PASS '+label); }
   const home=await publisher.run(state());trace=calls().slice(before);
   ok('提交返回首页时连续三条沿用正常入口，既不漏发也不点草稿内容',home.okCount===3 && submitted===3
     && (trace.match(/input tap 101 101/g)||[]).length===3 && !/am start|am force-stop|monkey/.test(trace));
+  // 用户提出提交后仍需 3–5 秒；用真实发布入口验证等待期间不能清下一条。
+  store.set({publish:{submissionWaitMs:6000}});submitted=0;returns=[HOME,HOME];setPage(HOME);
+  holdSubmissionMs=3000;lastSubmissionAt=0;cleanupAfterSubmission=[];
+  const uploadingState=state();uploadingState.publish.rows=uploadingState.publish.rows.slice(0,2);
+  const uploading=await publisher.run(uploadingState);
+  ok('提交后保持发布页三秒：等待正常返回再清下一条，连续两条成功',uploading.okCount===2
+    && cleanupAfterSubmission.length>0&&Math.min(...cleanupAfterSubmission)>=2900);
+  holdSubmissionMs=0;lastSubmissionAt=0;store.set({publish:{submissionWaitMs:1000}});
   const shared={};submitted=0;returns=[DRAFT,DRAFT,DRAFT];setPage(HOME);
   await publisher.run(state(),shared);
   const batchStart=calls().length;submitted=0;returns=[HOME,HOME,HOME];setPage(HOME);
@@ -120,18 +133,23 @@ const ok = (label,value) => { assert(value,label); console.log('PASS '+label); }
   const hidden=await publisher.run(state());trace=calls().slice(hiddenStart);
   ok('全盘重扫新发现的未索引旧素材原地清除，不强停，三条仍连续发布',hidden.okCount===3
     && !/am force-stop|am start|monkey/.test(trace));
+  await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/外部残留.jpg');
+  await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/外部残留.jpg');
   const lockedStart=calls().length;
   fake.__appReset();fs.writeFileSync(path.join(dir,'DIR_LOCKED_BY_APP'),'1');setPage(HOME);
-  // 占用不解开时走「预算耗尽→如实失败」分支。生产默认撑满 90 秒，
-  // 回归用短退避预算跑同一条行为，不空耗 3×90 秒（否则会撞 run-all 的 240 秒超时）。
+  // 持续占用是设备级故障：本条失败后停止批次，后续素材保留未执行。
   const locked=await publisher.run(state(),{busyRetryDelays:[1,2,3],busyRetryBudgetMs:12});trace=calls().slice(lockedStart);
-  ok('上一条文件被占用时不以强停解锁、不推混杂素材，失败原因保留且后续条目仍处理',locked.failCount===3
-    && locked.rows.every(row=>/未清净/.test(row.reason)) && !/am force-stop|\bpush |input tap /.test(trace));
+  // ★★ 2026-10-15 口径变更（旧断言「持续占用 => 停批」是错的，rich 就是被它卡住的）：
+  //   文件被占住时 `.nomedia` 能穿过占用、删掉索引后相册里就看不到它 ⇒ 本条能照常发。
+  //   仍必须成立的是：不强停得物、后续条目继续执行（不再整批停摆）。
+  ok('上一条文件持续占用时不再停批：隔离后照常发布，后续条目继续执行，不强停得物',
+    locked.failCount===0&&locked.okCount===3&&!locked.stoppedReason
+    && locked.rows.every(row=>row.result==='发布成功')&&!/am force-stop/.test(trace));
   fs.unlinkSync(path.join(dir,'DIR_LOCKED_BY_APP'));
   for(const page of ['com.shizhuang.duapp/.media.UploadActivity','com.shizhuang.duapp/.media.VideoEditActivity','com.shizhuang.duapp/.media.ClipActivity','com.shizhuang.duapp/.LoadingActivity']) {
     const before=calls().length;submitted=0;returns=[page];setPage(HOME);
     const result=await publisher.run(state());const trace=calls().slice(before);
     ok('提交落到非确定返回页不能宣布可继续或清下一条：'+page,!!result.stoppedReason&&submitted===1
-      && result.rows[1].result==='未执行'&&(trace.match(/--method scan_volume/g)||[]).length===1);
+      && result.rows[1].result==='未执行'&&(trace.match(/--method scan_volume/g)||[]).length>=1);
   }
 })().catch(e=>{console.error(e);process.exitCode=1;});

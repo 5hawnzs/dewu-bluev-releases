@@ -1,8 +1,9 @@
 'use strict';
-// 相册就绪协议集中于此；复用相机目录，不新增设备目录、命令或固定等待。
+// 相册就绪协议集中于此；每批独立目录，旧批隔离后再核实全盘索引。
 const path = require('path');
 const adb = require('./adb');
 const mainimg = require('./mainimg');
+const managedalbum = require('./managedalbum');
 const store = require('../store');
 
 async function prepare(serial, item, row, ctx = {}) {
@@ -16,7 +17,7 @@ async function prepare(serial, item, row, ctx = {}) {
   const mediaWord = isVideo ? '视频' : '图';
   const media = (item.files || []).filter(f => f.type === (isVideo ? 'video' : 'image'));
   if (!media.length) throw new Error('没有可推送的素材文件');
-  const remoteDir = '/sdcard/DCIM/Camera';
+  let remoteDir;
   const remotes = [];
   // 只以媒体库与扫描后回读确认清空；目录列表不是发布正确性的判据。
   // 全盘初查为空时仍须扫描，覆盖尚未入库的上一条素材。
@@ -25,10 +26,16 @@ async function prepare(serial, item, row, ctx = {}) {
   checkCancelled();
   const clearStarted = Date.now();
   require('./diagnostics').phase('清理相册', row.seq);
+  const retired=await managedalbum.retire(serial,{cancelled});
+  if(retired.isolated)log(row.dir+'：上一批已从相册隔离，物理文件待回收目录 '+retired.pending+' 个','info');
+  // ★★ 2026-10-15：`degraded` 必须有消费者 —— 它是「上一批目录两级隔离都没成功」的**唯一**信号，
+  //   过去算出来却没人读，等于静默失效（架构审计的结论之一）。这里如实说出来，
+  //   由下面的全盘复核兜底；兜不住时 clearAlbum 会停批。
+  if(retired.degraded)log(row.dir+'：上一批有 '+retired.degraded+' 个目录的隔离标记未确认，改由全盘相册复核兜底','warn');
   const cleared = await adb.clearAlbum(serial, {
     deadline: clearStarted + 90000, cancelled,
-    // 退避间隔是可注入 seam：生产走默认（500ms 起、封顶 5s、撑满 90s 预算），
-    // 回归用短间隔覆盖「句柄晚释放 / 一直占用」两条分支，不必空跑满 90 秒。
+    // 退避间隔可注入；生产最多四轮，不把持续占用反复拖到总预算。
+    // 回归覆盖短暂恢复与持续占用；清不掉就如实停止，绝不强停得物。
     busyRetryDelays: ctx.busyRetryDelays,
     busyRetryBudgetMs: ctx.busyRetryBudgetMs
   });
@@ -38,16 +45,15 @@ async function prepare(serial, item, row, ctx = {}) {
     throw error;
   }
   checkCancelled();
-  log(`${row.dir}：相册已清空，回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s`, 'info');
-  // ★★★ 2026-10-14（rich 四连失败后收紧）：**清理期间一个界面动作都不发**。
-  //   上一条已发布视频可能还挂在得物里（个人主页/播放器正在解码）⇒ 清理时点界面会把它继续拉住，
-  //   `rm` 永远报 `Text file busy`。导航改到清理**收敛之后**再启动，与推送/索引重叠，
-  //   省时效果保留；发布新动态、草稿处置、输入仍留在最后一道屏障之后。
-  //   这里只启动不等待：等推送与索引做完再统一等它，任一分支失败都不进发布入口。
+  // ★★ 2026-10-15：必须把「已从相册移除」与「物理文件待回收」**分开说**（用户口径：不许造假成功）。
+  //   相册看不到它 = 这一条能安全发布；磁盘上文件还在 = 另一件事，如实交代、释放后自动回收。
+  const pendingFiles=Array.isArray(cleared.physicalPending)?cleared.physicalPending:[];
+  log(`${row.dir}：相册已清空（回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s）`
+    +(pendingFiles.length?`；另有 ${pendingFiles.length} 个物理文件仍被占用、待回收（已隔离，不影响本条发布）`:''),'info');
+  // 全盘相册验证通过后才导航；新素材索引与主页导航可并行，发布入口在最后屏障之后。
   if (ctx.startNavigation) ctx.startNavigation();
   checkCancelled();
-  const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { timeout: 8000 });
-  if (!mk.ok) throw new Error('相机目录无法写入：' + (mk.stderr || mk.stdout || '未知原因'));
+  remoteDir=await managedalbum.create(serial,{cancelled});
 
   const pushStarted = Date.now();
   require('./diagnostics').phase('推送及索引素材', row.seq);

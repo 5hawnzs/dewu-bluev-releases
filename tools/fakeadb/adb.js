@@ -86,6 +86,45 @@ function makeFakeAdb(dir) {
 
   // 「设备上已经推送过去的文件」：真实 push 到哪个远端路径就记哪个。
   const pushed = [];
+  const managedDirs = new Map();
+  // ★★★ 2026-10-15：**任意目录**的 `.nomedia` 隔离标记。
+  //   产品在「旧路径残留 + 物理文件被句柄占住」时，唯一能穿过的通道就是给该文件所在目录写
+  //   `.nomedia`（真机复算：`rm`/`mv` 全 busy，`touch .nomedia` 成功，随后的 `scan_volume`
+  //   不会把它再扫回库）。夹具必须真的按这个开关决定「重扫会不会复活」——否则那条路在回归里
+  //   等于空操作（典型假绿：产品怎么写都绿）。
+  //   现场开关 NOMEDIA_DENIED：模拟设备 I/O 异常、标记写不进去（这时必须如实阻断，不许硬发）。
+  const nomediaDirs = new Set();
+  // ★ 本工具在**任意目录**留下的归属标记（`.bluev-isolated`）：内容一字不差地记下来。
+  //   回收时必须能区分「这条 .nomedia 是本工具写的」与「用户自己放的」——只有前者才允许撤。
+  const isolateMarks = new Map();     // '/sdcard/.../.bluev-isolated' -> 'BLUEV_ISOLATED_V1'
+  const pendingLists = new Map();     // '/sdcard/.../.bluev-pending' -> [要回收的路径]
+  // ★★★ 2026-10-15：**文件被进程持着句柄**的现场（rich 的真实现场，必须能长期摆出来）。
+  //   取值 = 匹配片段（'*' = 所有媒体文件）。语义与真机一致：
+  //     · `rm -f <它>`      → 失败 `Text file busy`（句柄不释放就一直失败）；
+  //     · `content delete`  → **成功**（库记录删掉，相册里立刻看不到它），
+  //                          但**物理文件保留**、`pushed` 也保留 ⇒ 下一次 `scan_volume` 会重新入库；
+  //     · 该目录有 `.nomedia` ⇒ 重扫**不**复活（这正是产品要走的唯一通道）。
+  //   ★ 旧夹具只有「按轮数递减的短暂 busy」和「强停才解开的 App 锁」，两者都不足以复现
+  //     「句柄长期不释放、而 .nomedia 能穿过去」这条决定性路径 —— 那条路在回归里会假绿。
+  const heldMedia = () => {
+    const f = path.join(dir, 'MEDIA_HELD');
+    return fs.existsSync(f) ? read(f, Buffer.from('*')).toString('utf8').trim() || '*' : '';
+  };
+  const isHeld = p => {
+    const h = heldMedia();
+    if (!h) return false;
+    return h === '*' ? /\.(?:mp4|jpg|jpeg|png|mov|gif|avi|webp|mp3|wav)$/i.test(String(p)) : String(p).includes(h);
+  };
+  // `.nomedia` 一旦被删掉，隔离立刻失效（真机实测：删掉标记再扫，记录马上复活）。
+  const dropNomedia = p => {
+    const c = String(p).replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+    if (c.endsWith('/.nomedia')) nomediaDirs.delete(c.slice(0, -'/.nomedia'.length));
+    if (c.endsWith('/.bluev-isolated')) isolateMarks.delete(c);
+  };
+  const managedRoot="/sdcard/Movies/BlueV";
+  const managedNorm=p=>String(p).replace(/^\/storage\/emulated\/0\//,"/sdcard/");
+  const isHidden=p=>[...managedDirs].some(([d,v])=>v.hidden&&managedNorm(p).startsWith(d+"/"))
+    ||[...nomediaDirs].some(d=>managedNorm(p).startsWith(d+"/"));
   // ★ 2026-10-03 新增：「真的进了媒体库」的文件。
   //   真机上 push ≠ 进库 —— 必须再调 `content call ... scan_file/scan_volume` 才会进
   //   （实测：不调的话得物相册里根本看不到这个文件）。所以 content query 只回 scanned、
@@ -340,6 +379,105 @@ function makeFakeAdb(dir) {
       }
       return okOut('Broadcast completed: result=0\n');
     }
+    // 新批目录模拟真实文件归属、隔离标记与扫描，不把未知命令回空当作成功。
+    // ★ 2026-10-15：第二手段「整目录改名成点开头隐藏目录」的语义。
+    //   真机 MuMu 实测：`mv batch_x .batch_x` → rc=0；重扫后 video 表 `No result found.`
+    //   （点开头目录不进媒体扫描）⇒ 与 .nomedia 同级，都算「已从相册隔离」。
+    //   ls 必须带 -A，否则改名后的隐藏目录列不出来、永远回收不掉（假绿陷阱）。
+    if(cmd==="ls -1A '/sdcard/Movies/BlueV'")return managedDirs.size
+      ?okOut([...managedDirs.keys()].map(d=>d.slice(managedRoot.length+1)).join('\n')+'\n')
+      :fail('ls: '+managedRoot+': No such file or directory');
+    const managedPath=(cmd.match(/'(\/sdcard\/Movies\/BlueV\/\.?batch_[a-f0-9]{32})(?:\/[^']*)?'/)||[])[1];
+    const managedTarget=(cmd.match(/'(\/sdcard\/Movies\/BlueV\/\.?batch_[a-f0-9]{32})'/)||[])[1];
+    if(managedPath&&cmd.startsWith('mkdir -p ')){managedDirs.set(managedPath,{owner:'',hidden:false});return okOut('');}
+    if(managedPath&&cmd.startsWith('printf BLUEV_MANAGED_V1 > ')){
+      managedDirs.get(managedPath).owner='BLUEV_MANAGED_V1';return okOut('');
+    }
+    if(managedPath&&cmd.startsWith('cat ')){
+      const owner=managedDirs.get(managedPath)?.owner;
+      return owner?okOut(owner):fail('cat: No such file or directory');
+    }
+    if(managedPath&&cmd.startsWith('touch ')){
+      if(fs.existsSync(path.join(dir,'MANAGED_HIDE_DENIED')))return fail('touch: Permission denied');
+      managedDirs.get(managedPath).hidden=true;return okOut('');
+    }
+    // .nomedia 回读：只有**真的存在这个标记**才算隔离成功。point-hidden 目录里没有 .nomedia 文件，
+    // 这里必须如实回 missing —— 否则「touch 失败但改名声称成功」这条假绿就测不出来。
+    if(managedPath&&/^\[ -f .*\.nomedia' \]/.test(cmd))return managedDirs.get(managedPath)?.hidden&&!managedPath.includes('/.batch_')?okOut('EXISTS\n'):fail('missing marker');
+    // `mv <batch_x> <.batch_x>`：真机语义 = 换名，旧路径消失、点开头新路径出现。
+    // 沿用既有的两类真实失败：App 锁住（Operation not permitted）与 DIR_STALE/顽固残骸（Device or resource busy）。
+    if(managedTarget&&/^mv '?\/sdcard\/Movies\/BlueV\/batch_[a-f0-9]{32}'? \.?/.test(cmd)){
+      const to=(cmd.match(/'\s*(\/sdcard\/Movies\/BlueV\/\.batch_[a-f0-9]{32})'\s*$/m)||[])[1];
+      if(fs.existsSync(path.join(dir,'MANAGED_RENAME_DENIED')))return fail("mv: bad '"+managedTarget+"': Operation not permitted");
+      if(!to)return fail('mv: missing destination');
+      const v=managedDirs.get(managedTarget);if(!v)return fail('mv: No such file or directory');
+      // ★ 真机语义：改名之后**物理路径跟着变**（旧路径不存在）。夹具必须同步搬走
+      //   physicalMedia / pushed / scanned / 目录内容，否则 find 会读空 ⇒ rmdir 假成功、
+      //   「改名隐藏」这条路就成了假绿。
+      const moved=[];
+      for(const p of [...physicalMedia])if(managedNorm(p).startsWith(managedTarget+'/')){moved.push(managedNorm(p));physicalMedia.delete(p);physicalMedia.add(to+p.slice(managedTarget.length));}
+      for(let i=0;i<pushed.length;i++)if(managedNorm(pushed[i]).startsWith(managedTarget+'/'))pushed[i]=to+pushed[i].slice(managedTarget.length);
+      for(let i=0;i<scanned.length;i++)if(managedNorm(scanned[i]).startsWith(managedTarget+'/'))scanned[i]=to+scanned[i].slice(managedTarget.length);
+      for(const m of moved){const t=to+m.slice(managedTarget.length);if(mtimes.has(mtKey(m))){mtimes.set(mtKey(t),mtimes.get(mtKey(m)));dbTimes.set(mtKey(t),dbTimeOf(m));}}
+      managedDirs.delete(managedTarget);managedDirs.set(to,{...v,hidden:true,renamed:true});return okOut('');
+    }
+    // 改名回读：目标在、原路径不在 ⇒ RENAMED。
+    if(managedTarget&&/^if \[ -d /.test(cmd)){
+      const from=(cmd.match(/! -e '(\/sdcard\/Movies\/BlueV\/\.?batch_[a-f0-9]{32})'/)||[])[1];
+      const isDir=managedDirs.has(managedTarget);
+      const fromGone=from?!managedDirs.has(from):true;
+      return isDir&&fromGone?okOut('RENAMED\n'):fail('');
+    }
+    if(managedPath&&cmd.startsWith('find ')){
+      const v=managedDirs.get(managedPath);if(!v)return fail('find: No such file or directory');
+      const found=[...physicalMedia].map(managedNorm).filter(p=>p.startsWith(managedPath+'/'));
+      if(v.owner)found.push(managedPath+'/.bluev-managed-v1');if(v.hidden)found.push(managedPath+'/.nomedia');
+      return okOut(found.join('\n')+(found.length?'\n':''));
+    }
+    if(managedPath&&cmd.startsWith('rmdir ')){
+      if([...physicalMedia].some(p=>managedNorm(p).startsWith(managedPath+'/')))return fail('rmdir: Directory not empty');
+      managedDirs.delete(managedPath);return okOut('');
+    }
+    // ★★★ 2026-10-15：任意目录的 `.nomedia`（隔离旧素材的唯一可行通道，见文件头 nomediaDirs）。
+    //   真机语义：文件被句柄占住时 `rm`/`mv` 报 busy，但**写给它所在目录加 `.nomedia` 能成功**，
+    //   随后 `scan_volume` 不会把该目录里的文件扫回媒体库。夹具照这个语义实现，
+    //   否则「占用下靠隔离让相册看不见它」这条路在回归里恒绿（测不出来）。
+    //   NOMEDIA_DENIED = 设备 I/O 异常、标记写不进去：这时产品必须如实阻断，不许当作隔离成功。
+    const isolateWrite = cmd.match(/^printf %s '([^']*)' > '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-isolated)'$/);
+    if (isolateWrite) {
+      isolateMarks.set(isolateWrite[2].replace(/^\/storage\/emulated\/0\//, '/sdcard/'), isolateWrite[1]);
+      return okOut('');
+    }
+    // ★ 待回收清单：`printf %s\n '<路径>' >> '<目录>/.bluev-pending'`（真机 sh 的追加写语义）。
+    //   回收只删清单里记着的路径，绝不遍历目录删 —— 夹具必须真的把它记下来，
+    //   否则「会不会误删用户同目录里的其它文件」这条在回归里测不出来。
+    const pendingAppend = cmd.match(/^printf %s\\n '([^']*)' >> '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
+    if (pendingAppend) {
+      const key = pendingAppend[2].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      const cur = pendingLists.get(key) || [];
+      cur.push(pendingAppend[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/'));
+      pendingLists.set(key, cur);
+      return okOut('');
+    }
+    const pendingRead = cmd.match(/^cat '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
+    if (pendingRead) {
+      const key = pendingRead[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      return pendingLists.has(key)
+        ? okOut(pendingLists.get(key).join('\n') + '\n')
+        : fail('cat: ' + pendingRead[1] + ': No such file or directory');
+    }
+    const isolateRead = cmd.match(/^cat '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-isolated)'$/);
+    if (isolateRead) {
+      const key = isolateRead[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      return isolateMarks.has(key) ? okOut(isolateMarks.get(key) + '\n') : fail('cat: ' + isolateRead[1] + ': No such file or directory');
+    }
+    const nomediaTouch = cmd.match(/^touch '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.nomedia)'$/);
+    if (nomediaTouch) {
+      const isoDir = nomediaTouch[1].replace(/\/\.nomedia$/, '').replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      if (fs.existsSync(path.join(dir, 'NOMEDIA_DENIED'))) return fail("touch: '" + nomediaTouch[1] + "': Read-only file system");
+      nomediaDirs.add(isoDir);
+      return okOut('');
+    }
     if (/^rm -f /.test(cmd)) {
       if(fs.existsSync(path.join(dir,'RM_SILENT_KEEP'))&&/\.(?:mp4|jpg|png)/i.test(cmd))return okOut('');
       if (fs.existsSync(path.join(dir,'MEDIA_PERMISSION_DENIED')) && /\.(?:mp4|jpg|png)/i.test(cmd)) return fail('rm: Permission denied');
@@ -352,8 +490,14 @@ function makeFakeAdb(dir) {
       const files = (cmd.slice(6).match(/'(?:[^']|'\\'')*'|\S+/g) || [])
         .map(p => p.startsWith("'") ? p.slice(1, -1).replace(/'\\''/g, "'") : p);
       if (files.some(p => /^\/(?:sdcard|storage\/emulated\/0)\//.test(p) && /\.(?:mp4|jpg|png)$/i.test(p))
+        && files.some(p => isHeld(p))) return fail('rm: Text file busy');
+      if (files.some(p => /^\/(?:sdcard|storage\/emulated\/0)\//.test(p) && /\.(?:mp4|jpg|png)$/i.test(p))
         && (appLocked() || fs.existsSync(DIR_STALE))) return fail('rm: Text file busy');
       files.forEach(p => {
+        const d=managedNorm(p).replace(/\/[^/]+$/, "");
+        // renamed=true 的目录靠**名字**隐藏（点开头），删掉里面的 .nomedia 文件并不解除隔离。
+        const v=managedDirs.get(d);if(v&&p.endsWith("/.nomedia")&&!v.renamed)v.hidden=false;if(v&&p.endsWith("/.bluev-managed-v1"))v.owner="";
+        dropNomedia(p);
         for(const media of physicalMedia)if(toCmp(media)===toCmp(p))physicalMedia.delete(media);
         devFiles.delete(p);
         for (let i = pushed.length - 1; i >= 0; i--) if (toCmp(pushed[i]) === toCmp(p)) pushed.splice(i, 1);
@@ -664,7 +808,26 @@ function makeFakeAdb(dir) {
     if (/^\[ -f /.test(cmd)) {
       const m = cmd.match(/^\[ -f '([^']*)' \]/);
       if (!m) return fail('bad test');
+      // ★ 2026-10-15：`.nomedia` / `.bluev-isolated` 这类**标记文件**也要如实回答 ——
+      //   否则「隔离标记写没写进去」这条唯一判据在回归里恒为 MESSING（产品怎么写都红/都绿）。
+      const p = m[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      if (isolateMarks.has(p) || (p.endsWith('/.nomedia') && nomediaDirs.has(p.slice(0, -'/.nomedia'.length)))) {
+        return okOut('EXISTS\n');
+      }
       return okOut(pushed.includes(m[1]) ? 'EXISTS\n' : 'MISSING\n');
+    }
+    // ★ 2026-10-15：跨条回收要用 `find <一堆根> -maxdepth 3 -name '.bluev-isolated'` 找回
+    //   本工具留下的隔离目录。夹具必须如实列出**真的存在标记**的那些目录，否则跨条回收在回归里
+    //   等于空操作（上一条的文件永远躺在磁盘上，测不出来）。
+    if (/^find .* -maxdepth 3 -name /.test(cmd)) {
+      const want = (cmd.match(/-name '([^']*)'/) || [])[1] || '';
+      const roots = (cmd.match(/'((?:\/sdcard|\/storage\/emulated\/0)\/[^']*)'/g) || []).map(s => s.slice(1, -1))
+        .map(p => p.replace(/^\/storage\/emulated\/0\//, '/sdcard/'));
+      const hits = [];
+      if (want.endsWith('.bluev-isolated')) {
+        for (const key of isolateMarks.keys()) if (roots.some(r => key.startsWith(r.replace(/^\/storage\/emulated\/0\//, '/sdcard/') + '/'))) hits.push(key);
+      }
+      return okOut(hits.map(h => h.replace(/^\/sdcard\//, '/storage/emulated/0/')).join('\n') + (hits.length ? '\n' : ''));
     }
     // ★ 2026-10-03 新增：媒体扫描（adb.js#mediaScan 发的就是这条）。
     //   真机语义：scan_file 成功回 `Bundle[{android.intent.extra.STREAM=content://media/...}]`，
@@ -675,7 +838,7 @@ function makeFakeAdb(dir) {
       const arg = argM ? argM[1].trim() : '';
       if (/--method scan_file/.test(cmd)) {
         const asSd = arg.replace(/^\/storage\/emulated\/0\//, '/sdcard/');
-        if (!failScan && asSd && pushed.includes(asSd)) {
+        if (!failScan && asSd && pushed.includes(asSd) && !isHidden(asSd)) {
           if (!scanned.includes(asSd)) scanned.push(asSd);
           dbTimes.set(mtKey(asSd), mtOf(asSd));     // ★ 进库这一刻才把文件时间抄进库
           if (fs.existsSync(SCAN_EXIT_139_AFTER_WRITE)) {
@@ -686,7 +849,10 @@ function makeFakeAdb(dir) {
         return okOut('Result: Bundle[{android.intent.extra.STREAM=null}]\n');
       }
       if (/--method scan_volume/.test(cmd)) {
-        if (!failScan) pushed.forEach(p => { if (!scanned.includes(p)) { scanned.push(p); mediaIdOf(p); } dbTimes.set(mtKey(p), mtOf(p)); });
+        if(!failScan) {
+          for(let i=scanned.length-1;i>=0;i--)if(isHidden(scanned[i]))scanned.splice(i,1);
+          pushed.filter(p=>!isHidden(p)).forEach(p=>{if(!scanned.includes(p)){scanned.push(p);mediaIdOf(p);}dbTimes.set(mtKey(p),mtOf(p));});
+        }
         if (!failScan && fs.existsSync(SCAN_EXIT_139_AFTER_WRITE)) return { out: 'Result: Bundle[{}]\n', code: 139 };
         return okOut('Result: Bundle[{}]\n');
       }
@@ -746,12 +912,17 @@ function makeFakeAdb(dir) {
         const idx = scanned.findIndex(p => mediaIdOf(p) === id);   // 按**稳定 id** 反查（不再用下标推算）
         if (idx >= 0) {
           const gone = scanned[idx];
+          // ★ 被句柄占住（MEDIA_HELD）⇒ 记录删掉、**物理文件与 pushed 都保留**，
+          //   于是下一次 scan_volume 会把它重新扫回库（真机实测，可复算）。
+          //   这正是旧代码「rm 失败就 return、从不删库记录」导致的死循环的**反面**，
+          //   也是新代码必须靠 `.nomedia` 才能收敛的那条路。
+          const heldNow = isHeld(gone);
           // 只有**没被占用**时物理文件才会跟着记录一起消失；被占用时物理仍在，扫卷会复活它。
-          if(!locked&&!fs.existsSync(path.join(dir,'RM_SILENT_KEEP')))for(const media of physicalMedia)if(toCmp(media)===toCmp(gone))physicalMedia.delete(media);
+          if(!locked&&!heldNow&&!fs.existsSync(path.join(dir,'RM_SILENT_KEEP')))for(const media of physicalMedia)if(toCmp(media)===toCmp(gone))physicalMedia.delete(media);
           scanned.splice(idx, 1);
           mediaIds.delete(String(gone));
           dbTimes.delete(mtKey(gone));
-          if(!locked)for (let i = pushed.length - 1; i >= 0; i--) {
+          if(!locked&&!heldNow)for (let i = pushed.length - 1; i >= 0; i--) {
             if (norm(pushed[i]).replace(/^\/storage\/emulated\/0\//, '/sdcard/') ===
                 norm(gone).replace(/^\/storage\/emulated\/0\//, '/sdcard/')) pushed.splice(i, 1);
           }
@@ -1037,6 +1208,9 @@ function makeFakeAdb(dir) {
   // ★★ 2026-10-04（第四十轮）：通用受管目录表 —— 支持清**相册根** `/sdcard/DCIM/Camera`。
   //   断言用法：`fakeExec.__dirs['/sdcard/DCIM/Camera'].files = ['X_gone_1']`
   fakeExec.__dirs = dirs;
+  fakeExec.__managedDirs=managedDirs;
+  fakeExec.__resetMedia=()=>{pushed.length=0;scanned.length=0;physicalMedia.clear();managedDirs.clear();mediaIds.clear();mtimes.clear();dbTimes.clear();};
+  fakeExec.__physicalMedia=physicalMedia;
   fakeExec.__cameraDirPath = CAMERA;
   // ★★ 2026-10-04 新增：`am force-stop` 的现场（断言侧用它证明「确实强停过、停了哪个包」）。
   //   · `__appStops` —— 真被执行过的 force-stop 包名列表（空 = 一次都没停过）。

@@ -563,6 +563,25 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
 }
 
 /**
+ * ★★ 2026-10-15：本进程里「已经被我们隔离过、还没回收完」的目录记录（serial → Set<目录>）。
+ *
+ * 为什么要有它（跨条回收的唯一线索，且**不额外发设备命令**）：
+ *   · 隔离（写 `.nomedia`）只是让相册看不见；物理文件还在磁盘上，句柄一释放就得删掉、并把标记撤掉。
+ *   · 上一条隔离、下一条回收：中间隔着两次 `clearAlbum` 调用，函数内的局部集合留不下来。
+ *   · 不能靠「遍历设备找 `.bluev-isolated`」：rich 这类设备的目录命令恰恰是历史故障点
+ *     （`ls 相册超时` 就出在它身上），多一条遍历就多一次卡住的机会。
+ *   ⇒ 用**进程内存**记着；本轮没有登记目录时一条命令都不发（正常设备的命令数一个都不变）。
+ *   ★ 如实说明它的边界：进程退出后这份内存就没了 —— 那时设备上最多残留一个 `.nomedia` 与一个
+ *     待回收的物理文件，**不影响发布正确性**（那条目录不再是素材落地区），但会白占一点磁盘。
+ *     这是刻意取舍：宁可少发命令、宁可多留一个隐藏的旧文件，也不让清理路径多一次卡死的机会。
+ */
+const isolatedRegistry = new Map();
+function rememberedDirs(serial) {
+  if (!isolatedRegistry.has(serial)) isolatedRegistry.set(serial, new Set());
+  return isolatedRegistry.get(serial);
+}
+
+/**
  * ★★★ 2026-10-04（真机实测新增）：把设备**整个相册**清到一条不剩 —— 判据是「MediaStore 里
  *   除了本条要推的，没有别的素材」。这是用户口径「发布某条素材时，调出相册只能看到他的图/视频」
  *   的**唯一靠得住的落点**。
@@ -576,17 +595,26 @@ async function clearMediaDir(serial, remoteDir, opts = {}) {
  *   · clearMediaDir —— 按**目录**清：把 DCIM/Camera（含 bluev）清干净，能顺带把物理文件删掉；
  *   · clearAlbum     —— 按**媒体库**清：不管素材落在哪个目录，只要相册里看得见的就清掉。
  *
- * 实现：扫 4 张表拿到所有 _id/_data ⇒ 先 `rm -f` 物理文件（不删文件的话，下一次 scan_volume
- *   会把残留**重新扫进库**、又冒出来）⇒ 再按 _id `content delete`（按 id 删不需要引号）⇒
- *   `scan_volume` ⇒ **复查**；还有残留就 `am force-stop` 一次再重来。
+ * 实现（2026-10-15 按真机实验重排，旧的「rm 失败就 return」是 rich 连续失败的根因）：
+ *   扫 4 张表拿到所有 _id/_data ⇒ 逐个文件：
+ *     ① `rm -f` 物理文件；删成功最好（连文件一起消失）；
+ *     ② 删不动（`Text file busy`：得物正握着解码句柄）⇒ 给它**所在目录**写 `.nomedia`
+ *        —— 这是占用下唯一能穿过的写操作。写完 `scan_volume` 就不会再把它扫回相册；
+ *     ③ 无论物理文件删没删掉，都按 _id `content delete`（按 id 删不需要引号）
+ *        —— **绝不允许任一方失败就跳过另一方**（旧代码在 ② 之前 return，记录因此永远删不掉）；
+ *     ④ `scan_volume` ⇒ **复查**四张表。
+ *   ⇒ 「相册里还有没有它」的判据 = **索引为空且重扫不复活**，不是「磁盘上的文件删掉了没有」。
+ *     物理文件删不掉只记「已从相册移除、物理文件待回收」，绝不因此判相册没清干净。
+ *   ★ 只有一种情况允许在「物理文件还在」时删索引：该目录的 `.nomedia` **已写进并回读确认**。
+ *     隔离没确认就删索引 = 静默失效（下一次全盘扫描会把它连同别的素材一起扫回来、混进这一屏）。
  *
  * ★ 不假装清干净：`ok` 只在**复查时四张表都为空**时给出，否则把「还剩几条、前几个是谁」如实带回。
  *   清不干净是**静默错误** —— 表现是「内容看着发成功了，配图却是别人的」，最难查。
  *
  * @param {object} [opts]
  *   · `forceStopPkg` —— 清不掉时**允许**把哪个 App 强停掉再重试（真机实测它持有解码句柄）。
- *                       不传就完全不碰 App。
- * 返回 { ok, removed, files, left, error, note, forceStopped }
+ *                       **生产路径一律不传**（发布期间与两条之间禁止强停得物）。
+ * 返回 { ok, removed, files, left, error, note, forceStopped, code, physicalPending, isolatedDirs }
  */
 async function clearAlbum(serial, opts = {}) {
   const TABLES = ['video', 'images', 'audio', 'files'];
@@ -595,6 +623,35 @@ async function clearAlbum(serial, opts = {}) {
   const all = [];
   const issues = [];
   const uncertainDeletes = new Set();
+  const busyFiles = new Set();
+  // ★★★ 2026-10-15（rich 卡住的真因，真机可复算，别再改回去）：
+  //   物理 `rm` 被句柄占住时报 `Text file busy`，此时**唯一能穿过的写操作**是给它所在目录写
+  //   `.nomedia`；写完再 `content delete` 删掉库记录，`scan_volume` 就**不会**把它扫回相册
+  //   （本机 MuMu 实测：没有 .nomedia ⇒ 记录复活；有 .nomedia ⇒ 记录保持消失）。
+  //   旧顺序「rm 失败就 return」等于**根本没执行 content delete**，于是记录留在库里、文件留在盘上，
+  //   下一轮再 busy、再 return —— rich 的四连失败与「等很久还是失败」就是这么来的。
+  //   现在的顺序：rm →（失败才）写 .nomedia + 我方回收标记 → content delete（**绝不跳过**）→ 重扫复查。
+  //   物理文件删不掉**不再算「相册没清干净」**：相册的判据是「媒体库里没有它，且重扫不会复活」；
+  //   删不掉的物理文件如实记成「已从相册移除、物理待回收」，释放后由下面的 reclaimIsolated 回收。
+  const ISOLATE_MARK = '.bluev-isolated';
+  const ISOLATE_MARK_TEXT = 'BLUEV_ISOLATED_V1';
+  // 隔离目录里的待回收清单：只记**我们自己确认是残留素材**的路径，回收时只删这些路径。
+  const PENDING_LIST = '.bluev-pending';
+  const isolatedDirs = new Set();
+  const isolationFailed = new Set();
+  const physicalPending = new Set();
+  // 物理文件**已经删掉**、但库记录还在（`content delete` 回执滞后/只回 Deleted 0）的路径。
+  //   这种残留是**可收敛**的：文件都没了，再删一次索引就好 —— 必须继续重试，
+  //   否则相册里会留下一条指向已删文件的僵尸记录（黑缩略图，点它必报「暂不支持的格式」）。
+  const physicalGone = new Set();
+  // ★ 禁止写 `.nomedia` 的目录（真机实测，务必保留）：往这些目录写会把**本批新素材**一起藏起来
+  //   （对照实验：根目录加了标记后 `scan_file` 只回 `file/993` 而不是 `video/media/993`，
+  //   普通查询就查不到新素材了）。素材落在这些目录里且 `rm` 失败时**只能如实停批**，
+  //   绝不允许为了"清干净"把用户的新素材一起隐藏。
+  const NOMEDIA_FORBIDDEN = ['/storage/emulated/0/Movies/BlueV', '/storage/emulated/0/Movies',
+    '/storage/emulated/0/DCIM', '/storage/emulated/0'];
+  const nomediaForbidden = d => NOMEDIA_FORBIDDEN.some(g => d === g || g.startsWith(d + '/'));
+  const quotePath = p => "'" + String(p).replace(/'/g, "'\\''") + "'";
   let recoveryAttempts = 0;
   const failedDelete = (result, operation, file) => {
     const normalized=normalizeContentCrash(result);
@@ -611,11 +668,9 @@ async function clearAlbum(serial, opts = {}) {
       : /offline|disconnected|no devices/i.test(text) ? 'offline' : 'delete-error';
     issues.push({ operation, kind });
     if (issues.length > 8) issues.shift();
-    if (kind !== 'busy') {
-      const error = new Error((operation === 'rm' ? '物理文件删除' : '媒体库记录删除') + '失败（' + kind + '），未确认清空');
-      error.code = kind === 'permission' ? 'ALBUM_PERMISSION' : kind === 'offline' ? 'ALBUM_OFFLINE' : 'ALBUM_DELETE_FAILED';
-      throw error;
-    }
+    // ★ 2026-10-15：这里**不再中途抛出**。中途抛出与旧代码「rm 失败即 return」是同一类错误：
+    //   它会跳过后面的隔离与索引删除，于是记录留在库里。真正的判据统一在收尾处：
+    //   四张表复查为空 = 清干净；仍有残留 = 按残留原因给出具体错误码（见下方 code 判定）。
   };
   const run = async (device, command, options = {}) => {
     if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
@@ -636,6 +691,123 @@ async function clearAlbum(serial, opts = {}) {
     const bad = result.find(r => r.status === 'rejected');
     if (bad) throw bad.reason;
     return result.map(r => r.value);
+  };
+  /**
+   * 占用下唯一能穿过的写操作：给**文件所在目录**写 `.nomedia`，并留下一条本工具的回收标记。
+   *
+   * 真机依据（本机 MuMu 复算，务必别再改回去）：
+   *   · 文件被句柄占住 ⇒ `rm -f` 报 `Text file busy`、`mv <dir> <.dir>` 报 `Operation not permitted`；
+   *   · `touch <dir>/.nomedia` **成功**；
+   *   · 此时按 _id `content delete` 删掉库记录，再 `scan_volume` ⇒ **记录保持消失**（相册里看不到它）；
+   *   · 把 `.nomedia` 删掉再扫 ⇒ 记录立刻回来（`_id` 变了号）——证明这就是那条开关。
+   * ⇒ 「相册里有没有它」的判据是**索引 + 隔离标记**，不是「磁盘上的文件删掉了没有」。
+   *   物理文件删不掉只记「待回收」，绝不因此判相册没清干净（那正是 rich 连续失败的写法）。
+   *
+   * 为什么不干脆只写 `.nomedia` 不写 `.bluev-isolated`：回收要能区分「这条 `.nomedia` 是本工具写的」
+   * 与「用户自己放的」。只有前者才允许在文件真的删掉之后移除，否则会把用户的意图删掉。
+   */
+  const isolateFile = async file => {
+    const dir = path.posix.dirname(file);
+    if (!dir.startsWith('/storage/emulated/0/')) return { ok: false, dir, why: '目录不在共享存储内' };
+    // ★ 不允许往「本批新素材要落地的目录」或其祖先写标记：那样会把新素材一起藏掉，
+    //   发布就再也选不到图 —— 这种情况下只能如实停批（见 NOMEDIA_FORBIDDEN 的说明）。
+    if (nomediaForbidden(dir)) {
+      return { ok: false, dir, why: '这个目录是素材落地区或它的上层（' + dir + '），写 .nomedia 会把本条要发的新素材一起隐藏' };
+    }
+    if (isolatedDirs.has(dir)) return { ok: true, dir, cached: true };
+    if (isolationFailed.has(dir)) return { ok: false, dir, why: '这个目录已经写过一次没成功' };
+    const mark = dir + '/' + ISOLATE_MARK;
+    const nm = dir + '/.nomedia';
+    // 归属标记写不写得上**不影响**相册判据（下面仍以复查为准），所以失败不在这里抛。
+    await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(mark), { timeout: 8000 });
+    const touched = await run(serial, 'touch ' + quotePath(nm), { timeout: 8000 });
+    const back = await run(serial, '[ -f ' + quotePath(nm) + ' ] && echo EXISTS', { timeout: 8000 });
+    const ok = touched.ok && back.ok && String(back.stdout || '').trim() === 'EXISTS';
+    if (ok) {
+      isolatedDirs.add(dir);
+      // ★ 跨条记忆：下一条的 clearAlbum 会从这里接回这个目录去回收（见 rememberedDirs 的说明）。
+      rememberIsolated(dir);
+      // ★★ 待回收**清单**（写进设备端，不靠内存）：只记我们自己确认过是「残留素材」的路径。
+      //   延后回收时**只删清单里的路径**，绝不遍历目录删 —— 否则会把用户同目录里的
+      //   私人照片/其它文件一起删掉（那是不可逆的损失）。
+      await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000 });
+      return { ok: true, dir, why: '' };
+    }
+    isolationFailed.add(dir);
+    return { ok: false, dir, why: '隔离标记 .nomedia 写入或回读未确认（' + ((touched.stderr || back.stderr || touched.stdout || '无错误详情') + '').trim() + '）' };
+  };
+  /**
+   * 回收「已隔离、占用可能已释放」的目录里剩下的物理文件。
+   *
+   * 为什么必须做：`.nomedia` 只让相册看不见它，文件还在磁盘上。占用一旦释放就得删掉，
+   *   否则用户设备的存储里会一直堆着旧素材。
+   * ★ 判据只管物理文件删没删掉，**不反过来影响相册结论**：删不掉就继续待回收
+   *   （下一次还会经过这里），绝不因为「文件还在」把已经清干净的相册判成失败。
+   * ★ 回收顺序必须是「先删文件、再删标记」：反过来的话，标记一没、文件还在，
+   *   下一次全盘扫描立刻把旧素材扫回相册（真机实测，可复算）。
+   */
+  /**
+   * 把**上一次调用**（乃至上一次发布）留下的隔离目录接回来。
+   *
+   * ★ 为什么不自己去设备上找：那要多发一条目录遍历命令，而 rich 这种设备的目录命令
+   *   恰恰是最容易卡住的（历史故障里就有「ls 相册超时」）。隔离目录只可能是**我们自己写的**，
+   *   由调用方把登记的目录传进来即可 —— 一条额外命令都不发。
+   *   设备侧的归属标记（`.bluev-isolated`）仍然要在，用来防止误撤用户自己放的 `.nomedia`。
+   */
+  const adoptIsolated = () => {
+    // 先接**进程内存里**登记的目录（同一次运行的上一条留下的），再接调用方显式传进来的。
+    for (const d of rememberedDirs(serial)) isolatedDirs.add(d);
+    for (const d of (Array.isArray(opts.isolatedDirs) ? opts.isolatedDirs : [])) {
+      const dir = toMediaPath(String(d || '').trim().replace(/\/+$/, ''));
+      if (dir.startsWith('/storage/emulated/0/') && !nomediaForbidden(dir)) isolatedDirs.add(dir);
+    }
+  };
+
+  /** 把本轮确认隔离了的目录登记进**跨条**记忆（`reclaimIsolated` 撤掉标记时会同步移除）。 */
+  const rememberIsolated = dir => {
+    const s = String(dir || '');
+    if (s.startsWith('/storage/emulated/0/')) rememberedDirs(serial).add(s);
+  };
+  /**
+   * 尽力回收已隔离目录里**我们记下来的**待回收素材；回收不了就继续隔离。
+   * ★ 这个函数**绝不允许**影响本次相册清理的结论（它是物理回收，不是相册判据）：
+   *   所以内部对每个目录单独 try，任何异常都只是「这次没回收成」。
+   */
+  const reclaimIsolated = async () => {
+    for (const dir of [...isolatedDirs]) {
+      try {
+        if (nomediaForbidden(dir)) { isolatedDirs.delete(dir); continue; }
+        // 不是本工具写的标记 ⇒ 一律不碰（用户自己放的 .nomedia 不能被我们撤掉）。
+        const owned = await run(serial, 'cat ' + quotePath(dir + '/' + ISOLATE_MARK), { timeout: 8000 });
+        if (!owned.ok || String(owned.stdout || '').trim() !== ISOLATE_MARK_TEXT) {
+          // ★★ 2026-10-15：这里必须分清「标记确实不在」和「标记读不出来」——
+          //   前者 = 这条 .nomedia 不是我们写的（或已经被回收掉），从此不再管它（绝不撤用户的标记）；
+          //   后者 = 设备 I/O 没给回话（超时/异常），**不能**当作「不是我们的」就忘掉 ——
+          //   一忘，这条 .nomedia 就永远留在用户相册目录里，再没人来撤。所以只有
+          //   「命令真的跑成功了、内容对不上」或「明确说文件不存在」才放手，其余一律留着下次再试。
+          const said = String(owned.stderr || '') + String(owned.stdout || '');
+          if (owned.ok || /No such file or directory/i.test(said)) isolatedDirs.delete(dir);
+          continue;
+        }
+        // ★ 只删**清单里记着的那几个路径**，绝不遍历目录删：同目录里可能有用户的私人照片，
+        //   遍历删除是不可逆的越界动作。
+        const list = await run(serial, 'cat ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000 });
+        if (!list.ok) continue;     // 清单读不到 ⇒ 不敢说回收完了，继续隔离，下次再试
+        const files = String(list.stdout || '').trim().split(/\r?\n/).map(s => toMediaPath(s.trim()))
+          .filter(p => p.startsWith('/storage/emulated/0/') && path.posix.dirname(p) === dir && !/[\r\n\0]/.test(p));
+        let left = 0;
+        for (const p of files) {
+          const rm = await run(serial, 'rm -f ' + quotePath(p), { timeout: 8000 });
+          if (rm.ok) physicalPending.delete(p); else left++;
+        }
+        if (left) continue;         // 还有删不掉的素材 ⇒ 保留 .nomedia 继续隔离，下次再试
+        // ★ 文件真的都删掉了，才允许撤掉标记；撤掉之后目录恢复普通目录。
+        await run(serial, 'rm -f ' + quotePath(dir + '/.nomedia') + ' ' + quotePath(dir + '/' + ISOLATE_MARK)
+          + ' ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000 });
+        isolatedDirs.delete(dir);
+        rememberedDirs(serial).delete(dir);
+      } catch (e) { /* 回收失败只记「没回收成」，绝不影响相册判据 */ }
+    }
   };
   const scanAll = async () => {
     const hit = [];
@@ -658,12 +830,35 @@ async function clearAlbum(serial, opts = {}) {
         || file.split('/').some(part => part === '..' || part === '.')) {
         throw new Error('媒体文件路径不在允许的共享存储范围内，未执行删除');
       }
-      const quoted = "'" + file.replace(/'/g, "'\\''") + "'";
+      const quoted = quotePath(file);
       const physical = await run(serial, 'rm -f ' + quoted, { timeout: 8000 });
-      if (!physical.ok) { failedDelete(physical, 'rm'); return; }
-      const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
-      if (!rd.ok) failedDelete(rd, 'delete', file);
-      else removed++;
+      let iso = { ok: true, why: '' };
+      if (!physical.ok) {
+        // ★ 物理删除失败**绝不能就此 return**（旧代码在这里 return，正是 rich 卡住的真因：
+        //   `content delete` 从未执行，记录留在库里、文件留在盘上，下一轮再 busy、再 return）。
+        //   失败原因只记录，不再抛：真正的判据是下面的四表复查。
+        failedDelete(physical, 'rm');
+        busyFiles.add(file);
+        // 占用（或任何删不掉）时改为「隔离」——这是占用下唯一能穿过的写操作。
+        iso = await isolateFile(file);
+      } else {
+        busyFiles.delete(file);
+        physicalGone.add(file);
+      }
+      // ★★★ 判据边界（2026-10-15 真机实验定的，别再放宽）：
+      //   物理文件**还在**时，只有「该目录的 .nomedia 已确认」才允许删索引。
+      //   否则这一次全盘扫描会把文件重新扫回库（真机实测：只 content delete 不写 .nomedia，
+      //   记录以新 _id 复活）；而删索引本身会让物理文件更难回收（MediaProvider 找不到 _data）。
+      //   隔离没确认就保留记录、如实报「隔离标记未确认」——绝不假装清干净。
+      if (physical.ok || iso.ok) {
+        const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
+        if (!rd.ok) failedDelete(rd, 'delete', file);
+        else removed++;
+      } else {
+        issues.push({ operation: 'isolate', kind: 'isolation-failed' });
+      }
+      // 物理文件还在（无论索引删没删掉）⇒ 如实记「待回收」，绝不宣称文件已删除。
+      if (!physical.ok) physicalPending.add(file); else physicalPending.delete(file);
     };
     for (let i = 0; i < hit.length; i += 2) await group(hit.slice(i, i + 2).map(removeOne));
   };
@@ -675,6 +870,17 @@ async function clearAlbum(serial, opts = {}) {
     return scanAll();
   };
   try {
+    // 先回收「占用已释放」的隔离残留（跨条存在）：不给它加进四表复查的计数里，
+    // 也不影响本次相册判据 —— 回收不动只是继续待回收。
+    // ★★ 2026-10-15：这里**不再自己遍历设备找标记**。原因有两条，都是实测教训：
+    //   ① rich 这类设备的目录命令本身就是历史故障点（`ls 相册超时` 就出在它身上），
+    //      多一条 `find` 就多一次「清理还没开始先卡住」的机会；
+    //   ② 判据必须与命令数解耦：取消/超时/慢主机三条回归盯的是「清理期只发相册命令」，
+    //      凭空多一条遍历会把这三条变成假红，掩盖真正的行为变化。
+    //   隔离目录只可能是**我们自己写的**，由调用方（albumready）把上一轮登记的目录传进来；
+    //   没传 = 本轮不回收（回收是尽力而为的物理动作，不影响相册判据）。
+    adoptIsolated();
+    await reclaimIsolated();
     let hit = await scanAll();
     // 空索引不代表共享存储没有素材。先重扫一次，捕获目录外尚未入库的文件，
     // 避免后续推图触发扫描时旧素材突然混入相册。
@@ -692,13 +898,8 @@ async function clearAlbum(serial, opts = {}) {
         await removeAll(discovered);
         hit = await reScan();
       }
-      // ★★★ 2026-10-14（rich 四连失败真因）：**busy 恢复必须撑满总预算，不能只试 3 次约 5 秒**。
-      //   现场：得物停在上一条已发布视频上握着**硬解码句柄**，rm 连续报 `Text file busy`；
-      //   旧版只退避 [500,1500,3000] 三次就下结论「未清净」⇒ 用户看到连续四条失败，
-      //   而真相只是句柄还没释放（设备侧每条清理实际只花 21.9~23.8s，离 90s 预算还远）。
-      //   现在改成：只要总预算没走完、取消没触发，就按 idx*600ms 封顶 5s 的间隔继续，
-      //   每轮重扫后以**当前真实残留**重试。仍然是**如实判据** —— 物理文件与四表复查都干净才放行，
-      //   预算走完仍清不掉就把 busy 原因原样带回，绝不假成功、绝不强停得物。
+      // rich 实测：持续占用只有结束得物进程后才解除；等待不能当成释放方案。
+      // 自动恢复最多四轮，覆盖短暂占用；禁止将同一失败反复拖到 90 秒。
       const busyDelays = Array.isArray(opts.busyRetryDelays) && opts.busyRetryDelays.length
         ? opts.busyRetryDelays.map(Number).filter(v => Number.isFinite(v) && v >= 0)
         : null;
@@ -708,13 +909,23 @@ async function clearAlbum(serial, opts = {}) {
       };
       // 退避间隔本身也要留出一次删除+重扫的时间，否则预算是假的。
       const recoveryReserve = 12000;
-      // 回归可用 busyRetryBudgetMs 收紧这段恢复的总时长；生产不传，直接吃满 90 秒总预算。
+      // 回归可收紧恢复预算；生产也受四轮上限约束，总预算仍限制慢命令。
       const busyBudget = Number.isFinite(Number(opts.busyRetryBudgetMs)) && Number(opts.busyRetryBudgetMs) >= 0
         ? Number(opts.busyRetryBudgetMs) : null;
       const recoveryEnd = busyBudget == null ? deadline : Math.min(deadline, Date.now() + busyBudget);
       for (;;) {
-        if (!hit.length) break;
+        if (!hit.length || recoveryAttempts >= 4) break;
         if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
+        // 只有**可收敛**的残留才值得继续等，别把总预算耗在明知无效的退避上
+        //   （rich「等了很久还是失败」的另一半原因）。可收敛 = 有下列之一：
+        //     · 物理文件删不掉（`Text file busy`）：句柄释放后就能删掉；
+        //     · 物理文件已删、索引回执滞后（`Deleted 0 rows` / 139 后重扫才发现）：再删一次就好；
+        //     · 索引删除命令本身失败但原因不是「不可恢复」。
+        //   不可收敛 = 隔离标记写不进去（物理文件还在、库记录还会被扫回来）⇒ 立即如实停止。
+        const convergible = h => busyFiles.has(toMediaPath(h.file))
+          || physicalGone.has(toMediaPath(h.file))
+          || !physicalPending.has(toMediaPath(h.file));
+        if (!hit.some(convergible)) break;
         const delay = nextBusyDelay();
         const reserve = busyBudget == null ? recoveryReserve : 0;
         if (!(delay >= 0) || recoveryEnd - Date.now() <= delay + reserve) break;
@@ -751,12 +962,35 @@ async function clearAlbum(serial, opts = {}) {
     }
     const categories = [...new Set(issues.map(issue => issue.operation + ':' + issue.kind))];
     const residualTypes = [...new Set(hit.map(h => h.table))];
-    const note = left ? '复查仍有 ' + left + ' 条相册记录；类型=' + residualTypes.join(',')
-      + '；恢复=' + recoveryAttempts + '次；删除异常=' + (categories.join(',') || '未报告，扫描后仍有记录') : '';
+    const pending = [...physicalPending];
+    // 只有「四表复查为空」才叫清干净；物理文件删不掉**不影响**这个结论（只进 pending 如实交代）。
+    // ★ 错误说明必须**点名真正的原因**：rich 现场旧日志写的是 `删除异常=rm:busy`，于是所有注意力
+    //   都被引到「等句柄释放」上；真正卡住的是「隔离标记没写进去 ⇒ 删了记录也会被扫回来」。
+    const blocking = hit.length
+      ? (physicalPending.size && issues.some(i => i.kind === 'isolation-failed')
+          ? '物理文件被占住、且所在目录的隔离标记（.nomedia）写入或回读未确认，'
+            + '删掉的库记录会被下一次全盘扫描扫回来；这是设备 I/O 层面的阻塞，等时间不会好'
+          : '')
+      : '';
+    const note = left
+      ? '复查仍有 ' + left + ' 条相册记录；类型=' + residualTypes.join(',')
+        + (blocking ? '；' + blocking : '')
+        + '；恢复=' + recoveryAttempts + '次；删除异常=' + (categories.join(',') || '未报告，扫描后仍有记录')
+      : (pending.length ? '已从相册移除；' + pending.length + ' 个物理文件待回收（仍在设备磁盘上，已用 .nomedia 隔离，不参与相册显示）' : '');
+    // 错误码按**残留原因**给，按优先级：隔离没确认 > 误伤风险 > 权限/离线 > 持续占用 > 其它残留。
+    // 发布侧据此决定「本条失败但继续下一条」还是「停批」；码错了会让人往反方向查。
+    const code = !left ? undefined
+      : issues.some(i => i.kind === 'isolation-failed') ? 'ALBUM_ISOLATION_FAILED'
+      : hit.some(h => busyFiles.has(toMediaPath(h.file))) ? 'ALBUM_BUSY'
+      : issues.some(i => i.kind === 'permission') ? 'ALBUM_PERMISSION'
+      : issues.some(i => i.kind === 'offline') ? 'ALBUM_OFFLINE'
+      : issues.some(i => i.operation === 'delete') ? 'ALBUM_DELETE_FAILED'
+      : 'ALBUM_RESIDUAL';
     return { ok: left === 0, removed, files: all.map(h => h.file), left, error: note, note, forceStopped,
-      code: left ? 'ALBUM_RESIDUAL' : undefined, recoveryAttempts, issues, residualTypes };
+      code, recoveryAttempts, issues, residualTypes, physicalPending: pending, isolatedDirs: [...isolatedDirs] };
   } catch (error) {
-    return { ok: false, removed, files: all.map(h => h.file), left: null, error: error.message, forceStopped, code: error.code };
+    return { ok: false, removed, files: all.map(h => h.file), left: null, error: error.message, forceStopped,
+      code: error.code, physicalPending: [...physicalPending], isolatedDirs: [...isolatedDirs] };
   }
 }
 
