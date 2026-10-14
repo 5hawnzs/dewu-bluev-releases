@@ -2760,6 +2760,7 @@ app.whenReady().then(async () => {
     const entries = [...document.querySelectorAll('.journal-entry')];
     const twoColumns = entries.every(e => getComputedStyle(e).gridTemplateColumns.split(' ').length === 2);
     const dateGroups = cards.length;
+    const latestDate = cards[0]?.querySelector('h2')?.textContent;
     const hasDetails = entries.every(e => e.querySelector('.journal-meta time') && e.querySelector('.journal-kind') && e.querySelector('h3') && e.querySelector('li'));
     const fits = entries.every(e => e.scrollWidth <= e.clientWidth);
     state.tab = 12; renderAll();
@@ -2767,10 +2768,10 @@ app.whenReady().then(async () => {
     const cells = [...document.querySelectorAll('.skeleton-table tbody td:nth-child(2)')];
     const namesFit = cells.length === 15 && cells.every(c => c.scrollWidth <= c.clientWidth);
     state.tab = 13; renderAll();
-    return { twoColumns, dateGroups, hasDetails, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
+    return { twoColumns, dateGroups, latestDate, hasDetails, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
   })()`);
   win.hide();
-  ok('更新日志按日期卡片分组，左侧时间和类型、右侧标题与要点，无横向溢出', releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits && releaseCheck.dateGroups === 2, JSON.stringify(releaseCheck));
+  ok('更新日志按日期卡片分组，左侧时间和类型、右侧标题与要点，无横向溢出', releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits && releaseCheck.dateGroups === 3 && releaseCheck.latestDate === '2026 年 10 月 14 日', JSON.stringify(releaseCheck));
   ok('句式名称完整显示、更新日志页提供检查更新', releaseCheck.namesFit && releaseCheck.updatePanel, JSON.stringify(releaseCheck));
   const updateNotice = await win.webContents.executeJavaScript(`(() => {
     const saved = { update: state.update, auth: state.auth, tab: state.tab };
