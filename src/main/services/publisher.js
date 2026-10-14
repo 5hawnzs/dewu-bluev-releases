@@ -340,7 +340,7 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
 
 // 商家主页可能没有 tvGoHomePage；使用首页动态流的相机入口，不依赖账号主页布局。
 async function openPublishEntry(serial, ctx = {}) {
-  const home = await adb.ensureApp(serial, { pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity, judge: f => uimap.isHomeScreen(f), timeoutMs: 30000 });
+  const home = await adb.ensureApp(serial, { pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity, judge: f => uimap.isHomeScreen(f), timeoutMs: 30000, allowForceStop: false });
   if (!home.ok) throw new Error('无法返回得物首页：' + (home.why || '未知原因'));
   await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' }, {}, ctx);
   await sleep(400, ctx.cancelled);
@@ -785,31 +785,40 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //     ⇒ 用户看到的「第二条永远拉不起来」。
   //   ★ 顺序：守卫在**清相册/推素材之前** ⇒ 拦下时连素材都不推（不白跑几十秒）。
   //   ★ 失败就**如实抛错**，绝不"当作没这回事继续往下点"（不知道自己在哪一屏时点固定坐标＝乱点）。
-  //   ★★ 2026-10-04（第十四次实测后）这一整段抽成 pullHome()，因为**清相册时可能把得物强停掉**
-  //     （它拿着素材的解码句柄，见 adb.clearMediaDir 的 1b 段）⇒ 强停之后要**再走一遍**这个守卫
-  //     （App 现在是死的，直接点固定坐标等于点空气）。两处调用，同一条判据。
-  const pullHome = async (why) => {
+  //   2026-10-14：历史强停恢复已禁止。草稿箱也是有效入口，连续发布直接沿用已有返回页。
+  const steps = uimap.stepsFor(map, isVideo);
+  // 草稿箱本身有发布新动态入口。复用已有返回页信息和定位步骤，下一条无需回首页。
+  const draftEntry = steps.findIndex(step => step.action === 'tapId' && step.value === uimap.DEWU.draft.exitId
+    && step.whenOn === uimap.DEWU.draft.titleId);
+  let entryFocus = '';
+  const pullHome = async () => {
     row.status = '回主线';
     if (ctx.onRow) ctx.onRow(row);
     // ★ 别在这里自己先读一次 currentFocus —— 那会把「转场瞬间读不到」这个现场吃掉，
     //   让守卫误判成「明确知道停在别处」从而瞎启动 App。守卫返回的 `from` 就是它看到的起点。
-    const g = await adb.ensureApp(serial, {
+    const knownReturn = ctx.publishReturnFocus;
+    ctx.publishReturnFocus = '';
+    const g = knownReturn && (uimap.isHomeScreen(knownReturn) || (draftEntry >= 0 && uimap.isDraftScreen(knownReturn)))
+      ? { ok: true, focus: knownReturn, started: false }
+      : await adb.ensureApp(serial, {
       pkg: uimap.DEWU.pkg,
       activity: uimap.DEWU.launchActivity,
       want: uimap.DEWU.homeActivity,
-      judge: (f) => uimap.isHomeScreen(f),
+      judge: (f) => uimap.isHomeScreen(f) || (draftEntry >= 0 && uimap.isDraftScreen(f)),
+      allowForceStop: false,
       timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
     });
+    entryFocus = g.focus || '';
     if (!g.ok) {
-      throw new Error((why ? why + '：' : '') + '没能把得物拉回首页：' + (g.why || '未知原因')
+      throw new Error('没能准备得物首页或草稿箱发布入口：' + (g.why || '未知原因')
         + ' —— 这一步不许跳过：定位表第一步是**固定坐标**点底部导航，停在别的页面上那个坐标底下不是底部导航。');
     }
     if (g.started) {
-      log(`${row.dir}：得物不在首页（之前的页面：${g.from || '读不到'}），已重新拉回首页${why ? '（' + why + '）' : ''}`, 'info');
+      log(`${row.dir}：之前不在首页，已准备发布入口（之前的页面：${g.from || '读不到'}）`, 'info');
     }
     return g;
   };
-  await pullHome('');
+  await pullHome();
 
   // ★★★ 2026-10-04 新增：**坐标空间守卫**（用户问「为啥你有具体坐标老是会点偏」）。
   //
@@ -831,7 +840,6 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //     放这儿还顺带满足「fail fast」：坐标系不对时，一个像素都不点、一张素材都不推。
   // ★ 挑哪一套步骤的判据抽到了 uimap.stepsFor（纯函数）：视频没单独配 videoSteps 就复用图文那套。
   //   抽出去是为了让回归能**喂输入验语义**，而不是拿正则去匹配这一行长什么样（重构一次就误报一次）。
-  const steps = uimap.stepsFor(map, isVideo);
   const fixedPts = uimap.tapPointsOf(steps);
   if (fixedPts.length) {
     ctx.uiSize = await stableCoordinates(serial, map.screen, ctx);
@@ -846,9 +854,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     }
   }
 
-  const { remotes, remoteDir } = await albumready.prepare(serial, item, row, {
-    ...ctx, publishConfig: c, afterForceStop: () => pullHome('释放上一条素材句柄后')
-  });
+  const { remotes, remoteDir } = await albumready.prepare(serial, item, row, { ...ctx, publishConfig: c });
 
   // 2) 按 UI 定位表走真实界面。
   //    ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的**（入口、相册页签、编辑页同一套），
@@ -900,7 +906,9 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   input（不是 tapId）⇒ 天然不会拿正文全文去比对某一小段话题，不会误报。
   //   被屏幕守卫跳过（rs.skipped）的步不算「点过」，所以置 ''。
   let lastTapId = '';
-  for (const raw of steps) {
+  const entrySteps = uimap.isDraftScreen(entryFocus) && draftEntry >= 0 ? steps.slice(draftEntry) : steps;
+  if (entrySteps !== steps) log(`${row.dir}：沿用草稿箱的「发布新动态」入口，不退出得物、不绕回首页`, 'info');
+  for (const raw of entrySteps) {
     if (cancelled()) throw new Error('已取消');
     let step = topicinput.mark(raw, uimap.fill(raw, data));
     // 老用户定位表同样升级，不能只改出厂表让已安装的机器继续跳过封面。
@@ -956,6 +964,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       const settle = await waitLeftPublishFlow(serial, {
         timeoutMs: Math.min(60000, Math.max(1000, Number(c.submissionWaitMs) || 30000)), cancelled
       });
+      ctx.publishReturnFocus = settle.ok ? settle.focus : '';
       if (!settle.ok) {
         ctx.submissionPending = `已点击提交，但等待 ${settle.waited}s 后尚未确认退出编辑流程；停止后续条目，避免清理或重启打断上传，不自动重复提交。`;
         log(ctx.submissionPending, 'warn');
@@ -1028,6 +1037,8 @@ async function run(state, ctx = {}) {
 }
 
 async function runBatch(state, ctx = {}) {
+  // 返回页只属于当前批次；调用者复用 ctx 或换设备时必须重新观察入口。
+  ctx.publishReturnFocus = '';
   const log = ctx.log || (() => {});
   // ★ 2026-10-05 用户口径「给用户只看大结论」：`log`（= ctx.log）现在一律是**过程明细**，
   //   界面不显示；只有 `conclude`（= ctx.conclude）那几句会出现在用户眼前。
@@ -1097,7 +1108,8 @@ async function runBatch(state, ctx = {}) {
   if (mode === 'adb' && todo.length && [false, true].some(video => uimap.tapPointsOf(uimap.stepsFor(map, video)).length)) {
     const home = await adb.ensureApp(serial, {
       pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity,
-      judge: focus => uimap.isHomeScreen(focus), timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
+      judge: focus => uimap.isHomeScreen(focus) || uimap.isDraftScreen(focus), allowForceStop: false,
+      timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
     });
     if (!home.ok) throw new Error('发布前未能将得物拉回首页：' + (home.why || '未知原因'));
     ctx.uiMapScreen = map.screen;
@@ -1170,6 +1182,8 @@ async function runBatch(state, ctx = {}) {
       const video = rowKind(row, item) === 'video';
       const wait = gapSecFor(video ? 'video' : 'image', c);
       if (wait > 0) {
+        // 有间隔时用户可能操作设备，不能沿用上一条返回页；连续发布直接复用。
+        ctx.publishReturnFocus = '';
         log(`按 ${wait} 秒间隔，${wait}s 后执行`, 'info');
         if (!await sleep(wait * 1000, cancelled, left => {
           progress({ done, total: todo.length, label: `${left}s 后执行`, waitLeft: left });

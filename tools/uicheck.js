@@ -42,6 +42,16 @@ app.whenReady().then(async () => {
   const auth = require(path.join(ROOT, 'src/main/auth.js'));
   const updater = require(path.join(ROOT, 'src/main/updater.js'));
   store.load();
+  // 注册 IPC 和执行任务之前必须隔离输出；仅隔离 userData 不会改变默认输出目录。
+  const isolatedOutput = path.join(TMP, 'out');
+  store.set({ paths: { output: isolatedOutput, rejected: path.join(TMP, 'rejected') } });
+  ok('界面自检首次任务之前输出目录已隔离', store.get('paths.output') === isolatedOutput, store.get('paths.output'));
+  if (store.get('paths.output') !== isolatedOutput) throw new Error('自检输出未隔离，拒绝启动任务以免污染真实日志');
+  const isolationLog = require(path.join(ROOT, 'src/main/services/runlog.js'));
+  const isolationEvent = { kind: 'log', message: '界面自检输出隔离验证' };
+  ok('界面自检首次日志真实落在临时输出目录', isolationLog.append(isolationEvent)
+    && fs.existsSync(path.join(isolatedOutput, 'run-log.jsonl'))
+    && isolationLog.read().some(entry => entry.message === isolationEvent.message));
   project.load();
   auth.load();
   ipc.register();
@@ -882,6 +892,24 @@ app.whenReady().then(async () => {
 
   ok('页签 8 有「导出 xlsx」（品牌统计）', await onTab(8, 'stats:export'));
 
+  const cfgDraftUi = await win.webContents.executeJavaScript(`(() => {
+    const savedTab = state.tab;
+    state.tab = 3; renderAll();
+    const input = document.querySelector('[data-cfg="copy.requiredTopic"]');
+    const initial = input && input.value;
+    if (input) { input.value = '#后台事件不能丢'; input.focus(); input.setSelectionRange(2, 4); }
+    renderBackground();
+    const kept = document.querySelector('[data-cfg="copy.requiredTopic"]');
+    const result = { preserved: kept && kept.value === '#后台事件不能丢',
+      focus: document.activeElement === kept && kept.selectionStart === 2 && kept.selectionEnd === 4 };
+    renderAll();
+    result.explicitReset = document.querySelector('[data-cfg="copy.requiredTopic"]').value === initial;
+    state.tab = savedTab; renderAll();
+    return result;
+  })()`);
+  ok('后台重绘保留未保存普通设置与光标，显式重绘不恢复草稿',
+    cfgDraftUi.preserved && cfgDraftUi.focus && cfgDraftUi.explicitReset, JSON.stringify(cfgDraftUi));
+
   const statsRangeUi = await win.webContents.executeJavaScript(`(async () => {
     const saved = { opts: JSON.parse(JSON.stringify(state.statsOpts)), stats: state.stats,
       query: state.statsQueryOpts && JSON.parse(JSON.stringify(state.statsQueryOpts)) };
@@ -943,8 +971,7 @@ app.whenReady().then(async () => {
   // 只验「多了一个页签」证明不了同步 —— 那恰恰是最容易做成两套数据的地方。
   // 日志由主进程 logbus 产生，这里直接往总线上灌几条（走的就是真的 log:entry 推送链路）。
   {
-    // 先把导出目录挪到临时目录：默认是「我的文档\输出\得物」，自检不许往用户那儿写文件
-    store.set({ paths: { output: path.join(TMP, 'out') } });
+    // 输出目录在启动阶段已经隔离；任务日志和界面导出始终使用同一临时目录。
 
     logbus.info('ENG-INFO 自检：这段只用来验证「运行日志」页与底部日志栏同步');
     logbus.error('ENG-ERR 自检：故意造一条错误日志（用来验级别筛选）');

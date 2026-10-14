@@ -655,8 +655,17 @@ async function clearAlbum(serial, opts = {}) {
     if (!hit.length) hit = await reScan();
     all.push(...hit);
     if (hit.length) {
+      const knownFiles = new Set(hit.map(h => toMediaPath(h.file)));
       await removeAll(hit);
       hit = await reScan();
+      // 已有索引与尚未索引的文件可能混在同一设备。重扫新发现的路径只清一次，
+      // 不把「新发现」误当作句柄占用而强停应用；同一路径删不掉也不反复删除。
+      const discovered = hit.filter(h => !knownFiles.has(toMediaPath(h.file)));
+      if (discovered.length) {
+        all.push(...discovered);
+        await removeAll(discovered);
+        hit = await reScan();
+      }
       if (hit.length && opts.forceStopPkg) {
         const pkg = String(opts.forceStopPkg);
         if (!/^[A-Za-z0-9_.]+$/.test(pkg)) throw new Error('释放句柄的应用包名无效');
@@ -1631,7 +1640,7 @@ function isFocusOf(focus, activity) {
  *
  * @returns {{ok:boolean, focus:string, started:boolean, why:string}}
  */
-async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000 } = {}) {
+async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000, allowForceStop = true } = {}) {
   const t0 = Date.now();
   const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000;
   const isWant = (focus) => {
@@ -1717,7 +1726,7 @@ async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000
   for (;;) {
     focus = await readFocus();
     if (isWant(focus)) return { ok: true, focus, started, from: before, why: '' };
-    if (!hardTried && focus && isFocusOf(focus, pkg) && Date.now() - t0 >= hardAfterMs) {
+    if (allowForceStop && !hardTried && focus && isFocusOf(focus, pkg) && Date.now() - t0 >= hardAfterMs) {
       hardTried = true;
       await forceStop(serial, pkg);
       await sleepMs(700);

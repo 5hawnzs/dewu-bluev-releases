@@ -1074,12 +1074,15 @@ async function loadStats() {
   state.statsBusy = true;
   state.statsTried = true;
   const profile = state.auth;
+  // 筛选可在等待期间修改，结果归属必须保留发起时的快照。
+  const queriedOpts = JSON.parse(JSON.stringify(state.statsOpts));
   try {
-    const r = await appApi.statsQuery(state.statsOpts);
+    const r = await appApi.statsQuery(queriedOpts);
     if (profile !== state.auth) { state.statsTried = false; return; }
     state.stats = r && r.ok ? r : { error: (r && r.error) || '查询失败' };
-    state.statsQueryOpts = state.stats.error ? null : JSON.parse(JSON.stringify(state.statsOpts));
+    state.statsQueryOpts = state.stats.error ? null : queriedOpts;
   } catch (e) {
+    if (profile !== state.auth) { state.statsTried = false; return; }
     state.stats = { error: (e && e.message) || '查询失败' };
     state.statsQueryOpts = null;
   } finally {
@@ -1778,6 +1781,40 @@ function stateGate() {
   return null;
 }
 
+function cfgDraftOwner() {
+  const user = state.auth && state.auth.user;
+  return JSON.stringify([state.tab, !!(state.auth && state.auth.requireLogin), user && user.id,
+    user && user.role, user && user.brands]);
+}
+
+// 后台事件只保留当前页、当前账号未保存的普通设置；切页和鉴权变化不带入草稿。
+function renderBackground() {
+  const pane = $('#pane'), owner = cfgDraftOwner(), drafts = new Map();
+  if (pane && pane.dataset.cfgOwner === owner) {
+    pane.querySelectorAll('[data-cfg]').forEach(el => {
+      if (el.type === 'password') return;
+      const initial = el.tagName === 'SELECT'
+        ? ((Array.from(el.options).find(option => option.defaultSelected) || el.options[0] || {}).value || '')
+        : el.defaultValue;
+      const dirty = el.type === 'checkbox' ? el.checked !== el.defaultChecked : el.value !== initial;
+      if (dirty) drafts.set(el.dataset.cfg, { value: el.value, checked: el.checked, focused: document.activeElement === el,
+        start: el.selectionStart, end: el.selectionEnd });
+    });
+  }
+  renderAll();
+  if (!pane || pane.dataset.cfgOwner !== owner || cfgDraftOwner() !== owner) return;
+  pane.querySelectorAll('[data-cfg]').forEach(el => {
+    const draft = drafts.get(el.dataset.cfg);
+    if (!draft || el.type === 'password') return;
+    if (el.type === 'checkbox') el.checked = draft.checked;
+    else el.value = draft.value;
+    if (draft.focused) {
+      el.focus();
+      if (typeof draft.start === 'number' && el.setSelectionRange) el.setSelectionRange(draft.start, draft.end);
+    }
+  });
+}
+
 function renderAll() {
   syncUpdateNotice();
   if (state.tab === 6 && !deviceScanBusy && Date.now() - deviceScanAt > 10000) setTimeout(() => refreshDevices(), 0);
@@ -1804,6 +1841,7 @@ function renderAll() {
     <div class="act">${(t.actions()).map(a => `<button class="btn${a.primary ? ' primary' : ''}${a.transfer ? ' lx-transfer lx-' + a.transfer : ''}${a.history ? ' lx-history' : ''}" data-act="${a.act}" title="${esc(a.label)}" aria-label="${esc(a.label)}" ${a.disabled ? 'disabled' : ''}>${a.history ? lexHistoryIcon(a.history) : a.transfer ? lexTransferIcon(a.transfer) + '<span>' + esc(a.label) + '</span>' : esc(a.label)}</button>`).join('')}</div>`;
   const scroll = $('#pane').scrollTop;
   $('#pane').innerHTML = t.render();
+  $('#pane').dataset.cfgOwner = cfgDraftOwner();
   if (window.releaseMotion) window.releaseMotion.mount();
   $('#pane').scrollTop = scroll;
   const chip = $('#runChip');
@@ -2910,7 +2948,7 @@ const ACTS = {
       apiKey: val('#lmKey'),
       model: val('#lmModel'),
     };
-    await appApi.configSet({ copy: { llm } });
+    await checkedConfigSet({ copy: { llm } });
     state.config = await appApi.configGet();
     toast(`模型配置已保存${llm.model ? `（默认模型：${llm.model}）` : '（模型留空 = 跟随内置）'}`, 'ok');
     closeModelModal();
@@ -2934,7 +2972,7 @@ const ACTS = {
   // 后续任务在 runJob 里会把这个 id 随 args 带给主进程（主进程还会再校验一次权限）。
   'bm:pick': async (el) => {
     const local = el.dataset.id.startsWith('local-');
-    await appApi.configSet({ copy: { promptProfileId: local ? el.dataset.id : '' } });
+    await checkedConfigSet({ copy: { promptProfileId: local ? el.dataset.id : '' } });
     state.config = await appApi.configGet();
     if (!local) state.brandId = el.dataset.id;
     // 标题栏那个下拉要跟着变 —— 否则「本次」改了却看不见，用户会以为没生效
@@ -2947,7 +2985,7 @@ const ACTS = {
   // 「默认选择」= 写进配置（copy.defaultBrandId），重启后还是它
   'bm:default': async (el) => {
     const id = el.dataset.id;
-    await appApi.configSet({ copy: { defaultBrandId: id } });
+    await checkedConfigSet({ copy: { defaultBrandId: id } });
     state.brandId = id;
     state.config = await appApi.configGet();
     await refreshBrands();
@@ -2971,7 +3009,7 @@ const ACTS = {
       if (!name) { toast('先给品牌起个名字', 'err'); return; }
       const r = await appApi.promptSave(id, { name, promptWrite });
       if (!r.ok) { toast(r.error, 'err'); return; }
-      await appApi.configSet({ copy: { promptProfileId: r.brand.id } });
+      await checkedConfigSet({ copy: { promptProfileId: r.brand.id } });
       state.config = await appApi.configGet();
       await refreshBrands();
       toast(`已新增品牌「${r.brand.name}」${promptWrite.trim() ? '' : '（还没配文案提示词，生成会被拦下）'}`, 'ok');
@@ -2996,8 +3034,8 @@ const ACTS = {
       }
       const wasPicked = (state.brandsMeta.defaultBrandId || '') === id;
       const wantPicked = !!(pkEl && pkEl.checked);
-      if (wantPicked && !wasPicked) await appApi.configSet({ copy: { defaultBrandId: id } });
-      else if (!wantPicked && wasPicked) await appApi.configSet({ copy: { defaultBrandId: '' } });
+      if (wantPicked && !wasPicked) await checkedConfigSet({ copy: { defaultBrandId: id } });
+      else if (!wantPicked && wasPicked) await checkedConfigSet({ copy: { defaultBrandId: '' } });
     }
 
     state.config = await appApi.configGet();
@@ -3086,7 +3124,8 @@ const ACTS = {
     if (!f) return;
     // 先静默试一次：报告里自带「素材路径」就直接用；没有的话再问一次这一批的素材目录
     let r = await appApi.run('report.import', brandArgs('report.import', { file: f }));
-    if (!r.ok && /素材路径/.test(r.error || '')) {
+    // 仅缺少可用路径时补选；路径不存在、表头损坏不能误说成空路径。
+    if (!r.ok && /缺「素材路径」，也没有指定这一批的素材目录/.test(r.error || '')) {
       const d = await appApi.pickDir({
         title: '这份报告的「素材路径」是空的 —— 请选择这一批的素材目录（D:\\你的素材目录\\20260901 这种，里面每个叶子文件夹 = 一条内容）'
       });
@@ -3150,7 +3189,7 @@ const ACTS = {
     renderAll();
   },
   'pub:useDev': async (el) => {
-    await appApi.configSet({ publish: { device: el.dataset.serial } });
+    await checkedConfigSet({ publish: { device: el.dataset.serial } });
     state.config = await appApi.configGet();
     state.project.publish = state.project.publish || {};
     await appApi.run('publish.connect', brandArgs('publish.connect', { device: el.dataset.serial }));
@@ -3168,7 +3207,7 @@ const ACTS = {
     const found = (state.devFound || []).find(d => d.serial === serial);
     const add = await appApi.run('publish.addDevice', brandArgs('publish.addDevice', { name: (found && found.name) || serial, serial }));
     if (!add.ok && !/已存在/.test(add.error || '')) { toast(add.error || '加入失败', 'err'); renderAll(); return; }
-    await appApi.configSet({ publish: { device: serial } });
+    await checkedConfigSet({ publish: { device: serial } });
     state.config = await appApi.configGet();
     state.project.publish = state.project.publish || {};
     const r = await appApi.run('publish.connect', brandArgs('publish.connect', { device: serial }));
@@ -3344,7 +3383,7 @@ const ACTS = {
   'brand:default': async () => {
     const sel = $('#brandDefault');
     const id = sel ? sel.value : '';
-    await appApi.configSet({ copy: { defaultBrandId: id } });
+    await checkedConfigSet({ copy: { defaultBrandId: id } });
     state.config = await appApi.configGet();
     await refreshBrands();
     toast(id ? `默认品牌已设为 ${brandNameOf(id)}` : '已取消默认品牌', 'ok');
@@ -3430,11 +3469,17 @@ const ACTS = {
     renderAll();
   },
 
-  'cfg:save': async () => { await saveCfgFromDom(); toast('已保存', 'ok'); }
+  'cfg:save': async () => { if (await saveCfgFromDom()) toast('已保存', 'ok'); }
   // ★ 2026-10-04：「cfg:path」（选输出目录 / 隔离目录）随设置页那一块一起删 ——
   //   界面上已经没有任何 data-act="cfg:path" 的入口，留着处理器就是死代码。
   //   两个目录改走出厂默认值（winpath.js），主进程的读取点（合规报告 / 日志 / 统计 / 隔离）全都没动。
 };
+
+async function checkedConfigSet(patch) {
+  const saved = await appApi.configSet(patch);
+  if (!saved || saved.ok === false) throw new Error((saved && saved.error) || '设置保存失败，请重试');
+  return saved;
+}
 
 async function saveCfgFromDom() {
   const patch = {};
@@ -3458,7 +3503,8 @@ async function saveCfgFromDom() {
     for (let i = 0; i < parts.length - 1; i++) { cur[parts[i]] = cur[parts[i]] || {}; cur = cur[parts[i]]; }
     cur[parts[parts.length - 1]] = v;
   });
-  await appApi.configSet(patch);
+  try { await checkedConfigSet(patch); }
+  catch (error) { toast('设置未保存：' + (error.message || '连接失败，请重试'), 'err'); return false; }
   state.config = await appApi.configGet();
   // ★ 外部工具的路径改完要**立刻**看得见「现在用的是哪一个」：adb / ffmpeg 的三段解析结果
   //   在主进程的 app:info 里，不刷新的话「外部依赖」表还写着旧状态，用户会以为没生效。
@@ -3468,6 +3514,7 @@ async function saveCfgFromDom() {
     state.info = await appApi.info();
     if (state.tab === 7 || state.tab === 11) renderAll();
   }
+  return true;
 }
 
 /**
@@ -3479,7 +3526,7 @@ async function saveCfgFromDom() {
  */
 function bindCfgInputs() {
   document.querySelectorAll('#pane [data-cfg]').forEach(el => {
-    el.onchange = () => { saveCfgFromDom(); };
+    el.onchange = () => { saveCfgFromDom().catch(error => toast('设置刷新失败：' + (error.message || '请重试'), 'err')); };
   });
 }
 
@@ -3538,18 +3585,23 @@ function bind() {
   // 只是省事，不是权限 —— 主进程每次起任务都会再校验一遍
   const bsel = $('#brandSel');
   if (bsel) bsel.onchange = async () => {
-    state.brandId = bsel.value;
-    await appApi.configSet({ copy: { defaultBrandId: bsel.value } });
-    state.config = await appApi.configGet();
-    await refreshBrands();
-    renderAll();
+    try {
+      await checkedConfigSet({ copy: { defaultBrandId: bsel.value } });
+      state.brandId = bsel.value;
+      state.config = await appApi.configGet();
+      await refreshBrands();
+      renderAll();
+    } catch (error) { toast(error.message || '品牌选择未保存，请重试', 'err'); bsel.value = state.brandId || ''; }
   };
 
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-act]');
     if (!el || el.disabled) return;
     const fn = ACTS[el.dataset.act];
-    if (fn) fn(el);
+    if (fn) {
+      try { Promise.resolve(fn(el)).catch(error => toast(error.message || '操作失败，请重试', 'err')); }
+      catch (error) { toast(error.message || '操作失败，请重试', 'err'); }
+    }
   });
 
   // 点遮罩关弹窗；点弹窗本体不关（否则选字拖一下鼠标就没了）
@@ -3583,7 +3635,7 @@ function bind() {
   });
 
   appApi.onLog(pushLog);
-  appApi.onProject(p => { state.project = p; renderAll(); });
+  appApi.onProject(p => { state.project = p; renderBackground(); });
   appApi.onTheme(applyTheme);
   appApi.onMaxChange(m => {
     $('#capMaxIcon').innerHTML = m
@@ -3593,7 +3645,7 @@ function bind() {
   appApi.onJobStart(j => {
     state.jobs = state.jobs.filter(x => x.id !== j.id);
     state.jobs.push({ id: j.id, type: j.type, label: j.label || j.type, batch: j.batch || '', progress: null, startedAt: j.startedAt || Date.now() });
-    renderAll();
+    renderBackground();
   });
   appApi.onJobProgress(p => {
     let j = state.jobs.find(x => x.id === p.id);
@@ -3610,7 +3662,7 @@ function bind() {
   appApi.onJobDone(d => {
     state.jobs = state.jobs.filter(x => x.id !== d.id);
     if (!d.ok) toast(d.error || '任务失败', d.cancelled || /已取消/.test(d.error || '') ? '' : 'err');
-    renderAll();
+    renderBackground();
   });
 
 }

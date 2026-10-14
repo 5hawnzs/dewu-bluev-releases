@@ -91,6 +91,48 @@ async function runCase(type, fault, mode = 'mock') {
     ok(type + ' 损坏报告明确报错，不能伪装占用或等待补写', !badReport.result.result.writeback.ok
       && report.pendingCount() === 0 && badReport.entries.some(e => /回写报告失败/.test(e.msg)));
   }
+  // 不同报告同一行号不能互相消费；补写 A 后仍须保留 B。
+  const reportA = path.join(tmp, '隔离报告A.xlsx'), reportB = path.join(tmp, '隔离报告B.xlsx');
+  for (const file of [reportA, reportB]) {
+    const wb = new ExcelJS.Workbook(), ws = wb.addWorksheet('AI 内容报告');
+    ws.addRow(['素材路径', '实际执行时间', '执行结果']); ws.addRow(['A', '', '']);
+    await wb.xlsx.writeFile(file);
+  }
+  sheet.putPending('report', [
+    { target: 'report', file: reportA, reportRow: 2, result: '发布成功' },
+    { target: 'report', file: reportB, reportRow: 2, result: '失败', reason: 'B 独有' }
+  ]);
+  await report.mergeResults(reportA, []);
+  ok('补写报告 A 只消费 A，报告 B 暂存不丢失', sheet.takePending('report').length === 1
+    && sheet.takePending('report')[0].file === reportB);
+  await report.mergeResults(reportB, []);
+  const sheetA = await sheet.exportSheet({ items: [{ id: 'A', dir: 'A' }], copyRows: [], verify: { rows: [] } });
+  const sheetB = path.join(tmp, '隔离发布单B.xlsx'); fs.copyFileSync(sheetA.file, sheetB);
+  sheet.putPending('sheet', [{ target: 'sheet', file: sheetB, seq: 1, result: '失败', reason: 'B 独有' }]);
+  const onlyA = await sheet.mergeResults(sheetA.file, []);
+  const checkA = new ExcelJS.Workbook(); await checkA.xlsx.readFile(sheetA.file);
+  ok('发布单 A 不补写同序号的 B 结果，也不消费 B 暂存', onlyA.updated === 0
+    && checkA.worksheets[0].getRow(2).getCell(21).text === '待发布'
+    && sheet.takePending('sheet').length === 1);
+  await sheet.mergeResults(sheetB, []);
+  // 旧版发布单暂存没有 file，不能用相同行号猜测目标；保留待人工核对。
+  const legacy = { seq: 1, result: '发布成功', at: '历史时间' };
+  sheet.putPending('sheet', [legacy]);
+  sheet.putPending('report', [{ reportRow: 2, result: '失败', reason: '历史报告', target: 'report' }]);
+  const legacySheet = await sheet.mergeResults(sheetA.file, []);
+  const legacyReport = await report.mergeResults(reportA, []);
+  ok('无目标文件的历史暂存不写入当前工作簿，也不静默丢弃', legacySheet.updated === 0
+    && legacyReport.updated === 0 && sheet.pendingCount() === 2);
+  sheet.putPending('sheet', []); sheet.putPending('report', []);
+  // A 再次被占用时仅替换 A 的积压，B 的结果必须原样留下。
+  sheet.putPending('report', [{ target: 'report', file: reportB, reportRow: 2, result: '失败', reason: 'B 独有' }]);
+  fs.chmodSync(reportA, 0o444);
+  let busyA;
+  try { busyA = await report.mergeResults(reportA, [{ reportRow: 2, result: '发布成功' }]); }
+  finally { fs.chmodSync(reportA, 0o644); }
+  ok('报告 A 被占用暂存时保留报告 B 的积压', busyA.busy && sheet.takePending('report').length === 2
+    && sheet.takePending('report').some(r => r.file === reportB && r.reason === 'B 独有'));
+  await report.mergeResults(reportA, []); await report.mergeResults(reportB, []);
   const submitted = await runCase('publish.rerun', 'corrupt', 'adb');
   ok('真实发布流程配假设备：已提交与回写失败独立，不自动重发', submitted.published === 1
     && submitted.result.result.okCount === 1 && submitted.result.result.failCount === 0

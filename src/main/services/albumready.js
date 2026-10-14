@@ -2,7 +2,6 @@
 // 相册就绪协议集中于此；复用相机目录，不新增设备目录、命令或固定等待。
 const path = require('path');
 const adb = require('./adb');
-const uimap = require('./uimap');
 const mainimg = require('./mainimg');
 const store = require('../store');
 
@@ -27,15 +26,13 @@ async function prepare(serial, item, row, ctx = {}) {
   const clearStarted = Date.now();
   require('./diagnostics').phase('清理相册', row.seq);
   const cleared = await adb.clearAlbum(serial, {
-    forceStopPkg: uimap.DEWU.pkg, deadline: clearStarted + 90000, cancelled
+    deadline: clearStarted + 90000, cancelled
   });
   if (!cleared.ok) {
     const error = new Error('上一条相册素材未清净：' + (cleared.error || '未知原因'));
     error.code = cleared.code;
     throw error;
   }
-  checkCancelled();
-  if (cleared.forceStopped && ctx.afterForceStop) await ctx.afterForceStop();
   checkCancelled();
   const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { timeout: 8000 });
   if (!mk.ok) throw new Error('相机目录无法写入：' + (mk.stderr || mk.stdout || '未知原因'));

@@ -205,10 +205,9 @@ function makeFakeAdb(dir) {
   // ★★ 2026-10-04 新增现场开关 **TAP_FOCUS**：**点完之后前台落到哪一屏**
   //   （模拟得物对这次提交的真实反应）。内容取值（缺省 = publish）：
   //     · `publish` —— 还停在发布流程里（＝没发出去：得物压根没受理，或提交那步被跳过了）；
-  //     · `draft`   —— 落到**草稿箱**（＝这条被存成草稿了；用户原话「我什么时候跟你说真实发布环境可以存草稿的」）；
+  //     · `draft`   —— 正常提交后返回已有草稿箱，不据此判断新增草稿；
   //     · `leave`   —— 离开发布流程、回到个人主页（＝这次**真的**提交出去了）。
-  //   用途：验用户口径「**发出去了才算成功**」—— 只有 leave 能算成功，另两种必须记失败，
-  //   而且必须**把得物强停掉**（不然那条草稿会一直留在「草稿箱」里）。
+  //   用途：验证提交与后续页面衔接。publish 尚未退出时不能开始下一条；draft 可直接继续。
   const TAP_FOCUS = path.join(dir, 'TAP_FOCUS');
   const PUB_FOCUS = 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity';
   const DRAFT_FOCUS = 'com.shizhuang.duapp/media.activity.DraftActivity';
@@ -290,8 +289,7 @@ function makeFakeAdb(dir) {
     if (cmd === 'input') return okOut('usage: input [<source>] <command>\n');
     // ★★ 2026-10-04 新增：定位表里的 tapXY / tapId 最终都落到 `input tap`。
     //   现场开关 TAP_FOCUS：点完之后前台落到哪一屏（publish / draft / leave，见文件顶部说明）。
-    //   真机形态就是用户口径「发出去了才算成功」要防的那两种：得物没受理（还停在发布流程里）、
-    //   或把它**当草稿存了**。用途：验「这两种必须记失败 + 强制关掉得物清草稿」。
+    //   提交后仍在编辑流程与正常返回草稿箱是不同情形；发布流程不得强停得物。
     if (/^input (tap|keyevent|text) /.test(cmd)) {
       if (fs.existsSync(TAP_FOCUS)) {
         const v = read(TAP_FOCUS, Buffer.from('')).toString('utf8').trim();
@@ -338,7 +336,16 @@ function makeFakeAdb(dir) {
       return okOut('Broadcast completed: result=0\n');
     }
     if (/^rm -f /.test(cmd)) {
-      cmd.split(/\s+/).slice(2).forEach(p => devFiles.delete(p));
+      // rm -f 同时用于抓屏临时文件和带引号的媒体路径；不能只删除前者而把相册残留喂成假故障。
+      const files = (cmd.slice(6).match(/'(?:[^']|'\\'')*'|\S+/g) || [])
+        .map(p => p.startsWith("'") ? p.slice(1, -1).replace(/'\\''/g, "'") : p);
+      if (files.some(p => /^\/(?:sdcard|storage\/emulated\/0)\//.test(p) && /\.(?:mp4|jpg|png)$/i.test(p))
+        && (appLocked() || fs.existsSync(DIR_STALE))) return fail('rm: Text file busy');
+      files.forEach(p => {
+        devFiles.delete(p);
+        for (let i = pushed.length - 1; i >= 0; i--) if (toCmp(pushed[i]) === toCmp(p)) pushed.splice(i, 1);
+        for (const d of DIRS) dirs[d].files = dirs[d].files.filter(name => toCmp(d + '/' + name) !== toCmp(p));
+      });
       return okOut('');
     }
     // ★★ 2026-10-04 新增：专属相册目录的真实语义（清相册那一步用的就是这些命令）。
@@ -692,6 +699,7 @@ function makeFakeAdb(dir) {
       return okOut(out || 'No result found.\n');
     }
     if (/^content delete /.test(cmd)) {
+      if (appLocked()) return fail('content delete: Text file busy');
       // ★★ 2026-10-04 新增：按 _id 删库记录（clearMediaDir 用的就是这条）。
       //   真机语义：删掉记录的同时**物理文件也一起消失**（见 adb.js 顶部实测注释）。
       //   夹具要同步把 scanned / pushed 里的对应项去掉 —— 否则 content query 还看得见，

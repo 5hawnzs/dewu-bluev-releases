@@ -461,9 +461,9 @@ function resultText(r) {
 /** 把结果写回报告（B=实际执行时间，C=执行结果）；被占用时整批暂存 */
 async function mergeResults(file, results, meta = {}) {
   const sheet = require('./sheet');
-  const backlog = sheet.takePending('report').filter(e => !e.file || e.file === file);
+  const backlog = sheet.takePending('report', file);
   // 只有「从报告导进来」的行才知道自己在报告里的行号；别的批次的结果不往报告里写
-  const incoming = (results || []).filter(r => r && r.reportRow).map(r => Object.assign({ target: 'report', file }, r));
+  const incoming = (results || []).filter(r => r && r.reportRow).map(r => Object.assign({}, r, { target: 'report', file }));
   const skipped = (results || []).length - incoming.length;
   const all = backlog.concat(incoming);
   if (!file || !all.length) return { updated: 0, pending: all.length, skipped };
@@ -487,7 +487,7 @@ async function mergeResults(file, results, meta = {}) {
       updated++;
     }
     await wb.xlsx.writeFile(wp.toLong(file));
-    sheet.putPending('report', []);
+    sheet.putPending('report', [], file);
     return { updated, pending: 0, flushed: backlog.length, skipped };
   } catch (e) {
     // 只有「文件被别的程序占着」才谈得上「暂存、下次再试」。
@@ -497,7 +497,7 @@ async function mergeResults(file, results, meta = {}) {
       logbus.error(`回写报告失败（${all.length} 条未写入）：${e.message}`);
       return { updated: 0, pending: 0, busy: false, skipped, error: e.message };
     }
-    sheet.putPending('report', all);
+    sheet.putPending('report', all, file);
     logbus.warn(`报告仍被占用，${all.length} 条结果已暂存，下次再试（可只读打开但不建议编辑保存）`);
     return { updated: 0, pending: all.length, busy: true, skipped, error: e.message };
   }

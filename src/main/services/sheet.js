@@ -204,23 +204,34 @@ function savePending(list) {
 function pendingCount() { return loadPending().length; }
 
 /**
- * 暂存队列按「回写目标」分开取放：
+ * 暂存队列按「回写目标 + 目标文件」分开取放：
  *   sheet  —— 我们自己的 26 列发布单
  *   report —— 真机的「AI 内容报告」（只回写 实际执行时间 / 执行结果 两列）
- * 两个目标互不覆盖，各自的积压只在自己的下一次运行时补写。
+ * 两个目标和不同文件互不覆盖；不传文件仅供统计和人工维护全部记录。
  */
-function takePending(target = 'sheet') {
-  return loadPending().filter(e => (e.target || 'sheet') === target);
+// 文件身份只做路径归一化；无文件的历史记录保留，不能猜测属于当前工作簿。
+function sameFile(a, b) {
+  if (!a || !b) return false;
+  const key = value => {
+    const resolved = path.resolve(String(value));
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  return key(a) === key(b);
 }
-function putPending(target, entries) {
-  const rest = loadPending().filter(e => (e.target || 'sheet') !== target);
+function takePending(target = 'sheet', file) {
+  return loadPending().filter(e => (e.target || 'sheet') === target
+    && (file === undefined || sameFile(e.file, file)));
+}
+function putPending(target, entries, file) {
+  const rest = loadPending().filter(e => (e.target || 'sheet') !== target
+    || (file !== undefined && !sameFile(e.file, file)));
   savePending(rest.concat(entries || []));
 }
 
 /** 一批结束后一次性合并回写 Excel；写不进去（被占用）就整批暂存，下次先补写 */
 async function mergeResults(file, results, target = 'sheet') {
-  const backlog = takePending(target);
-  const all = backlog.concat((results || []).map(r => Object.assign({ target }, r)));
+  const backlog = takePending(target, file);
+  const all = backlog.concat((results || []).map(r => Object.assign({}, r, { target, file })));
   if (!file || !all.length) return { updated: 0, pending: all.length };
 
   try {
@@ -241,7 +252,7 @@ async function mergeResults(file, results, target = 'sheet') {
       updated++;
     });
     await wb.xlsx.writeFile(wp.toLong(file));
-    putPending(target, []);
+    putPending(target, [], file);
     return { updated, pending: 0, flushed: backlog.length };
   } catch (e) {
     // 真机日志原话：Excel 仍被占用，暂存保留，下次再试（可只读打开但不建议编辑保存）
@@ -249,7 +260,7 @@ async function mergeResults(file, results, target = 'sheet') {
     if (!wp.isFileLockError(e)) {
       return { updated: 0, pending: 0, busy: false, error: e.message };
     }
-    putPending(target, all);
+    putPending(target, all, file);
     return { updated: 0, pending: all.length, busy: true, error: e.message };
   }
 }
