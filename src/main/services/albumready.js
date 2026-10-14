@@ -34,9 +34,15 @@ async function prepare(serial, item, row, ctx = {}) {
     throw error;
   }
   checkCancelled();
+  log(`${row.dir}：相册已清空，回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s`, 'info');
+  // 并行的主页导航必须完成；任一分支失败都不能提前推送素材。
+  if (ctx.beforePush) {
+    require('./diagnostics').phase('等待个人主页导航', row.seq);
+    await ctx.beforePush();
+  }
+  checkCancelled();
   const mk = await adb.shell(serial, 'mkdir -p ' + remoteDir, { timeout: 8000 });
   if (!mk.ok) throw new Error('相机目录无法写入：' + (mk.stderr || mk.stdout || '未知原因'));
-  log(`${row.dir}：相册已清空，回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s`, 'info');
 
   const pushStarted = Date.now();
   require('./diagnostics').phase('推送及索引素材', row.seq);

@@ -211,7 +211,8 @@ button.btn.sm{padding:4px 10px;font-size:11.5px}
 .stat.bad b{color:var(--red)} .stat.good b{color:var(--teal)}
 
 .tw{border-radius:8px;overflow-x:auto}
-.publish-rows table{table-layout:fixed;min-width:780px}
+.publish-rows table{table-layout:fixed;width:100%;max-width:960px;min-width:860px;margin:0 auto}
+.publish-rows th,.publish-rows td,.publish-rows td.num{text-align:center;vertical-align:middle}
 .publish-rows td{height:42px;box-sizing:border-box}
 .publish-rows td:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .publish-rows [data-publish-status] .b{max-width:100%;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}

@@ -5,10 +5,11 @@ const storage = new AsyncLocalStorage();
 const allowed = new Set(['query', 'delete', 'scan', 'find', 'ls', 'rm', 'mkdir', 'mv', 'force-stop',
   'dump', 'focus', 'input', 'push', 'devices', 'connect', 'other']);
 // 仅提取固定错误类别与长度；设备原文可能包含路径、账号或输入内容，不能直接上云。
-const outputKinds = new Set(['permission', 'segfault', 'offline', 'not-found', 'timeout', 'empty-result', 'media-rows', 'other', 'empty']);
+const outputKinds = new Set(['busy', 'permission', 'segfault', 'offline', 'not-found', 'timeout', 'empty-result', 'media-rows', 'other', 'empty']);
 function outputKind(result) {
   const value = String(result.stderr || '') + '\n' + (Buffer.isBuffer(result.stdout) ? '' : String(result.stdout || ''));
   if (/permission denied|permission denial|securityexception|not allowed/i.test(value)) return 'permission';
+  if (/text file busy|resource busy|temporarily unavailable|try again/i.test(value)) return 'busy';
   if (/segmentation fault|segfault/i.test(value)) return 'segfault';
   if (/device offline|device .*not found|no devices|closed|disconnected/i.test(value)) return 'offline';
   if (/no such file|not found|inaccessible/i.test(value) && !/No result found/i.test(value)) return 'not-found';
@@ -19,7 +20,7 @@ function outputKind(result) {
 }
 function create(client = {}) {
   return { version: String(client.version || '').slice(0, 24), build: Number(client.build) || 0,
-    phase: '任务启动', row: 0, commands: [], failures: [], count: 0,
+    phase: '任务启动', row: 0, commands: [], failures: [], phaseFailures: [], count: 0,
     phaseAt: performance.now(), phaseCount: 0, onPhase: client.onPhase };
 }
 function flush(state) {
@@ -29,14 +30,16 @@ function flush(state) {
   // 分阶段记录独立上传，批次再长也不会被末尾几条命令或摘要长度截掉。
   if (state.row > 0 && typeof state.onPhase === 'function') {
     try { state.onPhase({ phase: state.phase, row: state.row, elapsedSec,
-      commandCount: state.count - state.phaseCount, version: state.version, build: state.build, ok: state.phaseOk !== false }); } catch (_) {}
+      commandCount: state.count - state.phaseCount, version: state.version, build: state.build, ok: state.phaseOk !== false,
+      commands: state.commands.filter(e=>e.phase===state.phase && e.row===state.row).slice(-3),
+      failures: state.phaseFailures.slice() }); } catch (_) {}
   }
   state.phaseAt = now;
   state.phaseCount = state.count;
 }
 function phase(name, row = 0) {
   const state = storage.getStore();
-  if (state) { flush(state); state.phase = String(name).slice(0, 60); state.row = Number(row) || 0; state.phaseOk = true; }
+  if (state) { flush(state); state.phase = String(name).slice(0, 60); state.row = Number(row) || 0; state.phaseOk = true; state.phaseFailures = []; }
 }
 function fail() { const state = storage.getStore(); if (state) state.phaseOk = false; }
 function category(args) {
@@ -66,6 +69,10 @@ function record(args, result, ms, source) {
     state.commands.push(entry);
     if (state.commands.length > 6) state.commands.shift();
     if (!entry.ok) { state.failures.push(entry); if (state.failures.length > 4) state.failures.shift(); }
+    if (!entry.ok) {
+      state.phaseFailures.push(entry);
+      if (state.phaseFailures.length > 3) state.phaseFailures.splice(1,1);
+    }
   } catch (_) { /* 诊断记录失败不能影响发布。 */ }
 }
 function snapshot(state) {
@@ -91,4 +98,11 @@ function format(value) {
   const recent = (Array.isArray(value.commands) ? value.commands : []).slice(-3).map(encode).filter(Boolean);
   return `[诊断 ${version}/${value.build} 步骤=${name} 行=${Number(value.row) || 0} 失败=${failures.join(',') || '无'} 最近=${recent.join(',') || '无'}]`.slice(0, 700);
 }
-module.exports = { create, run: (state, fn) => storage.run(state, fn), phase, fail, flush, record, snapshot, format };
+async function isolatedPhase(name, row, work) {
+  const parent=storage.getStore();
+  if(!parent)return work();
+  const child=create({version:parent.version,build:parent.build,onPhase:parent.onPhase});
+  child.phase=name;child.row=row;
+  return storage.run(child,async()=>{try{return await work();}catch(error){child.phaseOk=false;throw error;}finally{flush(child);}});
+}
+module.exports = { create, run: (state, fn) => storage.run(state, fn), isolatedPhase, phase, fail, flush, record, snapshot, format };

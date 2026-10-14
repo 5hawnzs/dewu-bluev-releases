@@ -796,7 +796,7 @@ async function run(type, args = {}) {
   const diagnosticState = diagnostics.create({ version: require('electron').app.getVersion(), build: require('./githubupdates').BUILD,
     onPhase: stage => runlog.append(Object.assign({ kind: 'end', ok: stage.ok !== false, jobId: id,
       type: 'publish.phase', label: `第${stage.row}条 · ${stage.phase}`, batch: job.batch,
-      elapsedSec: stage.elapsedSec, diagnostic: { ...stage, commands: [], failures: [] } }, brandInfo, actorInfo)) });
+      elapsedSec: stage.elapsedSec, diagnostic: stage }, brandInfo, actorInfo)) });
   runlog.append(Object.assign({ kind: 'start', jobId: id, label, type, batch: job.batch }, brandInfo, actorInfo));
   if (picked.auto) logbus.info(`[${label}] 你的品牌权限只有一个，本次归属「${who}」`, Object.assign({ jobId: id, type, label }, brandInfo, actorInfo));
   let releaseSleep;

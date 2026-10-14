@@ -55,4 +55,63 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
     onRow: row => { if (row.status === '推送素材 1/2') cancelled = true; } });
   ok('进度回调中取消后，第一张也不能继续推送', atProgress.cancelled
     && !calls().slice(nextStart).some(c => /\bpush /.test(c)));
+  cancelled = false;
+  const adb = require('../src/main/services/adb');
+  await adb.push('FAKE', path.join(itemDir,'1.jpg'), '/sdcard/DCIM/Camera/上一条.jpg');
+  await adb.mediaScan('FAKE', '/sdcard/DCIM/Camera/上一条.jpg');
+  fs.writeFileSync(path.join(dir,'MEDIA_BUSY_ROUNDS'),'1');
+  const busyStart = calls().length;
+  const recovered = await publisher.run(state());
+  const busyTrace = calls().slice(busyStart);
+  const firstRm = busyTrace.findIndex(c=>/rm -f .*上一条/.test(c));
+  const secondRm = busyTrace.findIndex((c,i)=>i>firstRm && /rm -f .*上一条/.test(c));
+  ok('上一条物理文件短暂占用：不先删索引掩盖失败，自然恢复后才推送提交', recovered.okCount===1
+    && secondRm>firstRm && !busyTrace.slice(firstRm+1,secondRm).some(c=>/content delete|\bpush /.test(c))
+    && !busyTrace.some(c=>/am force-stop/.test(c)));
+  fs.writeFileSync(path.join(dir,'DIR_LOCKED_BY_APP'),'1');
+  const lockedStart=calls().length;
+  const locked=await publisher.run(state());
+  ok('持续占用不会被伪装为成功：有限恢复后如实保留busy原因，不推送、不提交、不强停',locked.failCount===1
+    && /rm:busy/.test(locked.rows[0].reason) && /恢复=3次/.test(locked.rows[0].reason)
+    && !calls().slice(lockedStart).some(c=>/\bpush |input tap|am force-stop/.test(c)));
+  fs.unlinkSync(path.join(dir,'DIR_LOCKED_BY_APP'));
+  fs.writeFileSync(path.join(dir,'DELETE_LAG_ROUNDS'),'1');
+  const delayed=await publisher.run(state());
+  ok('物理删除后索引暂未回收：不能把Deleted 0当作清空，实际复查收敛后完成',delayed.okCount===1&&delayed.failCount===0);
+  fs.writeFileSync(path.join(dir,'MEDIA_PERMISSION_DENIED'),'1');
+  const deniedStart=calls().length;
+  const denied=await publisher.run(state());
+  const deniedTrace=calls().slice(deniedStart);
+  ok('权限拒绝立即给出具体原因，不盲目恢复、不删除索引、不推送',denied.failCount===1
+    && /permission/.test(denied.rows[0].reason) && !deniedTrace.some(c=>/content delete|\bpush |input tap/.test(c)));
+  fs.unlinkSync(path.join(dir,'MEDIA_PERMISSION_DENIED'));
+  const originalMap=store.get('publish.uiMap');
+  const xmlFile=path.join(dir,'window.xml'), originalXml=fs.readFileSync(xmlFile,'utf8');
+  fs.writeFileSync(xmlFile,originalXml.replace('</hierarchy>',
+    '<node resource-id="com.shizhuang.duapp:id/tab_user" text="我" enabled="true" bounds="[90,90][110,110]"/>'+
+    '<node resource-id="com.shizhuang.duapp:id/tvGoHomePage" text="主页" enabled="true" bounds="[140,140][160,160]"/>'+
+    '<node resource-id="com.shizhuang.duapp:id/rlPublish" text="发布新动态" enabled="true" bounds="[190,190][210,210]"/></hierarchy>'));
+  store.set({publish:{uiMap:{steps:[
+    {action:'tapId',value:'com.shizhuang.duapp:id/tab_user',name:'底部我'},
+    {action:'tapId',value:'com.shizhuang.duapp:id/tvGoHomePage',name:'右上角主页'},
+    {action:'tapId',value:'com.shizhuang.duapp:id/rlPublish',name:'发布新动态'},
+    {action:'tapText',value:'发布',name:'提交发布'}]}}});
+  fs.writeFileSync(path.join(dir,'MEDIA_BUSY_ROUNDS'),'1');
+  const overlapStart=calls().length;
+  const overlap=await publisher.run(state());
+  const overlapTrace=calls().slice(overlapStart);
+  const navIndex=overlapTrace.findIndex(c=>/input tap 150 150/.test(c));
+  const scanIndex=overlapTrace.map((c,i)=>/--method scan_volume/.test(c)?i:-1).reduce((a,b)=>Math.max(a,b),-1);
+  const entryIndex=overlapTrace.findIndex(c=>/input tap 200 200/.test(c));
+  ok('清理期间仅并行进入个人主页，发布新动态及素材推送必须等待清理收敛',overlap.okCount===1
+    && navIndex>=0&&navIndex<scanIndex&&entryIndex>scanIndex
+    && overlapTrace.findIndex(c=>/\bpush /.test(c))>scanIndex);
+  fs.writeFileSync(path.join(dir,'MEDIA_PERMISSION_DENIED'),'1');
+  const overlapFailStart=calls().length;
+  const overlapFailed=await publisher.run(state());
+  ok('并行清理失败保留首个真实原因，取消导航不覆盖permission且不进发布入口',overlapFailed.failCount===1
+    && /permission/.test(overlapFailed.rows[0].reason)
+    && !calls().slice(overlapFailStart).some(c=>/input tap 200 200|\bpush /.test(c)));
+  fs.unlinkSync(path.join(dir,'MEDIA_PERMISSION_DENIED'));
+  store.set({publish:{uiMap:originalMap}});fs.writeFileSync(xmlFile,originalXml);
 })().catch(e => { console.error(e); process.exitCode = 1; });

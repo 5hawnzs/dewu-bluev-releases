@@ -593,6 +593,21 @@ async function clearAlbum(serial, opts = {}) {
   const deadline = Math.min(Number(opts.deadline) || Infinity, Date.now() + 90000);
   let forceStopped = false, removed = 0;
   const all = [];
+  const issues = [];
+  let recoveryAttempts = 0;
+  const failedDelete = (result, operation) => {
+    const text = String(result.stderr || '') + String(result.stdout || '');
+    const kind = /busy|temporarily unavailable|try again/i.test(text) ? 'busy'
+      : /permission|denied|SecurityException/i.test(text) ? 'permission'
+      : /offline|disconnected|no devices/i.test(text) ? 'offline' : 'delete-error';
+    issues.push({ operation, kind });
+    if (issues.length > 8) issues.shift();
+    if (kind !== 'busy') {
+      const error = new Error((operation === 'rm' ? '物理文件删除' : '媒体库记录删除') + '失败（' + kind + '），未确认清空');
+      error.code = kind === 'permission' ? 'ALBUM_PERMISSION' : kind === 'offline' ? 'ALBUM_OFFLINE' : 'ALBUM_DELETE_FAILED';
+      throw error;
+    }
+  };
   const run = async (device, command, options = {}) => {
     if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
     const left = deadline - Date.now();
@@ -635,9 +650,11 @@ async function clearAlbum(serial, opts = {}) {
         throw new Error('媒体文件路径不在允许的共享存储范围内，未执行删除');
       }
       const quoted = "'" + file.replace(/'/g, "'\\''") + "'";
-      await run(serial, 'rm -f ' + quoted, { timeout: 8000 });
+      const physical = await run(serial, 'rm -f ' + quoted, { timeout: 8000 });
+      if (!physical.ok) { failedDelete(physical, 'rm'); return; }
       const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
-      if (rd.ok) removed++;
+      if (!rd.ok) failedDelete(rd, 'delete');
+      else removed++;
     };
     for (let i = 0; i < hit.length; i += 2) await group(hit.slice(i, i + 2).map(removeOne));
   };
@@ -666,6 +683,17 @@ async function clearAlbum(serial, opts = {}) {
         await removeAll(discovered);
         hit = await reScan();
       }
+      // 仅异常残留进入有限恢复。物理删除失败不先删索引；重扫后以当前真实残留重试，
+      // 不强停应用、不按路径是否曾见过放弃恢复，全部操作仍受同一90秒截止预算限制。
+      for (const delay of [500, 1500, 3000]) {
+        if (!hit.length) break;
+        if (opts.cancelled && opts.cancelled()) throw new Error('相册清理已取消');
+        if (deadline - Date.now() <= delay) break;
+        await sleepMs(delay);
+        recoveryAttempts++;
+        await removeAll(hit);
+        hit = await reScan();
+      }
       if (hit.length && opts.forceStopPkg) {
         const pkg = String(opts.forceStopPkg);
         if (!/^[A-Za-z0-9_.]+$/.test(pkg)) throw new Error('释放句柄的应用包名无效');
@@ -683,8 +711,12 @@ async function clearAlbum(serial, opts = {}) {
       hit = await scanAll();
     }
     const left = hit.length;
-    const note = left ? '复查仍有 ' + left + ' 条相册记录' : '';
-    return { ok: left === 0, removed, files: all.map(h => h.file), left, error: note, note, forceStopped };
+    const categories = [...new Set(issues.map(issue => issue.operation + ':' + issue.kind))];
+    const residualTypes = [...new Set(hit.map(h => h.table))];
+    const note = left ? '复查仍有 ' + left + ' 条相册记录；类型=' + residualTypes.join(',')
+      + '；恢复=' + recoveryAttempts + '次；删除异常=' + (categories.join(',') || '未报告，扫描后仍有记录') : '';
+    return { ok: left === 0, removed, files: all.map(h => h.file), left, error: note, note, forceStopped,
+      code: left ? 'ALBUM_RESIDUAL' : undefined, recoveryAttempts, issues, residualTypes };
   } catch (error) {
     return { ok: false, removed, files: all.map(h => h.file), left: null, error: error.message, forceStopped, code: error.code };
   }

@@ -854,7 +854,47 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     }
   }
 
-  const { remotes, remoteDir } = await albumready.prepare(serial, item, row, { ...ctx, publishConfig: c });
+  // 只并行已知的浏览导航。自定义步骤、发布入口、草稿处置、输入均不跨越清理屏障。
+  const preparedSteps=new Set(), navSteps=[], absentDialogs=[];
+  if (uimap.isHomeScreen(entryFocus)) {
+    for(const step of steps) {
+      if(step.action==='tapId'&&step.value==='com.shizhuang.duapp:id/tvCancel'&&step.whenOn===step.value) {
+        absentDialogs.push(step); continue;
+      }
+      const browseId=step.action==='tapId'&&['com.shizhuang.duapp:id/tab_user','com.shizhuang.duapp:id/tvGoHomePage'].includes(step.value);
+      const browsePoint=step.action==='tapXY'&&/^底部.*我/.test(step.name||'')&&step.whenNotOn==='com.shizhuang.duapp:id/rlPublish';
+      if(!browseId&&!browsePoint)break;
+      if(/\$\{|\bwhen\b/.test(step.value||'')||step.when||step.whenNot)break;
+      navSteps.push(step);
+    }
+  }
+  let canOverlap=navSteps.length>0;
+  if(canOverlap&&absentDialogs.length) {
+    const page=await adb.dumpEx(serial,{pkg:uimap.DEWU.pkg,retries:0,allowAnimOff:false});
+    canOverlap=page.ok&&!/tvCancel|是否继续编辑|保存草稿|放弃编辑/.test(page.xml||'');
+  }
+  let preparation;
+  if(canOverlap) {
+    let aborted=false, navigationError=null;
+    const branchCancelled=()=>cancelled()||aborted||!!navigationError;
+    const navigation=require('./diagnostics').isolatedPhase('准备个人主页',row.seq,async()=>{
+      for(const step of navSteps) {
+        if(branchCancelled())throw new Error('发布已取消');
+        await runStep(serial,step,{}, {...ctx,cancelled:branchCancelled});
+        preparedSteps.add(step);
+      }
+      for(const step of absentDialogs)preparedSteps.add(step);
+    }).catch(error=>{navigationError=error;});
+    try {
+      preparation=await albumready.prepare(serial,item,row,{...ctx,publishConfig:c,cancelled:branchCancelled,
+        beforePush:async()=>{await navigation;if(navigationError)throw navigationError;}});
+    } catch(error) {
+      const primaryNavigationError=navigationError;
+      aborted=true;await navigation;throw primaryNavigationError&&!cancelled()?primaryNavigationError:error;
+    }
+    log(`${row.dir}：相册清理与个人主页导航已并行完成，之后才进入发布入口`, 'info');
+  } else preparation=await albumready.prepare(serial,item,row,{...ctx,publishConfig:c});
+  const { remotes, remoteDir } = preparation;
 
   // 2) 按 UI 定位表走真实界面。
   //    ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的**（入口、相册页签、编辑页同一套），
@@ -909,6 +949,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   const entrySteps = uimap.isDraftScreen(entryFocus) && draftEntry >= 0 ? steps.slice(draftEntry) : steps;
   if (entrySteps !== steps) log(`${row.dir}：沿用草稿箱的「发布新动态」入口，不退出得物、不绕回首页`, 'info');
   for (const raw of entrySteps) {
+    if(preparedSteps.has(raw))continue;
     if (cancelled()) throw new Error('已取消');
     let step = topicinput.mark(raw, uimap.fill(raw, data));
     // 老用户定位表同样升级，不能只改出厂表让已安装的机器继续跳过封面。

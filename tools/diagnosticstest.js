@@ -75,4 +75,15 @@ const adb = moduleBox.exports;
     assert(report.includes('/out=' + kind) && report.includes('/bytes=0:') && !report.includes('/secret'));
   }
   console.log('PASS 云端区分权限、崩溃、离线与无输出超时，保留输出长度而不泄露原文');
+  const retained=[];
+  const transient=diagnostics.create({version:'1.1.2',build:2026101403,onPhase:p=>retained.push(p)});
+  diagnostics.run(transient,()=>{
+    diagnostics.phase('清理相册',2);
+    diagnostics.record(['shell','rm -f /private/material.mp4'],{ok:false,code:1,stderr:'Text file busy /private/material.mp4'},5,'bundled');
+    for(let i=0;i<12;i++)diagnostics.record(['shell','content query --uri secret'],{ok:true,stdout:'No result found'},5,'bundled');
+    diagnostics.fail();diagnostics.phase('准备发布',3);
+  });
+  const retainedText=diagnostics.format(retained[0]);
+  assert(retainedText.includes('rm:')&&retainedText.includes('/out=busy')&&!/private|material|secret/.test(retainedText));
+  console.log('PASS 清理阶段原始失败经十二次成功查询后仍可在阶段云端摘要定位，且不泄露路径');
 })().catch(error => { console.error(error); process.exitCode = 1; });

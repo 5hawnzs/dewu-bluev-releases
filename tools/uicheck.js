@@ -2721,6 +2721,11 @@ app.whenReady().then(async () => {
       state.tab = 6; renderAll();
       const before = publishRowElement('live-row');
       const directoryBefore = before.children[1].getBoundingClientRect();
+      const table=before.closest('table'), area=table.parentElement;
+      const tableBox=table.getBoundingClientRect(), areaBox=area.getBoundingClientRect();
+      const compactCentered=directoryBefore.width<=261 && tableBox.width<=961
+        && Math.abs((tableBox.left-areaBox.left)-(areaBox.right-tableBox.right))<3
+        && [...table.querySelectorAll('th'),...before.children].every(el=>getComputedStyle(el).textAlign==='center');
       updatePublishRow({ id: 'live-row', startAt: '12:34:56', startedAtMs: Date.now() - 4000, elapsed: 0, status: '清相册', result: '' });
       refreshPublishElapsed();
       const started = before.querySelector('[data-publish-start]').textContent === '12:34:56';
@@ -2743,12 +2748,12 @@ app.whenReady().then(async () => {
       updatePublishRow({ id: 'live-row', startAt: '13:00:00' });
       state.tab = 6; renderAll();
       const retained = publishRowElement('live-row').querySelector('[data-publish-start]').textContent === '13:00:00';
-      return { started, ticking, phase, stable, stopped, escaped, retained, retry, retryCleared, layoutStable };
+      return { started, ticking, phase, stable, stopped, escaped, retained, retry, retryCleared, layoutStable, compactCentered };
     } finally { state.project = keep.project; state.tab = keep.tab; renderAll(); }
   })()`);
   ok('发布行开始时间、阶段与实时耗时更新，且不重建该行',
     rowRefresh.started && rowRefresh.ticking && rowRefresh.phase && rowRefresh.stable, JSON.stringify(rowRefresh));
-  ok('发布状态文字增长不会改变素材目录列的位置、宽度和行高', rowRefresh.layoutStable, JSON.stringify(rowRefresh));
+  ok('发布目录列紧凑、表格及内容居中，状态增长不改变列宽与行高', rowRefresh.layoutStable && rowRefresh.compactCentered, JSON.stringify(rowRefresh));
   ok('发布结束耗时停止、切换页面数据保留、错误文字安全转义',
     rowRefresh.stopped && rowRefresh.escaped && rowRefresh.retained && rowRefresh.retry && rowRefresh.retryCleared, JSON.stringify(rowRefresh));
   // IntersectionObserver 在完全隐藏的窗口里会暂停画布；短暂显示测试窗口验证真实可见播放。
@@ -2760,6 +2765,7 @@ app.whenReady().then(async () => {
     const entries = [...document.querySelectorAll('.journal-entry')];
     const twoColumns = entries.every(e => getComputedStyle(e).gridTemplateColumns.split(' ').length === 2);
     const dateGroups = cards.length;
+    const noBuildLabels = !document.querySelector('.release-journal').textContent.includes('构建');
     const latestDate = cards[0]?.querySelector('h2')?.textContent;
     const hasDetails = entries.every(e => e.querySelector('.journal-meta time') && e.querySelector('.journal-kind') && e.querySelector('h3') && e.querySelector('li'));
     const fits = entries.every(e => e.scrollWidth <= e.clientWidth);
@@ -2768,10 +2774,10 @@ app.whenReady().then(async () => {
     const cells = [...document.querySelectorAll('.skeleton-table tbody td:nth-child(2)')];
     const namesFit = cells.length === 15 && cells.every(c => c.scrollWidth <= c.clientWidth);
     state.tab = 13; renderAll();
-    return { twoColumns, dateGroups, latestDate, hasDetails, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
+    return { twoColumns, dateGroups, latestDate, noBuildLabels, hasDetails, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
   })()`);
   win.hide();
-  ok('更新日志按日期卡片分组，左侧时间和类型、右侧标题与要点，无横向溢出', releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits && releaseCheck.dateGroups === 3 && releaseCheck.latestDate === '2026 年 10 月 14 日', JSON.stringify(releaseCheck));
+  ok('更新日志按日期分组且不显示构建信息，左侧时间和类型、右侧标题与要点，无横向溢出', releaseCheck.noBuildLabels && releaseCheck.twoColumns && releaseCheck.hasDetails && releaseCheck.fits && releaseCheck.dateGroups === 3 && releaseCheck.latestDate === '2026 年 10 月 14 日', JSON.stringify(releaseCheck));
   ok('句式名称完整显示、更新日志页提供检查更新', releaseCheck.namesFit && releaseCheck.updatePanel, JSON.stringify(releaseCheck));
   const updateNotice = await win.webContents.executeJavaScript(`(() => {
     const saved = { update: state.update, auth: state.auth, tab: state.tab };

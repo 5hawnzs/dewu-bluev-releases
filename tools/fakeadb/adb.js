@@ -340,6 +340,12 @@ function makeFakeAdb(dir) {
       return okOut('Broadcast completed: result=0\n');
     }
     if (/^rm -f /.test(cmd)) {
+      if (fs.existsSync(path.join(dir,'MEDIA_PERMISSION_DENIED')) && /\.(?:mp4|jpg|png)/i.test(cmd)) return fail('rm: Permission denied');
+      const busyRounds = path.join(dir, 'MEDIA_BUSY_ROUNDS');
+      if (fs.existsSync(busyRounds) && /\.(?:mp4|jpg|png)/i.test(cmd)) {
+        const remaining = Number(read(busyRounds, Buffer.from('0')).toString());
+        if (remaining > 0) { fs.writeFileSync(busyRounds, String(remaining - 1)); return fail('rm: Text file busy'); }
+      }
       // rm -f 同时用于抓屏临时文件和带引号的媒体路径；不能只删除前者而把相册残留喂成假故障。
       const files = (cmd.slice(6).match(/'(?:[^']|'\\'')*'|\S+/g) || [])
         .map(p => p.startsWith("'") ? p.slice(1, -1).replace(/'\\''/g, "'") : p);
@@ -703,6 +709,11 @@ function makeFakeAdb(dir) {
       return okOut(out || 'No result found.\n');
     }
     if (/^content delete /.test(cmd)) {
+      const lagRounds=path.join(dir,'DELETE_LAG_ROUNDS');
+      if(fs.existsSync(lagRounds)) {
+        const left=Number(read(lagRounds,Buffer.from('0')).toString());
+        if(left>0){fs.writeFileSync(lagRounds,String(left-1));return okOut('Deleted 0 rows.\n');}
+      }
       if (appLocked()) return fail('content delete: Text file busy');
       // ★★ 2026-10-04 新增：按 _id 删库记录（clearMediaDir 用的就是这条）。
       //   真机语义：删掉记录的同时**物理文件也一起消失**（见 adb.js 顶部实测注释）。
