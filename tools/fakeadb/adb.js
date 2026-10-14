@@ -120,6 +120,10 @@ function makeFakeAdb(dir) {
     const c = String(p).replace(/^\/storage\/emulated\/0\//, '/sdcard/');
     if (c.endsWith('/.nomedia')) nomediaDirs.delete(c.slice(0, -'/.nomedia'.length));
     if (c.endsWith('/.bluev-isolated')) isolateMarks.delete(c);
+    // ★★★ 2026-10-15：清单文件被删掉时，夹具里那份记录也必须跟着消失 ——
+    //   否则「设备端清单不存在」这个现场**永远摆不出来**：产品明明已经把清单删了，
+    //   `cat .bluev-pending` 却还会回老内容 ⇒「清单丢了要用内存副本兜底」这条退回假绿。
+    if (c.endsWith('/.bluev-pending')) pendingLists.delete(c);
   };
   const managedRoot="/sdcard/Movies/BlueV";
   const managedNorm=p=>String(p).replace(/^\/storage\/emulated\/0\//,"/sdcard/");
@@ -384,9 +388,17 @@ function makeFakeAdb(dir) {
     //   真机 MuMu 实测：`mv batch_x .batch_x` → rc=0；重扫后 video 表 `No result found.`
     //   （点开头目录不进媒体扫描）⇒ 与 .nomedia 同级，都算「已从相册隔离」。
     //   ls 必须带 -A，否则改名后的隐藏目录列不出来、永远回收不掉（假绿陷阱）。
-    if(cmd==="ls -1A '/sdcard/Movies/BlueV'")return managedDirs.size
-      ?okOut([...managedDirs.keys()].map(d=>d.slice(managedRoot.length+1)).join('\n')+'\n')
-      :fail('ls: '+managedRoot+': No such file or directory');
+    if(cmd==="ls -1A '/sdcard/Movies/BlueV'"){
+      // ★★★ 2026-10-15：rich 的历史现场就是**目录命令超时**（旧日志：`ls 相册命令超时或被终止…SIGTERM`）。
+      //   现场开关 MANAGED_LS_KILLED = 这条 ls 被超时杀掉（不是"目录不存在"、也不是普通错误）——
+      //   产品必须把「列不出素材批次目录」当成**建议性信息缺失**，而不是因此停掉整批：
+      //   真正的判据是随后的全盘相册复核（clearAlbum / albumMatches）。
+      if(fs.existsSync(path.join(dir,'MANAGED_LS_KILLED')))return {out:'',code:null,killed:true,signal:'SIGTERM'};
+      if(fs.existsSync(path.join(dir,'MANAGED_LS_FAIL')))return fail('ls: '+managedRoot+': Text file busy');
+      return managedDirs.size
+        ?okOut([...managedDirs.keys()].map(d=>d.slice(managedRoot.length+1)).join('\n')+'\n')
+        :fail('ls: '+managedRoot+': No such file or directory');
+    }
     const managedPath=(cmd.match(/'(\/sdcard\/Movies\/BlueV\/\.?batch_[a-f0-9]{32})(?:\/[^']*)?'/)||[])[1];
     const managedTarget=(cmd.match(/'(\/sdcard\/Movies\/BlueV\/\.?batch_[a-f0-9]{32})'/)||[])[1];
     if(managedPath&&cmd.startsWith('mkdir -p ')){managedDirs.set(managedPath,{owner:'',hidden:false});return okOut('');}
@@ -453,6 +465,12 @@ function makeFakeAdb(dir) {
     //   否则「会不会误删用户同目录里的其它文件」这条在回归里测不出来。
     const pendingAppend = cmd.match(/^printf %s\\n '([^']*)' >> '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
     if (pendingAppend) {
+      // ★★★ 2026-10-15：现场开关 PENDING_APPEND_KILLED = 这一笔追加写**被宿主超时杀掉**。
+      //   真机语义：命令没跑完 ⇒ **设备端清单里就是没有这一条**（不是「写了但读不到」）。
+      //   夹具必须真的不记，否则「清单丢了 ⇒ 目录永远不敢回收、.nomedia 永远撤不掉」这条
+      //   不可接受的长期副作用在回归里测不出来（那正是用户自己的 DCIM/Camera 会被一直隐藏的场景）。
+      if (fs.existsSync(path.join(dir, 'PENDING_APPEND_KILLED')))
+        return { out: '', code: null, killed: true, signal: 'SIGTERM' };
       const key = pendingAppend[2].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
       const cur = pendingLists.get(key) || [];
       cur.push(pendingAppend[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/'));
@@ -479,6 +497,12 @@ function makeFakeAdb(dir) {
       return okOut('');
     }
     if (/^rm -f /.test(cmd)) {
+      // ★★★ 2026-10-15：rich 这种慢设备上**单条 rm 被宿主超时杀掉**（killed，不是 busy）也要能复现。
+      //   超时杀掉意味着「删没删掉未知」；产品应当把它当成「物理删除未确认」继续走隔离 + 删索引 +
+      //   重扫复核，而不是因此停掉整批（重扫为空才是放行条件）。
+      if (fs.existsSync(path.join(dir,'RM_KILLED')) && /\.(?:mp4|jpg|png)/i.test(cmd)) {
+        return { out: '', code: null, killed: true, signal: 'SIGTERM' };
+      }
       if(fs.existsSync(path.join(dir,'RM_SILENT_KEEP'))&&/\.(?:mp4|jpg|png)/i.test(cmd))return okOut('');
       if (fs.existsSync(path.join(dir,'MEDIA_PERMISSION_DENIED')) && /\.(?:mp4|jpg|png)/i.test(cmd)) return fail('rm: Permission denied');
       const busyRounds = path.join(dir, 'MEDIA_BUSY_ROUNDS');
@@ -883,6 +907,25 @@ function makeFakeAdb(dir) {
       return okOut(out || 'No result found.\n');
     }
     if (/^content delete /.test(cmd)) {
+      // ★★★ 2026-10-15：现场开关 CONTENT_DELETE_KILLED = 删除命令**被宿主超时杀掉**。
+      //   真机语义：这一条删没删掉**未知**（不是「确定失败」）。夹具必须真的体现这个「未知」：
+      //   既不能说它一定没删（那会让「未知回执后靠重扫收敛」这条路测不出来），
+      //   也不能说它一定删了。这里按「其实已生效」处理 —— 产品必须靠重扫复核自己确认，
+      //   而不是凭 killed 就当场判失败（那会把一条本来干净的素材记成失败，白让用户重跑）。
+      if (fs.existsSync(path.join(dir, 'CONTENT_DELETE_KILLED'))) {
+        const km = cmd.match(/\/(?:media|file)\/(\d+)\s*$/);
+        if (km) {
+          const kid = Number(km[1]);
+          const ki = scanned.findIndex(p => mediaIdOf(p) === kid);
+          if (ki >= 0) {
+            const kgone = scanned[ki];
+            const kheld = isHeld(kgone);
+            if (!appLocked() && !kheld) for (const media of physicalMedia) if (toCmp(media) === toCmp(kgone)) physicalMedia.delete(media);
+            scanned.splice(ki, 1); mediaIds.delete(String(kgone)); dbTimes.delete(mtKey(kgone));
+          }
+        }
+        return { out: '', code: null, killed: true, signal: 'SIGTERM' };
+      }
       const deleteExitFile=path.join(dir,'DELETE_EXIT_139');
       const deleteExit=fs.existsSync(deleteExitFile)?read(deleteExitFile,Buffer.from('')).toString().trim():'';
       if(deleteExit==='before'||deleteExit==='before-once') {
@@ -1191,6 +1234,15 @@ function makeFakeAdb(dir) {
     const stdout = Buffer.isBuffer(res.out) ? res.out : (isBuffer ? Buffer.from(res.out) : String(res.out));
     process.nextTick(() => {
       if (!callback) return;
+      // ★★★ 2026-10-15：如实模拟**被超时杀掉**的命令（真 execFile 的语义：err.killed=true、
+      //   err.signal='SIGTERM'、code=null）。产品用 killed 区分「命令被杀 ⇒ 结果未知」和
+      //   「命令跑完但报错 ⇒ 结果失败」，夹具不还原这一位的话，那条分支在回归里等于没测。
+      if (res.killed) {
+        const err = new Error('Command was killed by SIGTERM');
+        err.killed = true;
+        err.signal = res.signal || 'SIGTERM';
+        return callback(err, stdout, '');
+      }
       if (code) {
         // 真 adb 失败时是「非 0 退出码 + 消息在 stdout」，这里保持一致
         const err = new Error(`Command failed with exit code ${code}`);

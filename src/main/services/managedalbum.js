@@ -35,20 +35,33 @@ async function isolate(serial,dir,ctx) {
   return {ok:false,dir,how:'failed'};
 }
 async function retire(serial,ctx={}) {
+  // ★★★ 2026-10-15：retire 做的全是**建议性**动作（提前把上一批摘出索引、顺手回收）。
+  //   所以这里一律用 soft 上下文：命令被超时杀掉 ⇒ 返回未成功、由调用方如实记一笔，
+  //   而不是 throw 把**整批**停死。真正的判据留在随后 albumready → clearAlbum 的全盘四表复核
+  //   （它自己会在相册确实不干净时如实停批）。取消仍然照旧抛「发布已取消」（那是用户意图）。
+  const advCtx={...ctx,soft:true};
   // -A：改名后的隐藏目录（.batch_…）也必须列出来，否则它们永远回收不掉。
-  const listing=await command(serial,'ls -1A '+quote(ROOT),ctx);
+  const listing=await command(serial,'ls -1A '+quote(ROOT),advCtx);
   if(!listing.ok) {
-    if(/No such file or directory/.test(String(listing.stderr||'')+String(listing.stdout||'')))return {isolated:0,pending:0};
-    throw new Error('读取素材批次目录失败，未确认隔离：'+(listing.stderr||listing.stdout||'未知'));
+    // ★★★ 2026-10-15（别再改回 throw）：这一步只是「把上一批目录从相册索引里摘掉」的**建议性**优化，
+    //   列不出目录**不等于相册不干净** —— 真正的判据是紧接着的全盘四表复核（clearAlbum）与推送后的
+    //   albumMatches。旧写法只要 ls 失败（rich 的历史现场就是**目录命令超时被杀**）就 throw，
+    //   于是整整一批在第一道前置步骤停住、后面每条都被记成「未执行」，代价远大于它的收益。
+    //   ⇒ 读不到就如实报出来（listed:false + 原因），交给全盘复核兜底；一条命令都不多发。
+    const said=String(listing.stderr||'')+String(listing.stdout||'');
+    if(/No such file or directory/.test(said))return {isolated:0,pending:0,degraded:0,listed:true,note:''};
+    return {isolated:0,pending:0,degraded:0,listed:false,
+      note:listing.killed?'素材批次目录列表命令超时或被终止（'+(listing.signal||'未知信号')+'），改由全盘相册复核兜底'
+        :'素材批次目录列表读取失败（'+(said.trim()||'无错误详情')+'），改由全盘相册复核兜底'};
   }
   const directories=String(listing.stdout||'').trim().split(/\r?\n/)
     .map(n=>ROOT+'/'+n).filter(ownedPath);
   const owned=[];
   let degraded=0;
   for(const dir of directories) {
-    const marker=await command(serial,'cat '+quote(dir+'/'+MARKER),ctx);
+    const marker=await command(serial,'cat '+quote(dir+'/'+MARKER),advCtx);
     if(!marker.ok||String(marker.stdout||'').trim()!==OWNER)continue;
-    const iso=await isolate(serial,dir,ctx);
+    const iso=await isolate(serial,dir,advCtx);
     if(iso.ok)owned.push(iso.dir); else degraded++;
   }
   if(owned.length) {
@@ -81,7 +94,7 @@ async function retire(serial,ctx={}) {
     if(!removed.ok||!emptied.ok)pending++;
   }
   pending+=Math.max(0,owned.length-3);
-  return {isolated:owned.length,pending,degraded};
+  return {isolated:owned.length,pending,degraded,listed:true,note:''};
 }
 async function create(serial,ctx={}) {
   const dir=ROOT+'/batch_'+crypto.randomBytes(16).toString('hex');

@@ -27,6 +27,9 @@ async function prepare(serial, item, row, ctx = {}) {
   const clearStarted = Date.now();
   require('./diagnostics').phase('清理相册', row.seq);
   const retired=await managedalbum.retire(serial,{cancelled});
+  // ★★ 2026-10-15：读不到素材批次目录**不是**失败（只是少了一次「提前把上一批摘出索引」的机会），
+  //   如实说出来 —— 下面的全盘四表复核才是相册干净与否的唯一判据。绝不因此停批。
+  if(retired.listed===false)log(row.dir+'：'+retired.note,'warn');
   if(retired.isolated)log(row.dir+'：上一批已从相册隔离，物理文件待回收目录 '+retired.pending+' 个','info');
   // ★★ 2026-10-15：`degraded` 必须有消费者 —— 它是「上一批目录两级隔离都没成功」的**唯一**信号，
   //   过去算出来却没人读，等于静默失效（架构审计的结论之一）。这里如实说出来，
@@ -49,7 +52,7 @@ async function prepare(serial, item, row, ctx = {}) {
   //   相册看不到它 = 这一条能安全发布；磁盘上文件还在 = 另一件事，如实交代、释放后自动回收。
   const pendingFiles=Array.isArray(cleared.physicalPending)?cleared.physicalPending:[];
   log(`${row.dir}：相册已清空（回收 ${cleared.removed} 条记录，耗时 ${((Date.now() - clearStarted) / 1000).toFixed(2)}s）`
-    +(pendingFiles.length?`；另有 ${pendingFiles.length} 个物理文件仍被占用、待回收（已隔离，不影响本条发布）`:''),'info');
+    +(pendingFiles.length?`；另有 ${pendingFiles.length} 个物理文件未删除、待回收（已用 .nomedia 隔离，相册里看不到它，不影响本条发布；句柄释放后自动真删）`:''),'info');
   // 全盘相册验证通过后才导航；新素材索引与主页导航可并行，发布入口在最后屏障之后。
   if (ctx.startNavigation) ctx.startNavigation();
   checkCancelled();

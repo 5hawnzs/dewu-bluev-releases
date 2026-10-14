@@ -582,6 +582,24 @@ function rememberedDirs(serial) {
 }
 
 /**
+ * ★★★ 2026-10-15：与上面同一份**跨条**记忆，但记的是「这个目录里还有哪些物理文件待回收」。
+ *
+ * 为什么还要这一份内存副本：设备端那份清单（`.bluev-pending`）是**追加写**出来的，而 rich 这类
+ *   设备的历史故障就是命令超时被杀（`ls 相册命令超时…SIGTERM`）。清单那一笔要是没写进去，
+ *   回收时就会「读不到清单 ⇒ 不敢删 ⇒ 永远保留 .nomedia」——那条目录从此在系统相册里一直是隐藏的，
+ *   而它完全可能是用户自己的 DCIM/Camera（里面是用户的私人照片）。这种长期副作用不可接受，
+ *   所以清单在**内存里再存一份**：下一条清理时设备端清单读不到，就用内存这份兜底。
+ * ★ 边界（与 isolatedRegistry 一样如实写在这里）：进程退出后这份内存就没了，届时设备端那份
+ *   `.bluev-pending` 才是唯一线索；两处都丢只会出现在「清单写入被杀 **且** 同一进程没跑完就退出」
+ *   的叠加现场，那时最多留一个隐藏的旧素材不占相册显示（不影响发布正确性，但会白占一点磁盘）。
+ */
+const pendingRegistry = new Map();
+function rememberedPending(serial) {
+  if (!pendingRegistry.has(serial)) pendingRegistry.set(serial, new Set());
+  return pendingRegistry.get(serial);
+}
+
+/**
  * ★★★ 2026-10-04（真机实测新增）：把设备**整个相册**清到一条不剩 —— 判据是「MediaStore 里
  *   除了本条要推的，没有别的素材」。这是用户口径「发布某条素材时，调出相册只能看到他的图/视频」
  *   的**唯一靠得住的落点**。
@@ -679,11 +697,24 @@ async function clearAlbum(serial, opts = {}) {
     let r = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(options.timeout || 8000, 15000, left)) });
     // 低性能主机可能只是暂时没完成只读查询。只给读取一次较长恢复机会，
     // 不延长总预算、不自动重发删除命令，正常设备也不增加命令或等待。
-    if (r.killed && command.startsWith('content query ') && deadline > Date.now()
+    // ★★★ 2026-10-15：`content query` 与 `scan_volume` 都是**只读/扫描**类命令，被杀掉意味着
+    //   「这一次没读到」而不是「相册就是空的」。给它们一次较长的恢复机会；仍被杀就交给调用方
+    //   如实停批（**绝不能**把读不到当成空相册 —— 那是静默发错图的源头）。
+    const readLike = command.startsWith('content query ') || command.includes('--method scan_volume');
+    if (r.killed && readLike && deadline > Date.now()
       && !(opts.cancelled && opts.cancelled())) {
       r = await shell(device, command, { ...options, deadline, timeout: Math.max(1, Math.min(20000, deadline - Date.now())) });
     }
-    if (r.killed) { const e = new Error(command.split(' ')[0] + ' 全盘相册命令超时或被终止（限时 ' + r.timeoutMs + 'ms，信号 ' + (r.signal || '未知') + '）'); e.code = 'ALBUM_IO_INTERRUPTED'; throw e; }
+    // ★★★ 2026-10-15：`killed` 分两种含义，不能一刀切都中止本条：
+    //   · 只读查询 / 扫描被杀 ⇒ **结果未知**，绝不能当"空相册"（这里照旧中止本条）；
+    //   · 调用方显式声明 `allowKilled` 的单条写命令（目前只有 `rm -f` 一个文件）⇒ 含义是
+    //     「这一条删没删掉未知」，它并**不**让相册判据失效：后面照样要写隔离标记、删库记录、
+    //     重扫四表复核。所以把结果原样交给调用方，由它如实记成「物理删除未确认」，绝不因此停批。
+    if (r.killed) {
+      if (options.allowKilled) return r;
+      const e = new Error(command.split(' ')[0] + ' 全盘相册命令超时或被终止（限时 ' + r.timeoutMs + 'ms，信号 ' + (r.signal || '未知') + '）');
+      e.code = 'ALBUM_IO_INTERRUPTED'; throw e;
+    }
     return r;
   };
   const group = async work => {
@@ -719,18 +750,24 @@ async function clearAlbum(serial, opts = {}) {
     const mark = dir + '/' + ISOLATE_MARK;
     const nm = dir + '/.nomedia';
     // 归属标记写不写得上**不影响**相册判据（下面仍以复查为准），所以失败不在这里抛。
-    await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(mark), { timeout: 8000 });
-    const touched = await run(serial, 'touch ' + quotePath(nm), { timeout: 8000 });
-    const back = await run(serial, '[ -f ' + quotePath(nm) + ' ] && echo EXISTS', { timeout: 8000 });
+    // ★★★ 2026-10-15：这三条全是**与相册判据无关的写类命令**，必须允许被超时杀掉后如实继续 ——
+    //   若让 killed 全局中止本条，就会出现「隔离标记其实已经写上、索引却还没删，相册里仍看得见它」
+    //   的假失败（本条被记成失败，而下一条还要再清一遍）。真正判据由后面的四表重扫说了算。
+    await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(mark), { timeout: 8000, allowKilled: true });
+    const touched = await run(serial, 'touch ' + quotePath(nm), { timeout: 8000, allowKilled: true });
+    const back = await run(serial, '[ -f ' + quotePath(nm) + ' ] && echo EXISTS', { timeout: 8000, allowKilled: true });
     const ok = touched.ok && back.ok && String(back.stdout || '').trim() === 'EXISTS';
     if (ok) {
       isolatedDirs.add(dir);
       // ★ 跨条记忆：下一条的 clearAlbum 会从这里接回这个目录去回收（见 rememberedDirs 的说明）。
       rememberIsolated(dir);
+      // ★★ 与上面同一份跨条记忆：清单也记一份内存副本（见 pendingRegistry 的说明）——
+      //   设备端那一笔是**追加写**，被杀掉就丢了；丢了就会「永远不敢回收、永远留着 .nomedia」。
+      rememberedPending(serial).add(file);
       // ★★ 待回收**清单**（写进设备端，不靠内存）：只记我们自己确认过是「残留素材」的路径。
       //   延后回收时**只删清单里的路径**，绝不遍历目录删 —— 否则会把用户同目录里的
       //   私人照片/其它文件一起删掉（那是不可逆的损失）。
-      await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000 });
+      await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
       return { ok: true, dir, why: '' };
     }
     isolationFailed.add(dir);
@@ -792,18 +829,26 @@ async function clearAlbum(serial, opts = {}) {
         // ★ 只删**清单里记着的那几个路径**，绝不遍历目录删：同目录里可能有用户的私人照片，
         //   遍历删除是不可逆的越界动作。
         const list = await run(serial, 'cat ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000 });
-        if (!list.ok) continue;     // 清单读不到 ⇒ 不敢说回收完了，继续隔离，下次再试
-        const files = String(list.stdout || '').trim().split(/\r?\n/).map(s => toMediaPath(s.trim()))
+        const fromDevice = list.ok
+          ? String(list.stdout || '').trim().split(/\r?\n/).map(s => toMediaPath(s.trim())) : [];
+        // ★★★ 2026-10-15：设备端清单读不到时，用**本次进程内存里**的那份兜底（见 pendingRegistry）。
+        //   没有这一手就会出现：清单追加写被杀 → 清单读不到 → 这个目录永远不敢回收、
+        //   `.nomedia` 永远撤不掉（用户自己的 DCIM/Camera 会被系统相册一直隐藏）。这是不可接受的副作用。
+        //   两份合起来去重；两处都没有 ⇒ 才继续隔离（那时确实不知道要删谁，如实留标记）。
+        const fromMemory = [...rememberedPending(serial)].filter(p => path.posix.dirname(p) === dir);
+        const files = [...new Set(fromDevice.concat(fromMemory))]
           .filter(p => p.startsWith('/storage/emulated/0/') && path.posix.dirname(p) === dir && !/[\r\n\0]/.test(p));
+        if (!list.ok && !files.length) continue;   // 两处都不知道要删谁 ⇒ 不敢说回收完了，继续隔离，下次再试
         let left = 0;
         for (const p of files) {
-          const rm = await run(serial, 'rm -f ' + quotePath(p), { timeout: 8000 });
-          if (rm.ok) physicalPending.delete(p); else left++;
+          // allowKilled：单条回收被超时杀掉只代表「这条没删成」，不该让整条清理路径中止。
+          const rm = await run(serial, 'rm -f ' + quotePath(p), { timeout: 8000, allowKilled: true });
+          if (rm.ok) { physicalPending.delete(p); rememberedPending(serial).delete(p); } else left++;
         }
         if (left) continue;         // 还有删不掉的素材 ⇒ 保留 .nomedia 继续隔离，下次再试
         // ★ 文件真的都删掉了，才允许撤掉标记；撤掉之后目录恢复普通目录。
         await run(serial, 'rm -f ' + quotePath(dir + '/.nomedia') + ' ' + quotePath(dir + '/' + ISOLATE_MARK)
-          + ' ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000 });
+          + ' ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
         isolatedDirs.delete(dir);
         rememberedDirs(serial).delete(dir);
       } catch (e) { /* 回收失败只记「没回收成」，绝不影响相册判据 */ }
@@ -831,14 +876,26 @@ async function clearAlbum(serial, opts = {}) {
         throw new Error('媒体文件路径不在允许的共享存储范围内，未执行删除');
       }
       const quoted = quotePath(file);
-      const physical = await run(serial, 'rm -f ' + quoted, { timeout: 8000 });
+      // allowKilled：单条 `rm` 被超时杀掉 = 「删没删掉未知」，**不等于** busy、也不等于失败。
+      //   交给下面统一收口（如实记「物理删除未确认」，照样隔离 + 删索引 + 重扫复核）。
+      const physical = await run(serial, 'rm -f ' + quoted, { timeout: 8000, allowKilled: true });
       let iso = { ok: true, why: '' };
       if (!physical.ok) {
         // ★ 物理删除失败**绝不能就此 return**（旧代码在这里 return，正是 rich 卡住的真因：
         //   `content delete` 从未执行，记录留在库里、文件留在盘上，下一轮再 busy、再 return）。
         //   失败原因只记录，不再抛：真正的判据是下面的四表复查。
-        failedDelete(physical, 'rm');
-        busyFiles.add(file);
+        if (physical.killed) {
+          // ★★★ 2026-10-15（rich 这类慢设备的第四现场）：单条 `rm` 被宿主超时杀掉 = 「删没删掉未知」。
+          //   **绝不进 busyFiles** —— 那是「句柄被占用」的专用信号（它会让收尾去停整批，
+          //   而这里只是设备慢、命令没跑完，误报会把「慢」说成「得物一直握着文件」）。
+          //   也不值得为此再退避重试：超时说明这条设备命令本来就慢，重试只是把时间再烧一遍
+          //   （用户口径：失败的耗时比成功还长，是最糟的体验）。如实记一笔，交给下面的
+          //   隔离 → 删索引 → 重扫复核定论：重扫为空就照常发布，重扫还有记录才如实停批。
+          issues.push({ operation: 'rm', kind: 'unconfirmed' });
+        } else {
+          failedDelete(physical, 'rm');
+          busyFiles.add(file);
+        }
         // 占用（或任何删不掉）时改为「隔离」——这是占用下唯一能穿过的写操作。
         iso = await isolateFile(file);
       } else {
@@ -851,8 +908,14 @@ async function clearAlbum(serial, opts = {}) {
       //   记录以新 _id 复活）；而删索引本身会让物理文件更难回收（MediaProvider 找不到 _data）。
       //   隔离没确认就保留记录、如实报「隔离标记未确认」——绝不假装清干净。
       if (physical.ok || iso.ok) {
-        const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id, { timeout: 10000 });
-        if (!rd.ok) failedDelete(rd, 'delete', file);
+        // ★★★ 2026-10-15：`content delete` 被超时杀掉，含义是「这条记录删没删掉未知」——
+        //   与下面 failedDelete 里那条「139 空输出」是同一类**未知回执**，都必须走同一条路：
+        //   如实登记为未确认，然后**接着往下做全盘重扫复核**。让复核说了算，而不是在
+        //   还没看到复核结果时先中止 —— 中止的代价是本条被记成失败，而它很可能其实是干净的。
+        const rd = await run(serial, 'content delete --uri ' + mediaUri(h.table) + '/' + h.id,
+          { timeout: 10000, allowKilled: true });
+        if (rd.killed) { issues.push({ operation: 'delete', kind: 'cli-killed-unknown' }); uncertainDeletes.add(file); }
+        else if (!rd.ok) failedDelete(rd, 'delete', file);
         else removed++;
       } else {
         issues.push({ operation: 'isolate', kind: 'isolation-failed' });

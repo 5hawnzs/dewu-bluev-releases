@@ -293,8 +293,19 @@ const cloudRows = `Row: 0 _data=${main}, date_modified=1791608509\nRow: 1 _data=
     ? { stdout: 'Row: 0 _id=1, _data=/storage/emulated/0/DCIM/Camera/a.png\n' }
     : cmd.startsWith('rm -f ') ? (++interruptedDeletes, { killed: true, signal: 'SIGTERM' }) : {});
   const deleteResult = await slowDelete.adb.clearAlbum('FAKE');
-  ok('写入类删除超时不套用慢主机读取重试，不能继续新素材操作', !deleteResult.ok && interruptedDeletes === 1
-    && !slowDelete.calls.some(c => c.startsWith('content delete ') || c.includes('scan_volume')));
+  // ★★★ 2026-10-15 口径修正（旧断言盯的是错的判据）：夹具里 `content query` 只回一条记录、
+  //   而 `rm -f` **永远**被杀 —— 隔离标记又没有（假设备 `touch` 会成功，但这里的现场是
+  //   「命令一致被杀」的极端慢设备）。旧断言要求「killed ⇒ 一条都不用再发、直接停」，
+  //   那正是 rich 被拖死的写法：**物理删除没结论 ≠ 相册没清干净**，相册判据是媒体库四表复查。
+  //   现在盯的三件事都还是安全不变量：
+  //     ① 写入类命令被超时杀掉**不再套用**只读查询的 20 秒恢复重试（`rm` 只能发一次）；
+  //     ② 不为它做退避轮次（否则会像旧版那样把时间烧在等句柄上——「失败比成功还慢」）；
+  //     ③ 复查仍有记录时**如实失败**，绝不继续新素材操作。
+  ok('写入类删除超时不套用慢主机读取重试，也不退避空等；复查仍有记录时如实停批', !deleteResult.ok
+    && interruptedDeletes === 1 && deleteResult.recoveryAttempts === 0
+    && slowDelete.calls.filter(c => c.includes('scan_volume')).length <= 1
+    && !slowDelete.calls.some(c => c.startsWith('content delete '))
+    && deleteResult.code === 'ALBUM_ISOLATION_FAILED');
   const rows = Array.from({ length: 12 }, (_, i) => `Row: ${i} _id=${i + 1}, _data=/storage/emulated/0/DCIM/Camera/${i}.jpg`).join('\n');
   for (let round = 1; round <= 5; round++) {
     const morning = driver(cmd => {

@@ -333,6 +333,135 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
     await adb.clearAlbum('FAKE');
     ok('139+占用组合解除后：物理文件被真正删掉、隔离标记被撤（不靠假成功掩盖磁盘残留）',
       ![...fakeAdb.__physicalMedia].some(p=>/139占用残留/.test(p)));
+
+    // ========================================================================
+    // ★★★ 2026-10-15 新增：**列不出素材批次目录时不许停掉整批**。
+    //   rich 的历史现场就是目录命令超时（旧日志：`ls 相册命令超时或被终止 …SIGTERM`）。
+    //   `managedalbum.retire` 这步只是「把上一批目录从相册索引里摘掉」的**建议性**优化，
+    //   它读不到目录清单，并不等于相册不干净 —— 真正的判据是紧接着的全盘四表复核。
+    //   旧写法一读不到就 throw ⇒ 整批在第一道前置步骤就停住，后面每一条都被记成「未执行」。
+    // ========================================================================
+    {
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/蓝V批次1.jpg');
+      await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/蓝V批次1.jpg');
+      fs.writeFileSync(path.join(dir,'MANAGED_LS_KILLED'),'1');
+      const twoRows=state();twoRows.publish.rows.push({seq:2,id:'A',dir:'B',goods:1,result:''});
+      const lsStart=calls().length;
+      const lsKilled=await publisher.run(twoRows);
+      const lsTrace=calls().slice(lsStart);
+      ok('列不出素材批次目录（命令被杀）时不停整批：改由全盘复核兜底，两条都照常发布',
+        lsKilled.failCount===0&&lsKilled.okCount===2&&!lsKilled.stoppedReason
+        && lsTrace.some(c=>/ls -1A .*Movies\/BlueV/.test(c))
+        && !lsTrace.some(c=>/am force-stop/.test(c)));
+      fs.unlinkSync(path.join(dir,'MANAGED_LS_KILLED'));
+      await adb.clearAlbum('FAKE');
+    }
+    // 反面：列目录「读到了、但没读到东西」之外的真错误（非超时）也必须如实交代，
+    //   但同样不许把批次停死 —— 判据仍在全盘复核。
+    {
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/蓝V批次2.jpg');
+      await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/蓝V批次2.jpg');
+      fs.writeFileSync(path.join(dir,'MANAGED_LS_FAIL'),'1');
+      const failState=state();failState.publish.rows.push({seq:2,id:'A',dir:'B',goods:1,result:''});
+      const lsFailStart=calls().length;
+      const lsFailed=await publisher.run(failState);
+      const lsFailTrace=calls().slice(lsFailStart);
+      ok('素材批次目录列表报普通错误时也照常发布：相册是否干净由全盘复核说了算',
+        lsFailed.failCount===0&&lsFailed.okCount===2&&!lsFailed.stoppedReason
+        && !lsFailTrace.some(c=>/am force-stop/.test(c)));
+      fs.unlinkSync(path.join(dir,'MANAGED_LS_FAIL'));
+      await adb.clearAlbum('FAKE');
+    }
+    // ★★ 承上：把 retire 放宽成「读不到目录也不停批」**不能**因此放过真正不干净的相册 ——
+    //   同一轮里再摆一个清不掉的现场（素材在被句柄占住、且落在禁止写 .nomedia 的本批落地目录），
+    //   批次必须照旧停下。这条是上面两条的兜底反证：放宽的只是「建议性前置步骤」，不是判据。
+    {
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/Movies/BlueV/落地根残留.mp4');
+      await adb.mediaScan('FAKE','/sdcard/Movies/BlueV/落地根残留.mp4');
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'落地根残留');
+      fs.writeFileSync(path.join(dir,'MANAGED_LS_KILLED'),'1');
+      const gateStart=calls().length;
+      const gate=await publisher.run(state());
+      const gateTrace=calls().slice(gateStart);
+      // ★ 断言的是**安全不变量**，不是「必须停批」：这一条素材清不掉就该如实失败、不推素材、
+      //   不进发布入口、不强停得物；相册是否真的干净由下一条自己的全盘复核再判一次
+      //   （单条失败不拖累整批那条用例盯的就是"下一条会重新清理并核实"）。
+      ok('列表读不到也不放过真正不干净的相册：该条如实失败、不推素材、不强停得物',
+        gate.failCount===1&&gate.okCount===0
+        && /隔离标记/.test(gate.rows[0].reason||'')
+        && !gateTrace.some(c=>/touch '\/storage\/emulated\/0\/Movies\/BlueV\/\.nomedia'/.test(c))
+        && !gateTrace.some(c=>/\bpush |input tap /i.test(c))
+        && !gateTrace.some(c=>/am force-stop/.test(c)));
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      fs.unlinkSync(path.join(dir,'MANAGED_LS_KILLED'));
+      await adb.clearAlbum('FAKE');
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增：**单条物理删除命令被超时杀掉**（killed，不是 busy）。
+    //   为什么必须单独摆出来：rich 这类慢设备上，`rm -f` 可能跑不完就被宿主 execFile 超时
+    //   杀掉（旧日志里 `ls 相册命令超时或被终止…SIGTERM` 就是同一类现象）。此时「删没删掉」
+    //   **是未知的**，但它和第 35 行那条一样——只是**物理**动作没结论：
+    //   相册的判据始终是「媒体库四表复查为空且重扫不复活」。
+    //   已确认可复算的收敛路径：写 .nomedia 隔离（占用下唯一能穿过的写操作）→ 删库记录 →
+    //   重扫不复活 ⇒ 本条照常发布，物理文件如实记「待回收」。绝不许因为一条 rm 被超时就停批。
+    // ========================================================================
+    {
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/bluev/rm被杀残留.mp4');
+      await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/bluev/rm被杀残留.mp4');
+      fs.writeFileSync(path.join(dir,'RM_KILLED'),'1');
+      const killedStart=calls().length;
+      const rmKilled=await adb.clearAlbum('FAKE');
+      const rmKilledTrace=calls().slice(killedStart);
+      ok('单条rm被超时杀掉（结果未知）时不停批：隔离+删索引后靠重扫收敛，物理文件如实待回收',
+        rmKilled.ok===true && rmKilled.physicalPending.length===1
+        && rmKilledTrace.some(c=>/rm -f '\/storage\/emulated\/0\/DCIM\/Camera\/bluev\/rm被杀残留\.mp4'/.test(c))
+        && rmKilledTrace.some(c=>/touch '\/storage\/emulated\/0\/DCIM\/Camera\/bluev\/\.nomedia'/.test(c))
+        && rmKilledTrace.some(c=>/content delete/.test(c)));
+      fs.unlinkSync(path.join(dir,'RM_KILLED'));
+      await adb.clearAlbum('FAKE');
+    }
+    // ★★★ 2026-10-15 新增：**删除索引命令被超时杀掉**（未知回执）。
+    //   与「139 空输出」同属一类：这条记录删没删掉还不知道。绝不能因此当场判失败 ——
+    //   正确做法是继续做全盘四表重扫复核：库里确实没有它、重扫也不复活，就照常发布。
+    {
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/bluev/删索引被杀.mp4');
+      await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/bluev/删索引被杀.mp4');
+      fs.writeFileSync(path.join(dir,'CONTENT_DELETE_KILLED'),'1');
+      const delKilledStart=calls().length;
+      const delKilled=await publisher.run(state());
+      const delKilledTrace=calls().slice(delKilledStart);
+      ok('删除索引命令被超时杀掉（未知回执）时靠重扫复核收敛：库里确无记录就照常发布',
+        delKilled.okCount===1 && delKilled.failCount===0 && !delKilled.stoppedReason
+        && delKilledTrace.some(c=>/--method scan_volume/.test(c))
+        && !delKilledTrace.some(c=>/am force-stop/.test(c)));
+      fs.unlinkSync(path.join(dir,'CONTENT_DELETE_KILLED'));
+      await adb.clearAlbum('FAKE');
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增：**待回收清单那一笔没写进去**时，绝不能让那个目录永远隔离着。
+    //   现场：隔离标记写成功了（相册里确实看不到旧素材），但紧接着的清单追加写被超时杀掉。
+    //   设备端 `.bluev-pending` 于是不存在。旧写法 `读不到清单 ⇒ continue` 会让这条目录**每一轮**
+    //   都「不敢回收、继续保留 .nomedia」——而它可能正是用户自己的 DCIM/Camera（里面有私人照片），
+    //   那条目录从此在系统相册里一直是隐藏的。这是长期副作用，必须靠内存里的那份清单兜底解开。
+    //   判据：句柄一释放，下一次清理就要真的删掉物理文件、撤掉 .nomedia（而不是继续隔离）。
+    // ========================================================================
+    {
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/bluev/清单丢失残留.mp4');
+      await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/bluev/清单丢失残留.mp4');
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'清单丢失残留');
+      // 真机语义：追加写根本没跑完 ⇒ 设备端清单里就是没有这一条（不是写了却读不到）。
+      fs.writeFileSync(path.join(dir,'PENDING_APPEND_KILLED'),'1');
+      const lostIso=await adb.clearAlbum('FAKE');
+      fs.unlinkSync(path.join(dir,'PENDING_APPEND_KILLED'));
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      const lostStart=calls().length;
+      const lostReclaim=await adb.clearAlbum('FAKE');
+      const lostTrace=calls().slice(lostStart);
+      ok('待回收清单写入被杀（设备端清单不存在）时靠内存副本兜底：句柄释放后真的删文件、撤标记',
+        lostIso.ok && lostReclaim.ok && lostReclaim.physicalPending.length===0
+        && ![...fakeAdb.__physicalMedia].some(p=>/清单丢失残留/.test(p))
+        && lostTrace.some(c=>/rm -f .*\.nomedia/.test(c)));
+    }
   }
 
 })().catch(e => { console.error(e); process.exitCode = 1; });
