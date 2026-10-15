@@ -252,6 +252,53 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
   fs.unlinkSync(path.join(dir,'MANAGED_HIDE_DENIED'));
 
   // ==========================================================================
+  // ★★★ 2026-10-15 新增（架构审计清单第 3 节 · 用例 5，此前**一条断言都没有**）：
+  //   `.nomedia` 写不进去、但**整目录改名成点开头目录**成功 ⇒ 与写标记**等价**的隔离成功，
+  //   `degraded` 不许计数（它不是失败信号），更不许因此停批。
+  //   真机依据（本机 MuMu 复算）：目录空闲时 `mv <dir> <.dir>` 成功、重扫不回填；
+  //   只有**文件被句柄占住**时 mv 才报 Operation not permitted（那条由上面 NOMEDIA_DENIED
+  //   的「不可收敛必须停批」用例覆盖）。这里摆的正是「不让写标记、但目录本身没被锁」的现场。
+  //   为什么必须盯着：这是两级隔离的**第二级**，它一旦静默失效，隔离标记写不进就只能停批，
+  //   而相册其实本来是干净的 —— 那正是用户最反感的「失败比成功还慢」。
+  // ==========================================================================
+  {
+    const renamedTarget=await managed.create('FAKE');
+    const renamedFile=renamedTarget+'/改名隔离残留.mp4';
+    await adb.push('FAKE',path.join(itemDir,'1.jpg'),renamedFile);
+    await adb.mediaScan('FAKE',renamedFile);
+    // 反面现场先摆出来：**两级都写不进去**的目录必须如实计 degraded。
+    //   必须在本条目录还叫 `batch_…`（没被改过名）时测 —— 改过名的目录本来就已隐藏，
+    //   那时「写不进标记」不再构成失败（isolate 会直接判 already-hidden）。
+    fs.writeFileSync(path.join(dir,'MANAGED_HIDE_DENIED'),'1');
+    fs.writeFileSync(path.join(dir,'MANAGED_RENAME_DENIED'),'1');
+    const bothDenied=await managed.retire('FAKE');
+    ok('两级隔离都失败时如实计 degraded（不静默失效、也不假装隔离成功）',
+      bothDenied.isolated===0 && bothDenied.degraded>=1
+      && [...fakeAdb.__managedDirs.keys()].includes(renamedTarget));
+    // 文件被句柄占住 ⇒ 这个目录**回收不掉**，正好把它留在设备上供断言检查（回收是尽力而为）。
+    fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'改名隔离残留');
+    fs.unlinkSync(path.join(dir,'MANAGED_RENAME_DENIED'));
+    const renamedOnly=await managed.retire('FAKE');
+    const hiddenNames=[...fakeAdb.__managedDirs.entries()].filter(([k,v])=>/\/\.batch_[a-f0-9]{32}$/.test(k));
+    ok('上一批目录 .nomedia 写不进但改名成功：等价隔离成功、不计 degraded、原目录名不再存在',
+      renamedOnly.degraded===0 && renamedOnly.isolated>=1
+      && hiddenNames.some(([k,v])=>v.renamed===true&&k===renamedTarget.replace('/batch_','/.batch_'))
+      && ![...fakeAdb.__managedDirs.keys()].includes(renamedTarget));
+    // 复原现场：放掉句柄与两个开关，让延后回收把这条目录真的收干净。
+    fs.unlinkSync(path.join(dir,'MANAGED_HIDE_DENIED'));
+    fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+    const renamedReclaim=await managed.retire('FAKE');
+    // ★ 注意 `isolated` 的语义 = 本轮**被隔离过**的目录数（改名隐藏的那条也算），
+    //   所以这里断言的是「目录真的被回收掉了」，而不是 isolated===0。
+    const renamedAgain=await managed.retire('FAKE');
+    ok('改名隐藏过的目录在句柄释放后照样被回收：不留永久隐藏目录、不留旧素材',
+      renamedReclaim.degraded===0 && renamedReclaim.pending===0
+      && renamedAgain.isolated===0 && renamedAgain.pending===0
+      && ![...fakeAdb.__managedDirs.keys()].some(k=>k===renamedTarget||k===renamedTarget.replace('/batch_','/.batch_'))
+      && ![...fakeAdb.__physicalMedia].some(p=>/改名隔离残留/.test(p)));
+  }
+
+  // ==========================================================================
   // ★★★ 2026-10-15 新增：rich 现场的三条决定性用例（旧路径 / 防误伤 / 重扫复活）
   //   前三条在真机 MuMu 上逐一复算过（rm/mv 全 busy，只有 .nomedia 能穿过；删掉标记再扫记录立刻回来）。
   // ==========================================================================
