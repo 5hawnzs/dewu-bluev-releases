@@ -130,7 +130,7 @@ async function cleanupProbe() {
   // 上面那条 rm 已经把文件删了；重新摆一次现场来验「延后回收」这条产品路径本身。
   await adb.push(serial, fixture, target);
   await adb.mediaScan(serial, target);
-  await adb.shell(serial, 'printf %s\\n ' + quote(target) + ' >> ' + quote(dir + '/.bluev-pending'), { timeout: 8000 });
+  await adb.shell(serial, "printf '%s\\n' " + quote(target) + ' >> ' + quote(dir + '/.bluev-pending'), { timeout: 8000 });
   const reclaimedBefore = await adb.shell(serial, '[ -e ' + quote(target) + ' ] && echo EXISTS || echo MISSING', { timeout: 8000 });
   assert.strictEqual(String(reclaimedBefore.stdout || '').trim(), 'EXISTS', '回收前文件应当还在');
   const reclaim = await adb.clearAlbum(serial, { deadline: Date.now() + 90000 });

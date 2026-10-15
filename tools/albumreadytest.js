@@ -499,6 +499,40 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
       await adb.clearAlbum('FAKE');
     }
     // ========================================================================
+    // ★★★ 2026-10-15 新增（真机实测，本条盯的是**写进去的东西到底是不是真路径**）：
+    //   待回收清单那一条命令，格式串**必须带单引号**：`printf '%s\\n'`。
+    //   不带引号时（`printf %s\\n`）设备 sh 把 `\\n` 当成「反斜杠 + n」两个字符，
+    //   整份清单写成一行 `<路径>n<路径>n…`、`wc -l` = 0（本机 MuMu 上 `od -c` 可复算）。
+    //   危险点不是「少记一条」：回收阶段会把那一整行当**一个路径**去 `rm -f`，
+    //   而那个名字根本不存在 ⇒ rm 照样回成功 ⇒ 回收以为删干净了、把 `.nomedia` 撤掉，
+    //   真残留却还在盘上 —— 下一次全盘扫描就把它扫回相册（最不能出的静默错误）。
+    //   夹具里 `printf %s\\n` 那条老写法会写出一份**根本不是路径**的内容，
+    //   所以只要产品退回老写法，下面这条断言立刻红。
+    //   ★ 判据（两段）：① 设备端清单里**读回来的每一行都必须是真路径**；
+    //     ② 释放句柄后的回收必须把物理文件真删掉、并把 `.nomedia` 撤掉。
+    // ========================================================================
+    {
+      const target='/sdcard/DCIM/Camera/bluev/清单写歪残留.mp4';
+      const isoDir='/sdcard/DCIM/Camera/bluev';
+      await adb.shell('FAKE','rm -f '+quote(isoDir+'/.nomedia')+' '+quote(isoDir+'/.bluev-isolated')+' '+quote(isoDir+'/.bluev-pending'));
+      fakeAdb.__nomediaDirs.delete(isoDir);
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),target);
+      await adb.mediaScan('FAKE',target);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'清单写歪残留');
+      const bentIso=await adb.clearAlbum('FAKE');
+      const bentList=await adb.shell('FAKE','cat '+quote(isoDir+'/.bluev-pending'));
+      const bentLines=String(bentList.stdout||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+      ok('待回收清单写进设备的每一行都是真路径（格式串没引号时 sh 会把 \\n 写成字面 n）',
+        bentIso.ok===true && bentIso.physicalPending.length===1
+        && bentLines.length>=1 && bentLines.every(l=>l.startsWith('/sdcard/')||l.startsWith('/storage/emulated/0/')));
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      const bentReclaim=await adb.clearAlbum('FAKE');
+      ok('清单写对之后：句柄一释放，物理残留真删、.nomedia 真撤（不留永久隐藏）',
+        bentReclaim.ok===true && bentReclaim.physicalPending.length===0
+        && ![...fakeAdb.__physicalMedia].some(p=>/清单写歪残留/.test(p))
+        && String((await adb.shell('FAKE','[ -f '+quote(isoDir+'/.nomedia')+' ] && echo EXISTS')).stdout||'').trim()!=='EXISTS');
+    }
+    // ========================================================================
     // ★★★ 2026-10-15 新增：**待回收清单那一笔没写进去**时，绝不能让那个目录永远隔离着。
     //   现场：隔离标记写成功了（相册里确实看不到旧素材），但紧接着的清单追加写被超时杀掉。
     //   设备端 `.bluev-pending` 于是不存在。旧写法 `读不到清单 ⇒ continue` 会让这条目录**每一轮**

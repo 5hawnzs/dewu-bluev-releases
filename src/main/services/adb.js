@@ -930,7 +930,7 @@ async function clearAlbum(serial, opts = {}) {
       rememberedPending(serial).add(file);
       // ★★ 待回收**清单**（写进设备端，不靠内存）：只记我们自己确认过是「残留素材」的路径。
       //   延后回收时**只删清单里的路径**，绝不遍历目录删 —— 清单是唯一的删除依据。
-      await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(target + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
+      await run(serial, "printf '%s\\n' " + quotePath(file) + ' >> ' + quotePath(target + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
       // ★★ 登记表落盘（见 albumStateFile）：用户「发完就关程序」是常态，只放内存里的话，
       //   下一次开程序时这条目录再也没人回收（`.nomedia` 永久留着、旧素材谁也不删）。
       persistAlbumState(serial);
@@ -1087,7 +1087,7 @@ async function clearAlbum(serial, opts = {}) {
             const p = toMediaPath(h.file);
             rememberedPending(serial).add(p);
             physicalPending.add(p);
-            await run(serial, 'printf %s\\n ' + quotePath(p) + ' >> ' + quotePath(dir + '/' + PENDING_LIST),
+            await run(serial, "printf '%s\\n' " + quotePath(p) + ' >> ' + quotePath(dir + '/' + PENDING_LIST),
               { timeout: 8000, allowKilled: true });
           }
           persistAlbumState(serial);

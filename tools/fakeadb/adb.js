@@ -98,6 +98,10 @@ function makeFakeAdb(dir) {
   //   回收时必须能区分「这条 .nomedia 是本工具写的」与「用户自己放的」——只有前者才允许撤。
   const isolateMarks = new Map();     // '/sdcard/.../.bluev-isolated' -> 'BLUEV_ISOLATED_V1'
   const pendingLists = new Map();     // '/sdcard/.../.bluev-pending' -> [要回收的路径]
+  // ★★★ 2026-10-15：旧写法（`printf %s\n`，格式串没引号）在真机上写出来的那一行乱码。
+  //   单独放一份：它是「根本不是路径」的文本，不能当成正常清单混进 pendingLists
+  //   （混进去会让「读到乱码 ⇒ 不敢回收」这类用例的现场失真）。
+  const brokenPending = new Map();
   // ★★★ 2026-10-15：**文件被进程持着句柄**的现场（rich 的真实现场，必须能长期摆出来）。
   //   取值 = 匹配片段（'*' = 所有媒体文件）。语义与真机一致：
   //     · `rm -f <它>`      → 失败 `Text file busy`（句柄不释放就一直失败）；
@@ -124,6 +128,7 @@ function makeFakeAdb(dir) {
     //   否则「设备端清单不存在」这个现场**永远摆不出来**：产品明明已经把清单删了，
     //   `cat .bluev-pending` 却还会回老内容 ⇒「清单丢了要用内存副本兜底」这条退回假绿。
     if (c.endsWith('/.bluev-pending')) pendingLists.delete(c);
+    if (c.endsWith('/.bluev-pending')) brokenPending.delete(c);
   };
   const managedRoot="/sdcard/Movies/BlueV";
   const managedNorm=p=>String(p).replace(/^\/storage\/emulated\/0\//,"/sdcard/");
@@ -466,10 +471,20 @@ function makeFakeAdb(dir) {
       isolateMarks.set(isolateWrite[2].replace(/^\/storage\/emulated\/0\//, '/sdcard/'), isolateWrite[1]);
       return okOut('');
     }
-    // ★ 待回收清单：`printf %s\n '<路径>' >> '<目录>/.bluev-pending'`（真机 sh 的追加写语义）。
+    // ★ 待回收清单：`printf '%s\n' '<路径>' >> '<目录>/.bluev-pending'`（真机 sh 的追加写语义）。
     //   回收只删清单里记着的路径，绝不遍历目录删 —— 夹具必须真的把它记下来，
     //   否则「会不会误删用户同目录里的其它文件」这条在回归里测不出来。
-    const pendingAppend = cmd.match(/^printf %s\\n '([^']*)' >> '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
+    //
+    // ★★★ 2026-10-15 真机实测（务必别再放宽成「两种写法都算对」）：
+    //   格式串**必须带单引号**。不带引号时 `printf %s\n '<路径>'` 里的 `\n` 会被设备 sh
+    //   当成「反斜杠 + 字母 n」处理，于是整份清单写成一行 `<路径>n<路径>n…`：
+    //     · 实测字节（本机 MuMu，`od -c` 可复算）：`/ s d c a r d / a . m p 4 n`，`wc -l` = 0；
+    //     · 后果不是「少记一条」而是**写到清单里的根本不是真路径** ⇒ `rm -f` 删一个不存在的名字
+    //       照样「成功」⇒ 回收会以为删干净了，把 `.nomedia` 撤掉，而真残留还在盘上
+    //       —— 下一次扫描就把它扫回相册（正是本项目最不能出的那种静默错误）。
+    //   所以这里**故意**照真机语义实现这条错写法：写成一行没有换行的字面 `n` 文本，
+    //   产品一旦退回旧写法，读到的东西就不再是路径，对应用例会立刻红。
+    const pendingAppend = cmd.match(/^printf '%s\\n' '([^']*)' >> '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
     if (pendingAppend) {
       // ★★★ 2026-10-15：现场开关 PENDING_APPEND_KILLED = 这一笔追加写**被宿主超时杀掉**。
       //   真机语义：命令没跑完 ⇒ **设备端清单里就是没有这一条**（不是「写了但读不到」）。
@@ -483,9 +498,19 @@ function makeFakeAdb(dir) {
       pendingLists.set(key, cur);
       return okOut('');
     }
+    // 旧写法（格式串没引号）：真机上写进去的是一行 `<路径>n<路径>n…`（没有换行）。
+    // 夹具照这个语义回一份「根本不是路径」的内容，让回归能抓住退回旧写法的改动。
+    const pendingAppendUnquoted = cmd.match(/^printf %s\\n '([^']*)' >> '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
+    if (pendingAppendUnquoted) {
+      const key = pendingAppendUnquoted[2].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      brokenPending.set(key, (brokenPending.get(key) || '')
+        + pendingAppendUnquoted[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/') + 'n');
+      return okOut('');
+    }
     const pendingRead = cmd.match(/^cat '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-pending)'$/);
     if (pendingRead) {
       const key = pendingRead[1].replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      if (brokenPending.has(key)) return okOut(brokenPending.get(key));
       return pendingLists.has(key)
         ? okOut(pendingLists.get(key).join('\n') + '\n')
         : fail('cat: ' + pendingRead[1] + ': No such file or directory');
