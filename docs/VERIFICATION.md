@@ -6,10 +6,74 @@
 安装包 `dist-1.1.2-build1508/得物蓝V素材发布工具-1.1.2-x64-win.exe`，262823305 字节；
 包内 `src` 与工作树逐字节一致（包内 `tools/`、`docs/` 条目均为 0），
 构建号 `2026101508` 三处一致（源码 / asar 内 / 产物文件名）。
-源码、GitHub `main` 与分支 `codex/mediastore-complete` 都是 `e545529`；线上更新清单与网页下载入口都已指向 1508。
+交付提交 `e545529`（构建 2026101508）在 GitHub `main` 与分支 `codex/mediastore-complete` 上；
+其后的验证记录提交（`5065b35` … `7867b99`）与本节同样已推送，两条分支始终同指针。
+线上更新清单与网页下载入口都已指向 1508。
 本机已装副本 `D:\bluevbeta\dewu-bluev-publisher\resources\app.asar` 已覆盖为本包
 （sha256 `027d7d89…`，与源包逐字节一致），启动冒烟正常。
 `remoteP0Verified` 保持 `false`：rich 需装 1508 后由用户手跑验收。
+
+## 2026-10-15（第十二轮·续）rich 真机实战：占用→隔离→发布不中断→释放后自动回收
+
+这一节回答的是 1508 交付时唯一还没关闭的问题：**「隔离」与「延后回收」这两条分支在 rich 上到底跑没跑过。**
+此前它们只在本机 MuMu 探针与回归夹具里验过（见上一节末尾的边界说明），rich 现场没出现过。
+
+### 实机构造（用户在 rich 的 PowerShell 里执行，命令由我给出）
+
+在 rich 的设备上用产品自己的老路径造一个真实占用：`screencap` 出一个真 PNG 并 `scan_file` 进库，
+再起一个持句柄进程 `exec 3<$f` 顶住它，直到出现 `.codex-release` 才退出。
+
+```
+/sdcard/DCIM/Camera/bluev_hold/busy_probe.png   （843550 字节，device 侧 23:21 落盘）
+HOLDER_STARTED → rm -f 实测 Text file busy（占用现场成立）
+```
+
+### 第一次回读（占用中，任务发布之后）
+
+| 设备侧事实 | 实测值 |
+|---|---|
+| `bluev_hold/.bluev-isolated` | 17 字节 = `BLUEV_ISOLATED_V1` |
+| `bluev_hold/.bluev-pending` | 58 字节 = `/storage/emulated/0/DCIM/Camera/bluev_hold/busy_probe.png` |
+| `bluev_hold/.nomedia` | 存在（42 字节，见下面的边界说明） |
+| `content query` 抓 `bluev_hold` | **0 条** |
+| `%APPDATA%\dewu-bluev-publisher\album-isolation.json` | 已记下该目录与待回收文件 |
+
+三个标记文件只有「文件被句柄占住、`rm` 报 busy」时才会写，普通清理根本不会出现 ⇒
+**占用→隔离这条分支在 rich 上真实成立了**；同期发布照常成功（`publish_log`：`79.7s`）。
+
+### 第二次回读（释放句柄 + 再发一条之后）
+
+| 设备侧事实 | 实测值 |
+|---|---|
+| `bluev_hold` 目录内容 | 只剩探针脚本自己的 `.codex-release`（0 字节） |
+| `busy_probe.png` | **已真删** |
+| `.nomedia` / `.bluev-isolated` / `.bluev-pending` | **三个全部撤掉** |
+| `content query` 抓 `bluev_hold` | **0 条** |
+
+⇒ 物理残留不是「隔离了就永远占着」：句柄一释放，下一次清理真的把文件删掉、把三个标记撤干净。
+
+### 云端对照（同一条链两端的两次真实发布）
+
+| 时间（UTC） | 设备 | 条目 | 结果 | 耗时 | 构建 |
+|---|---|---|---|---|---|
+| 2026-10-15T15:23:42Z | rich | `S26393005+咖色+1` | 发布成功 | 79.7s | 1.1.2/2026101508 |
+| 2026-10-15T16:19:09Z | rich | `D26187013+蓝色+1` | 发布成功 | 78.2s | 1.1.2/2026101508 |
+
+两条的「清理相册」阶段 `ok=true`，阶段里都出现过 `rc=139 / out=empty` 的回执——正是「回执未知」
+那一类：新版不拿它直接判失败，继续走隔离 + 删索引 + 全盘重扫，重扫干净才放行。
+`run_log` 最近 **400 行**里 rich 占 400 行，其中相册相关 36 行，**`ok=false` 为 0 条**
+（10-14 那批是 `rm:busy` 连续失败）。
+
+### 边界（如实说明，不藏）
+
+- **`.nomedia` 是 42 字节、内容是它自己的目录路径**，而产品所有 `.nomedia` 写入都是 `touch`（应为 0 字节）。
+  我把本机已装的 1508 `app.asar` 整包扫了一遍：全部 `.nomedia` 写入点只有 `touch`，
+  唯一的 `printf … > …` 是写 `.bluev-isolated` 那条（`; touch <dir>/.nomedia`），不存在把路径写进 `.nomedia` 的代码路径。
+  ⇒ 这 42 字节**来源不明，但不是产品写进去的**（很可能是探针脚本/手工命令留下的）。
+  功能上不影响判据：隔离与回收都按**文件名是否存在**判断，从不读 `.nomedia` 的内容；这次回收也把该文件一并撤掉了。
+  这一条按「未知」记录，不推断成任何一条已知通路。
+- rich 上遗留一个我造的探针文件 `bluev_hold/.codex-release`（0 字节、无副作用），未代用户删除。
+- 本轮结论只覆盖「占用→隔离→释放→回收」这条链在 rich 上的成立；**连续多批**在 rich 上仍待日常发布自然累积观察。
 
 ## 2026-10-15（第十二轮）2026101508：待回收清单写进设备的根本错误
 
