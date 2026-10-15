@@ -742,6 +742,15 @@ async function clearAlbum(serial, opts = {}) {
   // 隔离目录里的待回收清单：只记**我们自己确认是残留素材**的路径，回收时只删这些路径。
   const PENDING_LIST = '.bluev-pending';
   const isolatedDirs = new Set();
+  // ★★★ 2026-10-15：**本轮真正确认过**的隔离目录（写过 `.nomedia` 且回读存在）。
+  //   为什么必须与 `isolatedDirs` 分开：后者会接回落盘登记（上一次运行留下的），
+  //   那是「**曾经**隔离过」的线索，不等于「**现在**仍然有效」—— 真机上标记可能已经
+  //   被撤掉/写失败。退避重试的「可收敛」判断必须只看本轮确认过的，否则会把
+  //   「注定失败」的现场当成可收敛，白跑满 4 轮退避（用户口径：失败不许比成功还久）。
+  const isolationVerified = new Set();
+  // ★ «文件自己所在的目录 → 实际隔离在哪个目录»。`.nomedia` 写不进自己那一层时会往上层退，
+  //   缓存的是**结果**（否则同一个目录里的第二条又要从自己那层开始重试一遍）。
+  const isolatedAt = new Map();
   const isolationFailed = new Set();
   const physicalPending = new Set();
   // 物理文件**已经删掉**、但库记录还在（`content delete` 回执滞后/只回 Deleted 0）的路径。
@@ -754,7 +763,28 @@ async function clearAlbum(serial, opts = {}) {
   //   绝不允许为了"清干净"把用户的新素材一起隐藏。
   const NOMEDIA_FORBIDDEN = ['/storage/emulated/0/Movies/BlueV', '/storage/emulated/0/Movies',
     '/storage/emulated/0/DCIM', '/storage/emulated/0'];
-  const nomediaForbidden = d => NOMEDIA_FORBIDDEN.some(g => d === g || g.startsWith(d + '/'));
+  // ★★★ 2026-10-15：这个「禁止清单」现在**按本条素材实际落地目录推导**，不再是一张写死的表。
+  //   为什么必须改：写死的表把 `DCIM` 也禁了（历史原因：1405 及更早版本把**新素材**推到
+  //   `/sdcard/DCIM/Camera`，那时在 `DCIM` 写 `.nomedia` 会把本条新素材一起藏掉）。
+  //   但本版本的新素材落在 `/sdcard/Movies/BlueV/batch_*`，`DCIM` 跟它已经没有关系了 ——
+  //   于是那条禁令把「DCIM 里的历史残留」整类变成**必然停批**，一点办法都没有。
+  //   现在的判据：**只有「本条素材落地目录本身 + 它的每一层上层」禁止**（那才会藏掉本条新素材）。
+  //   真机实测（本机 MuMu，可复算）：上层目录的 `.nomedia` 同样能让子孙目录里的文件不再被
+  //   扫进相册，`.nomedia` 撤掉后记录立刻回来。
+  const forbiddenDirs = (() => {
+    // ★ 默认值取**产品真实的落地目录**（`managedalbum.ROOT`）——单一事实来源，不写死第二份。
+    //   延迟 require 是为了避免加载期的循环依赖（managedalbum 加载时就要 adb）。
+    let raw = String(opts.landingRoot || '').trim();
+    if (!raw) { try { raw = require('./managedalbum').ROOT; } catch (e) { raw = ''; } }
+    const root = raw.replace(/\/+$/, '');
+    // 落地目录缺失或不在共享存储里 ⇒ 退回保守表（宁可少写标记，也不乱写）。
+    if (!root.startsWith('/storage/emulated/0/')) return NOMEDIA_FORBIDDEN.slice();
+    const list = [root];
+    for (let d = path.posix.dirname(root); d.startsWith('/storage/emulated/0'); d = path.posix.dirname(d)) list.push(d);
+    if (!list.includes('/storage/emulated/0')) list.push('/storage/emulated/0');
+    return list;
+  })();
+  const nomediaForbidden = d => forbiddenDirs.some(g => d === g || g.startsWith(d + '/'));
   const quotePath = p => "'" + String(p).replace(/'/g, "'\\''") + "'";
   let recoveryAttempts = 0;
   const failedDelete = (result, operation, file) => {
@@ -826,41 +856,97 @@ async function clearAlbum(serial, opts = {}) {
   const isolateFile = async file => {
     const dir = path.posix.dirname(file);
     if (!dir.startsWith('/storage/emulated/0/')) return { ok: false, dir, why: '目录不在共享存储内' };
-    // ★ 不允许往「本批新素材要落地的目录」或其祖先写标记：那样会把新素材一起藏掉，
-    //   发布就再也选不到图 —— 这种情况下只能如实停批（见 NOMEDIA_FORBIDDEN 的说明）。
-    if (nomediaForbidden(dir)) {
-      return { ok: false, dir, why: '这个目录是素材落地区或它的上层（' + dir + '），写 .nomedia 会把本条要发的新素材一起隐藏' };
-    }
-    if (isolatedDirs.has(dir)) return { ok: true, dir, cached: true };
+    // 允许往「本批新素材要落地的目录」或其**上层**写标记：那会把本条新素材一起藏掉，
+    //   发布就再也选不到图 —— 这种目录只能如实停批（见 forbiddenDirs 的说明）。
+    const allowed = d => !nomediaForbidden(d) && d.startsWith('/storage/emulated/0');
+    const cached = isolatedAt.get(dir);
+    if (cached) return { ok: true, dir: cached, cached: true };
     if (isolationFailed.has(dir)) return { ok: false, dir, why: '这个目录已经写过一次没成功' };
-    const mark = dir + '/' + ISOLATE_MARK;
-    const nm = dir + '/.nomedia';
-    // 归属标记写不写得上**不影响**相册判据（下面仍以复查为准），所以失败不在这里抛。
-    // ★★★ 2026-10-15：这三条全是**与相册判据无关的写类命令**，必须允许被超时杀掉后如实继续 ——
-    //   若让 killed 全局中止本条，就会出现「隔离标记其实已经写上、索引却还没删，相册里仍看得见它」
-    //   的假失败（本条被记成失败，而下一条还要再清一遍）。真正判据由后面的四表重扫说了算。
-    await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(mark), { timeout: 8000, allowKilled: true });
-    const touched = await run(serial, 'touch ' + quotePath(nm), { timeout: 8000, allowKilled: true });
-    const back = await run(serial, '[ -f ' + quotePath(nm) + ' ] && echo EXISTS', { timeout: 8000, allowKilled: true });
-    const ok = touched.ok && back.ok && String(back.stdout || '').trim() === 'EXISTS';
-    if (ok) {
-      isolatedDirs.add(dir);
+    /**
+     * ★★★ 2026-10-15：`.nomedia` 写不进**文件自己那一层**时，往**上层**试一次。
+     *
+     * 真机依据（本机 MuMu 复算，可复算）：`.nomedia` 写在**祖先目录**上，多数情况下同样能让
+     *   子孙目录里的文件不再被扫进相册（7 次实验里 6 次有效，1 次无效）。**所以这里只当它
+     *   「多一次机会」**，绝不当成隔离成功的证明 —— 判据永远只看后面那次全盘复查：
+     *   四表为空且重扫不复活才算干净，复活了就如实失败（哪怕标记确实写上去了）。
+     *
+     * 为什么这事真的会发生：设备上那一层可能就是写不进（只读/I-O 异常/权限），
+     *   而**上层是好的**。此时旧写法直接把整批停掉（`ALBUM_ISOLATION_FAILED`），
+     *   也就是用户看到的「清不干净目录」。往上退一层能真的把这条素材从相册里藏掉，
+     *   随后 `content delete` + 全盘重扫照样复核 —— 判据一分都没有放宽。
+     *
+     * 边界（一个字都不放宽）：**本条素材落地目录本身以及它的每一层上层**永远不许写 ——
+     *   那会把本条要发的新素材一起隐藏。撞上这个边界仍然如实停批。
+     */
+    const wanted = [];
+    for (let d = dir; d.startsWith('/storage/emulated/0') && d !== '/storage/emulated/0'; d = path.posix.dirname(d)) {
+      if (allowed(d)) wanted.push(d);
+    }
+    if (!wanted.length) {
+      return { ok: false, dir, why: '这个目录是素材落地区或它的上层（' + dir
+        + '），写 .nomedia 会把本条要发的新素材一起隐藏' };
+    }
+    let lastWhy = '';
+    for (const target of wanted) {
+      // 归属标记写不写得上**不影响**相册判据（下面仍以复查为准），所以失败不在这里抛。
+      // ★★★ 2026-10-15：这几条全是**与相册判据无关的写类命令**，必须允许被超时杀掉后如实继续 ——
+      //   若让 killed 全局中止本条，就会出现「隔离标记其实已经写上、索引却还没删，相册里仍看得见它」
+      //   的假失败（本条被记成失败，而下一条还要再清一遍）。真正判据由后面的四表重扫说了算。
+      const mark = target + '/' + ISOLATE_MARK;
+      const nm = target + '/.nomedia';
+      // ★★★ 2026-10-15：这几条写命令在真机上都会被宿主超时掐掉（`rc=?`），而「掐掉」既可能
+      //   表示没写、也可能表示已经写进去了。所以判据只能是**设备上的事实**（回读），
+      //   绝不能凭「回执没报错」或「回执被杀」去推。
+      //   归属标记在这里**不作判据**（写不上/回执丢了都不影响隔离成立）：它只是「这条
+      //   `.nomedia` 是我们写的」的凭据，回收前会补写并回读（见 reclaimIsolated）。
+      await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(mark), { timeout: 8000, allowKilled: true });
+      const touched = await run(serial, 'touch ' + quotePath(nm), { timeout: 8000, allowKilled: true });
+      const back = await run(serial, '[ -f ' + quotePath(nm) + ' ] && echo EXISTS', { timeout: 8000, allowKilled: true });
+      let nmThere = String(back.stdout || '').trim() === 'EXISTS';
+      let nmKnown = !back.killed;
+      // ★ H3：回读本身被执行环境掐掉（`rc=?`）时，**不能**就此判「隔离未确认」——
+      //   真机里这种只读命令有时已经跑完、只是回执没回来。既然设备上的事实可分，
+      //   就再独立看一眼：看得出来就按事实走；还是看不出来才如实当未确认。
+      if (back.killed) {
+        const again = await run(serial, 'if [ -f ' + quotePath(nm) + ' ]; then echo EXISTS; else echo MISSING; fi',
+          { timeout: 8000, allowKilled: true });
+        if (!again.killed && again.ok) {
+          nmThere = String(again.stdout || '').trim() === 'EXISTS';
+          nmKnown = true;
+        }
+      }
+      const ok = touched.ok && nmKnown && nmThere;
+      if (!ok) {
+        lastWhy = ((touched.stderr || back.stderr || touched.stdout || '无错误详情') + '').trim();
+        continue;      // 这一层写不进 ⇒ 往上退一层再试（真机实测：上层标记对子孙同样有效）
+      }
+      isolatedAt.set(dir, target);
+      isolatedDirs.add(target);
+      isolationVerified.add(target);
       // ★ 跨条记忆：下一条的 clearAlbum 会从这里接回这个目录去回收（见 rememberedDirs 的说明）。
-      rememberIsolated(dir);
+      rememberIsolated(target);
       // ★★ 与上面同一份跨条记忆：清单也记一份内存副本（见 pendingRegistry 的说明）——
       //   设备端那一笔是**追加写**，被杀掉就丢了；丢了就会「永远不敢回收、永远留着 .nomedia」。
       rememberedPending(serial).add(file);
       // ★★ 待回收**清单**（写进设备端，不靠内存）：只记我们自己确认过是「残留素材」的路径。
-      //   延后回收时**只删清单里的路径**，绝不遍历目录删 —— 否则会把用户同目录里的
-      //   私人照片/其它文件一起删掉（那是不可逆的损失）。
-      await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
+      //   延后回收时**只删清单里的路径**，绝不遍历目录删 —— 清单是唯一的删除依据。
+      await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(target + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
       // ★★ 登记表落盘（见 albumStateFile）：用户「发完就关程序」是常态，只放内存里的话，
       //   下一次开程序时这条目录再也没人回收（`.nomedia` 永久留着、旧素材谁也不删）。
       persistAlbumState(serial);
-      return { ok: true, dir, why: '' };
+      return { ok: true, dir: target, why: target === dir ? '' : '这一层写不进，已退到上层目录隔离：' + target };
     }
     isolationFailed.add(dir);
-    return { ok: false, dir, why: '隔离标记 .nomedia 写入或回读未确认（' + ((touched.stderr || back.stderr || touched.stdout || '无错误详情') + '').trim() + '）' };
+    return { ok: false, dir, why: '隔离标记 .nomedia 写入或回读未确认（' + (lastWhy || '无错误详情') + '）' };
+  };
+  /**
+   * 这条素材当前有没有被隔离覆盖（可能是它自己那一层，也可能是某个上层目录）。
+   * ★ 判据必须「覆盖」而不是「相等」：`.nomedia` 写在祖先目录上同样让子孙不可见。
+   */
+  const isolationCover = file => {
+    const p = toMediaPath(file);
+    for (const dir of isolatedDirs) if (p.startsWith(dir + '/')) return dir;
+    return '';
   };
   /**
    * 回收「已隔离、占用可能已释放」的目录里剩下的物理文件。
@@ -906,22 +992,52 @@ async function clearAlbum(serial, opts = {}) {
   const reclaimIsolated = async () => {
     for (const dir of [...isolatedDirs]) {
       try {
-        if (nomediaForbidden(dir)) { isolatedDirs.delete(dir); continue; }
-        // 不是本工具写的标记 ⇒ 一律不碰（用户自己放的 .nomedia 不能被我们撤掉）。
-        const owned = await run(serial, 'cat ' + quotePath(dir + '/' + ISOLATE_MARK), { timeout: 8000 });
+        // ★★★ 2026-10-15：这个分支**绝不能清登记**（同一个「忘掉」模式）：
+        //   落到这里说明这个目录是「本批素材落地目录或它的上层」——按判据说它不该被隔离。
+        //   但**万一**上面某一步真的把 `.nomedia` 写进去了（判据与写操作不是同一时刻的事实），
+        //   一清登记，那条标记就永远没人撤（那个目录以后一直不可见）。
+        //   正确做法：不动设备、**保留登记**、下轮再判（代价只有一次无副作用的检查）。
+        //   现在隔离目录与落地目录不可能重叠得这么死，但这条不变量必须自己站稳。
+        if (nomediaForbidden(dir)) continue;
+        /**
+         * ★★★ 2026-10-15（H1）：归属标记读不到时**先补写一次**，而不是立刻当成「不是我们的」。
+         *
+         * 真机依据：写入 `.bluev-isolated` 的那条 `printf` 会被宿主超时掐掉（`rc=?`）——
+         *   它**可能已经写进去了**，也可能没写。旧写法把「读不到」直接当成「这条 `.nomedia`
+         *   不是我们写的」⇒ `isolatedDirs.delete(dir)` + 清登记 ⇒ **那个目录再也无人回收**：
+         *   `.nomedia` 永久留着、旧素材谁也不删（rich 的 DCIM/Camera/bluev 正是这种目录）。
+         *   ⇒ 判定顺序改成：读不到 ⇒ **补写并回读**；补上了说明它本来就是我们的（或现在是），
+         *   继续回收；补不上（真写不进去）才如实保留隔离、下轮再试。
+         *   代价只有一次「补写 + 回读」，而收益是这条路**幂等可收敛**。
+         */
+        let owned = await run(serial, 'cat ' + quotePath(dir + '/' + ISOLATE_MARK), { timeout: 8000 });
         if (!owned.ok || String(owned.stdout || '').trim() !== ISOLATE_MARK_TEXT) {
           // ★★ 2026-10-15：这里必须分清「标记确实不在」和「标记读不出来」——
-          //   前者 = 这条 .nomedia 不是我们写的（或已经被回收掉），从此不再管它（绝不撤用户的标记）；
-          //   后者 = 设备 I/O 没给回话（超时/异常），**不能**当作「不是我们的」就忘掉 ——
-          //   一忘，这条 .nomedia 就永远留在用户相册目录里，再没人来撤。所以只有
-          //   「命令真的跑成功了、内容对不上」或「明确说文件不存在」才放手，其余一律留着下次再试。
+          //   后者 = 设备 I/O 没给回话（超时/异常），**不能**当作「不是我们的」就忘掉。
           const said = String(owned.stderr || '') + String(owned.stdout || '');
-          if (owned.ok || /No such file or directory/i.test(said)) {
+          const readable = !owned.killed && (owned.ok || /No such file or directory/i.test(said));
+          if (readable) {
+            // 读得到、但内容不对/文件不在 ⇒ 补写一次再回读（那一笔可能只是回执丢了）。
+            await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(dir + '/' + ISOLATE_MARK),
+              { timeout: 8000, allowKilled: true });
+            const recheck = await run(serial, 'cat ' + quotePath(dir + '/' + ISOLATE_MARK), { timeout: 8000 });
+            if (!recheck.ok || String(recheck.stdout || '').trim() !== ISOLATE_MARK_TEXT) {
+              // 补写也补不上 ⇒ 这条 `.nomedia` 确实不是我们的（或标记层写不进）。
+              // ★ 但**绝不清登记**：万一是「其实是我们写的、只是标记写不进去」，一清就永久留下
+              //   `.nomedia`（用户相册里那个目录以后一直不可见）。保留登记、下轮再试，代价只是
+              //   多一次无副作用的检查。
+              continue;
+            }
+            owned = recheck;
+          } else {
+            continue;   // 读不出来 ⇒ 一律留着下次再试
+          }
+          if (String(owned.stdout || '').trim() !== ISOLATE_MARK_TEXT) {
             isolatedDirs.delete(dir);
             rememberedDirs(serial).delete(dir);
             persistAlbumState(serial);
+            continue;
           }
-          continue;
         }
         // ★ 只删**清单里记着的那几个路径**，绝不遍历目录删：同目录里可能有用户的私人照片，
         //   遍历删除是不可逆的越界动作。
@@ -932,10 +1048,51 @@ async function clearAlbum(serial, opts = {}) {
         //   没有这一手就会出现：清单追加写被杀 → 清单读不到 → 这个目录永远不敢回收、
         //   `.nomedia` 永远撤不掉（用户自己的 DCIM/Camera 会被系统相册一直隐藏）。这是不可接受的副作用。
         //   两份合起来去重；两处都没有 ⇒ 才继续隔离（那时确实不知道要删谁，如实留标记）。
-        const fromMemory = [...rememberedPending(serial)].filter(p => path.posix.dirname(p) === dir);
+        // ★ 隔离可能写在**上层目录**上 ⇒ 待回收的素材是「在这个目录**下面**」，不再要求「直属这一层」。
+        const under = p => p === dir || p.startsWith(dir + '/');
+        const fromMemory = [...rememberedPending(serial)].filter(under);
         const files = [...new Set(fromDevice.concat(fromMemory))]
-          .filter(p => p.startsWith('/storage/emulated/0/') && path.posix.dirname(p) === dir && !/[\r\n\0]/.test(p));
-        if (!list.ok && !files.length) continue;   // 两处都不知道要删谁 ⇒ 不敢说回收完了，继续隔离，下次再试
+          .filter(p => p.startsWith('/storage/emulated/0/') && under(p) && !/[\r\n\0]/.test(p));
+        /**
+         * ★★★ 2026-10-15：两处都不知道要删谁时**不能拍脑袋**（既不能一律留着、也不能一律撤）：
+         *   · 一律留着 ⇒ 万一清单那一笔丢了，这条 `.nomedia` 永远没人撤 ——
+         *     那个目录（可能是 `DCIM/Camera` 这种相机默认落盘处）以后拍的照片一直不可见；
+         *   · 一律撤掉 ⇒ 万一其实还有残留，标记一撤、下一次扫描就把它扫回相册（假成功）。
+         *   ⇒ 用**事实**决定：先撤标记 + 全盘重扫一次。
+         *     · 没记录回来 ⇒ 里面确实没有会进相册的东西，登记清空、标记不再保留（幂等收口）；
+         *     · 有记录回来 ⇒ **立刻把标记写回去**（重新隐藏），把那几条也登进待回收清单，
+         *       本轮如实保留隔离、下轮继续 —— 绝不把残留留在相册里。
+         */
+        if (!files.length) {
+          const trial = await run(serial, 'rm -f ' + quotePath(dir + '/.nomedia') + ' ' + quotePath(dir + '/' + PENDING_LIST),
+            { timeout: 8000, allowKilled: true });
+          let reappeared = [];
+          if (!trial.killed || trial.ok) {
+            try { reappeared = (await scanAll()).filter(h => toMediaPath(h.file).startsWith(dir + '/')); }
+            catch (e) { reappeared = null; }
+          }
+          if (reappeared === null) continue;                 // 重扫没读成 ⇒ 不敢判断，保持隔离、下轮再试
+          if (!reappeared.length) {                          // 确实没有会进相册的东西
+            await run(serial, 'rm -f ' + quotePath(dir + '/' + ISOLATE_MARK), { timeout: 8000, allowKilled: true });
+            isolatedDirs.delete(dir);
+            for (const [k, v] of [...isolatedAt]) if (v === dir) isolatedAt.delete(k);
+            rememberedDirs(serial).delete(dir);
+            persistAlbumState(serial);
+            continue;
+          }
+          // 有残留回来了 ⇒ 立刻写回隔离标记，并把这几条登记进待回收清单，本轮保留隔离。
+          await run(serial, 'printf %s ' + quotePath(ISOLATE_MARK_TEXT) + ' > ' + quotePath(dir + '/' + ISOLATE_MARK)
+            + '; touch ' + quotePath(dir + '/.nomedia'), { timeout: 8000, allowKilled: true });
+          for (const h of reappeared) {
+            const p = toMediaPath(h.file);
+            rememberedPending(serial).add(p);
+            physicalPending.add(p);
+            await run(serial, 'printf %s\\n ' + quotePath(p) + ' >> ' + quotePath(dir + '/' + PENDING_LIST),
+              { timeout: 8000, allowKilled: true });
+          }
+          persistAlbumState(serial);
+          continue;
+        }
         let left = 0;
         for (const p of files) {
           // allowKilled：单条回收被超时杀掉只代表「这条没删成」，不该让整条清理路径中止。
@@ -950,7 +1107,18 @@ async function clearAlbum(serial, opts = {}) {
         // ★ 文件真的都删掉了，才允许撤掉标记；撤掉之后目录恢复普通目录。
         await run(serial, 'rm -f ' + quotePath(dir + '/.nomedia') + ' ' + quotePath(dir + '/' + ISOLATE_MARK)
           + ' ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
+        // ★★★ 2026-10-15（H2）：撤标记那条 `rm` 也会被宿主超时掐掉（`rc=?`）——
+        //   掐掉既可能是「撤掉了」也可能是「根本没执行」。**必须回读确认三个文件都不在了**，
+        //   才允许清登记；否则登记一清，这条 `.nomedia` 就永远没人撤（目录永久隐藏）。
+        const stillThere = await run(serial,
+          'if [ -e ' + quotePath(dir + '/.nomedia') + ' ] || [ -e ' + quotePath(dir + '/' + ISOLATE_MARK)
+          + ' ] || [ -e ' + quotePath(dir + '/' + PENDING_LIST) + ' ]; then echo EXISTS; else echo GONE; fi',
+          { timeout: 8000, allowKilled: true });
+        if (stillThere.killed || String(stillThere.stdout || '').trim() !== 'GONE') continue;
         isolatedDirs.delete(dir);
+        // ★ 缓存的是「这个目录被隔离在哪一层」。现在这一层的标记已经撤了 ⇒ 缓存必须一起失效，
+        //   否则同一次运行里后续的判定会以为它还被藏着（那是**假成功**：其实已经没人挡着重扫了）。
+        for (const [k, v] of [...isolatedAt]) if (v === dir) isolatedAt.delete(k);
         rememberedDirs(serial).delete(dir);
         persistAlbumState(serial);
       } catch (e) { /* 回收失败只记「没回收成」，绝不影响相册判据 */ }
@@ -1093,7 +1261,18 @@ async function clearAlbum(serial, opts = {}) {
         //   实测 5620ms / rm 发了 5 次 / 全盘重扫 5 次（成功那条只要 212ms）。
         //   隔离没确认时，物理文件删不掉 = 下一次扫描必然把记录扫回相册，等到句柄释放也没用
         //   （何况队列里下一条还在等）。此时立刻如实失败才是对的做法。
-        const isolationConfirmed = file => isolatedDirs.has(path.posix.dirname(toMediaPath(file)));
+        // ★★★ 2026-10-15：这里必须区分「隔离到底写在哪一层」——
+        //   · 写在**文件自己那一层** ⇒ 真机反复验证过：重扫不会复活 ⇒ 可收敛（再等等只差删文件）；
+        //   · 写在**上层**（`.nomedia` 写不进自己那层时退上去的）⇒ 实测 7 次里 1 次没挡住 ⇒
+        //     **不敢当作已确认**，于是它落到「不可收敛」那一支、立刻如实失败。
+        //   ★ 这不是收紧判据：收尾的全盘四表复查本来就会拦下它；这里只是别把时间烧在
+        //     明知可能无效的退避上（用户口径：失败的耗时绝不许比成功还长）。
+        const isolationConfirmed = file => {
+          const cover = isolationCover(file);
+          // ★ 只认**本轮亲自回读确认过**的那一层（见 isolationVerified 的说明）。
+          if (!cover || !isolationVerified.has(cover)) return false;
+          return !!cover && cover === path.posix.dirname(toMediaPath(file));
+        };
         // ★ 可收敛 = 再删一次有可能收敛。两种都算：
         //     · 物理文件已经没了（`physicalGone`）/ 根本不在待回收清单里 ⇒ 剩下的只是库记录滞后，
         //       再删一次记录就好（这类**必须**继续重试，否则相册里会留一条指向已删文件的僵尸记录）；
@@ -1142,7 +1321,8 @@ async function clearAlbum(serial, opts = {}) {
       //   ★ 放宽必须**只**针对「我们自己观测到句柄占用、因而进了待回收清单」的文件：
       //     那种文件留在盘上是已知且可解释的。若 rm 回执谎报成功（文件其实还在）而恰好有别的
       //     `.nomedia` 在，就绝不能放行 —— 那才是「以空库伪装清理成功」（有对应用例盯着）。
-      const isolated = isolatedDirs.has(parent) && physicalPending.has(file);
+      // ★ 同上：隔离可能写在**上层目录**（真机实测：上层 `.nomedia` 同样让子孙不可见）。
+      const isolated = !!isolationCover(file) && physicalPending.has(file);
       if(isolated)continue;
       const physical=await run(serial,`if [ -e ${quote(file)} ] || [ -L ${quote(file)} ]; then echo EXISTS; elif [ -d ${quote(parent)} ] && [ -r ${quote(parent)} ]; then echo MISSING; else echo UNKNOWN; fi`,{timeout:8000});
       if(!physical.ok||String(physical.stdout||'').trim()!=='MISSING') {

@@ -6,6 +6,18 @@ const mainimg = require('./mainimg');
 const managedalbum = require('./managedalbum');
 const store = require('../store');
 
+/**
+ * 本条素材**实际**要落地的目录（就是 `managedalbum.create` 要建的那个批次目录的位置）。
+ * clearAlbum 用它推算「哪些目录不许写 .nomedia」——只有这一条路径本身 + 它的上层会藏掉新素材。
+ * ★ 为什么不用写死的清单：本版本新素材落在 `/sdcard/Movies/BlueV/batch_*`，与 `DCIM` 无关，
+ *   而写死的清单把 `DCIM` 也禁了 ⇒ 历史残留落在那里时**必然停批**、一点办法都没有（rich 的现场）。
+ */
+function clearedLandingRoot(ctx) {
+  // ★ 单一事实来源：新素材落在 managedalbum.ROOT 下的**独立批次目录**里，
+  //   所以「不许写标记」的范围就是 ROOT 本身 + 它的上层。写死一份会跟实现漂开。
+  return adb.toMediaPath(managedalbum.ROOT);
+}
+
 async function prepare(serial, item, row, ctx = {}) {
   const log = ctx.log || (() => {});
   const conclude = ctx.conclude || log;
@@ -37,6 +49,10 @@ async function prepare(serial, item, row, ctx = {}) {
   if(retired.degraded)log(row.dir+'：上一批有 '+retired.degraded+' 个目录的隔离标记未确认，改由全盘相册复核兜底','warn');
   const cleared = await adb.clearAlbum(serial, {
     deadline: clearStarted + 90000, cancelled,
+    // ★ 本条素材**实际**要落地的目录（每批独立目录）—— clearAlbum 用它推算「哪些目录不许写
+    //   `.nomedia`」（只有这一条路径本身+它的上层会藏掉本条新素材）。不传就退回保守表。
+    //   旧行为把 `DCIM` 一类**跟本批无关**的目录也一律禁止 ⇒ 历史残留落在那里时必然停批。
+    landingRoot: clearedLandingRoot(ctx),
     // 退避间隔可注入；生产最多四轮，不把持续占用反复拖到总预算。
     // 回归覆盖短暂恢复与持续占用；清不掉就如实停止，绝不强停得物。
     busyRetryDelays: ctx.busyRetryDelays,

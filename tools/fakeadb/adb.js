@@ -457,6 +457,12 @@ function makeFakeAdb(dir) {
     //   NOMEDIA_DENIED = 设备 I/O 异常、标记写不进去：这时产品必须如实阻断，不许当作隔离成功。
     const isolateWrite = cmd.match(/^printf %s '([^']*)' > '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.bluev-isolated)'$/);
     if (isolateWrite) {
+      // ★★★ 2026-10-15：`MARK_WRITE_KILLED` = **这一笔归属标记丢了**（命令被宿主超时掐掉、
+      //   设备端**没有**这个文件）。真机里 `rc=?` 的命令就可能没跑完；这时 `.nomedia` 却是
+      //   刚写成功过的 ⇒ 目录被登记了、却读不到归属标记 —— 于是下一轮回收会把它误判成
+      //   「用户自己放的 .nomedia」而丢掉登记（目录从此再没人回收）。这个后果必须被测到。
+      if (fs.existsSync(path.join(dir, 'MARK_WRITE_KILLED')))
+        return { out: '', code: null, killed: true, signal: 'SIGTERM' };
       isolateMarks.set(isolateWrite[2].replace(/^\/storage\/emulated\/0\//, '/sdcard/'), isolateWrite[1]);
       return okOut('');
     }
@@ -493,8 +499,37 @@ function makeFakeAdb(dir) {
     if (nomediaTouch) {
       const isoDir = nomediaTouch[1].replace(/\/\.nomedia$/, '').replace(/^\/storage\/emulated\/0\//, '/sdcard/');
       if (fs.existsSync(path.join(dir, 'NOMEDIA_DENIED'))) return fail("touch: '" + nomediaTouch[1] + "': Read-only file system");
+      // ★★★ 2026-10-15：只对这一层「写不进」的现场。真机里这很常见：
+      //   **某一层**目录写不进（只读/I-O 异常），而它**上面那层是好的**。
+      //   产品应当往上退一层去写（真机实测：上层 .nomedia 对子孙同样有效），
+      //   而不是就此停批。夹具必须能制造「只有这一层坏」的现场，否则这条路测不出来。
+      if (fs.existsSync(path.join(dir, 'NOMEDIA_DENIED_LAYER'))
+        && fs.readFileSync(path.join(dir, 'NOMEDIA_DENIED_LAYER'), 'utf8').trim() === isoDir)
+        return fail("touch: '" + nomediaTouch[1] + "': Read-only file system");
       nomediaDirs.add(isoDir);
+      // ★★ 同上：`NOMEDIA_TOUCH_KILLED` = 标记**已经写到设备上**、回执被掐掉。
+      if (fs.existsSync(path.join(dir, 'NOMEDIA_TOUCH_KILLED')))
+        return { out: '', code: null, killed: true, signal: 'SIGTERM' };
       return okOut('');
+    }
+    // ★★ 回读被掐：**如实按设备上的真实状态作答**，只是把回执标记成 killed
+    //   （真机里 `[ -f ... ]` 这种只读命令被宿主超时掐掉时就是这个形态）。
+    const nomediaBackKilled = cmd.match(/^\[ -f '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.nomedia)' \] && echo EXISTS$/);
+    if (nomediaBackKilled && fs.existsSync(path.join(dir, 'NOMEDIA_BACK_KILLED'))) {
+      const isoDir = nomediaBackKilled[1].replace(/\/\.nomedia$/, '')
+        .replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      const exists = nomediaDirs.has(isoDir);
+      return { out: exists ? 'EXISTS\n' : '', code: null, killed: true, signal: 'SIGTERM' };
+    }
+    // ★★★ 2026-10-15：`.nomedia` 的**回读**也必须认「这一层写不进」。
+    //   写在别的层上的标记不属于这一层，所以这里只回这一层有没有文件。
+    const nomediaBack = cmd.match(/^\[ -f '((?:\/sdcard|\/storage\/emulated\/0)\/[^']*\/\.nomedia)' \] && echo EXISTS$/);
+    if (nomediaBack) {
+      const isoDir = nomediaBack[1].replace(/\/\.nomedia$/, '').replace(/^\/storage\/emulated\/0\//, '/sdcard/');
+      if (fs.existsSync(path.join(dir, 'NOMEDIA_DENIED_LAYER'))
+        && fs.readFileSync(path.join(dir, 'NOMEDIA_DENIED_LAYER'), 'utf8').trim() === isoDir)
+        return okOut('');
+      return nomediaDirs.has(isoDir) ? okOut('EXISTS\n') : okOut('');
     }
     if (/^rm -f /.test(cmd)) {
       // ★★★ 2026-10-15：rich 这种慢设备上**单条 rm 被宿主超时杀掉**（killed，不是 busy）也要能复现。
@@ -513,6 +548,17 @@ function makeFakeAdb(dir) {
       // rm -f 同时用于抓屏临时文件和带引号的媒体路径；不能只删除前者而把相册残留喂成假故障。
       const files = (cmd.slice(6).match(/'(?:[^']|'\\'')*'|\S+/g) || [])
         .map(p => p.startsWith("'") ? p.slice(1, -1).replace(/'\\''/g, "'") : p);
+      // ★★★ 2026-10-15：撤标记那条 `rm` 的两种「结果未知」语义，必须都测得到：
+      //   · `UNMARK_RM_KILLED`        = **真的执行了、回执被掐掉**（设备上标记已经没了）。
+      //     产品把它当「没撤成」而保留登记，代价只是下轮再来一次（幂等，正确方向）。
+      //   · `UNMARK_RM_KILLED_NOEXEC` = **没执行、回执被掐掉**（设备上标记还在）。
+      //     ★ 这才是危险方向：登记一清，标记就再没人撤 ⇒ 目录永久隐藏。
+      //   两者在真机上都是 `rc=?`（code 为 null），产品**无法**凭回执区分 —— 所以
+      //   唯一安全的写法是「撤了要回读确认」，而不是「回执没报错就当撤成了」。
+      const isUnmarkRm = files.some(p => /\/\.(?:nomedia|bluev-isolated|bluev-pending)$/.test(p));
+      const unmarkKilled = isUnmarkRm && fs.existsSync(path.join(dir, 'UNMARK_RM_KILLED'));
+      const unmarkNoExec = isUnmarkRm && fs.existsSync(path.join(dir, 'UNMARK_RM_KILLED_NOEXEC'));
+      if (unmarkNoExec) return { out: '', code: null, killed: true, signal: 'SIGTERM' };
       if (files.some(p => /^\/(?:sdcard|storage\/emulated\/0)\//.test(p) && /\.(?:mp4|jpg|png)$/i.test(p))
         && files.some(p => isHeld(p))) return fail('rm: Text file busy');
       if (files.some(p => /^\/(?:sdcard|storage\/emulated\/0)\//.test(p) && /\.(?:mp4|jpg|png)$/i.test(p))
@@ -527,6 +573,7 @@ function makeFakeAdb(dir) {
         for (let i = pushed.length - 1; i >= 0; i--) if (toCmp(pushed[i]) === toCmp(p)) pushed.splice(i, 1);
         for (const d of DIRS) dirs[d].files = dirs[d].files.filter(name => toCmp(d + '/' + name) !== toCmp(p));
       });
+      if (unmarkKilled) return { out: '', code: null, killed: true, signal: 'SIGTERM' };
       return okOut('');
     }
     // ★★ 2026-10-04 新增：专属相册目录的真实语义（清相册那一步用的就是这些命令）。
@@ -1271,6 +1318,11 @@ function makeFakeAdb(dir) {
   //       "锁已经没了"往下跑 ⇒ 该红的用例反而绿（典型串味假绿）。
   fakeExec.__appStops = appStops;
   fakeExec.__appReset = () => { appStopped = false; };
+  // ★★★ 2026-10-15：把「设备上还留着哪些 `.nomedia`」也挂出来。
+  //   为什么要暴露：退层隔离会把标记写在**上层目录**（例如 `DCIM/Camera`）——
+  //   如果那条标记没被撤掉，后面所有用例看到的是一个**被整体隐藏的现场**，
+  //   于是「明明该红的用例反而绿」或反之（串味）。断言侧必须能自己检查这条状态。
+  fakeExec.__nomediaDirs = nomediaDirs;
   // ★★★ 2026-10-05：把「设备上的文件时间 / 库里的 date_modified」也挂出来。
   //   断言侧要证明的是**设备上的事实**（那张图真的成了时间最新的），而不是「我们发过一条
   //   touch 命令」—— 手段发了但没生效（比如没重扫库），那样必须照样红。

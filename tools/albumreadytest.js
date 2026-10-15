@@ -29,6 +29,8 @@ const state = () => ({ items: [{ id: 'A', dir: itemDir, absDir: itemDir, files: 
   publish:{mode:'adb',device:'FAKE',rows:[{seq:1,id:'A',dir:'A',goods:1,result:''}]} });
 const calls = () => fs.readFileSync(path.join(dir, 'calls.log'), 'utf8').trim().split('\n');
 const ok = (label, value) => { assert(value, label); console.log('PASS ' + label); };
+// 设备端路径的单引号包裹（新用例里要直接发 shell 命令做回读）。
+const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 (async () => {
   const start = performance.now();
   const normal = await publisher.run(state());
@@ -542,6 +544,9 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
       const trace=calls().slice(start);
       const rmTries=trace.filter(c=>/rm -f .*隔离写不进残留/.test(c)).length;
       const scans=trace.filter(c=>/--method scan_volume/.test(c)).length;
+      // ★★★ 2026-10-15：本用例的现场是「**所有层**都写不进」（`NOMEDIA_DENIED` 是全局开关），
+      //   所以第二手段（退到上层）在这里也不成立 —— 仍然必须如实失败。
+      //   而「只禁这一层」时产品会退到上层并成功，那是**第二手段起作用**，另有专门用例盯着。
       ok('隔离标记写不进（不可收敛）时立刻如实失败：不把时间烧在无效退避上（rm 只发 1 次、不反复重扫）',
         stuck.ok===false && stuck.code==='ALBUM_ISOLATION_FAILED'
         && stuck.recoveryAttempts===0 && rmTries===1 && scans<=1
@@ -600,6 +605,197 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
         && !!saved['FAKE']);
       fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
       fs.unlinkSync(stateFile);
+      await adb.clearAlbum('FAKE');
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增（侧边审计实锤的第 1 条，H1）——**回执被掐掉 ≠ 命令没执行**：
+    //   真机上 `rc=?`（code 为 null）的命令**可能已经生效**。三种写法各自会留下永久副作用：
+    //     H1 归属标记 `.bluev-isolated` 那一笔其实写进去了、只是回执被杀 ⇒ 下一轮读不到标记，
+    //        被当成「用户自己放的 .nomedia」⇒ 清掉登记 ⇒ 那个目录再也无人回收
+    //        （`.nomedia` 永久留着、旧素材谁也不删）。
+    //     H2 撤标记的 `rm` 其实**没执行**、只是回执被杀 ⇒ 若已清登记，标记就永远留在设备上。
+    //     H3 `.nomedia` 回读被杀，但标记其实**已经写上** ⇒ 目录不进回收循环，残留永久留在盘上。
+    //   三条共同的后果就是侧边审计指出的「永久隐藏 + 假成功」。下面逐条钉住。
+    // ========================================================================
+    {
+      const target='/sdcard/DCIM/Camera/bluev/回执被杀残留.mp4';
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),target);
+      await adb.mediaScan('FAKE',target);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'回执被杀残留');
+      // 归属标记那一笔：真的写进去了、只是回执被掐
+      const markKill=path.join(dir,'MARK_WRITE_KILLED');
+      fs.writeFileSync(markKill,'1');
+      const first=await adb.clearAlbum('FAKE');
+      fs.unlinkSync(markKill);
+      // ★ 判据：`.nomedia` 在设备上确实存在 ⇒ 必须仍然被登记（不能被当成「用户自己放的」而丢掉）
+      const stateFile=path.join(tmp,'album-isolation.json');
+      const saved=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      const recorded=[...(saved.FAKE?.dirs||[])].some(d=>/DCIM\/Camera\/bluev$/.test(d));
+      ok('归属标记那笔写被杀（其实已生效）时目录仍被登记：不会被当成用户自己的标记而丢弃',
+        first.ok===true && first.physicalPending.length===1 && recorded);
+      // 占用释放 ⇒ 必须还能被回收（登记没丢才回收得掉）
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      const rec1=await adb.clearAlbum('FAKE');
+      ok('（H1 续）占用释放后照样回收：物理文件真删、登记清空（没有「永远没人管」的目录）',
+        rec1.ok===true && rec1.physicalPending.length===0
+        && ![...fakeAdb.__physicalMedia].some(p=>/回执被杀残留/.test(p)));
+      // ★ 收尾：本条用的目录里如果还留着 `.nomedia`，会**影响后面所有用例**（整个目录都被隐藏 ⇒
+      //   后面的用例看到的是「干净相册」，该红的反而绿）。这里如实断言它已经撤掉，并顺手清干净。
+      const nmAfter=String((await adb.shell('FAKE','[ -f ' + quote('/sdcard/DCIM/Camera/bluev/.nomedia')
+        + ' ] && echo EXISTS')).stdout||'').trim();
+      ok('（H1 收尾）用完的目录不留 `.nomedia`（否则后面所有用例都被它整体隐藏）',nmAfter!=='EXISTS');
+    }
+    {
+      // H2：撤标记的 rm **没执行**、只是回执被杀 ⇒ 绝不能清登记（否则标记永久留着）
+      const target='/sdcard/DCIM/Camera/bluev/撤标记被杀残留.mp4';
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),target);
+      await adb.mediaScan('FAKE',target);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'撤标记被杀残留');
+      const held=await adb.clearAlbum('FAKE');
+      const noexec=path.join(dir,'UNMARK_RM_KILLED_NOEXEC');
+      fs.writeFileSync(noexec,'1');
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      const tryReclaim=await adb.clearAlbum('FAKE');
+      fs.unlinkSync(noexec);
+      const still=String((await adb.shell('FAKE','[ -f ' + quote('/sdcard/DCIM/Camera/bluev/.bluev-isolated')
+        + ' ] && echo EXISTS')).stdout||'').trim();
+      const stateFile=path.join(tmp,'album-isolation.json');
+      const saved=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      const stillRecorded=[...(saved.FAKE?.dirs||[])].some(d=>/DCIM\/Camera\/bluev$/.test(d));
+      ok('撤标记的 rm 结果未知（其实没执行）时绝不清登记：标记还在就下轮继续撤（不留永久隐藏）',
+        held.ok===true && tryReclaim.ok===true
+        && (still!=='EXISTS' || stillRecorded));
+      // 下一轮（回执正常）必须真的把标记撤掉、登记清空
+      const fin=await adb.clearAlbum('FAKE');
+      const gone=String((await adb.shell('FAKE','[ -f ' + quote('/sdcard/DCIM/Camera/bluev/.nomedia')
+        + ' ] && echo EXISTS')).stdout||'').trim();
+      ok('（H2 续）回执恢复正常后标记真的被撤、登记清空（幂等重试收得回来）',
+        fin.ok===true && gone!=='EXISTS');
+    }
+    {
+      // H3：`.nomedia` 回读被杀，但标记其实已经写上 ⇒ 目录仍须进回收循环（否则残留永久留盘）
+      const target='/sdcard/DCIM/Camera/bluev/回读被杀残留.mp4';
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),target);
+      await adb.mediaScan('FAKE',target);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'回读被杀残留');
+      const backKill=path.join(dir,'NOMEDIA_BACK_KILLED');
+      fs.writeFileSync(backKill,'1');
+      const held=await adb.clearAlbum('FAKE');
+      fs.unlinkSync(backKill);
+      // 本条仍照常放行（判据是四表复查）—— 但目录必须已被登记，占用释放后回收得掉
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      const rec=await adb.clearAlbum('FAKE');
+      ok('（H3）.nomedia 回读被杀但标记已落盘时仍进回收循环：占用释放后物理文件被真删、标记真撤',
+        held.ok===true && rec.ok===true && rec.physicalPending.length===0
+        && ![...fakeAdb.__physicalMedia].some(p=>/回读被杀残留/.test(p))
+        && String((await adb.shell('FAKE','[ -f ' + quote('/sdcard/DCIM/Camera/bluev/.nomedia')
+          + ' ] && echo EXISTS')).stdout||'').trim()!=='EXISTS');
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增（**清不干净目录**的真正常见原因，rich 的老路径就属于这一类）：
+    //   残留素材落在 `DCIM/Camera/bluev`（1404 及更早版本的位置），而**那一层**目录
+    //   `.nomedia` 写不进（设备只读/IO 异常），但**它上面那层是好的**。
+    //   旧写法的行为：直接停批（ALBUM_ISOLATION_FAILED）—— 用户看到的就是「目录清不干净」，
+    //   而且这一类残留**根本没机会被清掉**。真机实测（本机 MuMu，可复算）：
+    //   `.nomedia` 写在**上层目录**上，同样能让子孙目录里的文件不再被扫进相册；
+    //   把上层那个标记删掉，记录立刻回来（开关确认就是它）。
+    //   新行为：退到上层去写（判据一分不放宽 —— 仍然必须「四表复查为空 + 重扫不复活」）。
+    // ========================================================================
+    {
+      const layer='/storage/emulated/0/DCIM/Camera/bluev';
+      const residual=layer+'/本层写不进残留.mp4';
+      /**
+       * ★★★ 2026-10-15：起点必须把**本用例涉及的整个子树**清成干净现场。
+       *   为什么：前面的用例（H1/H2/H3）都在 `DCIM/Camera/bluev` 上玩过隔离，
+       *   落盘登记表里可能还留着「这个目录被隔离过」的条目 —— 那会让本轮的
+       *   `reclaimIsolated` 先把整棵子树当成已隔离，于是新推的文件**根本没进库**
+       *   （`removed=0`、`pending=0`），断言的前提直接不成立（假红/假绿都可能）。
+       *   这里只清**本用例自己**的现场：撤掉这一层与上层的标记 + 把登记表里
+       *   这两条路径摘掉（不碰别的设备/别的目录的记录）。
+       */
+      await adb.shell('FAKE','rm -f ' + quote(layer+'/.nomedia') + ' ' + quote(layer+'/.bluev-isolated')
+        + ' ' + quote(layer+'/.bluev-pending') + ' ' + quote('/sdcard/DCIM/Camera/.nomedia')
+        + ' ' + quote('/sdcard/DCIM/Camera/.bluev-isolated') + ' ' + quote('/sdcard/DCIM/Camera/.bluev-pending'));
+      fakeAdb.__nomediaDirs.delete(layer.replace('/storage/emulated/0/','/sdcard/'));
+      fakeAdb.__nomediaDirs.delete('/sdcard/DCIM/Camera');
+      const stateF=path.join(tmp,'album-isolation.json');
+      if (fs.existsSync(stateF)) {
+        const j=JSON.parse(fs.readFileSync(stateF,'utf8'));
+        for (const k of Object.keys(j)) {
+          if (j[k]&&Array.isArray(j[k].dirs)) j[k].dirs=j[k].dirs.filter(d=>!/DCIM\/Camera$/.test(d));
+          if (j[k]&&Array.isArray(j[k].files)) j[k].files=j[k].files.filter(p=>!/本层写不进残留/.test(p));
+        }
+        fs.writeFileSync(stateF,JSON.stringify(j,null,2));
+      }
+      // 清完重载一次登记表（进程内存里那份也要跟着干净）
+      delete require.cache[require.resolve('../src/main/services/adb')];
+      const adbFresh=require('../src/main/services/adb');
+      adbFresh.setBundledAdbDir(path.resolve(__dirname,'..','vendor','adb'));
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),residual);
+      await adb.mediaScan('FAKE',residual);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'本层写不进残留');
+      // 只让**这一层**写不进（它上面那层是好的）
+      const denyLayer=path.join(dir,'NOMEDIA_DENIED_LAYER');
+      fs.writeFileSync(denyLayer,layer.replace('/storage/emulated/0/','/sdcard/'));
+      const degrade=await adbFresh.clearAlbum('FAKE');
+      const degradeNomedia=await adb.shell('FAKE','[ -f ' + quote(layer+'/.nomedia') + ' ] && echo EXISTS');
+      const upNomedia=await adb.shell('FAKE','[ -f ' + quote('/sdcard/DCIM/Camera/.nomedia') + ' ] && echo EXISTS');
+      // 相册判据：四表复查必须为空（这一条才是「相册里看不见它」），重扫不复活
+      await adb.mediaScan('FAKE','');
+      const lib=await adb.shell('FAKE','content query --uri content://media/external/video/media --projection _id:_data');
+      ok('本层 .nomedia 写不进时退到上层隔离：相册照样清空（不再停批），重扫不复活',
+        degrade.ok===true && degrade.physicalPending.length===1
+        && String(degradeNomedia.stdout||'').trim()!=='EXISTS'
+        && String(upNomedia.stdout||'').trim()==='EXISTS'
+        && !/本层写不进残留/.test(String(lib.stdout||'')));
+      // ① 占用释放 ⇒ 延后回收必须把物理文件真删掉，并且**撤掉上层那个标记**
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      fs.unlinkSync(denyLayer);
+      const reclaim=await adb.clearAlbum('FAKE');
+      ok('上层隔离的残留同样会被延后回收：物理文件真删、上层标记真撤（不留永久隐藏）',
+        reclaim.ok===true && reclaim.physicalPending.length===0
+        && ![...fakeAdb.__physicalMedia].some(p=>/本层写不进残留/.test(p)));
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增：**DCIM 里的历史残留必须能清**（rich 的现场就是这一类）。
+    //   旧行为把 `DCIM` 整层写死进禁止清单（历史原因：1405 把**新素材**推到 DCIM/Camera），
+    //   于是「DCIM 里的残留」永远只能停批。本版本新素材落在 Movies/BlueV/batch_*，
+    //   DCIM 与它无关 ⇒ 禁令必须**按本条实际落地目录推导**，只禁「落地目录本身 + 它的上层」。
+    // ========================================================================
+    {
+      const residual='/sdcard/DCIM/Camera/DCIM历史残留.mp4';
+      // ★ 同前：先清掉可能被上一条用例留在这里的上层标记（否则新文件根本进不了库）。
+      await adb.shell('FAKE','rm -f ' + quote('/sdcard/DCIM/Camera/.nomedia')
+        + ' ' + quote('/sdcard/DCIM/Camera/.bluev-isolated') + ' ' + quote('/sdcard/DCIM/Camera/.bluev-pending'));
+      fakeAdb.__nomediaDirs.delete('/sdcard/DCIM/Camera');
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),residual);
+      await adb.mediaScan('FAKE',residual);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'DCIM历史残留');
+      const r=await adb.clearAlbum('FAKE');
+      ok('DCIM 里的历史残留：占用中也能隔离并清出相册（旧写法在这里只会停批）',
+        r.ok===true && r.physicalPending.length===1
+        && r.code===undefined);
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      await adb.clearAlbum('FAKE');
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增（**安全边界，一个字都不许放宽**）：
+    //   新素材自己那个落地目录（`Movies/BlueV`）**以及它的上层**绝不许写 `.nomedia` ——
+    //   那会把本条要发的新素材一起藏掉，发布就再也选不到图。这条边界在「退层」之后
+    //   仍然必须成立（退层不能把范围一路退到落地目录上去）。
+    // ========================================================================
+    {
+      const residual='/sdcard/Movies/BlueV/落地目录残留.mp4';
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),residual);
+      await adb.mediaScan('FAKE',residual);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'落地目录残留');
+      const start=calls().length;
+      const r=await adb.clearAlbum('FAKE');
+      const trace=calls().slice(start);
+      ok('落地目录本身 + 它的上层绝不写 .nomedia：撞上边界时如实停批（不隐藏本条新素材）',
+        r.ok===false && r.code==='ALBUM_ISOLATION_FAILED'
+        && !trace.some(c=>/touch '(?:\/storage\/emulated\/0\/|\/sdcard\/)Movies(\/BlueV)?\/\.nomedia'/.test(c)));
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
       await adb.clearAlbum('FAKE');
     }
   }

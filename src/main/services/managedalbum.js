@@ -105,4 +105,6 @@ async function create(serial,ctx={}) {
   if(!mark.ok||!check.ok||String(check.stdout||'').trim()!==OWNER)throw new Error('新批素材目录归属标记未确认');
   return dir;
 }
-module.exports={retire,create};
+// ROOT 一并导出：调用方（albumready → clearAlbum）要用它推算「哪些目录不许写 .nomedia」
+// —— 本批新素材就落在 ROOT 下面，所以 ROOT 本身 + 它的上层会被禁。写死一份会漂。
+module.exports={retire,create,ROOT};
