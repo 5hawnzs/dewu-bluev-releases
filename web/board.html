@@ -92,6 +92,15 @@
   #tRows td:nth-child(2),#tRows td:nth-child(3),#tRows td:nth-child(4),#tTasks td:nth-child(2),#tTasks td:nth-child(3),#tTasks td:nth-child(4){white-space:normal}
   #tSku{min-width:760px}
   #tWho{min-width:720px}
+  #tUsers{min-width:1120px}
+  #tUsers td:nth-child(3){white-space:normal;overflow-wrap:anywhere}
+  #tUsers tr.hist>td{padding:0;background:#fafbfd;border-bottom:2px solid var(--line)}
+  .histbox{padding:12px 14px 6px}
+  .histbox .histacc{min-width:1080px}
+  .histbox tr.sumrow>td{background:#f2f6ff;border-bottom:1px solid var(--line)}
+  .histgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:12px}
+  .histgrid h4{font-size:12px;color:var(--tx2);margin:0 0 6px;font-weight:600}
+  .histgrid .tw,.histgrid>div{min-width:0;overflow-x:auto}
   #tAccounts,#tBrands{min-width:680px}
   #tApiUsage{min-width:980px}
   #panel-details .tw,#panel-tasks .tw{max-height:62vh;overflow:auto;overscroll-behavior:contain}
@@ -166,6 +175,7 @@
     <nav class="tabs" role="tablist" aria-label="看板内容">
       <button class="tab" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">总览</button>
       <button class="tab" id="tab-summary" role="tab" aria-selected="false" aria-controls="panel-summary" tabindex="-1">汇总</button>
+      <button class="tab" id="tab-users" role="tab" aria-selected="false" aria-controls="panel-users" tabindex="-1">用户概览</button>
       <button class="tab" id="tab-details" role="tab" aria-selected="false" aria-controls="panel-details" tabindex="-1">发布明细</button>
       <button class="tab" id="tab-usage" role="tab" aria-selected="false" aria-controls="panel-usage" tabindex="-1">AI 用量</button>
       <button class="tab" id="tab-tasks" role="tab" aria-selected="false" aria-controls="panel-tasks" tabindex="-1">任务记录</button>
@@ -205,6 +215,23 @@
     </div>
     <div class="card"><h2>账号汇总</h2><div class="tw"><table id="tAccounts"></table></div></div>
     <div class="card"><h2>品牌汇总</h2><div class="tw"><table id="tBrands"></table></div></div>
+    </section>
+
+    <section class="tab-panel" id="panel-users" role="tabpanel" aria-labelledby="tab-users" tabindex="0" hidden>
+    <div class="card">
+      <h2>用户概览（一台设备一行 · 一台设备登录过多个账号也只占一行）</h2>
+      <div class="rowbtns">
+        <span class="hint" id="usersMeta">—</span>
+        <button id="btnExportAll">导出全部设备 Excel</button>
+      </div>
+      <p class="hint">点每行右侧的「展开」看<strong>设备汇总行</strong>与<strong>这台设备登录过的每个账号</strong>，以及版本历史、按天活跃、按款发布次数。
+        机型/构建号取自任务日志的诊断摘要，读不到就显示 <b>—</b>（未知不等于空值）。
+        本页<b>不跟随</b>上方的时间 / 只看机器 / 执行人 / 品牌筛选 —— 跟着筛选走只会剩下自己那一行，看不到设备全貌。</p>
+      <p class="hint"><b>在线</b> = 最近 10 分钟内有上报（执行端默认每 30 秒上行一次）；程序闲着不发任务时不上报，
+        所以显示「离线」也可能只是当时没在跑，不代表程序关着。<b>最近登录</b>来自账号库的真实登录时间，与「最近上报」不是一回事。</p>
+      <p class="hint err" id="userNotice" hidden></p>
+      <div class="tw"><table id="tUsers"></table></div>
+    </div>
     </section>
 
     <section class="tab-panel" id="panel-details" role="tabpanel" aria-labelledby="tab-details" tabindex="0" hidden>
@@ -248,6 +275,9 @@ const $ = s => document.querySelector(s);
 const LS = 'bluev-board';
 let sb = null, timer = null, rows = [], taskRows = [], dupFold = 0, taskLoadError = '', adminSession = null;
 const LS_SESSION = 'bluev-board-session';
+
+/* ★★ 用户概览的状态：账号库的「最近登录」要单独取一次（管理员 RPC），取不到就整列显示 —，绝不猜。 */
+let accountLogins = null, accountLoginError = '';
 
 /* 会话落盘：以前只存在内存变量里，刷新页面或一次网络抖动就退回登录页。
    现在把 token 存到本机，刷新后自动恢复；只有服务器**明确**判定失效才清除。 */
@@ -415,14 +445,48 @@ async function load(){
   const raw = data || [];
   rows = dedupe(raw);
   dupFold = raw.length - rows.length;
-  taskRows = tasks || [];
+  // ★ 两张表的行打上来源标记：用户概览要分开算「发布」与「运行任务」，
+  //   靠字段名猜（有没有 task_type）在字段增删后会悄悄算错，标记是显式的。
+  rows.forEach(r => { r.__src = 'pub'; });
+  taskRows = (tasks || []).map(r => Object.assign({}, r, { __src: 'run' }));
   taskLoadError = taskError ? String(taskError.message || taskError) : '';
   conn('ok', `已连接 · 发布 ${rows.length} 条 · 任务 ${taskRows.length} 条`);
   $('#main').hidden = false;
+  await loadLoginTimes(session);
+  if(adminSession !== session) return;
   render();
   } catch(error){
     if(adminSession === session) conn('bad','读取失败，请刷新重试');
   } finally { loading = false; $('#btnRefresh').disabled = false; }
+}
+
+/**
+ * 「最近登录」= 账号库里**真实的登录时间**（bluev_auth_admin → list_users → lastLoginAt）。
+ * ★ 只有管理员 RPC 能读到它；读不到（权限/网络/接口变更）就整列显示 — 并在页面顶部如实说明，
+ *   绝不用「最近上报时间」冒充登录时间 —— 那两件事不是一回事。
+ * ★ 登录时间与设备是**按登录名**关联的：设备上报里带的是当前那个账号的用户名。
+ */
+async function loadLoginTimes(session){
+  try{
+    const { data, error } = await sb.rpc('bluev_auth_admin', { p_token: session.token, p_action: 'list_users', p_payload: {} });
+    if(adminSession !== session) return;
+    if(error || !data || data.ok !== true || !Array.isArray(data.users)) {
+      accountLogins = null;
+      accountLoginError = String((error && error.message) || (data && data.error) || '接口没有返回 users 列表');
+      return;
+    }
+    const map = new Map();
+    for(const u of data.users){
+      const t = Date.parse(u.lastLoginAt || '');
+      if(u.username && Number.isFinite(t)) map.set(String(u.username).toLowerCase(), t);
+    }
+    accountLogins = map;
+    accountLoginError = '';
+  }catch(e){
+    if(adminSession !== session) return;
+    accountLogins = null;
+    accountLoginError = String(e && e.message || e);
+  }
 }
 
 function filtered(){
@@ -467,6 +531,423 @@ function filteredTasks(){
     && (!m || mkey(r) === m)
     && (!u || ukey(r) === u)
     && (!b || brandName(r) === b));
+}
+
+/* ============================ 用户概览 ============================
+   ★ 一行 = 一台设备（按**机器名**合并；同一台机换过机器标识不会裂成两行）。
+   ★★ 数字口径与首页一致：任务数 / 成功数只算**真实发布结果**。模拟、探针、取消、未执行
+      不进这两个数字，但它们仍出现在「历史 → 按天」里（另计）—— 不藏，也不冒充发布。
+   ★ 本页**不跟随**上方的时间 / 机器 / 执行人 / 品牌筛选：它是设备总览，
+      跟着筛选走只会剩下自己那一行，反而看不到全貌（页面文案里写清楚了）。
+   ★★ 机型：云端目前**没有**这个字段（执行端还没上报），一律显示「—」，
+      绝不拿机器名冒充机型，也不填一个看着像型号的假值。
+   ------------------------------------------------------------------ */
+const ONLINE_MS = 10 * 60 * 1000;   // 最近 10 分钟内有上报 ⇒ 在线（执行端默认每 30 秒上行一次）
+const USERS_DAYS = 30;              // 历史面板与导出里的「按天」最多回溯这么多天
+const USERS_ROWS = 200;             // 主表最多显示多少台设备（按最近上报倒序，超出的在导出里仍在）
+
+/** 诊断摘要里的 版本/构建号：`[诊断 1.1.2/2026101508 步骤=…]`。读不到返回 null（不猜）。 */
+function buildOf(text){
+  const m = /诊断\s*([0-9A-Za-z.+-]{1,24})\/(\d{1,12})/.exec(String(text || ''));
+  return m ? { version: m[1], build: m[2] } : null;
+}
+const dayKey = ts => { const d = new Date(Number(ts)); const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; };
+
+let userDetails = new Map(), openDevice = '';
+
+/**
+ * 把一批上报折成一行统计。设备级与账号级**共用这一段**：口径只有一处，
+ * 汇总行与它下面每个账号行的「任务数 / 成功数 / 版本」才不会各算各的。
+ * @param {string} key   显示名（设备名，或「设备 · 账号」）
+ * @param {number} ids   这台机器出现过的机器标识个数（>1 ⇒ 界面明示已合并）
+ * @param {Array}  all   publish_log + run_log 的行
+ */
+function makeAccount(key, ids, all, first, last){
+  const pub = all.filter(r => r.__src === 'pub');
+  const task = all.filter(r => r.__src === 'run');
+
+  // 真实发布统计（口径与首页一致）
+  const real = pub.filter(isReal);
+  const okN = real.filter(r => r.result === '发布成功').length;
+
+  // 版本历史：来自任务日志的诊断摘要（发布阶段记录每条都带版本/构建号）
+  const builds = new Map();
+  for(const r of task){
+    const b = buildOf(r.error_summary); if(!b) continue;
+    const k = b.version + '/' + b.build;
+    let rec = builds.get(k);
+    if(!rec){ rec = { version:b.version, build:b.build, first:0, last:0, count:0 }; builds.set(k, rec); }
+    const t = Number(r.ts) || 0;
+    if(t && (!rec.first || t < rec.first)) rec.first = t;
+    if(t > rec.last) rec.last = t;
+    rec.count++;
+  }
+  const buildList = [...builds.values()].sort((a,b) => Number(b.build) - Number(a.build));
+
+  // 按天：发布（真实/非真实分开）+ 运行任务条数
+  const days = new Map();
+  const dayOf = t => { let o = days.get(dayKey(t));
+    if(!o){ o = { day:dayKey(t), pub:0, ok:0, bad:0, other:0, task:0 }; days.set(dayKey(t), o); }
+    return o; };
+  for(const r of pub){
+    const t = Number(r.ts) || 0; if(!t) continue;
+    const o = dayOf(t); o.pub++;
+    if(r.result === '发布成功') o.ok++;
+    else if(r.result === '失败') o.bad++;
+    else o.other++;
+  }
+  for(const r of task){ const t = Number(r.ts) || 0; if(!t) continue; dayOf(t).task++; }
+  const dayList = [...days.values()].sort((a,b) => b.day.localeCompare(a.day)).slice(0, USERS_DAYS);
+
+  // 按款：真实发布的条数与成败
+  const skus = new Map();
+  for(const r of real){
+    const k = (r.dir_name || '').trim() || '（未标款）';
+    let o = skus.get(k); if(!o){ o = { sku:k, n:0, ok:0, bad:0 }; skus.set(k, o); }
+    o.n++; if(r.result === '发布成功') o.ok++; else o.bad++;
+  }
+  const skuList = [...skus.values()].sort((a,b) => b.n - a.n).slice(0, 50);
+
+  // 品牌：取最近一次带了品牌的上报（换过品牌时显示当前那个）
+  const brandRow = all.filter(r => brandName(r)).sort((a,b) => (Number(b.ts)||0) - (Number(a.ts)||0))[0] || null;
+
+  return {
+    key, ids, first: first || 0, last: last || 0,
+    real: real.length, ok: okN, bad: real.length - okN,
+    builds: buildList, current: buildList[0] || null, dayList, skuList,
+    brand: brandRow ? brandName(brandRow) : '',
+    online: !!(last && Date.now() - last <= ONLINE_MS)
+  };
+}
+
+/**
+ * ★★ 一台设备 = 一行。设备上登录过**多个账号**时，主表**不裂成多行**：
+ *    · 主行的账号列显示「账号数」，发布统计是设备合计；
+ *    · 展开后第一行是**设备汇总行**（各账号相加，另有「跨账号」一栏装没标账号的记录），
+ *      下面每个账号各占一行，可单独看历史与导出。
+ *    为什么这么定：同一个人常常一晚换两三个账号发，按账号裂行会让人以为多了几台设备。
+ */
+function deviceOverview(){
+  const devs = new Map();
+  const ensure = key => { let d = devs.get(key);
+    if(!d){ d = { key, ids:new Set(), pub:[], task:[] }; devs.set(key, d); }
+    return d; };
+  for(const r of rows) ensure(mkey(r)).pub.push(r);
+  for(const r of taskRows) ensure(mkey(r)).task.push(r);
+
+  const out = [];
+  for(const d of devs.values()){
+    const all = d.pub.concat(d.task);
+    let first = 0, last = 0;
+    for(const r of all){
+      const t = Number(r.ts) || 0;
+      if(t){ if(!first || t < first) first = t; if(t > last) last = t; }
+      if(r.machine_id) d.ids.add(String(r.machine_id));
+    }
+    // 账号分组：用「账号标识」分（同一账号换过显示名不会裂开）
+    const groups = new Map();
+    for(const r of all){
+      const k = ukey(r) || '\u0000';            // 没标账号的（老版本 / 探针）单列一组
+      let g = groups.get(k);
+      if(!g){ g = { key:k, rows:[], first:0, last:0 }; groups.set(k, g); }
+      g.rows.push(r);
+      const t = Number(r.ts) || 0;
+      if(t){ if(!g.first || t < g.first) g.first = t; if(t > g.last) g.last = t; }
+    }
+    const accounts = [...groups.values()].map(g => {
+      const named = g.key !== '\u0000';
+      const sample = g.rows.filter(r => ukey(r)).sort((a,b) => (Number(b.ts)||0) - (Number(a.ts)||0))[0] || null;
+      const label = named ? ([sample && sample.display_name, sample && sample.username].filter(Boolean).join(' / ') || g.key) : '（未标账号）';
+      const acc = makeAccount(d.key + ' · ' + label, d.ids.size, g.rows, g.first, g.last);
+      acc.username = named ? String((sample && sample.username) || '') : '';
+      acc.label = label;
+      acc.named = named;
+      acc.loginAt = (named && accountLogins && acc.username) ? (accountLogins.get(acc.username.toLowerCase()) || 0) : 0;
+      acc.rows = g.rows.length;
+      return acc;
+    }).sort((a,b) => b.last - a.last);
+
+    out.push(Object.assign(makeAccount(d.key, d.ids.size, all, first, last), {
+      accounts,
+      // ★ 「几个账号」只数**有登录名**的账号：老版本 / 探针那种没标账号的记录会单独列成
+      //   「（未标账号）」一行，但不该让它把「1 个账号」说成「2 个账号」。
+      namedAccounts: accounts.filter(a => a.named).length,
+      loginAt: accounts.reduce((n, a) => Math.max(n, a.loginAt || 0), 0)
+    }));
+  }
+  return out.sort((a,b) => b.last - a.last);
+}
+
+/* ---- 导出 Excel：自带的极小 XLSX 生成器（零第三方依赖、不走 CDN，和看板其它部分同一原则） ---- */
+const CRC_TABLE = (() => { const t = new Uint32Array(256);
+  for(let n = 0; n < 256; n++){ let c = n; for(let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t; })();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+const utf8 = s => new TextEncoder().encode(s);
+const xmlEsc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+function colName(i){ let s = ''; i++; while(i > 0){ const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - m - 1) / 26; } return s; }
+
+/** 只存不压（method 0）的 ZIP：xlsx 就是个 zip，这样不必引入任何压缩库。 */
+function zipStore(entries){
+  const parts = [], central = [];
+  let offset = 0;
+  const dosTime = 0, dosDate = ((2026 - 1980) << 9) | (1 << 5) | 1;   // 固定时间戳：同样的数据导出，字节稳定
+  for(const e of entries){
+    const name = utf8(e.name), data = e.data, crc = crc32(data);
+    const local = new Uint8Array(30 + name.length), lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true); lv.setUint16(6, 0, true); lv.setUint16(8, 0, true);
+    lv.setUint16(10, dosTime, true); lv.setUint16(12, dosDate, true);
+    lv.setUint32(14, crc, true); lv.setUint32(18, data.length, true); lv.setUint32(22, data.length, true);
+    lv.setUint16(26, name.length, true); lv.setUint16(28, 0, true);
+    local.set(name, 30);
+    parts.push(local, data);
+    const cd = new Uint8Array(46 + name.length), cv = new DataView(cd.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0, true); cv.setUint16(10, 0, true);
+    cv.setUint16(12, dosTime, true); cv.setUint16(14, dosDate, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, data.length, true); cv.setUint32(24, data.length, true);
+    cv.setUint16(28, name.length, true);
+    cv.setUint32(42, offset, true);
+    cd.set(name, 46);
+    central.push(cd);
+    offset += local.length + data.length;
+  }
+  const centralSize = central.reduce((n, c) => n + c.length, 0);
+  const end = new Uint8Array(22), ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, entries.length, true); ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, centralSize, true); ev.setUint32(16, offset, true);
+  const all = parts.concat(central, [end]);
+  const total = all.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for(const c of all){ out.set(c, at); at += c.length; }
+  return out;
+}
+
+const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+function sheetXml(rows){
+  const body = rows.map((row, ri) => `<row r="${ri + 1}">` + row.map((v, ci) => {
+    const ref = colName(ci) + (ri + 1);
+    const num = typeof v === 'number' && Number.isFinite(v);
+    const text = v == null ? '' : String(v);
+    if(!num && text === '') return '';
+    return num ? `<c r="${ref}"><v>${v}</v></c>`
+      : `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(text)}</t></is></c>`;
+  }).join('') + '</row>').join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<worksheet xmlns="${NS_MAIN}"><sheetData>${body}</sheetData></worksheet>`;
+}
+/** sheets: [{name, rows:[[...]]}] → xlsx 字节。表名会被 Excel 的规则清洗（31 字、禁用字符、去重）。 */
+function xlsxBytes(sheets){
+  const used = new Set(), defs = sheets.map((s, i) => {
+    const base = String(s.name || ('表' + (i + 1))).replace(/[\[\]\*\/\\\?:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || ('表' + (i + 1));
+    let name = base, k = 2;
+    while(used.has(name)){ const tail = '(' + (k++) + ')'; name = base.slice(0, 31 - tail.length) + tail; }
+    used.add(name);
+    return { name, rows: Array.isArray(s.rows) ? s.rows : [] };
+  });
+  const sheetTags = defs.map((d, i) => `<sheet name="${xmlEsc(d.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('');
+  const relTags = defs.map((d, i) => `<Relationship Id="rId${i + 1}" Type="${NS_REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
+    + `<Relationship Id="rId${defs.length + 1}" Type="${NS_REL}/styles" Target="styles.xml"/>`;
+  const overrides = defs.map((d, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
+  const entries = [
+    { name: '[Content_Types].xml', data: utf8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+      + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`
+      + `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>`
+      + `<Default Extension="xml" ContentType="application/xml"/>`
+      + `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>`
+      + overrides
+      + `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`) },
+    { name: '_rels/.rels', data: utf8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+      + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
+      + `<Relationship Id="rId1" Type="${NS_REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`) },
+    { name: 'xl/workbook.xml', data: utf8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+      + `<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_REL}"><sheets>${sheetTags}</sheets></workbook>`) },
+    { name: 'xl/_rels/workbook.xml.rels', data: utf8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+      + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relTags}</Relationships>`) },
+    { name: 'xl/styles.xml', data: utf8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+      + `<styleSheet xmlns="${NS_MAIN}"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>`
+      + `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>`
+      + `<borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
+      + `<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>`
+      + `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`) }
+  ];
+  defs.forEach((d, i) => entries.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: utf8(sheetXml(d.rows)) }));
+  return zipStore(entries);
+}
+function stamp(){
+  const d = new Date(), p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+function downloadXlsx(filename, sheets){
+  try{
+    const blob = new Blob([xlsxBytes(sheets)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }catch(e){
+    const el = $('#userNotice');
+    el.hidden = false;
+    el.textContent = '导出 Excel 失败：' + String(e && e.message || e);
+  }
+}
+
+/* 两张表都用同一份「设备明细」：主表给人看，导出给人算。 */
+const DEVICE_MODEL_UNKNOWN = '—';
+const ACCOUNT_SEP = ' · ';          // 设备名与账号名的连接符（导出表里也用它，方便再拆开）
+
+/** 一行设备 / 一个账号 → 导出用的那一行。设备汇总行与账号行格式一致，便于在 Excel 里直接透视。 */
+function sheetRow(d, kind){
+  return [kind === 'device' ? '设备汇总' : '账号', d.key, d.ids, DEVICE_MODEL_UNKNOWN,
+    kind === 'device' ? (d.namedAccounts + ' 个') : d.label, d.username || '', d.brand,
+    d.first ? fmt(d.first) : '', d.last ? fmt(d.last) : '', d.loginAt ? fmt(d.loginAt) : '',
+    d.real, d.ok, d.bad, d.current ? d.current.version : '', d.current ? String(d.current.build) : '',
+    d.online ? '在线' : (d.last ? '离线' : '从未上报')];
+}
+const SHEET_HEAD = ['行类型', '设备 / 账号', '机器标识个数', '机型', '账号数 / 账号', '登录名', '品牌',
+  '首次上报', '最近上报', '最近登录（账号库）', '任务数', '成功数', '失败数', '版本号', '构建号', '在线'];
+
+/** 主表：一台设备一行；展开后第一行是设备汇总，下面是各账号。 */
+function userSheetRows(list){
+  const out = [SHEET_HEAD];
+  for(const d of list){
+    out.push(sheetRow(d, 'device'));
+    for(const a of d.accounts) out.push(sheetRow(a, 'account'));
+  }
+  return out;
+}
+/** 单台设备：汇总行 + 每个账号一行 + 版本历史 + 按天 + 按款。 */
+function deviceSheets(d){
+  const main = [SHEET_HEAD, sheetRow(d, 'device')].concat(d.accounts.map(a => sheetRow(a, 'account')));
+  const ver = [['行', '设备 / 账号', '版本号', '构建号', '首次出现', '最近出现', '记录条数']];
+  const day = [['行', '设备 / 账号', '日期', '发布条数', '成功', '失败', '其它结果', '运行任务条数']];
+  const sku = [['行', '设备 / 账号', '款', '条数', '成功', '失败']];
+  for(const part of [d].concat(d.accounts)){
+    const kind = part === d ? '设备汇总' : '账号';
+    for(const b of part.builds) ver.push([kind, part.key, b.version, String(b.build), b.first ? fmt(b.first) : '', b.last ? fmt(b.last) : '', b.count]);
+    for(const o of part.dayList) day.push([kind, part.key, o.day, o.pub, o.ok, o.bad, o.other, o.task]);
+    for(const o of part.skuList) sku.push([kind, part.key, o.sku, o.n, o.ok, o.bad]);
+  }
+  return [{ name: '设备与账号', rows: main }, { name: '版本历史', rows: ver },
+    { name: '按天明细', rows: day }, { name: '按款次数', rows: sku }];
+}
+/** 全部设备：设备汇总 + 每台每个账号 + 所有历史，一次导出。 */
+function allSheets(list){
+  const ver = [['行', '设备 / 账号', '版本号', '构建号', '首次出现', '最近出现', '记录条数']];
+  const day = [['行', '设备 / 账号', '日期', '发布条数', '成功', '失败', '其它结果', '运行任务条数']];
+  const acct = [['设备', '账号', '登录名', '品牌', '首次上报', '最近上报', '最近登录（账号库）', '任务数', '成功数', '失败数', '版本号', '构建号', '在线']];
+  for(const d of list) for(const a of d.accounts) acct.push([d.key, a.label, a.username || '', a.brand,
+    a.first ? fmt(a.first) : '', a.last ? fmt(a.last) : '', a.loginAt ? fmt(a.loginAt) : '',
+    a.real, a.ok, a.bad, a.current ? a.current.version : '', a.current ? String(a.current.build) : '',
+    a.online ? '在线' : (a.last ? '离线' : '从未上报')]);
+  for(const d of list) for(const part of [d].concat(d.accounts)){
+    const kind = part === d ? '设备汇总' : '账号';
+    for(const b of part.builds) ver.push([kind, part.key, b.version, String(b.build), b.first ? fmt(b.first) : '', b.last ? fmt(b.last) : '', b.count]);
+    for(const o of part.dayList) day.push([kind, part.key, o.day, o.pub, o.ok, o.bad, o.other, o.task]);
+  }
+  return [{ name: '设备概览', rows: userSheetRows(list) }, { name: '账号明细', rows: acct },
+    { name: '版本历史', rows: ver }, { name: '按天明细', rows: day }];
+}
+
+function chipOnline(d){
+  if(d.online) return '<span class="chip ok">在线</span>';
+  if(!d.last) return '<span class="chip wait" title="云端还没有这台设备的记录">—</span>';
+  return `<span class="chip wait" title="最近一次上报：${esc(fmt(d.last))}">离线</span>`;
+}
+const verCell = d => d.current ? `${esc(d.current.version)}<span class="hint">（${esc(d.current.build)}）</span>` : '<span class="hint">—</span>';
+const loginCell = t => `<td class="hint" title="来自账号库的真实登录时间（bluev_auth_admin → lastLoginAt）">${t ? fmt(t) : '—'}</td>`;
+
+/** 展开区：设备汇总行 + 每个账号一行 + 版本/按天/按款三张历史表。 */
+function historyHtml(d){
+  const acctRows = d.accounts.map(a => `<tr>
+      <td>账号</td><td>${esc(a.label)}</td><td class="hint">—</td>
+      <td>${esc(a.brand) || '<span class="hint">—</span>'}</td>
+      <td class="hint">${a.first ? fmt(a.first) : '—'}</td><td class="hint">${a.last ? fmt(a.last) : '—'}</td>
+      ${loginCell(a.loginAt)}
+      <td class="num">${a.real}</td><td class="num">${a.ok}</td><td class="num">${a.bad}</td>
+      <td>${verCell(a)}</td><td>${chipOnline(a)}</td></tr>`).join('');
+  const ver = d.builds.length
+    ? d.builds.map(b => `<tr><td>${esc(b.version)}<span class="hint">（${esc(b.build)}）</span></td><td class="hint">${fmt(b.first)}</td><td class="hint">${fmt(b.last)}</td><td class="num">${b.count}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="hint">没有诊断记录 —— 版本号只出现在发布阶段与失败记录里</td></tr>';
+  const days = d.dayList.length
+    ? d.dayList.map(o => `<tr><td class="hint">${esc(o.day)}</td><td class="num">${o.pub}</td><td class="num">${o.ok}</td><td class="num">${o.bad}</td><td class="num">${o.task}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="hint">没有记录</td></tr>';
+  const skus = d.skuList.length
+    ? d.skuList.map(o => `<tr><td>${esc(o.sku)}</td><td class="num">${o.n}</td><td class="num">${o.ok}</td><td class="num">${o.bad}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="hint">没有真实发布记录</td></tr>';
+  return `<div class="histbox">
+    <div class="rowbtns" style="margin-bottom:8px">
+      <b>${esc(d.key)} · 设备明细</b>
+      <button data-dev-export="${esc(d.key)}">导出这台设备的 Excel</button>
+      <span class="hint">设备上登录过的账号都在下面；版本来自诊断摘要。「按天」的发布条数含模拟/探针（另计），真实口径看成功/失败两列。</span>
+    </div>
+    <table class="histacc"><thead><tr><th>行</th><th>账号</th><th>机型</th><th>品牌</th><th>首次上报</th><th>最近上报</th>
+      <th>最近登录</th><th class="num">任务数</th><th class="num">成功数</th><th class="num">失败数</th><th>版本号（构建号）</th><th>在线</th></tr></thead>
+      <tbody>
+        <tr class="sumrow"><td><b>设备汇总</b></td><td><b>${d.namedAccounts} 个账号</b>${d.accounts.length > d.namedAccounts ? '<span class="hint">（另有未标账号的历史记录）</span>' : ''}</td><td class="hint">—</td>
+          <td>${esc(d.brand) || '<span class="hint">—</span>'}</td>
+          <td class="hint">${d.first ? fmt(d.first) : '—'}</td><td class="hint">${d.last ? fmt(d.last) : '—'}</td>
+          ${loginCell(d.loginAt)}
+          <td class="num"><b>${d.real}</b></td><td class="num"><b>${d.ok}</b></td><td class="num"><b>${d.bad}</b></td>
+          <td>${verCell(d)}</td><td>${chipOnline(d)}</td></tr>
+        ${acctRows || '<tr><td colspan="12" class="hint">这台设备的上报都没标账号。</td></tr>'}
+      </tbody></table>
+    <div class="histgrid">
+      <div><h4>版本历史</h4>
+        <table><thead><tr><th>版本号（构建号）</th><th>首次出现</th><th>最近出现</th><th class="num">条数</th></tr></thead><tbody>${ver}</tbody></table></div>
+      <div><h4>活跃历史（按天，最近 ${USERS_DAYS} 天）</h4>
+        <table><thead><tr><th>日期</th><th class="num">发布</th><th class="num">成功</th><th class="num">失败</th><th class="num">任务</th></tr></thead><tbody>${days}</tbody></table></div>
+      <div><h4>发布次数（按款，前 50）</h4>
+        <table><thead><tr><th>款</th><th class="num">条数</th><th class="num">成功</th><th class="num">失败</th></tr></thead><tbody>${skus}</tbody></table></div>
+    </div>
+  </div>`;
+}
+function renderUsers(){
+  const list = deviceOverview();
+  userDetails = new Map(list.map(d => [d.key, d]));
+  const online = list.filter(d => d.online).length;
+  const multi = list.filter(d => d.namedAccounts > 1).length;
+  $('#usersMeta').textContent = `${list.length} 台设备 · 在线 ${online} 台 · ${multi} 台登录过多个账号 · 页面刷新于 ${fmt(Date.now())}`;
+  const shown = list.slice(0, USERS_ROWS);
+  $('#tUsers').innerHTML = '<thead><tr><th>设备</th><th>机型</th><th>账号</th><th>品牌</th><th>首次上报</th><th>最近上报</th>'
+    + '<th>最近登录</th><th class="num">任务数</th><th class="num">成功数</th><th>版本号（构建号）</th><th>在线</th><th>历史</th></tr></thead><tbody>'
+    + (shown.map(d => {
+      const hist = openDevice === d.key ? `<tr class="hist"><td colspan="12">${historyHtml(d)}</td></tr>` : '';
+      const named = d.accounts.filter(a => a.named);
+      // 主行只列**有登录名**的账号；没标账号的历史记录在展开区单列一行，不混进账号清单。
+      const accCell = named.length > 1
+        ? `<b>${named.length} 个账号</b><div class="hint">${esc(named.map(a => a.label).join('、'))}</div>`
+        : (esc(named.length ? named[0].label : '') || '<span class="hint">—</span>');
+      return `<tr>
+        <td>${esc(d.key)}${d.ids > 1 ? ` <span class="hint">（含 ${d.ids} 个机器标识，已合并）</span>` : ''}</td>
+        <td class="hint" title="云端暂无机型字段：执行端还没上报，这里不填猜测值">—</td>
+        <td>${accCell}</td>
+        <td>${esc(d.brand) || '<span class="hint">—</span>'}</td>
+        <td class="hint">${d.first ? fmt(d.first) : '—'}</td>
+        <td class="hint">${d.last ? fmt(d.last) : '—'}</td>
+        ${loginCell(d.loginAt)}
+        <td class="num">${d.real}</td>
+        <td class="num">${d.ok}</td>
+        <td>${verCell(d)}</td>
+        <td>${chipOnline(d)}</td>
+        <td><button data-hist="${esc(d.key)}">${openDevice === d.key ? '收起' : '展开'}</button></td>
+      </tr>${hist}`;
+    }).join('') || '<tr><td colspan="12" class="hint">云端还没有任何设备上报记录。</td></tr>')
+    + '</tbody>';
+  const notice = accountLogins ? '' : (accountLoginError
+    ? `账号库的登录时间读不到（${accountLoginError}）——「最近登录」整列显示 —，其余列不受影响。`
+    : '');
+  $('#userNotice').hidden = !notice;
+  $('#userNotice').textContent = notice;
 }
 
 const brandKey = r => String(r.brand_id || r.brand_name || '');
@@ -612,6 +1093,7 @@ function render(){
     (feedback.map(r => `<tr><td>${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td><td>${esc(r.display_name||r.username||'')}</td><td>${esc(r.batch_no||'')}</td><td style="white-space:pre-wrap;min-width:300px;overflow-wrap:anywhere">${esc(r.error_summary||'')}</td></tr>`).join('') || '<tr><td colspan="5" class="hint">暂无反馈</td></tr>') + '</tbody>';
   const tasks = filteredTasks().filter(r => r.task_type !== 'feedback.submit');
   renderApiUsage(tasks);
+  renderUsers();
   $('#tTasks').innerHTML = `<thead><tr><th>时间</th><th>机器</th><th>执行人</th><th>品牌</th><th>任务</th><th>批次</th><th>状态</th><th class="num">耗时</th><th>错误摘要</th></tr></thead><tbody>` +
     (tasks.slice(0,200).map(r => `<tr>
       <td class="hint">${fmt(r.ts)}</td><td>${esc(r.machine_name||r.machine_id||'')}</td>
@@ -740,6 +1222,28 @@ $('.tabs').addEventListener('keydown', event => {
 });
 $('#prevRows').onclick = () => { detailPage = Math.max(0, detailPage - 1); render(); };
 $('#nextRows').onclick = () => { detailPage++; render(); };
+
+/* 用户概览的交互：展开/收起（一次只开一台，避免页面被撑得看不到底）、导出。
+   全部走事件委托 —— 表格内容是每次 render 重写的，逐个绑事件会失效。 */
+$('#tUsers').addEventListener('click', event => {
+  const hist = event.target.closest('[data-hist]');
+  if(hist){
+    const key = hist.getAttribute('data-hist');
+    openDevice = openDevice === key ? '' : key;
+    renderUsers();
+    return;
+  }
+  const dev = event.target.closest('[data-dev-export]');
+  if(dev){
+    const key = dev.getAttribute('data-dev-export'), d = userDetails.get(key);
+    if(d) downloadXlsx(`蓝V设备-${key}-${stamp()}.xlsx`, deviceSheets(d));
+  }
+});
+$('#btnExportAll').onclick = () => {
+  const list = [...userDetails.values()];
+  if(!list.length){ $('#userNotice').hidden = false; $('#userNotice').textContent = '还没有设备数据可导出。'; return; }
+  downloadXlsx(`蓝V用户概览-${stamp()}.xlsx`, allSheets(list));
+};
 ['#fMachine','#fUser','#fBrand','#fDays','#goal'].forEach(s => { $(s).onchange = render; $('#goal').oninput = render; });
 $('#auto').onchange = () => {
   clearInterval(timer); timer = null;
