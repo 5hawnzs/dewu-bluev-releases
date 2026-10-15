@@ -600,6 +600,92 @@ function rememberedPending(serial) {
 }
 
 /**
+ * ★★★ 2026-10-15：上面两份登记表**落到磁盘**，否则它们只在本次进程里有效。
+ *
+ * 为什么必须落盘（rich 现场每天都会发生，不是理论问题）：
+ *   用户的用法是「开程序 → 连发几条 → 关程序」。而「隔离成功、物理文件还没回收完」这个中间态
+ *   是**跨进程**存在的事实：`.nomedia` 已经写在设备上、旧素材还在设备磁盘上。
+ *   只放在进程内存里 ⇒ 下一次开程序时：
+ *     · 那条目录**再也没人来回收**：`.nomedia` 永远留着 —— 若目录是用户自己的
+ *       （`DCIM/Camera` 就是用户相机默认落盘处），他之后拍的、存的照片在系统相册里**一直看不见**；
+ *     · 待回收的旧素材永远躺在设备上，一条都没人删。
+ *   这与「不许留下长期副作用」直接冲突，所以登记表必须跨进程。
+ *
+ * 存放位置与 publish-history.json 同一处（`userData`），只记设备路径、不记任何凭据。
+ * ★ 边界（如实写在注释里）：写盘失败（只读盘等）时**静默降级**回旧行为（只在本次进程有效），
+ *   绝不因此让清理路径失败 —— 那份登记表是**尽力而为的回收线索**，不是相册判据。
+ */
+const ALBUM_STATE_NAME = 'album-isolation.json';
+/** 落盘位置（默认 userData 下那个文件）。探针/回归需要一个可注入的落点，所以留了 setter。 */
+let albumStateOverride = '';
+function albumStateFile() {
+  if (albumStateOverride) return albumStateOverride;
+  try {
+    const app = require('electron').app;
+    if (app && typeof app.getPath === 'function') return path.join(app.getPath('userData'), ALBUM_STATE_NAME);
+  } catch (e) { /* 非 Electron 环境（回归探针）：不落盘，退回进程内存 */ }
+  return '';
+}
+/**
+ * 指定登记表的落盘位置（只给探针/回归用；产品路径走 userData）。
+ * ★ 传入空串 = 退回默认位置。★ 传了路径就必须真的能写，否则继续静默降级。
+ */
+function setAlbumStateFile(p) { albumStateOverride = String(p == null ? '' : p).trim(); return albumStateOverride; }
+function readAlbumState() {
+  const f = albumStateFile();
+  if (!f) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch (e) { return {}; }
+}
+let albumStateLoaded = false;
+/** 启动后第一次用到时把上一次运行留下的登记表接回来（只做一次）。 */
+function loadAlbumStateOnce() {
+  if (albumStateLoaded) return;
+  albumStateLoaded = true;
+  const state = readAlbumState();
+  for (const [serial, v] of Object.entries(state)) {
+    const dirs = v && Array.isArray(v.dirs) ? v.dirs : [];
+    const files = v && Array.isArray(v.files) ? v.files : [];
+    for (const d of dirs) {
+      const dir = toMediaPath(String(d || '').trim().replace(/\/+$/, ''));
+      if (dir.startsWith('/storage/emulated/0/')) rememberedDirs(serial).add(dir);
+    }
+    for (const p of files) {
+      const file = toMediaPath(String(p || '').trim());
+      if (file.startsWith('/storage/emulated/0/')) rememberedPending(serial).add(file);
+    }
+  }
+}
+/**
+ * 把当前两份登记表写盘。
+ *
+ * ★ 必须**读-改-写**，不能整份覆盖：本程序允许同时开多个实例（每台设备一个），
+ *   而每个实例只认识**自己那台设备**的登记表。整份覆盖会让后写的实例把别的实例的登记抹掉
+ *   ⇒ 那台设备的隔离目录又变回「没人回收」。所以只覆盖**本机这台设备**那一条，其余原样保留。
+ * ★ 残留竞态（如实写下，不假装没有）：读-改-写之间没有文件锁，两个实例**恰好同时**写
+ *   （毫秒级窗口）时，后写的那个仍可能把前一个刚加的那条覆盖掉。代价是那台设备的隔离目录
+ *   这一次没被回收（`.nomedia` 多留一轮，不影响发布正确性）；同一个设备的发布本来就是串行的，
+ *   跨设备同时写只在这个毫秒窗口里撞得上。要用文件锁消除它，得引入锁文件与超时，
+ *   收益与复杂度不成比例 —— 先如实记在这里，真出现再换。
+ */
+function persistAlbumState(serial) {
+  const f = albumStateFile();
+  if (!f) return;
+  const out = readAlbumState();       // 先接别的实例写进去的那些设备
+  const dirs = rememberedDirs(serial), files = rememberedPending(serial);
+  if (dirs.size || files.size) out[serial] = { dirs: [...dirs], files: [...files] };
+  else delete out[serial];
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = f + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf8');
+    fs.renameSync(tmp, f);
+  } catch (e) { /* 只读盘等场景静默降级：登记表丢了只影响「下次回收」，不影响相册判据 */ }
+}
+
+/**
  * ★★★ 2026-10-04（真机实测新增）：把设备**整个相册**清到一条不剩 —— 判据是「MediaStore 里
  *   除了本条要推的，没有别的素材」。这是用户口径「发布某条素材时，调出相册只能看到他的图/视频」
  *   的**唯一靠得住的落点**。
@@ -768,6 +854,9 @@ async function clearAlbum(serial, opts = {}) {
       //   延后回收时**只删清单里的路径**，绝不遍历目录删 —— 否则会把用户同目录里的
       //   私人照片/其它文件一起删掉（那是不可逆的损失）。
       await run(serial, 'printf %s\\n ' + quotePath(file) + ' >> ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
+      // ★★ 登记表落盘（见 albumStateFile）：用户「发完就关程序」是常态，只放内存里的话，
+      //   下一次开程序时这条目录再也没人回收（`.nomedia` 永久留着、旧素材谁也不删）。
+      persistAlbumState(serial);
       return { ok: true, dir, why: '' };
     }
     isolationFailed.add(dir);
@@ -793,6 +882,10 @@ async function clearAlbum(serial, opts = {}) {
    */
   const adoptIsolated = () => {
     // 先接**进程内存里**登记的目录（同一次运行的上一条留下的），再接调用方显式传进来的。
+    // ★★★ 2026-10-15：还要接**上一次运行**留下的（落盘那份）—— 用户「发完就关程序」是常态，
+    //   只靠进程内存的话，那条目录再也没人回收（`.nomedia` 永久留在用户相册目录里，见
+    //   albumStateFile 的说明）。
+    loadAlbumStateOnce();
     for (const d of rememberedDirs(serial)) isolatedDirs.add(d);
     for (const d of (Array.isArray(opts.isolatedDirs) ? opts.isolatedDirs : [])) {
       const dir = toMediaPath(String(d || '').trim().replace(/\/+$/, ''));
@@ -803,7 +896,7 @@ async function clearAlbum(serial, opts = {}) {
   /** 把本轮确认隔离了的目录登记进**跨条**记忆（`reclaimIsolated` 撤掉标记时会同步移除）。 */
   const rememberIsolated = dir => {
     const s = String(dir || '');
-    if (s.startsWith('/storage/emulated/0/')) rememberedDirs(serial).add(s);
+    if (s.startsWith('/storage/emulated/0/')) { rememberedDirs(serial).add(s); persistAlbumState(serial); }
   };
   /**
    * 尽力回收已隔离目录里**我们记下来的**待回收素材；回收不了就继续隔离。
@@ -823,7 +916,11 @@ async function clearAlbum(serial, opts = {}) {
           //   一忘，这条 .nomedia 就永远留在用户相册目录里，再没人来撤。所以只有
           //   「命令真的跑成功了、内容对不上」或「明确说文件不存在」才放手，其余一律留着下次再试。
           const said = String(owned.stderr || '') + String(owned.stdout || '');
-          if (owned.ok || /No such file or directory/i.test(said)) isolatedDirs.delete(dir);
+          if (owned.ok || /No such file or directory/i.test(said)) {
+            isolatedDirs.delete(dir);
+            rememberedDirs(serial).delete(dir);
+            persistAlbumState(serial);
+          }
           continue;
         }
         // ★ 只删**清单里记着的那几个路径**，绝不遍历目录删：同目录里可能有用户的私人照片，
@@ -843,7 +940,11 @@ async function clearAlbum(serial, opts = {}) {
         for (const p of files) {
           // allowKilled：单条回收被超时杀掉只代表「这条没删成」，不该让整条清理路径中止。
           const rm = await run(serial, 'rm -f ' + quotePath(p), { timeout: 8000, allowKilled: true });
-          if (rm.ok) { physicalPending.delete(p); rememberedPending(serial).delete(p); } else left++;
+          if (rm.ok) {
+            physicalPending.delete(p);
+            rememberedPending(serial).delete(p);
+            persistAlbumState(serial);
+          } else left++;
         }
         if (left) continue;         // 还有删不掉的素材 ⇒ 保留 .nomedia 继续隔离，下次再试
         // ★ 文件真的都删掉了，才允许撤掉标记；撤掉之后目录恢复普通目录。
@@ -851,6 +952,7 @@ async function clearAlbum(serial, opts = {}) {
           + ' ' + quotePath(dir + '/' + PENDING_LIST), { timeout: 8000, allowKilled: true });
         isolatedDirs.delete(dir);
         rememberedDirs(serial).delete(dir);
+        persistAlbumState(serial);
       } catch (e) { /* 回收失败只记「没回收成」，绝不影响相册判据 */ }
     }
   };
@@ -985,10 +1087,24 @@ async function clearAlbum(serial, opts = {}) {
         //     · 物理文件已删、索引回执滞后（`Deleted 0 rows` / 139 后重扫才发现）：再删一次就好；
         //     · 索引删除命令本身失败但原因不是「不可恢复」。
         //   不可收敛 = 隔离标记写不进去（物理文件还在、库记录还会被扫回来）⇒ 立即如实停止。
-        const convergible = h => busyFiles.has(toMediaPath(h.file))
-          || physicalGone.has(toMediaPath(h.file))
-          || !physicalPending.has(toMediaPath(h.file));
-        if (!hit.some(convergible)) break;
+        // ★★★ 2026-10-15（用户口径「失败的耗时绝不许比成功还长」，夹具实测可复算）：
+        //   判据必须**先看隔离**再看句柄占用 —— 旧写法把顺序排反了，于是「隔离写不进 + 文件被占」
+        //   这种**注定失败**的现场被 busyFiles 判成「可收敛」，白跑满 4 轮退避：
+        //   实测 5620ms / rm 发了 5 次 / 全盘重扫 5 次（成功那条只要 212ms）。
+        //   隔离没确认时，物理文件删不掉 = 下一次扫描必然把记录扫回相册，等到句柄释放也没用
+        //   （何况队列里下一条还在等）。此时立刻如实失败才是对的做法。
+        const isolationConfirmed = file => isolatedDirs.has(path.posix.dirname(toMediaPath(file)));
+        // ★ 可收敛 = 再删一次有可能收敛。两种都算：
+        //     · 物理文件已经没了（`physicalGone`）/ 根本不在待回收清单里 ⇒ 剩下的只是库记录滞后，
+        //       再删一次记录就好（这类**必须**继续重试，否则相册里会留一条指向已删文件的僵尸记录）；
+        //     · 隔离已确认 ⇒ 相册里已经看不到它，重扫也不会复活，重试只为把物理文件删掉。
+        // ★ 唯一**不可收敛**的：物理文件仍在磁盘上（进了待回收清单）**且**隔离没确认 ——
+        //   这时删掉的库记录会被下一次全盘扫描原样扫回来，等时间不会让设备 I/O 变好。
+        //   实测（夹具）：旧写法在这里白跑满 4 轮 = 5620ms / rm 5 次 / 全盘重扫 5 次，而成功那条只要 212ms。
+        const filePending = h => physicalPending.has(toMediaPath(h.file));
+        const recoverable = h => physicalGone.has(toMediaPath(h.file))
+          || !filePending(h) || isolationConfirmed(h.file);
+        if (!hit.some(recoverable)) break;
         const delay = nextBusyDelay();
         const reserve = busyBudget == null ? recoveryReserve : 0;
         if (!(delay >= 0) || recoveryEnd - Date.now() <= delay + reserve) break;
@@ -2365,5 +2481,6 @@ module.exports = {
   setBundledApkPath, getBundledApkPath, resolveAdbChoice, getActiveAdb, bundledStatus,
   installKeyboard, ensureKeyboard, adbKeyboardIme, defaultIme, keyboardReady, currentFocus,
   uiSize,
-  ensureApp, isFocusOf, frontActivity, topActivityMatching
+  ensureApp, isFocusOf, frontActivity, topActivityMatching,
+  setAlbumStateFile
 };

@@ -462,6 +462,87 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
         && ![...fakeAdb.__physicalMedia].some(p=>/清单丢失残留/.test(p))
         && lostTrace.some(c=>/rm -f .*\.nomedia/.test(c)));
     }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增（用户口径「失败的耗时绝不许比成功还长」）：
+    //   **隔离标记写不进去**是这条清理路径上唯一的**不可收敛**现场 —— 物理文件删不掉、库记录
+    //   删了也会被下一次全盘扫描扫回来。等时间不会让设备 I/O 变好，所以退避重试在这里
+    //   **一丝价值都没有**：只会把「本条已经确定失败」拖成好几倍的耗时。
+    //   可复算的前后对照（夹具实测）：旧写法 5620ms / rm 发了 5 次 / 全盘重扫 5 次；
+    //   正确写法应当只发 1 次 rm、只做 1 次重扫复核，然后立刻如实返回失败。
+    //   ★ 判据（安全不变量）一条都不放宽：仍然必须 **失败**、仍然必须报「隔离标记未确认」、
+    //     仍然不许推素材 —— 改的只是「别把时间烧在明知无效的等待上」。
+    // ========================================================================
+    {
+      const residual='/sdcard/DCIM/Camera/bluev/隔离写不进残留.mp4';
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),residual);
+      await adb.mediaScan('FAKE',residual);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'隔离写不进残留');
+      fs.writeFileSync(path.join(dir,'NOMEDIA_DENIED'),'1');
+      const start=calls().length;
+      const stuck=await adb.clearAlbum('FAKE');
+      const trace=calls().slice(start);
+      const rmTries=trace.filter(c=>/rm -f .*隔离写不进残留/.test(c)).length;
+      const scans=trace.filter(c=>/--method scan_volume/.test(c)).length;
+      ok('隔离标记写不进（不可收敛）时立刻如实失败：不把时间烧在无效退避上（rm 只发 1 次、不反复重扫）',
+        stuck.ok===false && stuck.code==='ALBUM_ISOLATION_FAILED'
+        && stuck.recoveryAttempts===0 && rmTries===1 && scans<=1
+        && !trace.some(c=>/am force-stop/.test(c)));
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      fs.unlinkSync(path.join(dir,'NOMEDIA_DENIED'));
+      await adb.clearAlbum('FAKE');
+    }
+    // ========================================================================
+    // ★★★ 2026-10-15 新增（**跨进程**回收，审计结论里唯一还没堵上的口子）：
+    //   `isolatedRegistry` / `pendingRegistry` 只活在**进程内存**里 ⇒ 只要用户在「隔离成功、
+    //   物理文件还没回收」之间关掉程序（rich 现场天天发生：发布完就关），下一轮开起来就
+    //   **再也想不起**那个目录曾经被我们隔离过：
+    //     · `.nomedia` 永远留在那里 —— 若那个目录是用户自己的（例如 DCIM/Camera），
+    //       用户之后拍的/存的照片在系统相册里**一直看不见**；
+    //     · 待回收的旧素材永远躺在设备磁盘上，谁也不删。
+    //   判据（安全不变量）：进程重启后**第一次**清理，句柄已释放就必须真的删掉物理文件、
+    //   撤掉 `.nomedia`；期间一条新命令都不许多发（回收只按登记过的路径走，绝不遍历目录）。
+    // ========================================================================
+    {
+      // ① 上一次运行：文件被句柄占住 ⇒ 隔离成功、物理文件进待回收，然后**进程退出**。
+      const leftover='/sdcard/DCIM/Camera/bluev/重启遗留残留.mp4';
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),leftover);
+      await adb.mediaScan('FAKE',leftover);
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'重启遗留残留');
+      const beforeRestart=await adb.clearAlbum('FAKE');
+      // ② 句柄释放 + 进程重启：内存里那份登记表没了，只剩落盘那份。
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      delete require.cache[require.resolve('../src/main/services/adb')];
+      const adbAfterRestart=require('../src/main/services/adb');
+      const restartStart=calls().length;
+      const afterRestart=await adbAfterRestart.clearAlbum('FAKE');
+      const restartTrace=calls().slice(restartStart);
+      ok('进程重启后仍记得并回收上次运行隔离的目录：句柄一释放就真删文件、撤掉 .nomedia',
+        beforeRestart.ok && beforeRestart.physicalPending.length===1
+        && afterRestart.ok && afterRestart.physicalPending.length===0
+        && ![...fakeAdb.__physicalMedia].some(p=>/重启遗留残留/.test(p))
+        && restartTrace.some(c=>/rm -f .*\.nomedia/.test(c))
+        && !restartTrace.some(c=>/am force-stop/.test(c)));
+      // ③ 多实例共存：本程序允许**同时开多个实例**（每台设备一个），每台各写一份自己的登记表。
+      //    落盘必须是「读-改-写」：后写的实例把别的实例那条抹掉的话，那台设备的隔离目录
+      //    就再也没人回收（`.nomedia` 永久留在那台设备的相册目录里）—— 这是静默失效。
+      // 落盘里一律是 `toMediaPath` 归一化后的写法（`/storage/emulated/0/...`），断言也按这个比。
+      const other='/storage/emulated/0/DCIM/Camera/bluev/别的设备残留.mp4';
+      const stateFile=path.join(tmp,'album-isolation.json');
+      fs.writeFileSync(stateFile,JSON.stringify({'别的设备':{dirs:['/storage/emulated/0/DCIM/Camera/bluev'],
+        files:['/storage/emulated/0/DCIM/Camera/bluev/别的设备残留.mp4']}},null,2));
+      fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'多实例残留');
+      await adb.push('FAKE',path.join(itemDir,'1.jpg'),'/sdcard/DCIM/Camera/bluev/多实例残留.mp4');
+      await adb.mediaScan('FAKE','/sdcard/DCIM/Camera/bluev/多实例残留.mp4');
+      const multi=await adb.clearAlbum('FAKE');
+      const saved=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+      ok('多实例并存：本机写登记表不会抹掉别的设备的记录（读-改-写，隔离目录不会变成没人回收）',
+        multi.ok && multi.physicalPending.length===1
+        && !!saved['别的设备'] && (saved['别的设备'].files||[]).includes(other)
+        && !!saved['FAKE']);
+      fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
+      fs.unlinkSync(stateFile);
+      await adb.clearAlbum('FAKE');
+    }
   }
 
 })().catch(e => { console.error(e); process.exitCode = 1; });
