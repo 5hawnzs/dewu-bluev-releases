@@ -87,13 +87,25 @@ const ok = (label, value) => { assert(value, label); console.log('PASS ' + label
   //   但**物理文件与 push 记录都留着**，所以没有 .nomedia 的话重扫必复活。
   fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'上一条');
   const lateStart = calls().length;
-  const late = await publisher.run(state());
+  // ★★★ 2026-10-15 新增断言用：把发布器真正打给用户看的日志抓下来 ——
+  //   「物理文件没删掉」这件事**必须在日志里如实说出来**，否则界面只显示「相册已清空」，
+  //   用户会以为磁盘也干净了（AGENTS.md 硬约束第 5 条：不许造假成功）。
+  //   以前这条只有 `clearAlbum` 的返回值被测过（`physicalPending`），
+  //   **面向用户的那句话没有任何断言**，改了文案/拼错变量都不会变红。
+  const lateLogs = [];
+  const late = await publisher.run(state(), { log: (m, l) => lateLogs.push((l || 'info') + ': ' + m) });
   const lateTrace = calls().slice(lateStart);
   const lateRmTries = lateTrace.filter(c=>/rm -f .*上一条/.test(c)).length;
   ok('句柄晚释放也不空等：占用中隔离后立刻发布，物理文件如实留待回收，不强停得物',
     late.okCount===1 && late.failCount===0 && lateRmTries<=2
     && !lateTrace.some(c=>/am force-stop/.test(c))
     && [...fakeAdb.__physicalMedia].some(p=>/上一条\.jpg/.test(p)));
+  // ★★★ 2026-10-15 新增：**用户看得见的那句话**必须同时说出两件事 ——
+  //   ① 相册已清空（可以安全发布）；② 有 N 个物理文件没删掉、待回收。
+  //   只有 ① 没有 ② = 拿「相册干净」冒充「磁盘干净」，是本项目明令禁止的假成功。
+  ok('物理文件没删掉时日志如实说出「另有 N 个物理文件未删除、待回收」，不拿相册干净冒充磁盘干净',
+    lateLogs.some(l=>/相册已清空（回收 \d+ 条记录，耗时 [\d.]+s）/.test(l))
+    && lateLogs.some(l=>/另有 1 个物理文件未删除、待回收（已用 \.nomedia 隔离/.test(l)));
   // 句柄释放 ⇒ 下一次清理必须真的删掉物理文件并撤掉 .nomedia（隔离不是永久占着磁盘）。
   fs.unlinkSync(path.join(dir,'MEDIA_HELD'));
   const reclaimStart = calls().length;
