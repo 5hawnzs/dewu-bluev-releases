@@ -1,12 +1,50 @@
-# v1.1.2 / 2026101506 验证记录
+# v1.1.2 / 2026101507 验证记录
 
 本文件是当前验证结论入口。旧版诊断与测试记录保持为历史，不重复维护新版结论。
 
-本次完整回归 **2315 项**、界面自检 **311 项**、安装包检查 **24 项** 全部通过。
-安装包 `dist-1.1.2-build1506/得物蓝V素材发布工具-1.1.2-x64-win.exe`，262817847 字节；
-包内 94 份 `src` 文件与工作树逐字节一致，构建号 `2026101506` 三处一致。
+本次完整回归 **2329 项**（albumreadytest 51 项）、界面自检 **311 项**、安装包检查 **14 项** 全部通过。
+安装包 `dist-1.1.2-build1507/得物蓝V素材发布工具-1.1.2-x64-win.exe`，262823329 字节；
+包内 94 份 `src` 文件与工作树逐字节一致（包内 `tools/`、`docs/` 条目均为 0），
+构建号 `2026101507` 三处一致（源码 / asar 内 / 产物文件名）。
 已推送本地中间仓库与 GitHub 分支 `codex/mediastore-complete`，并已覆盖线上更新清单。
-`remoteP0Verified` 保持 `false`。
+本机已装副本 `D:\bluevbeta\dewu-bluev-publisher\resources\app.asar` 已覆盖为本包
+（sha256 `79f6cb25…`，与源包逐字节一致），启动冒烟正常。
+`remoteP0Verified` 保持 `false`：rich 需装 1507 后由用户手跑验收。
+
+## 2026-10-15（第十一轮交付）2026101507：三条「回执被杀」的永久副作用 + 退层隔离
+
+第十一轮的代码改动落在 `src/`（`services/adb.js`、`services/albumready.js`、`services/managedalbum.js`），
+所以**必须重新打包**才能交付 —— 只改 `tools/`/`docs/` 的那几轮不用重打，这轮不行。
+
+交付取证（全部实测，可复算）：
+
+| 项目 | 实测 |
+|---|---|
+| 全量回归 | `node tools/run-all.js` → **2329 项全部通过** |
+| 相册专项 | `node tools/albumreadytest.js` → **51 项**（含 H1/H2/H3 与退层隔离的新用例） |
+| 包内核验 | `node tools/verifypack.js --dir dist-1.1.2-build1507/win-unpacked` → **14 项 PASS / 0 FAIL** |
+| 包内与工作树 | 94 份 `src` **逐字节一致**；包内 `tools/`=0、`docs/`=0；包内 `BUILD = 2026101507` |
+| 安装包 | 262,823,329 字节，sha256 `fc79b597c356de5fc2e846153a4278eb5f892755e1c1140030ab7714443071e1` |
+| 本机已装副本 | `resources/app.asar` 覆盖为本包（sha256 `79f6cb25…`），其余 `resources/*` 逐字节相同，启动正常 |
+| 三处一致 | 工作树 / 本地中间仓库 / GitHub 分支 `codex/mediastore-complete` 都是 `83f26d7` |
+| 线上通道 | GitHub Release `v1.1.2-build.2026101507` 非草稿；附件 sha256 与本地一致；`latest.json` 指向它 |
+
+真机探针（MuMu `127.0.0.1:16384`，本轮在新包代码上重跑）：
+
+- `node tools/album-anchor-heal-verify.js` → **pass**：占用中隔离（`ok=true / pending=1`）→
+  人为抹掉归属凭据 `MISSING` → 释放后再清 ⇒ `ok=true / pending=0`，残留 `MISSING`、
+  `.nomedia` `MISSING`、同目录对照文件仍在（`neighbor=EXISTS`）。
+- `node tools/album-fullpath-verify.js` → **pass**：第 1 条走完整生产顺序（占用残留清理 5.88s +
+  推素材），第 2 条跨条回收上一批目录（`MISSING`），日志两句同时在，
+  释放句柄后物理文件与 `.nomedia` 都 `MISSING`。
+
+★ 仍未关闭（如实留在这里）：
+
+- rich 尚未装 1507；远端 P0 只能由 rich 上的真实任务结果关闭。
+- 1506 那两批六条**没有一条**走到「物理文件删不掉 ⇒ 延后回收」分支（清理相册阶段 6.9–8.4s、无 `rm:busy`），
+  该分支在 rich 现场仍未出现过，目前由 MuMu 真机探针 + 回归夹具覆盖。
+- 「祖先目录 `.nomedia` 挡住子孙被扫进相册」在 MuMu 上 7 次实验里有 **1 次无效** ⇒
+  退层只当机会、不当证明，判据始终是全盘四表复查为空且重扫不复活。
 
 ## 2026-10-15 第七轮：隔离登记表跨进程存活（关掉程序再打开也收得回来）
 

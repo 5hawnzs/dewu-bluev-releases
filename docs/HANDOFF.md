@@ -2805,16 +2805,23 @@ distance scaling, and reorderable elements. 如果不行再跟我说」，随后
 
 ### 交付与真机复核
 
-- 包：`1.1.2 build 2026101506`（GitHub `wfjdyhmtr2-glitch/dewu-bluev-releases` 的
-  `v1.1.2-build.2026101506`），`latest.json` 已指向它；**刻意不自动下载/自动安装**，
+- 包：`1.1.2 build 2026101507`（GitHub `wfjdyhmtr2-glitch/dewu-bluev-releases` 的
+  `v1.1.2-build.2026101507`），`latest.json` 已指向它；**刻意不自动下载/自动安装**，
   必须在应用里点「检查更新 → 下载 → 立即安装」。
-- 全量回归 `node tools/run-all.js` → **2319 项全部通过**。
+  （1506 与 1507 的差别只有一条：1507 把第十一轮 `src/` 修复真正打进了安装包。
+  只改 `tools/`/`docs/` 的那些轮次不用重打包，**改 `src/` 就必须重打**。）
+- 全量回归 `node tools/run-all.js` → **2329 项全部通过**。
 - 真机探针 `node tools/album-fullpath-verify.js`（人工调用，走真 product 代码连跑两条）：
   占用中老路径残留被隔离并清出相册（四表 0 条、重扫 0 条、`.nomedia`=EXISTS）、
   `retire()` 不 throw、跨条把上一批目录真回收（MISSING）、释放句柄后物理文件与标记都真删。
   实测数字与两个探针自身的坑见 [`VERIFICATION.md`](VERIFICATION.md) 第十轮小节。
-- `distribution/v1.1.2/verification.json` 的 `remoteP0Verified` 已按上面这组 rich 实测置 `true`
-  （该文件在 `.gitignore` 里，只随发版目录走，不进 git）。
+- 1507 交付时又补跑了两个真机探针，都 pass：`album-anchor-heal-verify.js`（占用中隔离 →
+  人为抹掉归属凭据 → 释放后仍能补凭据、真删残留、撤 `.nomedia`）与
+  `album-fullpath-verify.js`（完整生产顺序连跑两条）。数字见
+  [`VERIFICATION.md`](VERIFICATION.md) 第十一轮交付小节。
+- `remoteP0Verified` 必须由 **rich 装 1507 之后的真实发布结果**关闭；在此之前保持 `false`，
+  不许拿本机或 MuMu 的结果冒充（`distribution/v1.1.2/verification.json` 在 `.gitignore` 里，
+  只随发版目录走，不进 git）。
 
 ### 仍然没有关闭的事（如实留着，别当成已验）
 
