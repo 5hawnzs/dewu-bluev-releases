@@ -438,8 +438,49 @@ async function openPublishEntry(serial, ctx = {}) {
   if (!home.ok) throw new Error('无法返回得物首页：' + (home.why || '未知原因'));
   // 上一轮中断留下的「是否继续编辑」会挡在动态页签前；先点「放弃」再进。
   await dismissResumeDialog(serial, ctx);
+  // 点「动态」后必须确认当前前台就是动态流 HomeActivity，否则中间可能仍有弹窗/慢转场。
+  // 以前只 sleep 400ms 后找相机，弹窗或转场稍慢就会把错误丢给后面的 tab_trends/etTitle。
   await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' }, {}, ctx);
-  await sleep(400, ctx.cancelled);
+  const trendStarted = performance.now();
+  let trendConfirmed = false;
+  while (performance.now() - trendStarted < 30000) {
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    const focus = await adb.currentFocus(serial, { timeout: 3000 });
+    if (focus && uimap.isHomeScreen(focus)) { trendConfirmed = true; break; }
+    const page = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0 }, ctx);
+    if (!page.ok || page.via === 'dumpsys') {
+      await sleep(400, ctx.cancelled);
+      continue;
+    }
+    const dialog = entrydialogs.inspect(uimap.parseNodes(page.xml));
+    if (dialog) {
+      if (ctx.log) ctx.log('备用入口：点击动态后遇到入口弹窗，先处理再确认动态流：' + (dialog.name || '未知弹窗'), 'info');
+      if (dialog.resume && dialog.button) {
+        const r = await adb.tap(serial, dialog.button.center.x, dialog.button.center.y);
+        if (!r.ok) {
+          const error = new Error('点击动态后未能关闭未完成内容提示；未继续进入发布入口。');
+          error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+          throw error;
+        }
+      } else if (dialog.button) {
+        const r = await adb.tap(serial, dialog.button.center.x, dialog.button.center.y);
+        if (!r.ok) {
+          const error = new Error('点击动态后未能关闭入口弹窗；未继续进入发布入口。');
+          error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+          throw error;
+        }
+      }
+      await sleep(400, ctx.cancelled);
+      continue;
+    }
+    await sleep(400, ctx.cancelled);
+  }
+  if (!trendConfirmed) {
+    const focus = await adb.currentFocus(serial, { timeout: 3000 });
+    const error = new Error(`点击「动态」后等待 30 秒仍未确认回到动态流；当前页面${focus || '读不到'}。未点击相机、未进入发布流程，本批停止。`);
+    error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+    throw error;
+  }
   await tapReadyCamera(serial, ctx);
   // 只点击一次，慢设备允许继续转场；命令回执不代表页面已进入。
   const started = performance.now(), timeoutMs = 30000;
@@ -1262,9 +1303,16 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
         || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布'));
       if (submittingVideo) await require('./videocover').verify(serial, ctx);
       rs = await runStep(serial, step, data, ctx);
-      if (!(rs && rs.skipped) && (step.action === 'tapCardText'
-        || step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/ivProduct')) {
+      const pickedGoods = step.action === 'tapCardText'
+        || step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/ivProduct';
+      const pickedGoodsStep = pickedGoods && /^好物\d+ · 选结果第 1 格/.test(step.name || '');
+      if (!(rs && rs.skipped) && pickedGoods) {
         try {
+          if (pickedGoodsStep) {
+            // 选完好物后不能只等编辑页回来：得物可能点空、搜索为空、或识别结果把页面拉回。
+            // 先确认容器里重新出现 ivDelete（用户口径：没挂上就是没选上），再确认编辑页返回。
+            await runStep(serial, { name: '选择好物后校验确实挂上', action: 'waitId', value: 'com.shizhuang.duapp:id/ivDelete', timeout: 8000 }, {}, ctx);
+          }
           await runStep(serial, { name: '选择好物后返回文案编辑页', action: 'waitId', value: 'com.shizhuang.duapp:id/etTitle', timeout: 30000 }, {}, ctx);
         } catch (error) {
           error.code = 'PUBLISH_TRANSITION_UNCONFIRMED';
