@@ -82,3 +82,110 @@
 - 上一轮真机发布用的是**已经发过一次的同一篇内容**（用户授权以历史内容复测）。产品口径「已回写报告的内容
   不会再被引用」由 `publisher.runBatch` 只处理 `result !== '发布成功'` 的行保证，本次未改动该逻辑。
 - 未在**真实无主页账号**上验证（本机账号有主页，只能用 `--route=fallback` 强制走相机那一段）。
+
+---
+
+# 追加（同一天更晚）：`0x80000003` 弹框 = 图形进程崩了带走整个程序
+
+## 用户报的现象
+两张 Windows 弹框截图：
+- `electron.exe - 应用程序错误`（02:03，开发态）
+- `得物蓝V素材发布工具.exe - 应用程序错误`（02:47，装机版）
+
+正文一样：`应用程序发生异常 unknown software exception (0x80000003)，位置为 0x00007FF…6E49`。
+两次都落在「正在替换安装内容」的时间窗里（unpacked 02:42:30、asar 02:50:58），所以一开始怀疑是半拷的原生件；
+取证后**主因不是它**，见下。
+
+## 根因（本仓库自己早就记过，只是没落到正式包上）
+`0x80000003` 就是 `int3`，Windows 上对应 `__debugbreak()`。远程桌面 / 向日葵这类环境里 GPU 进程会反复退出，
+Chromium 数到上限走 `LOG(FATAL)`：
+
+```
+FATAL:gpu_data_manager_impl_private.cc(449) GPU process isn't usable. Goodbye.
+```
+
+Windows 上 `LOG(FATAL)` 就是 `__debugbreak()` ⇒ 弹 `unknown software exception (0x80000003)` 并且**整个程序退出**。
+发布跑到一半被它带走，表现就是用户说的「发布中断 / 卡死」。
+
+证据链：
+- `bluev-adb-fix/docs/knowledge/archive/worklog/2026-09-30.md:80` 记的就是这条：
+  `FATAL:...GPU process isn't usable. Goodbye.`（退出码 2147483651）→「加 `--in-process-gpu --disable-gpu` 即活」。
+- `tools/run-all.js:62` 的 `ELECTRON_FLAGS` 也写着同样的理由 —— **但只加给了自检脚本，正式包一直没加**。
+  所以自检永远是绿的、用户那边照旧崩，这正是「为什么一直有这种报错」的答案。
+- 事件日志/WER 里没有我们 exe 的 `0x80000003` 记录（只有 AweSun 的 `0xc0000005`）⇒ 不是被 WER 记档的通用崩溃，
+  与「未捕获的 C++ 异常」不符，更符合 `__debugbreak`。
+- 安装目录 `debug.log` 有 crashpad `TransactNamedPipe: 管道的另一端上无任何进程 (0xE9)`；最后一条为 00:32，
+  修复版覆盖（02:50）之后不再新增。
+
+## 实现（TDD：先红后绿）
+新增 `src/main/startupflags.js`（`wanted()` / `apply()`）：
+默认 `disableHardwareAcceleration()` + `appendSwitch('disable-gpu','in-process-gpu')`；
+口子 `--enable-gpu` 或 `BLUEV_ENABLE_GPU=1/true`（空串、`0` 不算）；ready 之后才调用则返回 `reason:'late'`
+并**如实记一条日志**，不假装生效。
+
+新增 `src/main/crashguard.js`：crashpad 转储落 `userData/crashdumps`（`uploadToServer:false`），
+监听 `child-process-gone` / `render-process-gone` / `uncaughtException` / `unhandledRejection`；
+全部 try/catch，日志通道坏了也不影响运行；**主进程异常只记录不退出**（不能让留档机制帮倒忙）。
+
+`src/main/index.js`：这两件事都在 `requestSingleInstanceLock()` 与 `app.whenReady` **之前**做完
+（实测位置：guard 1263 / apply 1418 / whenReady 2174）—— 开关挂晚了 Electron 不认。
+
+自检：`startupflagstest` 6 项、`crashguardtest` 7 项、`deployguardtest` 5 项（`tools/run-all.js` 已登记）。
+
+## 真机 A/B（同一台机器、同一个已安装的 exe）
+| 启动方式 | 进程总数 | gpu-process | crashpad-handler | renderer |
+| --- | --- | --- | --- | --- |
+| 默认（修复生效） | 4 | **0** | 1 | 1 |
+| 显式 `--enable-gpu` 对照 | 5 | **1** | — | — |
+
+⇒ 开关真的在起作用，不是碰巧。
+
+## 覆盖与发布摘要
+- 构建：`node tools/prepare-distribution.js` → build **2026101613**、262864643 字节、
+  `sha256 5e7ee59561246737e85dff8d47ae6c17030c2def1fb9e35f5f6217fdddbb7aef`。
+- GitHub 分发通道：已发布 `v1.1.2-build.2026101613` 并更新 `latest.json`（上一版线上是 2026101605）。
+- 本机覆盖：`prepare-publish-confirmation.cjs`（1787 文件核验、替换 src/ 72 文件）→
+  `apply-publish-confirmation.cjs` PASS；装后 asar `BUILD=2026101613`，
+  原生件自检 `unpacked-check.json` problems 0（顺带清掉上一次覆盖误拷出来的
+  `resources/app.asar.unpacked/app.asar.unpacked` 重复副本：100 个文件 / 20.6MB）。
+- `tools/apply-publish-confirmation.cjs`：装完追加原生件自检，不通过即回滚（父仓库脚本，不提交）。
+
+## 最终代码上的备用入口真机复验（本轮）
+走用户自己的**已安装 App**（`--remote-debugging-port=9222`，通过 CDP 点真实按钮）：
+报告 `video-app-acceptance/AI内容报告_备用1613复核.xlsx`（单条视频、
+素材 `E:\bluev_beta\flat_20261002-2329\3261132028+米白色12_1`），设备 `127.0.0.1:16384`。
+
+- 点「开始试发」→ 日志第一条就是
+  `强制备用入口：定位表里没有「动态」页签步骤，仍按内置的动态流相机入口走`；
+- 21 个阶段全部 `ok`，包括 `选视频后的转场 · 等到设置封面页 8.1s`（其间点「下一步」2 次并确认目标屏）、
+  `选择并核验视频封面 12.7s`、`提交发布 4.5s`、`等待提交退出 0.75s`；
+- 结果：`发布成功【目标 1 条，成功 1 条，失败 0 条】`，单条 70.8s、整批 71.4s，报告已回写（1 行）。
+
+## 逐段转场夹具复核（本轮重跑，主入口 / 备用入口各一遍）
+`transition-audit-20261016/*.json`（02:52 重跑，正反例成对）：
+
+| 场景 | 主入口 | 备用入口 | 判定 |
+| --- | --- | --- | --- |
+| 确认标题后提交（正例） | ok 1 / fail 0 | ok 1 / fail 0 | 提交 1 次，正常收尾 |
+| 选材不足自动补选（正例） | ok 1 / fail 0 | ok 1 / fail 0 | 点「下一步」1 次后提交 |
+| 目标节点读不到（反例） | 停批 | 停批 | 保留现场，**一次都不盲点、不提交** |
+| 同页重建节点（反例） | 停批 | 停批 | 有限重读后仍无法确认 ⇒ 停批 |
+| 只选到 1/3 张图（反例） | 停批 | 停批 | 不许把「部分选中」当成功 |
+| 标题无法确认（反例） | 停批 | 停批 | `etTitle` 读不到 ⇒ 停批 + 保留现场 |
+
+正例全绿、反例全部**停批而不是瞎点**：用户报的那几种「找不到节点 / 继续编辑提示」对应的都是
+「读不到就必须停下、保留现场」，不会再出现「悄悄提交了错内容」或整批无声卡死。
+
+## 更新日志页（用户口径的回归点）
+装机版「应用更新」页实测：版本 chip 显示 `v1.1.2 · 构建号 2026101613`；
+整页文本里 `备用入口` / `试发` 均为 **false**；10 月 17 日只列三条核心标题，
+新增的第一条是「稳定性：图形环境异常时程序不再整体退出，发布不会中途中断」。
+
+## 仍未做 / 限制
+- 反例夹具是**故意注入**的（喂进去的 dump 里真的没有目标节点），它验的是「读不到时的行为」，
+  不代表真机上会出现这些画面；真机的主/备用入口两条路本轮都已真实发布成功。
+- 本轮没有再动发布链路本身（`publisher.run` 未改），只加了进程级开关与崩溃留档；
+  提速项（`选视频后的转场` 8–11s、`选择并核验视频封面` 12s、守卫步首屏 6s）保持 99b9dbb 的状态，未继续优化。
+- 备用入口复验用的是**已经发布过的同一篇历史内容**（用户授权：已回写报告的内容拿来复测，
+  不会再次被引用）。产品侧「已回写的不再引用」由 `publisher.runBatch` 只处理
+  `result !== '发布成功'` 的行保证。
