@@ -3,6 +3,7 @@
 window.releaseMotion = (() => {
   const days = [
     { date: "2026 年 10 月 17 日", week: "周六", entries: [
+      { time: "本次修复", kind: "修复", title: "稳定性：图形环境异常时程序不再整体退出，发布不会中途中断" },
       { time: "本次修复", kind: "修复", title: "发布入口：上一次中断留下的发布页自动收掉，新任务不再卡住" },
       { time: "本次优化", kind: "调整", title: "页面读取：同一屏不再重复抓取，入口检查更快" }
     ] },

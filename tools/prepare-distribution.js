@@ -15,7 +15,9 @@ function prepare(source = path.join(ROOT, 'dist')) {
   const bundled = JSON.parse(read('package.json'));
   // ★★ 新增的模块必须列在这里：漏掉的话「安装包源码不是最终版本」这条守卫就形同虚设 ——
   //   装上去 require 一个不存在的文件，表现是整个发布链路直接起不来。
-  for (const file of ['src/main/githubupdates.js', 'src/main/feedback.js', 'src/main/jobs.js', 'src/main/uimapdefaults.js', 'src/main/services/uimap.js', 'src/main/services/uimapshape.js', 'src/main/services/transition.js', 'src/main/services/entrydialogs.js', 'src/main/services/displayrecovery.js', 'src/main/services/diagnostics.js', 'src/main/services/adb.js', 'src/main/services/albumready.js', 'src/main/services/managedalbum.js', 'src/main/services/publisher.js', 'src/main/services/videocover.js', 'src/main/services/cloudsync.js', 'src/renderer/app.js', 'src/renderer/index.html', 'src/renderer/styles.css', 'src/renderer/release-motion.js']) {
+  // ★ 2026-10-17：把「发布途中被图形进程崩溃带走」这条修复的两个新模块也纳入核验 ——
+  //   它们只在 index.js 顶部被 require，漏进安装包的话表现是「装上去还是照旧崩」，最难查。
+  for (const file of ['src/main/index.js', 'src/main/startupflags.js', 'src/main/crashguard.js', 'src/main/githubupdates.js', 'src/main/feedback.js', 'src/main/jobs.js', 'src/main/uimapdefaults.js', 'src/main/services/uimap.js', 'src/main/services/uimapshape.js', 'src/main/services/transition.js', 'src/main/services/entrydialogs.js', 'src/main/services/displayrecovery.js', 'src/main/services/diagnostics.js', 'src/main/services/adb.js', 'src/main/services/albumready.js', 'src/main/services/managedalbum.js', 'src/main/services/publisher.js', 'src/main/services/videocover.js', 'src/main/services/cloudsync.js', 'src/renderer/app.js', 'src/renderer/index.html', 'src/renderer/styles.css', 'src/renderer/release-motion.js']) {
     if (read(file) !== fs.readFileSync(path.join(ROOT, file), 'utf8')) throw new Error('安装包源码不是最终版本：' + file);
   }
   if (bundled.version !== pkg.version) throw new Error('构建版本与源码不一致，请重新打包');

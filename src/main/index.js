@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, crashReporter } = require('electron');
 const path = require('path');
 const store = require('./store');
 const project = require('./project');
@@ -19,6 +19,26 @@ const cloudsync = require('./services/cloudsync');
 if (wp.isWin()) app.setAppUserModelId('com.bluev.publisher');
 
 const DEV = process.argv.includes('--dev');
+
+/**
+ * ★★ 2026-10-17 用户报的「unknown software exception (0x80000003)」：
+ *    远程桌面/向日葵这类环境下 GPU 进程反复退出，Chromium 数到上限直接 FATAL 掉**整个程序**
+ *    （Windows 上 FATAL = __debugbreak = 就是这个弹框），发布跑到一半会被它带走。
+ *    开关必须在单实例判断与 app.whenReady **之前**挂上（晚了 Electron 根本不认），
+ *    理由与实测记录见 startupflags.js 顶部。
+ *    同时装上崩溃留档：下次万一还有原生崩溃，日志里能说出是哪个进程、什么原因。
+ */
+const startupflags = require('./startupflags');
+const crashguard = require('./crashguard');
+crashguard.install({
+  app, crashReporter, logbus,
+  userData: app.getPath('userData'),
+  build: require('./githubupdates').BUILD
+});
+const startup = startupflags.apply({ app, log: message => logbus.warn(message) });
+if (startup.disabled) {
+  logbus.info('图形环境：已关掉硬件加速与独立 GPU 进程（软件渲染），避免发布途中被图形进程崩溃带走', null, { tier: 'detail' });
+}
 
 /**
  * 随包分发的第三方文件放哪：打包后在 `resources/<name>`，开发运行时在仓库 `vendor/<name>`。

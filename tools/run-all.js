@@ -25,6 +25,9 @@ require('./test-runtime')();
  *   cloudauth-test 云端统一账号（只用 anon key / 不公开账号表 / 安全函数固定 search_path / 无回退本机登录）
  *   cloudtest      云端同步（关着不联网 / 只推增量 / 幂等头 / 不留绝对路径 / 失败不推进游标 /
  *                  内置的只能是 anon key / 导入配置先校验并拦下 service_role）
+ *   startupflagstest 启动开关（发布途中被 GPU 进程崩溃带走 → 关掉硬件加速与独立 GPU 进程）
+ *   crashguardtest  崩溃留档（原因照实说 / 记录不许帮倒忙 / 主进程异常只记录不退出）
+ *   deployguardtest 覆盖安装后的原生件自检（缺件、半拷必须报出来并回滚）
  *
  * 三个 Electron 套件需要有桌面会话（远程桌面里要有人在的会话，纯后台 SSH 会起不来）。
  */
@@ -84,6 +87,11 @@ const SUITES = [
   ['publishcontinuationtest', 'node', ['tools/publishcontinuationtest.js']],
   ['frontendstatetest', 'node', ['tools/frontendstatetest.js']],
   ['diagnosticstest', 'node', ['tools/diagnosticstest.js']],
+  // 启动开关（GPU 关闭）与崩溃留档：不接 Electron 也能验，单列才看得出哪条判据塌了
+  ['startupflagstest', 'node', ['tools/startupflagstest.js']],
+  ['crashguardtest', 'node', ['tools/crashguardtest.js']],
+  // 覆盖安装后的原生件自检（缺件/半拷必须报出来并回滚）
+  ['deployguardtest', 'node', ['tools/deployguardtest.js']],
   ['sleepguardtest', 'node', ['tools/sleepguardtest.js']],
   ['displayrecoverytest', 'node', ['tools/displayrecoverytest.js']],
   ['mediapermissiontest', 'node', ['tools/mediapermissiontest.js']],
