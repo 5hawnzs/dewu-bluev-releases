@@ -765,6 +765,26 @@ TABS[4] = {
 //     为一个空白位不值当。代价是页签编号在 5 处留了个空位 ⇒ renderAll 与 Ctrl+数字 都加了兜底
 //     （原来落到空位会读 undefined.title，整页白屏）。
 
+/**
+ * 发布前的「得物设置提醒」。
+ * ★★ 2026-10-16：抽成一个函数，「模拟器发布」与「备用入口试发」共用**同一份**。
+ *   原来它只写在模拟器发布页里；试发那一页同样是真实提交，少了这段提醒，
+ *   两处的前置要求就会各说各话 —— 复制一份迟早各自演化。
+ */
+function publishSetupHtml() {
+  return `
+      <details class="publish-setup">
+        <summary><span class="publish-setup-icon" aria-hidden="true">!</span><span>得物设置提醒<span class="publish-setup-brief">关闭 2 项商品识别设置，并确保草稿箱为空</span></span></summary>
+        <div class="publish-setup-items">
+          <div><span class="publish-setup-path">得物 → 我 → 设置 → 隐私设置</span><strong>允许平台在我的内容动态关联商品</strong><span class="publish-setup-off">设为关闭</span></div>
+          <div><span class="publish-setup-path">得物 → 我 → 设置 → 通用设置</span><strong>作品暂停时自动识别画面中商品</strong><span class="publish-setup-off">设为关闭</span></div>
+          <div><span class="publish-setup-path">得物 → 当前账号 → 草稿箱</span><strong>确保目前账号草稿箱为空</strong><span class="publish-setup-off">发布前手动确认</span></div>
+        </div>
+        <p>每个账号均需手动检查，重装后请重新确认；本工具不检测开关状态。</p>
+      </details>
+  `;
+}
+
 TABS[6] = {
   title: '模拟器发布',
   desc: '导入 AI 内容报告 → 选择设备和发布间隔 → 开始发布',
@@ -818,15 +838,7 @@ TABS[6] = {
         <p class="hint">★ 这一页就是流程的最后一步：<b>导入 AI 内容报告 → 选发布间隔 → 开始发布</b>。
           报告里空着的货号 / 颜色，导入时会按<b>叶子文件夹名</b>（「货号+颜色」，以 + 号分隔）自动补上，
           并写回报告文件（<b>只补空格子，不覆盖你已填的</b>）。</p>
-      <details class="publish-setup">
-        <summary><span class="publish-setup-icon" aria-hidden="true">!</span><span>得物设置提醒<span class="publish-setup-brief">关闭 2 项商品识别设置，并确保草稿箱为空</span></span></summary>
-        <div class="publish-setup-items">
-          <div><span class="publish-setup-path">得物 → 我 → 设置 → 隐私设置</span><strong>允许平台在我的内容动态关联商品</strong><span class="publish-setup-off">设为关闭</span></div>
-          <div><span class="publish-setup-path">得物 → 我 → 设置 → 通用设置</span><strong>作品暂停时自动识别画面中商品</strong><span class="publish-setup-off">设为关闭</span></div>
-          <div><span class="publish-setup-path">得物 → 当前账号 → 草稿箱</span><strong>确保目前账号草稿箱为空</strong><span class="publish-setup-off">发布前手动确认</span></div>
-        </div>
-        <p>每个账号均需手动检查，重装后请重新确认；本工具不检测开关状态。</p>
-      </details>
+${publishSetupHtml()}
       </div>
       ${batchesHtml('', '运行中的批次 / 任务')}
       ${rows.length ? `<div class="tw publish-rows"><table>
@@ -1832,6 +1844,9 @@ TABS[14] = {
           到「主页」那一步当作找不到，于是由<b>正式发布里那段回退代码</b>接管（回首页 → 点动态 → 点相机）。
           素材清理、推送、索引、主图排序、选图、转场、填写、提交 <b>每一步都和正式发布一模一样</b>
           —— 所以在这里发的，就是远端账号会走的路径，逐条命令相同。</p>
+        <!-- ★★ 试发也是真实提交 ⇒ 发布前的前置要求必须和「模拟器发布」页同一份
+             （这里调的就是那个共用函数，不是复制一段文案）。 -->
+        ${publishSetupHtml()}
       </div>
       <div class="box">
         ${reportBoxHtml()}

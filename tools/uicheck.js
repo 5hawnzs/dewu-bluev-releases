@@ -2843,11 +2843,22 @@ app.whenReady().then(async () => {
       document.querySelector('[data-act="feedback:close"]').click();
       state.tab = 6; renderAll();
       const reminder = document.querySelector('#pane').textContent.includes('确保目前账号草稿箱为空');
+      // ★★ 试发那一页也是**真实提交** —— 发布前的前置要求必须和「模拟器发布」页同一份。
+      //   这里逐条比对两页渲染出来的提醒文字：哪天有人往一边加了新要求、另一边没加，
+      //   或者把共用函数拆成两份复制，这条立刻红。
+      const setupOf = tab => { state.tab = tab; renderAll();
+        return document.querySelector('#pane').querySelector('.publish-setup').textContent.replace(/\s+/g, ''); };
+      const setupPublish = setupOf(6), setupFallback = setupOf(14);
+      const sameSetup = setupPublish.length > 40 && setupPublish === setupFallback;
       state.tab = 8; renderAll();
-      return opened && document.querySelector('#feedbackModal').hidden && reminder && !document.querySelector('[data-act="stats:checkPath"]');
+      return { ok: opened && document.querySelector('#feedbackModal').hidden && reminder
+        && !document.querySelector('[data-act="stats:checkPath"]'), sameSetup, setupPublish, setupFallback };
     } finally { state.tab = saved; renderAll(); }
   })()`);
-  ok('设置反馈弹窗可输入和关闭、发布前提醒草稿箱为空、统计页移除检测输出目录按钮', feedbackUi);
+  ok('设置反馈弹窗可输入和关闭、发布前提醒草稿箱为空、统计页移除检测输出目录按钮', feedbackUi.ok);
+  ok('★ 「模拟器发布」与「备用入口试发」两页的发布前提醒**逐字相同**（共用同一份，不是各抄一份）',
+    feedbackUi.sameSetup,
+    `发布页 ${(feedbackUi.setupPublish || '').length} 字 / 试发页 ${(feedbackUi.setupFallback || '').length} 字`);
   if (process.env.BLUEV_CAPTURE_RELEASE === '1') {
     await win.webContents.executeJavaScript(`Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); state.tab = 13; renderAll(); document.querySelector('#pane').scrollTop = 0;`);
     await new Promise(r => setTimeout(r, 500));
