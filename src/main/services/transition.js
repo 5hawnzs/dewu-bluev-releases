@@ -144,6 +144,11 @@ async function run(serial, rawSpec, ctx = {}, deps = {}) {
     const nodes = d && d.ok ? parse(d.xml) : [];
     where = visible(nodes, d && d.why);
 
+    // 复用转场观测做选材确认；补选后留到下次正常轮询确认，不用旧页面继续点下一步。
+    if (d && d.ok && ctx.confirmSelection && hitAny(nodes, ['com.shizhuang.duapp:id/flThumbSelect'])) {
+      if (!await ctx.confirmSelection(d)) { await sleep(POLL_MS); continue; }
+    }
+
     // ① 已到目标屏（或从未离开过）⇒ 不点，直接过
     if (d && d.ok && hitAny(nodes, spec.until)) {
       // ★ 必须说出来「到了哪一屏、点没点过」：真机排查时最怕的是「这一步悄悄过了」——

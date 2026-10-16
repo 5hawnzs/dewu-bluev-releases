@@ -1,7 +1,8 @@
 'use strict';
 /** 主窗口：Windows 无边框 + 自绘标题栏，尺寸/最大化状态持久化 */
-const { BrowserWindow, nativeTheme, screen } = require('electron');
+const { BrowserWindow, nativeTheme, screen, nativeImage } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const store = require('./store');
 const logbus = require('./logbus');
 
@@ -115,6 +116,8 @@ function createWindow(locked) {
 
   win = new BrowserWindow({
     title: '得物蓝V素材发布工具',
+    // 显式设置原生窗口图标，开发启动与安装版使用同一份品牌资源。
+    icon: nativeImage.createFromBuffer(fs.readFileSync(path.join(__dirname, '..', 'assets', 'icon.png'))),
     width: start.width,
     height: start.height,
     minWidth: locked ? 340 : MAIN_MIN_W,

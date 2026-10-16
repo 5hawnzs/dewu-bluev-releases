@@ -254,7 +254,7 @@ const state = {
     let stopped;
     try { stopped = await publisher.run(stoppedState, { ...ctx, cancelled: () => cancelled,
       log: msg => stopLogs.push(msg) }); } finally { adbForSetup.clearAlbum = originalClear; }
-    ok('清相册时停止：已成功行保留、当前行已取消、后续行未执行，不计失败', stopped.cancelled && stopped.okCount === 1
+    ok('清相册时停止：历史成功行保留但不计本批成功、当前行已取消、后续行未执行，不计失败', stopped.cancelled && stopped.okCount === 0
       && stopped.failCount === 0 && stopped.rows.map(x => x.result).join(',') === '发布成功,已取消,未执行,未执行');
     ok('主动停止只记取消原因和批次停止，不伪装清理失败或批次发布完成', stopped.rows[1].reason === '任务已取消'
       && stopLogs.some(s => s.includes('批次已停止')) && !stopLogs.some(s => /发布失败|发布结束：/.test(s)));
@@ -1535,8 +1535,11 @@ const state = {
     p21a.e ? ('抛异常：' + p21a.e.message) : JSON.stringify(p21a.r));
 
   // 行为级（正向对照）：**草稿箱屏**跑同一步 ⇒ 必须真点到出口那颗，坐标 = 中心 (540,1871)
+  fs.writeFileSync(path.join(FDB, 'TAP_FOCUS'), 'publish');
   const p21b = await probe21(draftXml21,
     { action: 'tapId', value: uimap.DEWU.draft.exitId, whenOn: uimap.DEWU.draft.titleId });
+  fs.unlinkSync(path.join(FDB, 'TAP_FOCUS'));
+  fs.writeFileSync(path.join(FDB, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
   const tap21 = /-s \S+ shell input tap (\d+) (\d+)/.exec(calls());
   ok('㉑ ★ 行为级：按**配置里**的 id 在草稿箱屏上真点到 fl_publish 的中心 (540,1871)（与真机实测同一坐标）',
     !p21b.e && !!tap21 && tap21[1] === '540' && tap21[2] === '1871'
@@ -1674,9 +1677,12 @@ const state = {
   //    没有这个复用就是 2 次（守卫 1 次 + 点击 1 次），实测多花 ~1–2s。
   //    判据 = 数 calls.log 里含 `uiautomator dump` 的**行数**：1 = 复用了；2 = 复用被拆掉。
   fs.writeFileSync(FAKE_WINDOW, draftXml21);
+  fs.writeFileSync(path.join(FDB, 'TAP_FOCUS'), 'publish');
   clearCalls();
   const r22 = await publisher.runStep('127.0.0.1:5555',
     { action: 'tapId', value: DRAFT_EXIT, whenOn: DRAFT_TITLE, name: '草稿箱拦截' }, {}, { log() {} });
+  fs.unlinkSync(path.join(FDB, 'TAP_FOCUS'));
+  fs.writeFileSync(path.join(FDB, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
   const dumps22 = calls().split(/\r?\n/).filter(l => /uiautomator dump/.test(l)).length;
   // 注意：点击成功时 runStep 返回的是 **undefined**（只有守卫拦下才返回 {skipped}）。
   // 写成 `!r22.skipped` 会在这里抛异常 ⇒ 整段断言一条都不打、只看 FAIL 的人会误判成「全绿」。

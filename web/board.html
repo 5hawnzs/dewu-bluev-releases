@@ -18,7 +18,7 @@
   .chip.ok{color:#fff;background:var(--ok);border-color:var(--ok)}
   .chip.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
   .chip.wait{color:#fff;background:var(--wait);border-color:var(--wait)}
-  main{padding:18px 20px 40px;max-width:1180px;margin:0 auto}
+  main{padding:18px 20px 40px;width:100%;max-width:1920px;margin:0 auto}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
   .card h2{font-size:13px;margin:0 0 10px;color:var(--tx2);font-weight:600;letter-spacing:.03em}
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
@@ -92,7 +92,20 @@
   #tRows td:nth-child(2),#tRows td:nth-child(3),#tRows td:nth-child(4),#tTasks td:nth-child(2),#tTasks td:nth-child(3),#tTasks td:nth-child(4){white-space:normal}
   #tSku{min-width:760px}
   #tWho{min-width:720px}
-  #tUsers{min-width:1120px}
+  /* 宽屏铺开，窄屏保留列宽并在表格内滚动，避免短标题和按钮逐字换行。 */
+  #tUsers{min-width:1380px}
+  #tUsers>thead>tr>th{white-space:nowrap}
+  #tUsers>tbody>tr:not(.hist)>td{padding:10px 12px;vertical-align:top}
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(1){min-width:210px;overflow-wrap:anywhere}
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(2){min-width:64px}
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(3){min-width:170px}
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(4){min-width:88px}
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(5),
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(6),
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(7){min-width:120px;white-space:nowrap}
+  #tUsers>tbody>tr:not(.hist)>td:nth-child(10){min-width:132px}
+  #tUsers button,#tUsers .chip{white-space:nowrap}
+  #tUsers>tbody>tr:not(.hist)>td:last-child{min-width:80px}
   #tUsers td:nth-child(3){white-space:normal;overflow-wrap:anywhere}
   #tUsers tr.hist>td{padding:0;background:#fafbfd;border-bottom:2px solid var(--line)}
   .histbox{padding:12px 14px 6px}

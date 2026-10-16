@@ -21,6 +21,8 @@ function parseNodes(xml) {
       cls: attr.class || '',
       pkg: attr.package || '',
       clickable: attr.clickable === 'true',
+      checkable: attr.checkable === 'true',
+      checked: attr.checked === 'true' ? true : attr.checked === 'false' ? false : null,
       // ★★ 2026-10-04：必须保留 enabled —— 得物「关联好物」那一行在**自动识别视频好物**期间
       //   是 `clickable=true` 但 **`enabled=false`**（真机实测 t0/t1 两屏都是）。
       //   少了这个字段就没法判「它现在到底能不能点」⇒ 点了没反应，而报错会指向后面那一步
@@ -334,6 +336,7 @@ function suggest(nodes, pkg, opts = {}) {
   pushStep('未完成草稿拦截 · 点「放弃」（只有真弹出「是否继续编辑」时才点）', 'tapId',
     DEWU.resumeDialog.dismissId, RESUME_HINT, { whenOn: DEWU.resumeDialog.dismissId });
   pushStep('从相册选图', 'tapText', '相册', '选图入口，按实际页面改');
+  steps.push(require('./uimapshape').selectImages());
   pushStep('确认选图', 'tapText', '下一步', '部分版本叫 完成/确定');
   pushStep('填标题', 'input', '${title}', '占位符在运行时替换为生成好的标题');
   pushStep('填正文', 'input', '${body}', '占位符替换为正文');

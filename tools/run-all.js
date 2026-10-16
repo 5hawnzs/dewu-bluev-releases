@@ -71,6 +71,11 @@ const SUITES = [
   ['adbtest', 'node', ['tools/adbtest.js']],
   ['mediaquerytest', 'node', ['tools/mediaquerytest.js']],
   ['publish-sequencetest', 'node', ['tools/publish-sequencetest.js']],
+  ['publish-jobtest', 'node', ['tools/publish-jobtest.js']],
+  ['publish-transitiontest', 'node', ['tools/publish-transitiontest.js']],
+  // 提交前复核与自动恢复：通过 publisher.run 验证主、备用入口。
+  ...['recover-selection', 'partial-selection', 'recover-title', 'unconfirmed-title', 'confirmed-title', 'single-selection'].flatMap(kind =>
+    ['main', 'fallback'].map(route => ['publish-content-' + kind + '-' + route, 'node', ['tools/publish-contenttest.js', kind, route]])),
   // 转场模块 + 加固模块：依赖是注入的 ⇒ 判据不接设备就能验完，单列一套才看得出哪条判据塌了
   ['transitiontest', 'node', ['tools/transitiontest.js']],
   // ★ 这一套里有多条"如实失败"的用例要等满转场超时（每条 30s，实测整套约 250s）——

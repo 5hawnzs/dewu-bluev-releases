@@ -271,17 +271,11 @@ const namesOf = steps => steps.map(s => String(s.name || s.action)).join(' → '
       && svIdx > 0 && /选中要发/.test(String(sug.videoSteps[svIdx - 1].name || '')),
       JSON.stringify({ 图文前一步: sug.steps[siIdx - 1] && sug.steps[siIdx - 1].name, 视频前一步: sug.videoSteps[svIdx - 1] && sug.videoSteps[svIdx - 1].name }));
 
-    // ★★ 现状说明（不是断言，但必须如实）：`harden()` 目前**只在「界面抓表」这一条路上被调用**
-    //   （uimap.js 的 suggest）。另外两条路 —— 出厂内置表、用户导入的表 —— 还**没有**接它。
-    //   后果要说清楚：出厂表和本机上已经存下的表里，**视频**那条还是两条盲点 + 两条固定 wait；
-    //   publisher.js 的旧表兼容分支只认 `whenOn=edit_panel`（图文那一步），接不住视频。
-    //   所以图上这条路目前只对「重新抓一次表」的用户生效 —— 这是候选 3 还没做完的那一半。
-    const rawHas = builtin.steps.some(s => s.action === 'transition');
-    const rawBlindVideo = builtin.videoSteps.filter(s => s.action === 'tapXY' && String(s.value).replace(/\s/g, '') === '985,1843').length;
-    console.log('      （现状说明：出厂内置表里' + (rawHas ? '已有' : '还没有') + '转场步骤，'
-      + '视频里还剩 ' + rawBlindVideo + ' 个盲点 985,1843；加固目前只在「界面抓表」那条路上被调用）');
+    // 内置表和导入旧表在 publisher.run 的真实执行入口加固；行为验证见 publish-transitiontest.js。
+    console.log('      （生产执行入口现已统一加固，图文/视频按实际内容类型确认目标页）');
   }
 
   console.log('');
   console.log(process.exitCode ? '有 FAIL' : '全部通过');
 })().catch(e => { console.log('FAIL  用例抛异常（不许抛）：' + (e && e.stack || e)); process.exitCode = 1; });
+

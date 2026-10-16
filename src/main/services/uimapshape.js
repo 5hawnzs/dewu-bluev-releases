@@ -87,7 +87,10 @@ function selectImages() {
 const BLIND_NEXT_POINTS = ['985,1843'];
 const BLIND_NEXT_ANCHORS = [D + 'edit_panel', D + 'editVideoView'];
 function isBlindNext(step) {
-  if (!step || step.action !== 'tapXY') return false;
+  if (!step) return false;
+  if (step.action === 'tapText' && step.value === '下一步') return true;
+  if (step.action === 'tapId' && [D + 'tvNextStep', D + 'flNextStep'].includes(step.value)) return true;
+  if (step.action !== 'tapXY') return false;
   if (BLIND_NEXT_ANCHORS.includes(String(step.whenOn || ''))) return true;
   return BLIND_NEXT_POINTS.includes(String(step.value || '').replace(/\s/g, ''));
 }
@@ -95,7 +98,9 @@ function isBlindNext(step) {
 /** 这一步是不是「选素材」那一步（转场必须紧跟在它后面） */
 const SELECT_NAME = /选中要发的|选图/;
 function isSelectStep(step) {
-  if (!step) return false;
+  if (!step || !/^tap/.test(String(step.action || '')) || isBlindNext(step)) return false;
+  // 打开相册不是选中素材，不能仅因步骤名含「选图」就提前推进。
+  if (step.action === 'tapText' && step.value === '相册') return false;
   if (SELECT_NAME.test(String(step.name || ''))) return true;
   return String(step.action || '') === 'tapId' && String(step.value || '').endsWith('/flThumbSelect');
 }
@@ -120,7 +125,6 @@ function harden(map) {
   for (const [key, want] of [['steps', imageTransition], ['videoSteps', videoTransition]]) {
     const list = Array.isArray(src[key]) ? src[key].slice() : [];
     if (!list.length) continue;                                      // 视频单独没配 ⇒ 复用图文那套，不用补
-    if (list.some(s => s && s.action === 'transition')) continue;     // 已经有转场步骤 ⇒ 幂等，不动
     // ★ 插入点：**选素材那一步之后**。为什么不是「第一条 input 之前」：
     //   那样会把转场排在「点标题输入框」**后面** —— 框还没出现就去点它，等于白点一轮。
     //   转场的语义就是「选完素材 → 等到目标屏」，位置只能是紧跟着选素材。
@@ -129,6 +133,8 @@ function harden(map) {
     let anchor = -1;
     for (let i = 0; i < firstInput; i++) if (isSelectStep(list[i])) anchor = i;
     if (anchor < 0) continue;                                         // 找不到选素材那一步 ⇒ 一个字都不动
+    // 只有选材后的转场才表示这段已加固，其他位置的自定义转场不能遮住它。
+    if (list.slice(anchor + 1, firstInput).some(s => s && s.action === 'transition')) continue;
     // 摘掉选素材之后、第一次输入之前的所有「旧式盲点转场」与它们后面那条「补等待」。
     // ★ 「补等待」的判据必须看**原始序列里紧邻的前一步**是不是盲点：
     //   盲点先被摘掉，再看已保留列表的尾巴就会漏删这一条（见 tools/transitiontest.js 的反证用例）。

@@ -16,6 +16,14 @@ function inspect(nodes) {
   const pick = (buttons, title) => buttons.sort((a,b) => Number(explicitClose(b))-Number(explicitClose(a))
     || (title && title.center ? Math.hypot(a.center.x-title.center.x,a.center.y-title.center.y)-Math.hypot(b.center.x-title.center.x,b.center.y-title.center.y) : 0)
     || nodes.indexOf(b)-nodes.indexOf(a))[0];
+  // ★ 备用入口起手会撞上「是否继续编辑」：这是上一轮中断留下的半成品。
+  //   本次要发的是队列里的新内容 ⇒ 在这里点「放弃」是正确且安全的；
+  //   它不能和下面「取消上传/取消发布」等同等待（那些涉及正在执行的内容）。
+  const resumeTitle = own.find(n => /^是否继续编辑/.test(text(n)));
+  const resumeCancel = own.find(n => usable(n) && /:id\/tvCancel$/.test(n.id) && /^(放弃|取消)$/.test(text(n)));
+  if (resumeTitle && resumeCancel) {
+    return { name: '未完成内容继续编辑提示', title: text(resumeTitle), button: resumeCancel, resume: true };
+  }
   // 这些按钮涉及正在执行的内容，不能把“取消”当作普通弹窗关闭。
   const unsafe = own.find(n => /^(取消上传|取消发布|放弃发布|放弃编辑|保存草稿|是否继续编辑|确认支付|确认付款|退出登录)$/.test(text(n)));
   if (unsafe) return { waiting: true, name: text(unsafe) + '（等待内容操作结束，不取消上传或发布）' };

@@ -407,9 +407,37 @@ async function tapReadyCamera(serial, ctx) {
   throw error;
 }
 
+// 备用入口进「动态」前先清掉上一轮中断留下的「是否继续编辑」半成品弹窗。
+// 主入口定位表里有 resumeDialog 守卫，但备用入口写死 tab_trends，缺这一层。
+async function dismissResumeDialog(serial, ctx = {}) {
+  const started = performance.now();
+  while (performance.now() - started < 10000) {
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    const page = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0 }, ctx);
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    // 无文字或拿不到完整结构时不瞎点；只处理已确认的「是否继续编辑」弹窗。
+    if (!page.ok || page.via === 'dumpsys') return;
+    const dialog = entrydialogs.inspect(uimap.parseNodes(page.xml));
+    if (dialog && dialog.resume && dialog.button) {
+      if (ctx.log) ctx.log('备用入口：先点「放弃」清掉上一轮未完成内容，再进入动态', 'info');
+      const result = await adb.tap(serial, dialog.button.center.x, dialog.button.center.y);
+      if (!result.ok) {
+        const error = new Error('未能点击「放弃」关闭未完成内容提示；未继续进入发布入口。');
+        error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+        throw error;
+      }
+      await sleep(400, ctx.cancelled);
+      continue;
+    }
+    return;
+  }
+}
+
 async function openPublishEntry(serial, ctx = {}) {
   const home = await adb.ensureApp(serial, { pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity, judge: f => uimap.isHomeScreen(f), timeoutMs: 30000, allowForceStop: false });
   if (!home.ok) throw new Error('无法返回得物首页：' + (home.why || '未知原因'));
+  // 上一轮中断留下的「是否继续编辑」会挡在动态页签前；先点「放弃」再进。
+  await dismissResumeDialog(serial, ctx);
   await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' }, {}, ctx);
   await sleep(400, ctx.cancelled);
   await tapReadyCamera(serial, ctx);
@@ -447,6 +475,25 @@ async function openPublishEntry(serial, ctx = {}) {
 function isAccountEntryStep(step) {
   return step.action === 'tapId' && /:(?:id)\/(?:tab_user|tvGoHomePage|rlPublish)$/.test(step.value || '')
     || step.action === 'tapXY' && /^底部.*我/.test(step.name || '') && step.whenNotOn === 'com.shizhuang.duapp:id/rlPublish';
+}
+
+// 主入口和草稿箱出口同样必须等目标页，点击命令成功不等于转场完成。
+async function confirmAlbumEntry(serial, step, ctx) {
+  const allowDraft = step.value !== uimap.DEWU.draft.exitId;
+  const started = Date.now();
+  let focus = '';
+  while (Date.now() - started < 30000) {
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    focus = await adb.currentFocus(serial, { timeout: 3000 });
+    if (uimap.isPublishScreen(focus) || allowDraft && uimap.isDraftScreen(focus)) {
+      if (ctx.log) ctx.log(`${step.name || step.value}：已确认进入${uimap.isDraftScreen(focus) ? '草稿箱' : '发布流程'}`, 'info');
+      return;
+    }
+    await sleep(300, ctx.cancelled);
+  }
+  const error = new Error(`${step.name || step.value}：点击后等待 30 秒仍未确认进入相册${allowDraft ? '或草稿箱' : ''}；当前页面${focus || '读不到'}。未选材、未填写、未提交，停止本批次。`);
+  error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+  throw error;
 }
 
 async function runStep(serial, step, data, ctx) {
@@ -571,7 +618,7 @@ async function runStep(serial, step, data, ctx) {
           await openPublishEntry(serial, ctx);
           return { alternateEntry: true };
         }
-        const rawHit = exact.length ? exact : uimap.findNodes(nodes, { contains: step.value }).filter(x => x && x.center);
+        let rawHit = exact.length ? exact : uimap.findNodes(nodes, { contains: step.value }).filter(x => x && x.center);
         // ★★ tapCardText：颜色文字**不是**选中卡片的开关
         //   （真机实测：点它弹「选择商品规格」）。这里把「颜色文字」
         //   换算成「包住它的那张商品图」，点图心才等于选中整张卡。
@@ -662,6 +709,45 @@ async function runStep(serial, step, data, ctx) {
         pickList.map(n0 => ({ x: n0.center.x, y: n0.center.y })),
         pickList.length > 1 ? 250 : 0);
       if (!r.ok) throw new Error('点击失败：' + (r.stderr || '').trim());
+      if (step.action === 'tapId' && ['com.shizhuang.duapp:id/rlPublish', uimap.DEWU.draft.exitId].includes(step.value)) {
+        await confirmAlbumEntry(serial, step, ctx);
+      }
+      // 把选材检查交给下一次转场观测，正常路径不额外抓屏。
+      if (step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/flThumbSelect') {
+        const nextWasEnabled = nodes.some(n => /:id\/(?:tvNextStep|flNextStep)$/.test(n.id) && n.enabled);
+        let repairs = 0, unknownObservations = 0;
+        ctx.confirmSelection = async d => {
+          const nodes = uimap.parseNodes(d.xml || '');
+          if (!nodes.some(n => n.id === step.value)) return true;
+          const counts = nodes.filter(n => /:id\/(?:tvNextStep|flNextStep)$/.test(n.id))
+            .map(n => (n.text + ' ' + n.desc).match(/下一步\s*[（(]\s*(\d+)\s*[）)]/)).filter(Boolean).map(m => Number(m[1]));
+          if (ctx.log) ctx.log('选材观测：预期 '+want+'；数量标记 '+(counts.length?counts.join('/'):'无')+'；图片格 '+nodes.filter(n=>n.id===step.value).length+'；可勾选 '+nodes.filter(n=>n.id===step.value&&n.checkable).length, 'info');
+          const actual = counts.length && counts.every(n => n === counts[0]) ? counts[0] : null;
+          if (actual === want) { ctx.confirmSelection = null; return true; }
+          const cells = nodes.filter(n => n.id === step.value);
+          // 相册只有一份素材时，从不可用变为可用的下一步可证明已选一份；无需依赖数字文案。
+          if (want === 1 && cells.length === 1 && !nextWasEnabled
+            && nodes.some(n => /:id\/(?:tvNextStep|flNextStep)$/.test(n.id) && n.enabled)) {
+            ctx.confirmSelection = null; return true;
+          }
+          const targets = pickList.map(old => cells.find(n => n.bounds === old.bounds));
+          // 只接受明确的可勾选状态；普通节点默认 checked=false 不能证明漏选。
+          const known = targets.every(n => n && n.checkable && typeof n.checked === 'boolean');
+          const missing = known ? targets.filter(n => !n.checked) : [];
+          if (known && !missing.length && actual === null) { ctx.confirmSelection = null; return true; }
+          if (known && missing.length && repairs < 2) {
+            checkCancelled(); repairs++;
+            const r = await adb.tapSeq(serial, missing.map(n => n.center), missing.length > 1 ? 250 : 0);
+            if (!r.ok && ctx.log) ctx.log('漏选补点回执未确认，将按下一次页面观测核实', 'warn');
+            if (ctx.log) ctx.log(`选材自动恢复：仅补选 ${missing.length} 张（第 ${repairs}/2 次）`, 'info');
+            return false;
+          }
+          // 结构尚未就绪时先让转场循环继续观测，不能首次读不到就终止。
+          if (!known && actual === null && unknownObservations++ < 2) return false;
+          const error = new Error(`选材自动恢复未完成：预期 ${want} 张，实际 ${actual === null ? '读不到' : actual}；${known ? '补选后仍未确认' : '缺少可定位的勾选状态'}，保留现场`);
+          error.code = 'PUBLISH_CONTENT_UNCONFIRMED'; throw error;
+        };
+      }
       if (want > 1 && ctx && ctx.log) {
         const pts = pickList.map(n0 => n0.center.x + ',' + n0.center.y).join(' / ');
         ctx.log(`${step.name || step.value}：一次点了 ${want} 个（相册按时间倒序，点的是最前面 ${want} 格；坐标 ${pts}）`, 'info');
@@ -729,13 +815,28 @@ async function runStep(serial, step, data, ctx) {
       //     · 输入法不是 ADBKeyboard 时中文**整串丢失**，广播照样返回成功。
       //   校验对象 = **紧邻的上一步 tapId 点的那个框**（由 runReal 传进来；只认紧邻 ⇒ 话题步不会误报）。
       //   判据：完全一致，或以「期望串的前 12 个字符」开头（得物可能对标题做截断/规整）。
-      //   读不到结构时**既不算失败也不算通过**，如实告警（本项目口径：「读不到 ≠ 成功」）。
+      //   读不到结构时有限重读；仍未知就停止批次，不让未知内容继续提交。
       const checkId = String((ctx && ctx.inputCheckId) || '');
       if (checkId) {
         const want = String(step.value == null ? '' : step.value);
-        const got = await adb.readTextOf(serial, checkId, { pkg: uimap.DEWU.pkg });
+        let got;
+        for (let read = 0; read < 3; read++) {
+          checkCancelled();
+          got = await adb.readTextOf(serial, checkId, { pkg: uimap.DEWU.pkg });
+          if (got.ok && String(got.text || '').trim() === '' && want && read === 0) {
+            // 已明确确认空框，重新定位并补输一次；非空内容不追加，避免串字。
+            if (ctx && ctx.log) ctx.log(`「${step.name || '输入'}」自动恢复：空框重新定位并补输一次`, 'info');
+            await runStep(serial, { action: 'tapId', value: checkId, name: '输入自动恢复定位' }, {}, ctx);
+            const retry = await adb.inputText(serial, want);
+            if (!retry.ok && ctx && ctx.log) ctx.log('补输回执未确认，继续按实际内容核验', 'warn');
+            continue;
+          }
+          if (got.ok) break;
+          if (read < 2) await sleep(300, ctx && ctx.cancelled);
+        }
         if (!got.ok) {
-          if (ctx && ctx.log) ctx.log(`「${step.name || '输入'}」回读不到，无法确认填进去没有（${got.why}）`, 'warn');
+          const error = new Error(`「${step.name || '输入'}」有限重读后仍无法确认内容（${got.why}），停止批次并保留现场`);
+          error.code = 'PUBLISH_CONTENT_UNCONFIRMED'; throw error;
         } else {
           // 比对前**先把空白全部去掉**：正文是多行的（`\n`），而 dump 把换行渲染成什么形态
           // 不可控（`&#10;` / 真换行 / 空格）⇒ 拿原文比会**假报不一致**。
@@ -901,7 +1002,28 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   //   ★ 顺序：守卫在**清相册/推素材之前** ⇒ 拦下时连素材都不推（不白跑几十秒）。
   //   ★ 失败就**如实抛错**，绝不"当作没这回事继续往下点"（不知道自己在哪一屏时点固定坐标＝乱点）。
   //   2026-10-14：历史强停恢复已禁止。草稿箱也是有效入口，连续发布直接沿用已有返回页。
-  const steps = uimap.stepsFor(map, isVideo);
+  // 在真实执行入口加固，覆盖内置表、导入旧表和调用方传入表。
+  ctx.confirmSelection = null; // 每条素材重新建立选材观测，不沿用上一条状态。
+  const shape = require('./uimapshape');
+  let selectedSteps = uimap.stepsFor(map, isVideo).slice();
+  if (isVideo && !(map.videoSteps || []).length) {
+    selectedSteps = selectedSteps.map(step => {
+      // 复用图文的位置，不能复用图文的目标屏和图片数量。
+      if (step.action === 'transition' && step.until === shape.IMAGE_TARGET) return shape.videoTransition();
+      if (step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/flThumbSelect' && step.count === '${imageCount}') {
+        return { ...step, count: '${videoCount}' };
+      }
+      return step;
+    });
+  }
+  const stepKey = isVideo ? 'videoSteps' : 'steps';
+  const steps = shape.harden({ [stepKey]: selectedSteps }).map[stepKey] || selectedSteps;
+  if (isVideo && !steps.some(step => step.action === 'videoCover'
+    || step.action === 'tapId' && /:id\/tv_skip$/.test(step.value || '')
+    || step.action === 'tapXY' && String(step.value).replace(/\s/g, '') === '820,1857')) {
+    const transitionIndex = steps.findIndex(step => step.action === 'transition' && step.until === shape.VIDEO_TARGET);
+    if (transitionIndex >= 0) steps.splice(transitionIndex + 1, 0, { name: '选择并核验视频封面', action: 'videoCover' });
+  }
   // 草稿箱本身有发布新动态入口。复用已有返回页信息和定位步骤，下一条无需回首页。
   const draftEntry = steps.findIndex(step => step.action === 'tapId' && step.value === uimap.DEWU.draft.exitId
     && step.whenOn === uimap.DEWU.draft.titleId);
@@ -1140,6 +1262,15 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
         || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布'));
       if (submittingVideo) await require('./videocover').verify(serial, ctx);
       rs = await runStep(serial, step, data, ctx);
+      if (!(rs && rs.skipped) && (step.action === 'tapCardText'
+        || step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/ivProduct')) {
+        try {
+          await runStep(serial, { name: '选择好物后返回文案编辑页', action: 'waitId', value: 'com.shizhuang.duapp:id/etTitle', timeout: 30000 }, {}, ctx);
+        } catch (error) {
+          error.code = 'PUBLISH_TRANSITION_UNCONFIRMED';
+          throw error;
+        }
+      }
     } finally {
       const used = Date.now() - tStep;
       if (ctx.stepTiming) ctx.stepTiming.push({ name: step.name || step.value, ms: used, row: row.dir });
@@ -1441,7 +1572,7 @@ async function runBatch(state, ctx = {}) {
       stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED' || e.code === 'ALBUM_BUSY';
       if (e.code === 'ALBUM_BUSY') stoppedReason = '相册文件持续占用，自动恢复未解除；请处理设备占用后重新启动任务';
       if (e.code === 'UI_COORDINATES') stoppedReason = reason;
-      if (e.code === 'PUBLISH_ENTRY_UNCONFIRMED' || e.code === 'PUBLISH_TRANSITION_UNCONFIRMED') { stoppedReason = reason; stoppedForEntry = true; }
+      if (e.code === 'PUBLISH_ENTRY_UNCONFIRMED' || e.code === 'PUBLISH_TRANSITION_UNCONFIRMED' || e.code === 'PUBLISH_CONTENT_UNCONFIRMED') { stoppedReason = reason; stoppedForEntry = true; }
       // 持续文件占用是设备级故障，停止本批次，后续素材保留未执行。
       if (e.code === 'ALBUM_IO_INTERRUPTED') log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
       // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
@@ -1486,9 +1617,9 @@ async function runBatch(state, ctx = {}) {
       reportRow: row.reportRow || 0   // 从「AI 内容报告」导入的行：回写时需要它在 Excel 里的行号
     });
     done++;
-    progress({ done, total: todo.length, label: row.dir, succeeded: rows.filter(r => r.result === '发布成功').length });
+    progress({ done, total: todo.length, label: row.dir, succeeded: results.filter(r => r.result === '发布成功').length });
     if (stoppedReason) {
-      conclude((stoppedForEntry ? '发布入口尚未确认' : stoppedForSubmission ? '本条提交尚未稳定' : stoppedForAlbum ? '相册持续占用' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
+      conclude((stoppedForEntry ? '发布流程自动恢复后仍未确认' : stoppedForSubmission ? '本条提交尚未稳定' : stoppedForAlbum ? '相册持续占用' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
       break;
     }
   }
@@ -1501,8 +1632,9 @@ async function runBatch(state, ctx = {}) {
       onRow(row);
     }
   }
-  const okCount = rows.filter(r => r.result === '发布成功').length;
-  const failCount = rows.filter(r => r.result === '失败').length;
+  // 批次汇总只统计本次实际执行的结果；队列里此前已提交的条目不再计入。
+  const okCount = results.filter(r => r.result === '发布成功').length;
+  const failCount = results.filter(r => r.result === '失败').length;
   log(`批量发布完成，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s`, 'info');
   log(cancelled() || stoppedReason ? `批次已停止：成功 ${okCount} 条，失败 ${failCount} 条，其余已取消或未执行`
     : `发布结束：共 ${todo.length} 条 / ${failCount} 失败，成功 ${okCount}（${mode === 'adb' ? '真实设备' : '模拟'}）。内容展示与审核结果请在得物查看`, cancelled() ? 'info' : stoppedReason ? 'warn' : 'ok');

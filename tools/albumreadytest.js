@@ -183,8 +183,15 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
     {action:'tapId',value:'com.shizhuang.duapp:id/rlPublish',name:'发布新动态'},
     {action:'tapText',value:'发布',name:'提交发布'}]}}});
   fs.writeFileSync(path.join(dir,'MEDIA_BUSY_ROUNDS'),'1');
+  // 主入口现在会确认目标页，假设备也必须真实推进前台状态。
+  observeCommand = args => {
+    const cmd = String(args[args.length - 1]);
+    if (cmd === 'input tap 200 200') fs.writeFileSync(path.join(dir, 'FOCUS'), 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity');
+    if (cmd === 'input tap 162 160') fs.writeFileSync(path.join(dir, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
+  };
   const overlapStart=calls().length;
   const overlap=await publisher.run(state());
+  observeCommand = null;
   const overlapTrace=calls().slice(overlapStart);
   const overlapFirstRm=overlapTrace.findIndex(c=>/rm -f /.test(c));
   const lastScan=overlapTrace.map((c,i)=>/--method scan_volume/.test(c)?i:-1).reduce((a,b)=>Math.max(a,b),-1);

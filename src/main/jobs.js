@@ -629,6 +629,7 @@ async function dispatch(type, args, ctx) {
         : '视频复用图文（默认，不用单独配）'}（来自 ${path.basename(args.file)}）`);
       return { steps: steps.length, videoSteps: videoSteps.length, file: args.file };
     }
+    case 'publish.fallbackTest':
     case 'publish.run': {
       const s = st();
       if (!s.publish.rows || !s.publish.rows.length) throw new Error('请先导出发布单');
