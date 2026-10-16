@@ -409,6 +409,9 @@ async function tapReadyCamera(serial, ctx) {
 
 // 备用入口进「动态」前先清掉上一轮中断留下的「是否继续编辑」半成品弹窗。
 // 主入口定位表里有 resumeDialog 守卫，但备用入口写死 tab_trends，缺这一层。
+// ★★ 2026-10-17 提速：这一次读屏**顺便**当「点动态」那一步的页面结构用（返回值里的 xml），
+//   否则为了这一层守卫要在同**一屏**上多抓一次（实测一次 dump ~1-2s）——用户口径里的
+//   「减少重复观测」正是指这种同屏重复。中间没有任何动作 ⇒ 那份结构交给下一步点时一定新鲜。
 async function dismissResumeDialog(serial, ctx = {}) {
   const started = performance.now();
   while (performance.now() - started < 10000) {
@@ -416,7 +419,7 @@ async function dismissResumeDialog(serial, ctx = {}) {
     const page = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0 }, ctx);
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
     // 无文字或拿不到完整结构时不瞎点；只处理已确认的「是否继续编辑」弹窗。
-    if (!page.ok || page.via === 'dumpsys') return;
+    if (!page.ok || page.via === 'dumpsys') return null;
     const dialog = entrydialogs.inspect(uimap.parseNodes(page.xml));
     if (dialog && dialog.resume && dialog.button) {
       if (ctx.log) ctx.log('备用入口：先点「放弃」清掉上一轮未完成内容，再进入动态', 'info');
@@ -429,18 +432,25 @@ async function dismissResumeDialog(serial, ctx = {}) {
       await sleep(400, ctx.cancelled);
       continue;
     }
-    return;
+    return { xml: page.xml };
   }
+  return null;
 }
 
 async function openPublishEntry(serial, ctx = {}) {
-  const home = await adb.ensureApp(serial, { pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity, judge: f => uimap.isHomeScreen(f), timeoutMs: 30000, allowForceStop: false });
+  const home = await adb.ensureApp(serial, {
+    pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity,
+    judge: f => uimap.isHomeScreen(f), timeoutMs: 30000, allowForceStop: false,
+    onNote: m => { if (ctx.log) ctx.log(m, 'warn'); }
+  });
   if (!home.ok) throw new Error('无法返回得物首页：' + (home.why || '未知原因'));
   // 上一轮中断留下的「是否继续编辑」会挡在动态页签前；先点「放弃」再进。
-  await dismissResumeDialog(serial, ctx);
+  // 这一次读屏的结果**直接当下一跳的页面结构用**（presetXml）⇒ 同一屏不重复抓。
+  const resumePage = await dismissResumeDialog(serial, ctx);
   // 点「动态」后必须确认当前前台就是动态流 HomeActivity，否则中间可能仍有弹窗/慢转场。
   // 以前只 sleep 400ms 后找相机，弹窗或转场稍慢就会把错误丢给后面的 tab_trends/etTitle。
-  await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' }, {}, ctx);
+  await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' },
+    {}, ctx, resumePage && resumePage.xml);
   const trendStarted = performance.now();
   let trendConfirmed = false;
   while (performance.now() - trendStarted < 30000) {
@@ -537,7 +547,12 @@ async function confirmAlbumEntry(serial, step, ctx) {
   throw error;
 }
 
-async function runStep(serial, step, data, ctx) {
+/**
+ * @param presetXml 可选：调用方**刚刚**读到的这一屏结构（中间没有任何动作）。用它当第 1 次
+ *   尝试的页面结构，省掉同一屏的第二次抓屏（实测一次 dump ~1-2s）。只为「读出这一屏之后
+ *   紧接着就要点它」的调用方准备（见 openPublishEntry 的备用入口那一段）。
+ */
+async function runStep(serial, step, data, ctx, presetXml) {
   const checkCancelled = () => { if (ctx && ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消'); };
   checkCancelled();
   if (ctx.publishEntryReady && isAccountEntryStep(step)) return { skipped: true, why: '已由备用入口进入发布流程' };
@@ -568,7 +583,7 @@ async function runStep(serial, step, data, ctx) {
     };
     return require('./transition').run(serial, spec, ctx);
   }
-  let reusedXml = null;
+  let reusedXml = (typeof presetXml === 'string' && presetXml) ? presetXml : null;
   if (step && (step.whenOn || step.whenNotOn)) {
     const g = await screenGuard(serial, step, ctx, wantAnimOff);
     if (!g.ok) return { skipped: true, why: g.why };
@@ -1088,6 +1103,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       want: uimap.DEWU.homeActivity,
       judge: (f) => uimap.isHomeScreen(f) || (draftEntry >= 0 && uimap.isDraftScreen(f)),
       allowForceStop: false,
+      // 收掉上一次中断留下的发布页时要让用户看见（内容进了草稿，不是被丢掉）。
+      onNote: m => log(m, 'warn'),
       timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
     });
     entryFocus = g.focus || '';
@@ -1508,6 +1525,7 @@ async function runBatch(state, ctx = {}) {
     const home = await adb.ensureApp(serial, {
       pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity,
       judge: focus => uimap.isHomeScreen(focus) || uimap.isDraftScreen(focus), allowForceStop: false,
+      onNote: m => log(m, 'warn'),
       timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
     });
     if (!home.ok) throw new Error('发布前未能将得物拉回首页：' + (home.why || '未知原因'));

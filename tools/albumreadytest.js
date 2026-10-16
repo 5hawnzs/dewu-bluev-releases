@@ -29,7 +29,7 @@ const state = () => ({ items: [{ id: 'A', dir: itemDir, absDir: itemDir, files: 
   copyRows: [{id:'A',title:'测试',body:'测试',topics:[]}], verify:{rows:[]},
   publish:{mode:'adb',device:'FAKE',rows:[{seq:1,id:'A',dir:'A',goods:1,result:''}]} });
 const calls = () => fs.readFileSync(path.join(dir, 'calls.log'), 'utf8').trim().split('\n');
-const ok = (label, value) => { assert(value, label); console.log('PASS ' + label); };
+const ok = (label, value, why) => { assert(value, label + (why ? '　→ 实际：' + why : '')); console.log('PASS ' + label); };
 // 设备端路径的单引号包裹（新用例里要直接发 shell 命令做回读）。
 const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 (async () => {
@@ -309,7 +309,8 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
         try{result=await publisher.openPublishEntry('FAKE',dialogCtx);}catch(e){error=e;}finally{observeCommand=null;}
         const trace=calls().slice(beginDialog), taps=trace.filter(c=>/input tap /.test(c));
         if(mode==='none')ok('没有弹窗不新增抓屏或点击：仍仅3次页面读取、动态与相机各点一次',result&&result.ok
-          &&trace.filter(c=>/uiautomator dump/.test(c)).length===3&&taps.length===2);
+          &&trace.filter(c=>/uiautomator dump/.test(c)).length===3&&taps.length===2,
+          JSON.stringify({ dumps: trace.filter(c=>/uiautomator dump/.test(c)).length, taps, ok: !!(result&&result.ok) }));
         else if(['update','notify','unknown','ambiguous'].includes(mode))ok('已知、未知或多个按钮弹窗自动关闭后再点击相机：'+mode,result&&result.ok
           &&taps.filter(c=>c.endsWith('input tap 450 100')).length===1
           &&taps.findIndex(c=>c.endsWith('input tap 450 100'))<taps.findIndex(c=>c.endsWith('input tap 300 100')));

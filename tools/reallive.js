@@ -12,13 +12,24 @@
    用法：
      node tools/reallive.js                # 按 project.publish.rows 全发
      node tools/reallive.js --dry          # 只走到「提交发布」前一步（不点提交）
+     node tools/reallive.js --dry --route=fallback --reset
+                                           # 强制走备用入口（动态流相机）；--reset 把已成功的行改回待发布
    前置：模拟器在线、得物已登录且停在首页。
+
+   ★ 为什么要有 --route / --reset（2026-10-17）：
+     · 主入口和备用入口必须**都能真机走通**。本机账号有「主页」按钮 ⇒ 不强制就永远只测主入口，
+       而远端无主页按钮的账号走的正是备用那一段 —— 必须能指定路线单独验。
+     · `publisher.runBatch` 只处理 `result !== '发布成功'` 的行（已回写的行不重复发布，这是产品口径）。
+       想拿历史内容重跑就得先把那几行改回待发布 —— 所以 `--reset` 会**先备份 project.json**，
+       再只清掉结果字段；配合 `--dry` 使用不会真的发出去。
 */
 const path = require('path');
 const Module = require('module');
 
 const ROOT = path.resolve(__dirname, '..');
 const DRY = process.argv.includes('--dry');
+const ROUTE = (process.argv.find(a => a.startsWith('--route=')) || '').slice('--route='.length);
+const RESET = process.argv.includes('--reset');
 
 // ---- 把 electron 换成薄壳：store/project/logbus 都只 require electron 的 app.getPath ----
 const USERDATA = 'C:/Users/Administrator/AppData/Roaming/dewu-bluev-publisher';
@@ -48,6 +59,9 @@ const stub = {
   Notification: function () { return { show: () => {} }; },
   screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 800 } }) },
 };
+// ★ 2026-10-17：`project.patch()` 会 `BrowserWindow.getAllWindows()` 广播给界面。
+//   干跑没有窗口 ⇒ 必须明确返回「一个窗口都没有」，否则 patch 直接 TypeError（实测踩到）。
+stub.BrowserWindow.getAllWindows = () => [];
 require.cache['__electron_stub__'] = { id: '__electron_stub__', filename: '__electron_stub__', loaded: true, exports: stub };
 
 const store = require(path.join(ROOT, 'src/main/store'));
@@ -74,11 +88,29 @@ console.log('adb = ' + adb.getActiveAdb().path + '（来源 ' + adb.getActiveAdb
 const st = () => project.get();
 const c = store.get('publish') || {};
 
+// --reset：把「发布成功」的行改回待发布，好让 runBatch 真的跑它（只动结果字段，不动素材与文案）。
+//   先备份 project.json —— 走的是真工程文件，改坏了要能一眼回退。
+if (RESET) {
+  const state0 = st();
+  const rows0 = (state0.publish && state0.publish.rows) || [];
+  const file = path.join(USERDATA, 'project.json');
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const backup = file + '.bak-before-reset-' + stamp;
+  try {
+    require('fs').copyFileSync(file, backup);
+    console.log('★ --reset：已备份 ' + backup);
+  } catch (e) { console.log('★ --reset：备份失败（继续）：' + e.message); }
+  rows0.forEach(r => { r.result = ''; r.reason = ''; r.status = '待发布'; r.elapsed = 0; });
+  project.patch({ publish: Object.assign({}, state0.publish, { rows: rows0 }) });
+  console.log(`★ --reset：${rows0.length} 行已改回待发布`);
+}
+
 console.log('=== 本次要发的 ===');
 const state = st();
 const rows = (state.publish && state.publish.rows) || [];
 rows.forEach(r => console.log(` seq${r.seq} ${r.id} | ${r.title} | goods=${JSON.stringify(r.goodsList)}`));
 console.log('mode=', c.mode, '| device=', store.get('publish.device') || c.device, '| intervalSec=', c.intervalSec);
+if (ROUTE) console.log('★ --route=' + ROUTE + '（main = 强制主入口，fallback = 强制动态流相机）');
 
 const serial = process.argv.find(a => a.startsWith('--serial='))?.slice(9) || store.get('publish.device') || c.device || '127.0.0.1:16384';
 
@@ -87,7 +119,12 @@ const runState = {
   items: state.items || [],
   copyRows: state.copyRows || [],
   verify: state.verify || { rows: [] },
-  publish: Object.assign({}, state.publish, { device: serial, mode: 'adb' }),
+  publish: Object.assign({}, state.publish, {
+    device: serial,
+    mode: 'adb',
+    // 不传 --route 就保持工程里的设置（与 App 行为一字不差）。
+    forceAlternateEntry: ROUTE === 'main' ? false : ROUTE === 'fallback' ? true : !!(state.publish || {}).forceAlternateEntry,
+  }),
 };
 // dry：剔除「提交发布」那一步（与 pubsim 同一手法）
 if (DRY) {

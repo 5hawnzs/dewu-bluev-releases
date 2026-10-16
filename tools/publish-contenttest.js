@@ -59,11 +59,15 @@ if(['partial-selection','recover-selection'].includes(which)){
  const evidence={case:which,route:fallback?'fallback':'main',okCount:result.okCount,failCount:result.failCount,stoppedReason:result.stoppedReason,reason:result.rows[0].reason,nextClicks,submissions,selected,logs:logs.filter(m=>/回读不到|转场|目标屏|自动恢复/.test(m))};
  fs.writeFileSync(path.join(tmp,which+'-'+evidence.route+'.json'),JSON.stringify(evidence,null,2));
  console.log(JSON.stringify(evidence));
- if(which==='single-selection'){assert.equal(submissions,1);assert.equal(result.okCount,1)}
- if(which==='recover-title'){assert.equal(submissions,1);assert.equal(result.okCount,1);assert.equal(inputAttempts,2)}
- if(which==='confirmed-title'){assert.equal(submissions,1);assert.equal(result.okCount,1)}
- if(which==='unconfirmed-title')assert.equal(submissions,0,'标题回读未确认时不得继续提交');
- if(which==='recover-selection'){assert.equal(selected,3);assert.equal(submissions,1);assert.equal(result.okCount,1)}
- if(which==='partial-selection'){assert.equal(submissions,0,'补选两次仍仅1图时不得继续提交');assert(result.stoppedReason);assert(logs.filter(m=>m.includes('选材自动恢复：')).length===2)}
+ // ★ 2026-10-17：这一套原来只打 JSON、一句 PASS 都不打 —— 而 tools/run-all.js 是按「PASS 行数」计数的，
+ //   于是这 12 条（6 个素材复核场景 × 主入口/备用入口）**全被判成没过**（其实断言全过）。
+ //   回归到底是绿的还是红的必须一眼可信 ⇒ 补上 PASS 行，与仓库里其他套件同一口径。
+ const expect=(cond,label)=>{assert(cond,evidence.route+' '+which+'：'+label);console.log('PASS '+evidence.route+' '+which+'：'+label)};
+ if(which==='single-selection'){expect(submissions===1,'只选一张时点一次下一步就进编辑页');expect(result.okCount===1,'单张素材也照常发出去')}
+ if(which==='recover-title'){expect(inputAttempts===2,'标题框空着时重新定位并补输一次');expect(submissions===1,'补输确认后只提交一次');expect(result.okCount===1,'这条照常发出去')}
+ if(which==='confirmed-title'){expect(submissions===1,'标题回读确认后只提交一次');expect(result.okCount===1,'这条照常发出去')}
+ if(which==='unconfirmed-title')expect(submissions===0,'标题回读未确认时不得继续提交');
+ if(which==='recover-selection'){expect(selected===3,'只选到 1 张时自动补选到 3 张');expect(submissions===1,'补齐后只提交一次');expect(result.okCount===1,'这条照常发出去')}
+ if(which==='partial-selection'){expect(submissions===0,'补选两次仍仅 1 图时不得继续提交');expect(!!result.stoppedReason,'必须如实停批并说明原因');expect(logs.filter(m=>m.includes('选材自动恢复：')).length===2,'补选最多两次，不许无限重试')}
 })().catch(e=>{console.error('发布复核回归失败：'+e.message);process.exitCode=1});
 

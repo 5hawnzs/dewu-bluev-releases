@@ -47,7 +47,25 @@ const filesLog = () => { try { return fs.readFileSync(FILES, 'utf8'); } catch (e
 const clearFiles = () => fs.writeFileSync(FILES, '');
 
 // ★ 必须在 require 被测模块之前替换：src/main/services/adb.js 在加载时就解构了 execFile
-require('child_process').execFile = require(path.join(__dirname, 'fakeadb', 'adb.js')).makeFakeAdb(FDB);
+const fakeExec = require(path.join(__dirname, 'fakeadb', 'adb.js')).makeFakeAdb(FDB);
+// ★★ 2026-10-17：「现场编排」钩子 —— 有些真机交互**光靠固定夹具表达不了**：
+//   在发布页按返回，**页面自己**会弹出「确定要返回编辑吗？」确认条，只有点了其中那颗
+//   「保存并退出」才真的离开发布流程。夹具不会因为按了返回就换一屏，所以在命令这一层
+//   按需改写 window.xml / FOCUS（与 tools/../transition-audit 的 reproduce.cjs 同一手法）。
+//   默认 null＝一个字节都不动，既有用例行为完全不变。
+let scene = null;
+//   用 Proxy 而不是包一层普通函数：断言侧会直接读 `execFile.__dirs` / `__bluevDir` 这些
+//   挂在假 adb 上的「现场状态」句柄（见 D1/㉜ 那几段）。包成新函数会把它们全遮掉 ——
+//   实测就是这么把 adbtest 打成 `Cannot set properties of undefined (setting 'exists')` 的。
+require('child_process').execFile = new Proxy(fakeExec, {
+  apply: (target, thisArg, args) => {
+    if (scene) {
+      const argv = Array.isArray(args[1]) ? args[1].join(' ') : String(args[1]);
+      try { scene(argv); } catch (e) { /* 现场脚本不许影响被测链路 */ }
+    }
+    return target.apply(thisArg, args);
+  }
+});
 // 假设备测试不读取宿主机真实模拟器。
 require(path.join(base, 'src/main/services/emulators.js')).discover = async () => ({ instances: [], errors: [] });
 
@@ -2607,6 +2625,10 @@ const state = {
       fs.writeFileSync(TAPF, 'publish');
       const timePub = async (sec) => {
         store.set({ publish: { uiMap, intervalSec: 0, postPublishWaitSec: sec } });
+        // ★ 2026-10-17：两次测量必须**从同一个状态起跑**。第 1 次跑完会把前台留在发布页上
+        //   （夹具的 TAP_FOCUS=publish），第 2 次就变成在测「残留发布页的收敛」而不是
+        //   「postPublishWaitSec 会不会拖慢完成」—— 那是另一个变量，也不是这条断言要问的事。
+        fs.writeFileSync(FOCUSF, HOME_F);
         const t0 = Date.now();
         await publisher.run(mkSt(), { log: () => {}, progress: () => {}, cancelled: () => false, onRow: () => {} });
         return Date.now() - t0;
@@ -3532,6 +3554,102 @@ const state = {
         && logs4.some(l => /媒体库核实主图时间最新/.test(l)
           && /scan_file 退出码 139/.test(l) && /scan_volume 退出码 139/.test(l)),
       String((r34.rows[0] || {}).result || '') + ' / ' + logs4.filter(l => /扫描命令/.test(l)).join(' | '));
+  }
+
+  // ==========================================================================
+  // F) ★★ 未完成内容不再把**整批**拦死（2026-10-17 真机取证）
+  //    另一台设备的失败日志里连着三条同样的失败：「没能准备得物首页或草稿箱发布入口：当前停在
+  //    可能含未完成内容的页面 TotalPublishProcessActivity，不能自动返回以免保存草稿、丢弃内容
+  //    或中断上传」，之后那台设备**每一批都开不了头**，只能人工去把那一页点掉 —— 这就是用户
+  //    口径里的「卡点」。
+  //    真机取证（MuMu12 / 得物 6.0.5 / 在有内容的发布页按返回）：
+  //      tvTip「确定要返回编辑吗？」/ tvQuit「返回编辑」/ tvSaveDraft「保存并退出」/ tvCancel「取消」
+  //    ⇒「保存并退出」是**页面自己提供的无损出口**（内容存进「我-个人主页」的草稿，不丢）。
+  //    判据三条：① 有内容但有无损出口 ⇒ 自动收掉、本批照常开始；
+  //              ② 正在上传/发布 ⇒ 一个 tap 都不发（不动正在执行的内容）；
+  //              ③ 弹出确认条却**没有**无损出口 ⇒ 照旧拒绝，绝不替用户选「返回编辑 / 取消」。
+  // ==========================================================================
+  {
+    const FOCUSF = path.join(FDB, 'FOCUS');
+    const PUB_FOCUS = 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity';
+    const HOME_FOCUS = 'com.shizhuang.duapp/.modules.home.ui.HomeActivity';
+    const hadF = fs.existsSync(FOCUSF) ? fs.readFileSync(FOCUSF, 'utf8') : null;
+    const stashF = fs.readFileSync(FAKE_WINDOW, 'utf8');
+    // 真机 dump 里**文字节点自己不可点**，可点的是它外面的容器（tvSaveDraft clickable=false，
+    // 真正 clickable 的是 layoutSaveDraft）—— 夹具必须照原样写，否则验不到「点的是哪一个」。
+    const line = (id, text, bounds, clickable = true) => `<node index="0" text="${text}" resource-id="com.shizhuang.duapp:id/${id}"`
+      + ` class="android.widget.TextView" package="com.shizhuang.duapp" enabled="true" clickable="${clickable}" bounds="${bounds}"/>`;
+    const saveDraftRow = line('layoutSaveDraft', '', '[0,1692][1080,1811]')
+      .replace('/>', '>' + line('tvSaveDraft', '保存并退出', '[0,1713][1080,1756]', false) + '</node>');
+    const hierarchy = inner => `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${inner}</hierarchy>`;
+    // 带内容的发布页（字段照真机 dump 原样搬）
+    const pageWithContent = hierarchy(line('etTitle', '米白调穿搭卫衣，质感在线', '[0,444][1080,487]')
+      + line('etTrendContent', '正文内容', '[0,503][1080,864]')
+      + line('tvSaveExit', '存草稿', '[14,1799][103,1915]')
+      + line('tvPublish', '发布', '[205,1815][1045,1892]'));
+    // 发布页按返回后**页面自己**弹出的确认条（真机 dump 原样）
+    const exitSheet = hierarchy(line('tvTip', '确定要返回编辑吗？', '[0,1483][1080,1571]')
+      + line('tvQuit', '返回编辑', '[0,1572][1080,1691]')
+      + saveDraftRow
+      + line('tvCancel', '取消', '[0,1822][1080,1920]'));
+    // 只有「返回编辑 / 取消」的确认条：**没有**无损出口
+    const exitSheetNoSave = hierarchy(line('tvTip', '确定要返回编辑吗？', '[0,1483][1080,1571]')
+      + line('tvQuit', '返回编辑', '[0,1572][1080,1691]')
+      + line('tvCancel', '取消', '[0,1822][1080,1920]'));
+    // 「保存并退出」的可点容器中心（真机：layoutSaveDraft [0,1692][1080,1811] ⇒ 540,1751±1）
+    const SAVE_DRAFT_TAP = /input tap 540 175[12]/;
+    const runFromPublishPage = async (pageXml, onBack) => {
+      fs.writeFileSync(FOCUSF, PUB_FOCUS);
+      fs.writeFileSync(FAKE_WINDOW, pageXml);
+      scene = cmd => {
+        // 按返回 ⇒ 页面自己弹出确认条（夹具不会因为按键就换一屏，只能在这里编排）
+        // ★ 传进来的是**整条 argv**（形如 `-s 127.0.0.1:5555 shell input keyevent 4`），
+        //   所以只能找子串、不能加行首锚点（加了就一条都匹配不上，实测踩到）。
+        if (/input keyevent (?:4|KEYCODE_BACK)\b/.test(cmd) && onBack) { fs.writeFileSync(FAKE_WINDOW, onBack); return; }
+        // 点「保存并退出」⇒ 真的离开发布流程、回到首页
+        if (SAVE_DRAFT_TAP.test(cmd)) { fs.writeFileSync(FOCUSF, HOME_FOCUS); fs.writeFileSync(FAKE_WINDOW, stashF); }
+      };
+      store.set({ publish: { uiMap, ensureAppTimeoutMs: 3000 } });
+      clearCalls();
+      const lg = [];
+      const st = mkAlbumState(2);
+      try {
+        await publisher.run(st, { log: (m, l) => lg.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
+      } catch (e) { st.publish.rows[0].reason = st.publish.rows[0].reason || ('抛出：' + e.message); }
+      scene = null;
+      return { log: calls(), logs: lg, row: st.publish.rows[0] };
+    };
+    try {
+      // F1) 有内容 + 页面自带无损出口 ⇒ 自动「保存并退出」，本批照常开始
+      const f1 = await runFromPublishPage(pageWithContent, exitSheet);
+      ok('F1 ★★★ 停在有内容的发布页 ⇒ 走页面自带的「保存并退出」无损收掉，不再把这一批拦死',
+        SAVE_DRAFT_TAP.test(f1.log) && !/没能准备得物首页/.test(String(f1.row.reason || '')),
+        (f1.log.match(/input (?:tap|keyevent) [^\n]*/g) || []).join(' | ').slice(0, 260) || '（一个 tap 都没发）');
+      ok('F1 ★ 收掉的是「保存并退出」，且只点一次（点两下就点空了）',
+        nOf(f1.log, /input tap 540 175[12]/g) === 1, '次数=' + nOf(f1.log, /input tap 540 175[12]/g));
+      ok('F1 ★ 日志里说清了「为什么动这一页、内容去哪了」（不许闷着收掉页面上的东西）',
+        f1.logs.some(l => /保存并退出/.test(l) && /草稿/.test(l)),
+        f1.logs.filter(l => /保存并退出/.test(l))[0] || '（没写）');
+
+      // F2) 正在上传/发布 ⇒ 一个 tap 都不发（不动正在执行的内容）
+      const uploading = hierarchy(line('etTitle', '标题', '[0,444][1080,487]')
+        + line('tvPublish', '正在上传', '[205,1815][1045,1892]'));
+      const f2 = await runFromPublishPage(uploading, null);
+      ok('F2 ★★ 发布页正在上传 ⇒ 如实停下，且**一个 tap 都不发**',
+        !/input tap/.test(f2.log) && !/input keyevent 4/.test(f2.log)
+        && /正在上传|上传中|正在发布|发布中/.test(String(f2.row.reason || '')),
+        (f2.log.match(/input (?:tap|keyevent) [^\n]*/g) || []).join(' | ') || '（没有 tap，正确）');
+
+      // F3) 有确认条但没有无损出口 ⇒ 照旧拒绝（绝不替用户选「返回编辑 / 取消」）
+      const f3 = await runFromPublishPage(pageWithContent, exitSheetNoSave);
+      ok('F3 ★★ 确认条上没有「保存并退出」⇒ 照旧拒绝，绝不点「返回编辑 / 取消」替用户做决定',
+        !SAVE_DRAFT_TAP.test(f3.log) && !/input tap 540 1631/.test(f3.log) && !/input tap 540 1871/.test(f3.log)
+        && /未完成内容|保存草稿|丢弃内容/.test(String(f3.row.reason || '')),
+        String(f3.row.reason || '').slice(0, 140));
+    } finally {
+      fs.writeFileSync(FAKE_WINDOW, stashF);
+      if (hadF == null) { if (fs.existsSync(FOCUSF)) fs.unlinkSync(FOCUSF); } else fs.writeFileSync(FOCUSF, hadF);
+    }
   }
 
   console.log('\n--- 日志样例 ---');

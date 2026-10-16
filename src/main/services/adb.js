@@ -14,6 +14,8 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const diagnostics = require('./diagnostics');
+const uimap = require('./uimap');
+const entrydialogs = require('./entrydialogs');
 
 /**
  * adb 可执行文件从哪来 —— 三段，优先级从高到低：
@@ -2295,6 +2297,82 @@ function isFocusOf(focus, activity) {
 }
 
 /**
+ * ★★ 2026-10-17：把「上一次中断留下的发布流程页」**无损**收掉。
+ *
+ * 为什么非做不可（另一台设备的真实失败日志 + 本机复现）：
+ *   上一次中断（程序被关、报错、或用户自己停掉）会把得物**留在发布页上**，
+ *   之后**每一批**都在这里失败：「当前停在可能含未完成内容的页面 TotalPublishProcessActivity，
+ *   不能自动返回以免保存草稿、丢弃内容或中断上传」。用户只能人工去把那一页点掉 —— 这就是卡点。
+ *
+ * 为什么不能简单地按返回：这一页上可能真有内容，盲按返回要面对它自己的确认条，
+ *   而确认条里「保存 / 放弃」的选择**不该由程序替用户做**（放弃＝真的丢内容）。
+ *
+ * ⇒ 判据（真机取证 / MuMu 12 / 得物 6.0.5）：在发布页按返回，页面自己会弹出
+ *     「确定要返回编辑吗？」，其中**「保存并退出」**是唯一一个「内容不丢、又能离开发布流程」的出口
+ *     （内容存进「我-个人主页」的草稿）。所以：
+ *   ① 这一屏正在上传/发布 ⇒ **一个键都不按**，如实停下（不打断正在执行的内容）；
+ *   ② 先按返回，让页面自己把确认条弹出来；出现「保存并退出」就点它 ⇒ 无损退出，本批继续；
+ *   ③ 拿不到那个出口 ⇒ 照旧拒绝（保护不变），绝不替用户点「返回编辑 / 取消」。
+ *
+ * @returns {{ok:boolean, focus:string, why:string}}
+ */
+async function leaveUnfinishedPage({ serial, focus, pkg, budgetMs, note }) {
+  // 上限 8 秒：真机上按返回后确认条**一秒内**就出来了（实测）。这里只是给它一点余量，
+  // 不是为了把整批的时间预算花光 —— 没有出口时要**尽快**如实失败，而不是让人干等。
+  const limit = Math.max(1500, Math.min(8000, Number(budgetMs) > 0 ? Number(budgetMs) : 8000));
+  const deadline = Date.now() + limit;
+  const publishish = f => /(?:publish|edit|camera|album|upload|payment|cashier|login)/i.test(String(f || ''));
+  const nodesNow = async () => {
+    const page = await dumpEx(serial, { pkg, retries: 0, allowAnimOff: false });
+    return page && page.ok ? uimap.parseNodes(page.xml) : [];
+  };
+  const nodes0 = await nodesNow();
+  if (entrydialogs.hasUploadInFlight(nodes0)) {
+    return { ok: false, focus,
+      why: `当前停在发布流程页「${focus}」，而这一屏正在上传或发布中 —— 不打断正在执行的内容，`
+        + '本批停止；等它自己结束后再发下一批' };
+  }
+  // 已经在确认条上（上一次就停在这一屏）就不用再按返回；否则先按返回让它自己弹出来。
+  if (!entrydialogs.inspectPublishExit(nodes0)) {
+    await keyevent(serial, 4);
+    await sleepMs(700);
+  }
+  let at = focus;
+  let tapped = false;
+  for (;;) {
+    const now = await currentFocus(serial);
+    if (now) at = now;
+    if (now && !publishish(now)) return { ok: true, focus: now, why: '' };
+    if (Date.now() >= deadline) break;
+    const exit = entrydialogs.inspectPublishExit(await nodesNow());
+    if (!exit) { await sleepMs(400); continue; }
+    if (tapped) {
+      // 已经点过一次「保存并退出」但仍停在这一屏 ⇒ **不点第二下**：那一下的坐标底下
+      // 可能已经不是这颗按钮了（真机同坐标换屏是常态，见 transition.js 的同一条教训）。
+      return { ok: false, focus: at,
+        why: `已按页面自带的「${exit.name}」退出，但仍停在发布流程页「${at}」—— 不再重复点击，本批停止，请在设备上人工确认这一页` };
+    }
+    if (!exit.button || !exit.button.center) {
+      return { ok: false, focus: at,
+        why: `当前停在发布流程页「${at}」，页面弹出的返回确认里没有「保存并退出」这个不丢内容的出口 —— `
+          + '不替你选「返回编辑 / 取消」，本批停止，请在设备上人工处理这一页' };
+    }
+    if (note) note(`收掉上一次中断留下的发布页：按页面自带的「${exit.name}」退出`
+      + '（内容会存进「我-个人主页」的草稿，不会丢），继续本批');
+    const r = await tap(serial, exit.button.center.x, exit.button.center.y);
+    if (!r.ok) {
+      return { ok: false, focus: at,
+        why: `点「${exit.name}」的回执未确认：${String(r.stderr || r.stdout || '').trim() || '未知原因'}。不重复点击，本批停止` };
+    }
+    tapped = true;
+    await sleepMs(900);
+  }
+  return { ok: false, focus: at,
+    why: `当前停在可能含未完成内容的页面「${at}」，按返回后 ${(limit / 1000).toFixed(1)}s 内没有出现`
+      + '「保存并退出」这个不丢内容的出口 —— 不自动替它选保存或放弃，本批停止，请在设备上人工处理这一页' };
+}
+
+/**
  * ★★ 2026-10-04 新增：**把 App 拉回指定的一屏，并确认它真的到了**。
  *
  * 为什么非做不可（真机实测）：一条内容发完之后，得物停在哪儿是**不确定的**
@@ -2314,7 +2392,7 @@ function isFocusOf(focus, activity) {
  *
  * @returns {{ok:boolean, focus:string, started:boolean, why:string}}
  */
-async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000, allowForceStop = true } = {}) {
+async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000, allowForceStop = true, onNote = null } = {}) {
   const t0 = Date.now();
   const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000;
   const isWant = (focus) => {
@@ -2379,8 +2457,15 @@ async function ensureApp(serial, { pkg, activity, want, judge, timeoutMs = 30000
       }
       if (!inTargetApp(focus)) break;
       if (/(?:publish|edit|camera|album|upload|payment|cashier|login)/i.test(focus)) {
-        return { ok: false, focus, started: false, from: before,
-          why: `当前停在可能含未完成内容的页面「${focus}」，不能自动返回以免保存草稿、丢弃内容或中断上传` };
+        // ★★ 2026-10-17：这里原来是**直接拒绝**（"不能自动返回以免保存草稿、丢弃内容或中断上传"）。
+        //   真机取证证明：上一次中断把得物留在发布页之后，**之后每一批都开不了头** —— 那正是用户
+        //   口径里的「卡点」。⇒ 改成先试着用**页面自己提供的无损出口**收掉它（见 leaveUnfinishedPage），
+        //   拿不到那个出口就照旧拒绝（保护不变，见该函数的三条判据）。
+        const escaped = await leaveUnfinishedPage({
+          serial, focus, pkg, budgetMs: timeout - (Date.now() - t0), note: onNote
+        });
+        if (escaped.ok) { focus = escaped.focus; backs++; continue; }
+        return { ok: false, focus: escaped.focus || focus, started: false, from: before, why: escaped.why };
       }
       const page = await dumpEx(serial, { pkg, retries: 0, allowAnimOff: false });
       if (!page.ok || /保存草稿|放弃编辑|放弃发布|正在上传|是否退出|是否继续编辑|确认支付|确认付款|退出登录/.test(page.xml || '')) {

@@ -20,7 +20,11 @@ function driver(reply, delayMs = 0) {
       const finish = () => callback(result.code || result.killed ? Object.assign(new Error('设备命令返回非零'), { code: result.code, killed: result.killed, signal: result.signal }) : null,
         result.stdout || (command.startsWith('content query ') && !result.code && !result.stderr ? 'No result found.\n' : ''), result.stderr || '');
       if (delayMs) setTimeout(finish, delayMs); else finish();
-    } } : name === './diagnostics' ? require('../src/main/services/diagnostics') : require(name)
+    // ★ 2026-10-17：adb.js 新增了 `./uimap` 与 `./entrydialogs` 两个依赖（发布页退出确认条要用）。
+    //   vm 里没有真实文件名 ⇒ 相对路径解析不到，必须在这里显式给出（同 diagnosticstest 的处理）。
+    } } : name === './diagnostics' ? require('../src/main/services/diagnostics')
+      : name === './uimap' ? require('../src/main/services/uimap')
+      : name === './entrydialogs' ? require('../src/main/services/entrydialogs') : require(name)
   });
   return { adb: module.exports, calls, executions };
 }

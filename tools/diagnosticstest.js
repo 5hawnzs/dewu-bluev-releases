@@ -5,7 +5,12 @@ const moduleBox = { exports: {} };
 let commands = 0;
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/main/services/adb.js'), 'utf8'), {
   module: moduleBox, exports: moduleBox.exports, process, Buffer, console, setTimeout, clearTimeout,
-  require: name => name === './diagnostics' ? diagnostics : name === 'child_process' ? {
+  // ★ 2026-10-17：adb.js 新增了 `./uimap` 与 `./entrydialogs` 两个依赖（发布页退出确认条要用），
+  //   vm 里没有真实文件名 ⇒ 相对路径解析不到，必须在这里显式给出。
+  //   漏掉它们的表现是「Cannot find module './uimap'」，看起来像产品坏了，其实是夹具没跟上。
+  require: name => name === './diagnostics' ? diagnostics
+    : name === './uimap' ? require('../src/main/services/uimap')
+    : name === './entrydialogs' ? require('../src/main/services/entrydialogs') : name === 'child_process' ? {
     execFile: (_file, args, _opts, callback) => {
       commands++;
       const failed = String(args.at(-1)).startsWith('find ');
