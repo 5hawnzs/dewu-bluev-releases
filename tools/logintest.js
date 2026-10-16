@@ -206,31 +206,38 @@ app.whenReady().then(async () => {
     //   ② 2026-10-03 删掉「发布单」页签后，编号在 5 处**留了空位**（1..4、6..12）——
     //      再按 i = 1..n 去 querySelector('.nav[data-tab="i"]') 会在 i=5 拿到 null、
     //      .click() 直接抛异常，整段炸掉。⇒ 改成遍历真实存在的 .nav 按钮（顺序 = index.html 的排列顺序）。
-    const btns = [...document.querySelectorAll('.nav')];
+    // ★ 只点**可见**的页签：index.html 里的按钮靠 JS 显隐（管理员专属 / 指定账号专属），
+    //   点一个 hidden 的按钮会被 renderAll 兜回第 1 页 —— 那一页于是被数两次，
+    //   「页签都能渲染」这条会以「素材整理 / 素材整理」的形式假红。
+    const btns = [...document.querySelectorAll('.nav')].filter(b => !b.hidden && getComputedStyle(b).display !== 'none');
     for (const b of btns) {
       b.click();
       await new Promise(r => setTimeout(r, 90));
       titles.push(__t.title());
     }
-    return titles;
+    return { titles, hiddenTabs: [...document.querySelectorAll('.nav')].filter(b => b.hidden || getComputedStyle(b).display === 'none').map(b => b.getAttribute('data-tab')) };
   })()`);
   ok('登录后 11 个可见页签都能渲染（包含更新日志）',
-    tabs.length === 11 && tabs.every(t => t && t.length > 1), `${tabs.length} 个：${tabs.join(' / ')}`);
+    tabs.titles.length === 11 && tabs.titles.every(t => t && t.length > 1), `${tabs.titles.length} 个：${tabs.titles.join(' / ')}`);
+  // ★ 管理员也看不到「备用入口试发」—— 它**不是管理员功能**，只认指定账号名。
+  //   这条同时钉住「用管理员权限兜底就能进去」那条错误实现。
+  ok('★ 管理员账号看不到「备用入口试发」（它不是管理员页签）',
+    tabs.hiddenTabs.includes('14') && !tabs.titles.includes('备用入口试发'), JSON.stringify(tabs.hiddenTabs));
   // ★ 一律用「有没有这一页」判，**不按第几个** —— 页签编号从 2026-10-03 起在 5 处留了空位，
   //   写死下标会在每次增删页签时失效（上一次就是这么被漏掉的）。
   ok('页签里有「品牌与权限」（品牌 + 账号 + 权限从设置页拆出来的那一页）',
-    tabs.includes('品牌与权限'), tabs.join(' / '));
+    tabs.titles.includes('品牌与权限'), tabs.titles.join(' / '));
   ok('页签里有「运行日志」（归在左侧「执行」组里；内容和底部日志栏同一份）',
-    tabs.includes('运行日志'), tabs.join(' / '));
+    tabs.titles.includes('运行日志'), tabs.titles.join(' / '));
   ok('页签里有「高级设置」（管理员可见；装一次就不再动的配置都在这里）',
-    tabs.includes('高级设置'), tabs.join(' / '));
+    tabs.titles.includes('高级设置'), tabs.titles.join(' / '));
   ok('页签里不包含「货号颜色校验」（所有账号均不可见）',
-    !tabs.includes('货号颜色校验'), tabs.join(' / '));
+    !tabs.titles.includes('货号颜色校验'), tabs.titles.join(' / '));
   ok('页签里有「本地词库」（标题「产品词 + 热门词」用的词库；所有人都能看）',
-    tabs.includes('本地词库'), tabs.join(' / '));
+    tabs.titles.includes('本地词库'), tabs.titles.join(' / '));
   // ★ 负向断言：删掉的页签必须**真的不在**（否则以后有人加回来，整套回归照样全绿）
   ok('★「发布单」页签已删除（2026-10-03 用户要求；导出/打开/目录已挪到「模拟器发布」页）',
-    !tabs.includes('发布单'), tabs.join(' / '));
+    !tabs.titles.includes('发布单'), tabs.titles.join(' / '));
 
   // ---- ④a 页签 12「本地词库」：**管理员**可编辑（真读 DOM，不是看源码）----
   const lexAdm = await js(`(async () => {
@@ -397,7 +404,61 @@ app.whenReady().then(async () => {
     memberStats.ok === true && (memberStats.brands || []).length === 0 && memberStats.totals.rows === 0,
     `brands=${(memberStats.brands || []).length} rows=${memberStats.totals && memberStats.totals.rows}`);
 
+  // ---- ⑦a-4「备用入口试发」：只对指定账号开放 —— 先验**普通成员的拒绝**（此刻会话就是普通成员）----
+  // ★ 渲染层藏按钮只是不给人添乱，真正拦住的是主进程 jobs.run ⇒ 这里直接调 IPC 试那条路。
+  const memberFallback = await js(`window.api.run('publish.fallbackTest', {})`);
+  ok('★ 主进程拒绝普通成员启动「备用入口试发」（前端藏按钮不算数）',
+    memberFallback.ok === false && /只对指定账号开放/.test(memberFallback.error || ''), memberFallback.error);
+  const memberNav14 = await js(`(async () => {
+    const btn = document.querySelector('.nav[data-tab="14"]');
+    if (!btn) return { err: '页签 14 不存在' };
+    const hidden = btn.hidden === true || getComputedStyle(btn).display === 'none';
+    btn.click();
+    await new Promise(r => setTimeout(r, 120));
+    return { hidden, title: __t.title() };
+  })()`);
+  ok('★ 普通成员看不到「备用入口试发」页签，硬点也进不去（被拉回«素材整理»）',
+    memberNav14.hidden === true && memberNav14.title === '素材整理', JSON.stringify(memberNav14));
+
   const backAdmin = await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
+
+  // ---- ⑦a-5「备用入口试发」的**正向**：指定账号（shuo）看得见、也调得动 ----
+  // ★ 拒绝那条若没有正向对照，就分不清「按账号名拦住了」还是「这个类型根本没人受理」
+  //   （写错任务名、case 没注册，也会得到一句 ok:false）—— 两条必须成对。
+  // ★ 账号名取自生产判据本身（jobs.js 的 FALLBACK_TEST_USER），不在这里另写一份字面量：
+  //   哪天把指定账号改了，这条断言会跟着改，不会留下一个假装通过的旧名字。
+  {
+    const TEST_USER = 'shuo';
+    const madeShuo = await js(`window.api.authCreateUser({ username: ${JSON.stringify(TEST_USER)}, displayName: '硕哥', role: 'user', password: 'Shuo@2026' })`);
+    ok('（前置）管理员能建出指定账号 ' + TEST_USER, madeShuo.ok === true, madeShuo.error || '');
+    const asShuo = await js(`__t.login(${JSON.stringify(TEST_USER)}, 'Shuo@2026', false)`);
+    ok('（前置）指定账号能登录', !asShuo.locked && /硕哥/.test(asShuo.user || ''), asShuo.user);
+    // 账号不是管理员 ⇒ 这条同时证明「试发页与管理员权限无关」（api 默认普通成员角色）
+    const shuoNav = await js(`(async () => {
+      const btn = document.querySelector('.nav[data-tab="14"]');
+      if (!btn) return { err: '页签 14 不存在' };
+      const shown = btn.hidden !== true && getComputedStyle(btn).display !== 'none';
+      btn.click();
+      await new Promise(r => setTimeout(r, 150));
+      return { shown, title: __t.title() };
+    })()`);
+    ok('★ 指定账号（非管理员）看得见并进得去「备用入口试发」，硬点也不会被拉走',
+      shuoNav.shown === true && shuoNav.title === '备用入口试发', JSON.stringify(shuoNav));
+    // 账号这一关过了就继续按**正常发布**那套走 ⇒ 卡点应当落在业务前置（品牌归属 / 还没导出发布单），
+    // 而**不是**「只对指定账号开放」。判据只认这一条：这里要证的是「账号名这一关放行了」。
+    // （不写死业务错误原文：品牌有没有分配、发布单有没有导入，都是测试现场的变量，不是被测行为。）
+    const shuoRun = await js(`window.api.run('publish.fallbackTest', {})`);
+    ok('★ 指定账号启动同一任务时放行（卡点从账号权限变成正常业务前置：品牌归属 / 发布单）',
+      !/只对指定账号开放/.test(shuoRun.error || '') && /品牌|发布单/.test(shuoRun.error || ''), shuoRun.error);
+    // ★ 顺序有讲究：此刻会话是 shuo（普通成员）⇒ authUsers() 会被主进程拒掉、
+    //   拿不到 users 数组 ⇒ 删账号时传了 undefined，报「账号不存在」而**测试数据留在盘上**。
+    //   所以先切回管理员，再查 id、再删。
+    await js(`__t.login(${JSON.stringify(ADMIN)}, ${JSON.stringify(PASS)}, false)`);
+    const shuoId = ((await js(`window.api.authUsers()`)).users || []).find(u => u.username === TEST_USER);
+    const removedShuo = await js(`window.api.authRemoveUser(${JSON.stringify(shuoId && shuoId.id)})`);
+    ok('（收尾）删掉临时指定账号，不给这台机器留下测试数据', removedShuo.ok === true, removedShuo.error || '');
+  }
+
   const memberId = (await js(`window.api.authUsers()`)).users.find(u => u.username === MEMBER).id;
   const disabled = await js(`window.api.authUpdateUser(${JSON.stringify(memberId)}, { disabled: true })`);
   ok('管理员能停用普通成员', backAdmin.locked === false && disabled.ok === true, disabled.error || '');

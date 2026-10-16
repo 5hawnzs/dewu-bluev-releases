@@ -42,7 +42,28 @@ const PARALLEL_TYPES = new Set(['copy.generate']);
  * 素材整理 / 合规 / 校验 / 商品资料属于准备动作，归属可有可无（没有就记「未标品牌」）。
  * 归属规则与提示语都在 brands.resolveFor 里，这里只声明「哪些任务必须有」。
  */
-const BRAND_SCOPED = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
+const BRAND_SCOPED = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun', 'publish.fallbackTest']);
+
+/**
+ * ★★ 2026-10-16 新增：「备用入口试发」——**只给指定账号**用的试发模块。
+ *
+ * 为什么非要有它：本机账号的个人页有「主页」按钮 ⇒ 主入口永远能走通，
+ * 备用入口（动态流相机）在本机没有真实触发条件，而远端无主页按钮的账号走的正是备用那一段。
+ * 光靠「本机跑一遍」证明不了备用入口，只能靠一个显式的强制开关把它跑出来。
+ *
+ * 三条红线（写在代码里，别靠记忆）：
+ *   ① 只影响「走哪个入口」，后续清理 / 推送 / 索引 / 选图 / 填写 / 提交一步都不简化 ——
+ *      它必须是真实发布，否则测出来的结论不能用。
+ *   ② 只有下面这一个账号能看到、能调用（渲染层隐藏 + 主进程拒绝，两层都在）。
+ *   ③ 不新建发布链路：直接复用 publisher.run，避免两套代码各自演化。
+ *   ④ 开关的语义是**「假装这台账号没有『主页』按钮」**（见 publisher.runStep 里 tvGoHomePage 那一段），
+ *      不是「另走一条备用路线」—— 导航照常点「我」，由生产环境那段回退代码自己接管。
+ *      这样试发跑出来的命令序列与真的没有主页按钮的账号逐条相同（albumreadytest 有断言钉住）。
+ */
+const FALLBACK_TEST_USER = 'shuo';
+function isFallbackTester(actor) {
+  return !!actor && String(actor.username || '').trim().toLowerCase() === FALLBACK_TEST_USER;
+}
 
 /** 任务类型 → 界面上给人的名字 */
 const TYPE_LABEL = {
@@ -53,6 +74,7 @@ const TYPE_LABEL = {
   'verify.check': '好物货号颜色预检',
   'sheet.export': '导出发布单', 'report.import': '导入 AI 内容报告',
   'publish.run': '自动发布', 'publish.rerun': '发布重跑',
+  'publish.fallbackTest': '备用入口试发',
   'publish.exportLog': '重导出日志', 'pool.import': '导入商品资料'
 };
 
@@ -80,7 +102,7 @@ function typeIds(type) { return byType.get(type) || new Set(); }
 
 /** 发布器会把单条素材失败作为批次结果返回（而非 throw）。任务云日志需要沿用逐条结果，避免整批有失败仍记成成功。 */
 function publishRunOutcome(type, result) {
-  if (!['publish.run', 'publish.rerun'].includes(type)) return { ok: true, error: '' };
+  if (!['publish.run', 'publish.rerun', 'publish.fallbackTest'].includes(type)) return { ok: true, error: '' };
   if (result && result.cancelled) return { ok: false, cancelled: true, error: '任务已取消' };
   if (result && result.stoppedReason) return { ok: false, error: '批次已停止：' + result.stoppedReason };
   const failCount = Math.max(0, Number(result && result.failCount) || 0);
@@ -617,7 +639,11 @@ async function dispatch(type, args, ctx) {
       if (wr.checked) logbus.info(`发布前检查：要回写的 ${wr.checked} 个 Excel 都没被占用（可以直接发）`);
       // 批次名默认取发布单文件名（真机：选 AI内容报告_xxx.xlsx → 开始批次）
       const batch = args.batchId || s.publish.batch || (s.sheet.file ? path.basename(s.sheet.file, path.extname(s.sheet.file)) : '') || ('批' + wp.stamp());
-      const r = await publisher.run(Object.assign({}, s, { publish: Object.assign({}, s.publish, { batch }) }), Object.assign({}, ctx, {
+      // ★★ 2026-10-16：「备用入口试发」走这里同一条路，只多一个 forceAlternateEntry 开关。
+      //   为什么不复制一份：两套发布代码一定会各自演化，测出来的结论就不可信了
+      //   （本来就是要验线上那条备用入口，不是要验另一条简化路径）。
+      const r = await publisher.run(Object.assign({}, s, { publish: Object.assign({}, s.publish, { batch,
+        forceAlternateEntry: type === 'publish.fallbackTest' }) }), Object.assign({}, ctx, {
         onRow: row => send('publish:row', row)
       }));
       project.patch({ publish: Object.assign({}, s.publish, { rows: r.rows, batch: r.batch, running: false }) });
@@ -702,12 +728,18 @@ async function run(type, args = {}) {
   // 品牌归属与权限放在最前面：不通过就连任务都不起、日志也不写 ——
   // 否则「被拒绝」这件事会以一条正常任务日志的样子留在台账里，越查越乱
   const actor = auth.enabled() ? auth.current() : null;
+  // ★★ 「备用入口试发」是**指定账号专属**的测试模块。
+  //   藏起按钮只是不给人添乱；真正拦住的是这里 —— 前端改一行不算数。
+  //   免登录开发模式（auth.enabled() 为假）放行，否则本机根本没法自测这条链路。
+  if (type === 'publish.fallbackTest' && auth.enabled() && !isFallbackTester(actor)) {
+    return { ok: false, error: '「备用入口试发」只对指定账号开放' };
+  }
   // 登录后的用户任务都记录品牌；自动设备轮询不生成任务日志。
   const picked = brands.resolveFor(actor, args.brandId, { required: BRAND_SCOPED.has(type) || !!actor && type !== 'publish.devices' });
   if (!picked.ok) return { ok: false, error: picked.error, brandDenied: true };
   const brand = picked.brand || null;
   const promptProfile = type === 'copy.generate' ? require('./promptprofiles').selected() : null;
-  if (['publish.run', 'publish.rerun'].includes(type)) {
+  if (['publish.run', 'publish.rerun', 'publish.fallbackTest'].includes(type)) {
     const queue = project.get().publish || {};
     if (queue.brandId) {
       const allowed = brands.resolveFor(actor, queue.brandId, { required: true });

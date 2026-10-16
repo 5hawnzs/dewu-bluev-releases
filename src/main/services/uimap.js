@@ -381,6 +381,11 @@ function suggest(nodes, pkg, opts = {}) {
   vpush('搜索货号', 'input', '${sku}', '');
   vpush('提交发布', 'tapText', '发布', '最后一步的发布按钮');
 
+  // ★★ 2026-10-16：候选表必须经过**同一个**加固 module（见 services/uimapshape.js）。
+  //   否则会出现最难查的一种回归：用户点一次「抓取页面结构」→ 导入，
+  //   就把已经发出去的修复**静默换回旧行为**（表里没有转场步骤了，盲点照旧）。
+  //   加固只改「步骤形状」，与这一屏抓到了什么无关 ⇒ 在 return 前统一过一道。
+  const hardened = require('./uimapshape').harden({ steps, videoSteps });
   return {
     package: pkg || (nodes[0] && nodes[0].pkg) || '',
     generatedAt: Date.now(),
@@ -403,8 +408,11 @@ function suggest(nodes, pkg, opts = {}) {
     note: '一条内容发多张图：把「选图」那一步写成 '
       + '{"action":"tapId","value":"<缩略图的 resource-id>","count":"${imageCount}"} —— '
       + '${imageCount} = 这个叶子文件夹里有几张图；不写 count 就只点第一个匹配。相册按时间倒序，点的是最前面 N 格。',
-    steps,
-    videoSteps
+    // ★★ 2026-10-16：候选表必须经过**同一个**加固 module（见 services/uimapshape.js）。
+    //   否则会出现最难查的一种回归：用户点一次「抓取页面结构」→ 导入，
+    //   就把已经发出去的修复**静默换回旧行为**（表里没有转场步骤了，盲点照旧）。
+    //   加固只改「步骤形状」，与这一屏抓到了什么无关 ⇒ 在这里统一过一道即可。
+    ...hardened.map
   };
 }
 
@@ -437,7 +445,7 @@ function fill(step, data) {
 //     所以它只适合版式固定、且下一步能立刻发现异常的格子；动态结果（相册格子 / 颜色卡片 /
 //     商品结果图）**必须**继续用 tapId / tapCardText。要保险就给这一步配 whenOn 屏幕守卫
 //     （守卫本身要抓一次屏，但一屏抓一次，仍比每步都抓便宜）。
-const STEP_ACTIONS = ['tapText', 'tapId', 'tapDesc', 'tapCardText', 'tapXY', 'input', 'wait', 'waitId', 'back', 'screenshot', 'videoCover'];
+const STEP_ACTIONS = ['tapText', 'tapId', 'tapDesc', 'tapCardText', 'tapXY', 'input', 'wait', 'waitId', 'back', 'screenshot', 'videoCover', 'transition'];
 
 /**
  * ★ 条件步骤（when / whenNot）—— 2026-10-03 加。
@@ -637,6 +645,36 @@ function normalizeSteps(input, label = 'steps') {
           + `多个点用分号隔开，如 "540,1871;300,900"。现在写的是「${value}」，解析不出任何坐标。`);
       }
       return Object.assign({}, step, { value }, cond, scr, { points: pts });
+    }
+    // ★★ transition（2026-10-16 新增）：**转场**——「点一下 / 确认换屏」这一件事单独成一步。
+    //   为什么要它、怎么跟 wait / waitId 分工，见 services/transition.js 的文件头。
+    //   在**导入时**就把写错的判据挡住：等到跑在真机上才发现「没写 until」，
+    //   那时素材已经推完、界面已经点了一半（本项目吃过太多次这种亏）。
+    if (action === 'transition') {
+      const until = [];
+      for (const one of (Array.isArray(step.until) ? step.until : [step.until])) {
+        const v = String(one == null ? '' : one).trim();
+        if (v) until.push(v);
+      }
+      if (!until.length) {
+        throw new Error(`${at}（transition）必须写 "until"：出现哪一屏才算到了。`
+          + `写 resource-id（形如 com.shizhuang.duapp:id/etTitle）或屏上的精确文字（例如 设置封面）。`);
+      }
+      const from = [];
+      for (const one of (Array.isArray(step.from) ? step.from : (step.from == null ? [] : [step.from]))) {
+        const v = String(one == null ? '' : one).trim();
+        if (v) from.push(v);
+      }
+      const tmo = (step.timeout == null || step.timeout === '') ? 30000 : Number(step.timeout);
+      if (!Number.isFinite(tmo) || tmo <= 0) {
+        throw new Error(`${at}（transition）的 timeout 要写毫秒数（> 0），不写默认 30000`);
+      }
+      const rawMax = step.maxClicks;
+      const maxClicks = (rawMax == null || rawMax === '') ? 2 : Number(rawMax);
+      if (!Number.isInteger(maxClicks) || maxClicks < 1 || maxClicks > 4) {
+        throw new Error(`${at}（transition）的 maxClicks 要写 1~4 的整数（同一屏最多点几次下一步），不写默认 2`);
+      }
+      return Object.assign({}, step, { until, from, timeout: tmo, maxClicks }, cond, scr);
     }
     if (action === 'tapText' || action === 'tapId' || action === 'tapDesc' || action === 'tapCardText') {
       const value = String(step.value == null ? '' : step.value);

@@ -12,10 +12,11 @@ for (const file of fs.readdirSync(path.join(__dirname, 'fakeadb'))) fs.copyFileS
 fs.writeFileSync(path.join(dir, 'IME_ACTIVE'), '1');
 fs.writeFileSync(path.join(dir, 'FOCUS'), 'com.shizhuang.duapp/.modules.home.ui.HomeActivity');
 const fakeAdb = require('./fakeadb/adb').makeFakeAdb(dir);
-let cancelled = false, cancelOnPush = false;
+let cancelled = false, cancelOnPush = false, observeCommand = null;
 require('child_process').execFile = function(bin, args, options, callback) {
   return fakeAdb(bin, args, options, (error, stdout, stderr) => {
     if (cancelOnPush && args.includes('push')) cancelled = true;
+    if (observeCommand) observeCommand(args);
     callback(error, stdout, stderr);
   });
 };
@@ -198,6 +199,256 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
     && overlapFirstRm>=0&&lastScan>overlapFirstRm
     && !overlapTrace.slice(overlapFirstRm,lastScan+1).some(c=>/input tap /.test(c))
     && navIndex>lastScan&&entryIndex>navIndex&&entryIndex>lastPush);
+  // 有主页与无主页账号都从真实 publisher.run 进入；相册页不再含主页入口节点。
+  const node = (id, x, text = '') => `<node resource-id="com.shizhuang.duapp:id/${id}" text="${text}" enabled="true" bounds="[${x-10},90][${x+10},110]"/>`;
+  const albumXml = '<hierarchy>' + node('photo',350) + node('submit',400) + '</hierarchy>';
+  const homeFocus = 'com.shizhuang.duapp/.modules.home.ui.HomeActivity';
+  const publishFocus = 'com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity';
+  // ★★ 第三条轨迹：账号**有**主页按钮，但用「备用入口试发」的开关强制走备用。
+  //   判据不是「跑通了」，而是**逐条命令与"真的没主页按钮"那条完全相同** ——
+  //   只要试发模块偷偷走了一条更短的路（比如素材好了直接点相机、跳过「我」），这条就红。
+  const traceOf = {};
+  for (const hasHome of [true, false, 'forced']) {
+    const forced = hasHome === 'forced';
+    const hasHomeBtn = hasHome === true;
+    fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+    const browseXml = '<hierarchy>'+node('tab_user',100)+node('tab_trends',250)+node('ivCamera',300)
+      +(hasHomeBtn?node('tvGoHomePage',150)+node('rlPublish',200):'')+'</hierarchy>';
+    fs.writeFileSync(xmlFile,browseXml);
+    store.set({publish:{uiMap:{steps:[
+      {action:'tapId',value:'com.shizhuang.duapp:id/tab_user',name:'底部我'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/tvGoHomePage',name:'主页'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/rlPublish',name:'发布新动态'},
+      {action:'tapId',value:require('../src/main/services/uimap').DEWU.draft.exitId,whenOn:require('../src/main/services/uimap').DEWU.draft.titleId,name:'点击草稿拦截'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/photo',name:'选择图片'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/submit',name:'提交发布'}]}}});
+    const overlayGone = [], overlayTimers = [], guardLogs = [];
+    observeCommand = args => {
+      const cmd = String(args[args.length-1]);
+      if (!hasHomeBtn && cmd === 'input tap 250 100') {
+        fs.writeFileSync(xmlFile,browseXml.replace('</hierarchy>','<node text="发布成功" class="android.widget.TextView" bounds="[250,60][350,140]"/></hierarchy>'));
+        overlayTimers.push(setTimeout(()=>{fs.writeFileSync(xmlFile,browseXml);overlayGone.push(calls().length);},1400));
+      }
+      if (cmd === `input tap ${hasHomeBtn?200:300} 100`) {
+        fs.writeFileSync(xmlFile,albumXml);fs.writeFileSync(path.join(dir,'FOCUS'),publishFocus);
+      }
+      if (cmd === 'input tap 400 100') {
+        fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);fs.writeFileSync(xmlFile,browseXml);
+      }
+    };
+    const begin=calls().length, statuses=[], phases=[], diag=require('../src/main/services/diagnostics');
+    let result;
+    const batch=state(), batchCtx={onRow:r=>statuses.push(r.status),log:m=>guardLogs.push(m)};
+    if (!hasHomeBtn) batch.publish.rows.push({seq:2,id:'A',dir:'B',goods:1,result:''});
+    if (forced) batch.publish.forceAlternateEntry = true;
+    try {
+      result=await diag.run(diag.create({onPhase:p=>phases.push(p.phase)}),()=>publisher.run(batch,batchCtx));
+    } finally {observeCommand=null;overlayTimers.forEach(clearTimeout);}
+    const allEvents=calls().slice(begin);
+    const events=allEvents.slice(0,allEvents.findIndex(c=>c.endsWith('input tap 400 100'))+1), entry=events.findIndex(c=>c.endsWith(`input tap ${hasHomeBtn?200:300} 100`));
+    const lastMaterial=events.reduce((last,c,i)=>/\bpush |content query|content call/.test(c)?i:last,-1);
+    traceOf[forced?'forced':(hasHomeBtn?'main':'fallback')]=events;
+    ok(`${hasHomeBtn?'主':forced?'强制备用':'备用'}入口在素材核实后进入相册、选图并只提交一次`,result.okCount===(hasHomeBtn?1:2)&&result.failCount===0
+      &&entry>lastMaterial&&events.filter(c=>c.endsWith('input tap 400 100')).length===1
+      &&events.findIndex(c=>c.endsWith('input tap 350 100'))>entry);
+    ok('相册页草稿守卫显示检查且不点击，检查发生在选图之前',statuses.includes('检查草稿箱（出现时进入相册）')
+      &&!statuses.includes('点击草稿拦截')&&phases.some(p=>p.includes('检查草稿箱'))
+      &&statuses.indexOf('检查草稿箱（出现时进入相册）')<statuses.indexOf('选择图片')
+      &&events.filter(c=>/input tap /.test(c)).length===5);
+    // ★ 这一段整体只对「账号真的没有主页按钮」跑：它验的是备用入口自身的各种边界
+    //   （提示遮挡、慢跳转、超时、取消…）以及"新批次重新核验主入口"。
+    //   强制备用那条的职责只有一个 —— 与这一条**逐条命令相同**（见循环后的对照断言），
+    //   让它再跑一遍这些边界只会把两种场景混在一起。
+    if (hasHome === false) {
+      const cameraCalls=allEvents.map((c,i)=>c.endsWith('input tap 300 100')?begin+i:-1).filter(i=>i>=0);
+      ok('连续两条备用入口均等待发布成功提示结束才点相机，素材核实仍在点击之前',overlayGone.length===2
+        &&cameraCalls.length===2&&cameraCalls.every((i,n)=>i>=overlayGone[n])
+        &&guardLogs.some(m=>/发布提示或进度仍显示/.test(m)));
+      ok('无主页账号同批两条只点一次我、两次走备用入口、两次提交',
+        allEvents.filter(c=>c.endsWith('input tap 100 100')).length===1
+        &&allEvents.filter(c=>c.endsWith('input tap 300 100')).length===2
+        &&allEvents.filter(c=>c.endsWith('input tap 400 100')).length===2);
+      fs.writeFileSync(xmlFile,'<hierarchy>'+node('tab_user',100)+node('tvGoHomePage',150)+node('rlPublish',200)+'</hierarchy>');
+      observeCommand=args=>{
+        const cmd=String(args[args.length-1]);
+        if(cmd==='input tap 200 100') {fs.writeFileSync(xmlFile,albumXml);fs.writeFileSync(path.join(dir,'FOCUS'),publishFocus);}
+        if(cmd==='input tap 400 100') fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+      };
+      const resetStart=calls().length;
+      let reset;
+      try {reset=await publisher.run(state(),batchCtx);} finally {observeCommand=null;}
+      ok('复用同一上下文的新批次仍重新核验主入口，不沿用上批备用路线',reset.okCount===1
+        &&calls().slice(resetStart).some(c=>c.endsWith('input tap 150 100'))&&!batchCtx.publishEntryRoute);
+      // 真入口回归：无弹窗沿用原有3次页面读取；只在实际关闭后重新读取。
+      for (const mode of ['none','update','notify','unknown','ambiguous','unsafe','unknown_noclose','stuck']) {
+        fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);fs.writeFileSync(xmlFile,browseXml);
+        const title=mode==='notify'?'开启通知':mode==='unknown'?'陌生确认':'发现新版本';
+        const close='<node resource-id="com.shizhuang.duapp:id/tvCancel" text="取消" clickable="true" enabled="true" bounds="[440,90][460,110]"/>';
+        const popup=node('tv_title',360,title)+close+(mode==='unsafe'?node('warning',380,'取消上传'):'')
+          +(mode==='ambiguous'?close.replace('tvCancel','anotherCancel'):'');
+        let stopped=false;
+        observeCommand=args=>{
+          const cmd=String(args[args.length-1]);
+          if(cmd==='input tap 250 100'&&mode!=='none')fs.writeFileSync(xmlFile,browseXml.replace('</hierarchy>',
+            (mode.startsWith('unknown')?'<node resource-id="android:id/alertTitle" text="陌生确认" class="android.app.Dialog" bounds="[350,90][370,110]"/>'+(mode==='unknown'?close.replace('text="取消"','text="关闭"'):''):popup)+'</hierarchy>'));
+          if(cmd==='input tap 450 100'&&mode!=='stuck')fs.writeFileSync(xmlFile,browseXml);
+          if(cmd==='input tap 300 100'){fs.writeFileSync(xmlFile,albumXml);fs.writeFileSync(path.join(dir,'FOCUS'),publishFocus);}
+        };
+        const beginDialog=calls().length, dialogCtx={cancelled:()=>stopped,log:m=>{
+          if(mode==='stuck'&&/等待确认关闭/.test(m))stopped=true;
+          if(['unsafe','unknown_noclose'].includes(mode)&&/继续等待/.test(m))stopped=true;
+        }};
+        let result,error;
+        try{result=await publisher.openPublishEntry('FAKE',dialogCtx);}catch(e){error=e;}finally{observeCommand=null;}
+        const trace=calls().slice(beginDialog), taps=trace.filter(c=>/input tap /.test(c));
+        if(mode==='none')ok('没有弹窗不新增抓屏或点击：仍仅3次页面读取、动态与相机各点一次',result&&result.ok
+          &&trace.filter(c=>/uiautomator dump/.test(c)).length===3&&taps.length===2);
+        else if(['update','notify','unknown','ambiguous'].includes(mode))ok('已知、未知或多个按钮弹窗自动关闭后再点击相机：'+mode,result&&result.ok
+          &&taps.filter(c=>c.endsWith('input tap 450 100')).length===1
+          &&taps.findIndex(c=>c.endsWith('input tap 450 100'))<taps.findIndex(c=>c.endsWith('input tap 300 100')));
+        else ok('无关闭入口或涉及上传时先等待而不误点，关闭未确认不点相机：'+mode,error&&!dialogCtx.publishEntryReady
+          &&!taps.some(c=>c.endsWith('input tap 300 100'))
+          &&taps.filter(c=>c.endsWith('input tap 450 100')).length===(mode==='stuck'?1:0));
+      }
+      fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+      fs.writeFileSync(xmlFile,'<hierarchy>'+node('tab_user',100)+node('tab_trends',250)+'</hierarchy>');
+      const failedStart=calls().length, failedCtx={};
+      const failed=await publisher.run(state(),failedCtx);
+      ok('备用相机入口不存在时如实失败，不选图不提交也不记成功路线',failed.failCount===1&&failed.okCount===0
+        &&!failedCtx.publishEntryRoute&&!calls().slice(failedStart).some(c=>/input tap (350|400) 100$/.test(c)));
+      fs.writeFileSync(xmlFile,browseXml);
+      fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+      let guardCancelled=false, guardError;
+      observeCommand=args=>{if(String(args[args.length-1])==='input tap 250 100')
+        fs.writeFileSync(xmlFile,browseXml.replace('</hierarchy>','<node text="上传中" class="android.widget.ProgressBar" bounds="[250,60][350,140]"/></hierarchy>'));};
+      const guardStart=calls().length;
+      try {await publisher.openPublishEntry('FAKE',{cancelled:()=>guardCancelled,log:m=>{if(/发布提示或进度仍显示/.test(m))guardCancelled=true;}});}
+      catch(error){guardError=error;}
+      finally{observeCommand=null;fs.writeFileSync(xmlFile,browseXml);}
+      ok('发布进度遮挡期间不点击相机，等待可取消',guardError&&/取消/.test(guardError.message)
+        &&!calls().slice(guardStart).some(c=>c.endsWith('input tap 300 100')));
+      let delayedTimer;
+      observeCommand=args=>{
+        const cmd=String(args[args.length-1]);
+        if(cmd==='input tap 300 100') delayedTimer=setTimeout(()=>{
+          fs.writeFileSync(xmlFile,albumXml);fs.writeFileSync(path.join(dir,'FOCUS'),publishFocus);
+        },9000);
+        if(cmd==='input tap 400 100') {fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);fs.writeFileSync(xmlFile,browseXml);}
+      };
+      const delayedStart=calls().length, delayedLogs=[];
+      let delayedEntry;
+      try {delayedEntry=await publisher.run(state(),{log:m=>delayedLogs.push(m)});}
+      finally {observeCommand=null;clearTimeout(delayedTimer);}
+      ok('相机点击9秒后才进入相册仍继续成功，并明确提示慢跳转且不重复点击',delayedEntry.okCount===1
+        &&delayedLogs.some(m=>/跳转较慢.*继续等待/.test(m))
+        &&calls().slice(delayedStart).filter(c=>c.endsWith('input tap 300 100')).length===1);
+      const unchangedStart=calls().length, unchangedCtx={};
+      const unchangedBatch=state();unchangedBatch.publish.rows.push({seq:2,id:'A',dir:'B',goods:1,result:''});
+      const unchanged=await publisher.run(unchangedBatch,unchangedCtx);
+      ok('相机已点击但页面没有进入发布流程时仍失败，不把点击回执当成功',unchanged.failCount===1
+        &&/等待 30 秒.*当前仍在得物首页/.test(unchanged.rows[0].reason)&&!unchangedCtx.publishEntryRoute
+        &&calls().slice(unchangedStart).filter(c=>c.endsWith('input tap 300 100')).length===1
+        &&!calls().slice(unchangedStart).some(c=>/input tap (350|400) 100$/.test(c)));
+      ok('入口超时后停止本批，下一条不清理不推送且标记未执行',!!unchanged.stoppedReason
+        &&unchanged.rows[1].result==='未执行'&&calls().slice(unchangedStart).filter(c=>/\bpush /.test(c)).length===2);
+      fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+      observeCommand=args=>{if(String(args[args.length-1])==='input tap 300 100')fs.writeFileSync(path.join(dir,'FOCUS_UNREADABLE'),'1');};
+      let unknownEntry;
+      try {await publisher.openPublishEntry('FAKE',{});} catch(error){unknownEntry=error;}
+      finally {observeCommand=null;fs.rmSync(path.join(dir,'FOCUS_UNREADABLE'),{force:true});}
+      ok('前台长期读不到时明确报未确认，不谎称仍在首页或已进入',unknownEntry
+        &&unknownEntry.code==='PUBLISH_ENTRY_UNCONFIRMED'&&/当前前台页面读不到/.test(unknownEntry.message)
+        &&!/当前仍在得物首页/.test(unknownEntry.message));
+      fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+      let entryCancelled=false, cancelError;
+      observeCommand=args=>{if(String(args[args.length-1])==='input tap 300 100')entryCancelled=true;};
+      try {await publisher.openPublishEntry('FAKE',{cancelled:()=>entryCancelled});} catch(error){cancelError=error;}
+      finally {observeCommand=null;}
+      ok('相机点击后取消立即结束等待，不误报入口超时',cancelError&&cancelError.message==='发布已取消');
+    }
+  }
+  // ★★ 试发模块的全部意义就在这一条：**强制备用与"真的没有主页按钮"必须逐条命令一样**。
+  //   命令轨迹里含「点我 / 找不到主页→回首页 / 点动态 / 点相机」整段，所以
+  //   只要试发抄了一条更短的路（跳过「我」、素材好了直接点相机），这里立刻红。
+  {
+    const norm = list => list.map(c => c.replace(/\/sdcard\/[^\s']+|batch_[a-f0-9]+/g, '<path>')).join('\n');
+    ok('★「备用入口试发」与"账号真的没有主页按钮"逐条命令完全相同（不是另走一条捷径）',
+      !!traceOf.fallback && !!traceOf.forced && norm(traceOf.forced) === norm(traceOf.fallback),
+      `备用 ${traceOf.fallback ? traceOf.fallback.length : 0} 条 / 强制备用 ${traceOf.forced ? traceOf.forced.length : 0} 条`);
+    ok('（对照）有主页按钮的主入口轨迹确实**不同**（否则上一条比的是两份空/同一份）',
+      !!traceOf.main && norm(traceOf.main) !== norm(traceOf.fallback));
+    // 线上无主页账号那一截必须真的被走到：点了「我」，然后才回首页走动态流相机。
+    ok('★ 强制备用也照着线上走：先点「我」，再回首页 → 点「动态」→ 点相机',
+      traceOf.forced.some(c => c.endsWith('input tap 100 100'))
+      && traceOf.forced.some(c => c.endsWith('input tap 250 100'))
+      && traceOf.forced.some(c => c.endsWith('input tap 300 100')));
+  }
+  // 经真实 publisher.run 复现：相册下一步后暂时仍是旧屏，不能把编辑页跳过。
+  for (const route of ['delayed','direct','slow_title','cancel','never','no_title','ambiguous','stuck_editor']) {
+    fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+    const initial='<hierarchy>'+node('photo',350)+node('albumNext',500)+'</hierarchy>';
+    const editor='<hierarchy>'+node('edit_panel',600)+node('flNextStep',650)+node('tvNextStep',650,'下一步')+'</hierarchy>';
+    const form='<hierarchy>'+node('etTitle',700)+node('submit',400)+'</hierarchy>';
+    fs.writeFileSync(xmlFile,initial);
+    store.set({publish:{uiMap:{steps:[
+      {action:'tapId',value:'com.shizhuang.duapp:id/photo',name:'选择图片'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/albumNext',name:'相册下一步'},
+      {action:'tapXY',value:'985,1843',whenOn:'com.shizhuang.duapp:id/edit_panel',name:'图片编辑页下一步'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/etTitle',name:'点标题输入框'},
+      {action:'tapId',value:'com.shizhuang.duapp:id/submit',name:'提交发布'}]}}});
+    const timers=[], messages=[]; let abort=false;
+    observeCommand=args=>{
+      const cmd=String(args[args.length-1]);
+      if(cmd==='input tap 500 100') {
+        fs.writeFileSync(path.join(dir,'FOCUS'),publishFocus);
+        if(route!=='never')timers.push(setTimeout(()=>{
+          fs.writeFileSync(xmlFile,route==='direct'?form:route==='ambiguous'?editor.replace('</hierarchy>',node('tvNextStep',680,'下一步')+'</hierarchy>'):editor);
+          if(route==='cancel')abort=true;
+        },1100));
+        if(route==='ambiguous')timers.push(setTimeout(()=>{abort=true;},2500));
+      }
+      if(cmd==='input tap 650 100'&&route!=='no_title')timers.push(setTimeout(()=>fs.writeFileSync(xmlFile,form),route==='slow_title'?1500:100));
+      if(cmd==='input tap 400 100')fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+    };
+    // ★★ stuck_editor：点过一下之后**这一屏始终没变**（还是那颗「下一步」）。
+    //   旧写法会点第二下 —— 而转场期间同一坐标底下可能已经是「发布」＝误发。
+    //   正确行为：屏幕结构没变就绝不点第二下，等到超时如实报失败，后续条目不执行。
+    if (route === 'stuck_editor') {
+      const base = observeCommand;
+      observeCommand = args => {
+        const cmd = String(args[args.length-1]);
+        if (cmd === 'input tap 650 100') return;   // 覆盖外层：点击后不换屏
+        base(args);
+      };
+    }
+    const begin=calls().length; let r;
+    const batch=state();if(['never','no_title','stuck_editor'].includes(route))batch.publish.rows.push({seq:2,id:'A',dir:'B',goods:1,result:''});
+    try{r=await publisher.run(batch,{cancelled:()=>abort,log:m=>messages.push(m)});}
+    finally{observeCommand=null;timers.forEach(clearTimeout);}
+    const trace=calls().slice(begin), taps=trace.filter(c=>/input tap /.test(c));
+    if(['cancel','ambiguous'].includes(route))ok('图片转场取消或两个不同位置下一步时不猜坐标：'+route,r.cancelled&&!taps.some(c=>/input tap (650|680|700|400) 100/.test(c)));
+    else if(route==='stuck_editor')ok('转场时这一屏始终没变就不点第二下（第二下可能落到「发布」）：只失败一次、后续不执行',
+      r.failCount===1&&!!r.stoppedReason&&r.rows[1].result==='未执行'
+      &&taps.filter(c=>c.endsWith('input tap 650 100')).length===1
+      &&!taps.some(c=>/input tap (700|400) 100/.test(c)));
+    else if(['never','no_title'].includes(route))ok('图片转场未确认仅首条失败，次条不清理不推送且标记未执行：'+route,r.failCount===1&&!!r.stoppedReason
+      &&r.rows[1].result==='未执行'&&trace.filter(c=>/\bpush /.test(c)).length===2
+      &&taps.filter(c=>c.endsWith('input tap 650 100')).length===(route==='never'?0:1)
+      &&!taps.some(c=>/input tap (700|400) 100/.test(c)));
+    else ok('旧定位表图片转场：'+route+'，仅确认标题页后继续、不盲点、不重复下一步',r.okCount===1
+      &&taps.filter(c=>c.endsWith('input tap 650 100')).length===(route==='direct'?0:1)
+      &&taps.filter(c=>c.endsWith('input tap 400 100')).length===1
+      &&!taps.some(c=>/input tap 985 1843/.test(c))
+      // ★ 「本来就在标题页」与「点到位了」必须能分开：日志要说出确认了哪一屏、点过几次。
+      &&messages.some(m=>/已确认进入目标屏（com\.shizhuang\.duapp:id\/etTitle）/.test(m)
+        &&(route==='direct'?/未点击「下一步」/.test(m):/点击「下一步」1 次/.test(m))));
+  }
+  fs.writeFileSync(xmlFile,originalXml);fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
+  store.set({publish:{uiMap:{steps:[
+    {action:'tapId',value:'com.shizhuang.duapp:id/tab_user',name:'底部我'},
+    {action:'tapId',value:'com.shizhuang.duapp:id/tvGoHomePage',name:'右上角主页'},
+    {action:'tapId',value:'com.shizhuang.duapp:id/rlPublish',name:'发布新动态'},
+    {action:'tapText',value:'发布',name:'提交发布'}]}}});
   // 真正清不掉的现场：文件被占住 + 隔离标记写不进去（rm 被拒但索引删除会连文件一起删掉，
   // 只有「占住 + 标记写不进」才会让记录被扫回来）。
   fs.writeFileSync(path.join(dir,'MEDIA_HELD'),'外部残留');

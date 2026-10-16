@@ -25,7 +25,10 @@ app.commandLine.appendSwitch('disable-gpu');
 
 // ★ 下标 = 页签编号 - 1。页签 5「发布单」2026-10-03 已按用户要求删除，编号**不重排**
 //   ⇒ 第 5 位留 null 占位（否则 6~12 的标题会整体错位一格）。
-const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '本地词库', '更新日志'];
+const TABS = ['素材整理', '合规检查', '文案生成', null /* 货号颜色校验：全员隐藏 */, null /* 5 发布单：已删 */, '模拟器发布', '设置', '品牌统计', '品牌与权限', '运行日志', '高级设置', '本地词库', '更新日志',
+  // ★ 14「备用入口试发」：只对指定账号（shuo）可见的测试模块；免登录开发模式（本自检就是）
+  //   按 fallbackTestVisible() 放行，所以这里能遍历到它。
+  '备用入口试发'];
 const errors = [];      // 会让自检失败
 const notes = [];       // 只打印，不算失败（警告级）
 
@@ -251,8 +254,17 @@ app.whenReady().then(async () => {
       && folderMotion.names[2] === 'folder-tool-gradient' && folderMotion.durations.every(x => x === '18s'),
     JSON.stringify(folderMotion));
 
-  ok('左侧导航包含新增更新日志，共 11 个页签', await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length') === 11,
-    await win.webContents.executeJavaScript('document.querySelectorAll(".nav").length + " 个"'));
+  // ★ 2026-10-16 新增第 12 个页签「备用入口试发」（只对指定账号可见）。
+  //   数的是**.nav 按钮总数**（含 data-admin / data-fallback-test 这类靠 JS 显隐的），
+  //   免登录模式下它按设计是可见的 —— 断言会同时验「可见个数」与「隐藏个数」两半。
+  const navCount = await win.webContents.executeJavaScript(`(() => ({
+    all: document.querySelectorAll('.nav').length,
+    visible: [...document.querySelectorAll('.nav')].filter(b => !b.hidden).length,
+    hiddenFallback: [...document.querySelectorAll('.nav[data-fallback-test]')].filter(b => b.hidden).length
+  }))()`);
+  ok('左侧导航共 12 个页签（含新增的「备用入口试发」）', navCount.all === 12, navCount.all + ' 个');
+  ok('免登录开发模式下「备用入口试发」可见（否则本机没法自测这条链路）',
+    navCount.hiddenFallback === 0, JSON.stringify(navCount));
   ok('★「运行日志」确实排在「执行」组下面（不是随便接在末尾）',
     await win.webContents.executeJavaScript(`(() => {
       const navs = [...document.querySelectorAll('.side > *')];
@@ -311,7 +323,9 @@ app.whenReady().then(async () => {
   // 页签 9 前面单独测过（品牌与权限）；10 是新增的「运行日志」。
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 从遍历名单里去掉（编号不重排，5 是空位）。
   const phs = [];        // 收集各页签真实渲染出来的 placeholder（见下方守卫断言）
-  for (const i of [1, 2, 3, 6, 7, 8, 10, 12]) {
+  // ★ 14「备用入口试发」也要真渲染一遍：它的 render 里读的是 state.project.publish，
+  //   与「模拟器发布」同一份数据；漏掉编号就会变成「加了页签但从来没人验过会不会白屏」。
+  for (const i of [1, 2, 3, 6, 7, 8, 10, 12, 14]) {
     await win.webContents.executeJavaScript(`(() => { const b = document.querySelector('.nav[data-tab="${i}"]'); if (b) b.click(); return true; })()`);
     await new Promise(r => setTimeout(r, 150));
     const info = await win.webContents.executeJavaScript(`(() => {
@@ -338,7 +352,7 @@ app.whenReady().then(async () => {
   //   ③ 坏形状下每页都得有交代（写清原因的壳 或 登录页），不许留白。
   const shield = await win.webContents.executeJavaScript(`(() => {
     const DENY = { ok: false, error: '未登录或登录已过期，请重新登录' };
-    const ALL = [1, 2, 3, 6, 7, 8, 9, 10, 11, 12];
+    const ALL = [1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14];
     const good = { project: JSON.parse(JSON.stringify(state.project)), config: JSON.parse(JSON.stringify(state.config)) };
     const clone = o => JSON.parse(JSON.stringify(o));
     const run = (proj, cfg) => {
@@ -346,6 +360,9 @@ app.whenReady().then(async () => {
       const keep = { p: state.project, c: state.config, t: state.tab };
       state.project = proj; state.config = cfg;
       for (const k of ALL) {
+        // ★ 这里的 TABS 是**渲染层**那个对象（键 = 页签编号，不是数组！）。
+        //   写成 TABS[k-1] 会整体错位一格：k=1 取到 TABS[0]（undefined ⇒ 第 1 页被跳过），
+        //   k=6 取到 TABS[5]（已删的发布单 ⇒ 模拟器发布页被跳过）。必须按编号取。
         if (!TABS[k]) continue;
         state.tab = k;
         try {
@@ -372,22 +389,24 @@ app.whenReady().then(async () => {
   })()`);
   const sh = JSON.parse(shield);
   const bads = [['project=null', sh.pNull], ['config=null', sh.cNull], ['project=拒绝对象', sh.pDeny], ['config=拒绝对象', sh.cDeny]];
-  ok('★ 正向对照：真值下 10 页**每页都真渲染**、一条异常都没有（证明下面那圈遍历真在跑，不是空==空）',
-    sh.good.threw.length === 0 && sh.good.rendered === 10,
-    `渲染 ${sh.good.rendered}/10 · 异常 ${sh.good.threw.length}${sh.good.threw.length ? ' → ' + sh.good.threw.join(',') : ''}`);
+  // ★ 页数从 ALL 数组算出来（12 页），不写死 —— 下一次加页签时这里不该再变成红字。
+  const ALL_PAGES = 12;
+  ok(`★ 正向对照：真值下 ${ALL_PAGES} 页**每页都真渲染**、一条异常都没有（证明下面那圈遍历真在跑，不是空==空）`,
+    sh.good.threw.length === 0 && sh.good.rendered === ALL_PAGES,
+    `渲染 ${sh.good.rendered}/${ALL_PAGES} · 异常 ${sh.good.threw.length}${sh.good.threw.length ? ' → ' + sh.good.threw.join(',') : ''}`);
   ok('★★ 工程状态/配置「不是数据」时，renderAll 一页都不许抛（原来 project=null 崩 6 页、config=null 崩 5 页）',
     bads.every(([, r]) => r.threw.length === 0),
     bads.map(([n, r]) => `${n}:${r.threw.length ? '崩' + r.threw.length + '(' + r.threw[0] + ')' : '0'}`).join(' · '));
   ok('★★ 每种坏形状下每一页都要有交代（说清原因的壳 或 登录页）—— 不许留白',
-    bads.every(([, r]) => r.shell + r.gate === 10),
+    bads.every(([, r]) => r.shell + r.gate === ALL_PAGES),
     bads.map(([n, r]) => `${n}:壳${r.shell}+登录${r.gate}`).join(' · '));
   ok('★ 壳里把**原因**写出来了（拒绝的要说"未登录/已过期"，没读到的要说"还没读到"），不是一句"暂无数据"糊弄',
     sh.pDeny.said.indexOf('未登录') >= 0 && sh.cDeny.said.indexOf('未登录') >= 0
       && /还没读到/.test(sh.pNull.said) && /还没读到/.test(sh.cNull.said),
     JSON.stringify(bads.map(([n, r]) => [n, r.said])));
-  ok('★ 自证还原：把真值放回去后 10 页照常渲染、零异常（这套探针自己没把界面弄坏）',
-    sh.back.threw.length === 0 && sh.back.rendered === 10,
-    `渲染 ${sh.back.rendered}/10 · 异常 ${sh.back.threw.length}`);
+  ok(`★ 自证还原：把真值放回去后 ${ALL_PAGES} 页照常渲染、零异常（这套探针自己没把界面弄坏）`,
+    sh.back.threw.length === 0 && sh.back.rendered === ALL_PAGES,
+    `渲染 ${sh.back.rendered}/${ALL_PAGES} · 异常 ${sh.back.threw.length}`);
 
   // ---- 页签 12「本地词库」：真读 DOM 断言（不是看源码里有没有那行字）----
   // ★ 开发免登录状态也可编辑本机词库。

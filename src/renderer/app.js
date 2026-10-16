@@ -289,7 +289,7 @@ function logExportPayload() {
 
 /* ---------------- 任务（实例化：同一时间可以有多个批次在跑） ---------------- */
 /** 产出可发布内容的任务：必须带品牌归属。名单要和主进程 jobs.js 的 BRAND_SCOPED 保持一致 */
-const BRAND_SCOPED_TYPES = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun']);
+const BRAND_SCOPED_TYPES = new Set(['copy.generate', 'report.import', 'sheet.export', 'publish.run', 'publish.rerun', 'publish.fallbackTest']);
 
 /**
  * 产出类任务统一带上标题栏选中的品牌。没选中就不带 —— 让主进程把「为什么不行」讲清楚，
@@ -423,13 +423,30 @@ function publishRowElement(id) {
   return [...document.querySelectorAll('[data-publish-row]')].find(el => el.dataset.publishRow === String(id));
 }
 
+/**
+ * 哪些页面在展示「发布队列逐行状态」。
+ * ★★ 2026-10-16：新增页签 14「备用入口试发」之后，凡是原来只认 6 的地方都要一起认它 ——
+ *   漏一处的表现是「那一页的耗时列不刷新 / 状态停在准备中」，看着像卡死，其实是没更新。
+ */
+const PUBLISH_ROW_TABS = new Set([6, 14]);
+
+/**
+ * 「发布类任务」——「模拟器发布」页与「备用入口试发」页共用同一批任务类型。
+ * ★★ 加 `publish.fallbackTest` 必须要连这几处一起认它，否则试发那一页：
+ *   设备状态不刷新 / 进度条不更新 / 每 10 秒的自动扫描不跑（看着像卡死，其实是没接线）。
+ */
+const PUBLISH_JOB_TYPES = ['publish.run', 'publish.rerun', 'publish.fallbackTest'];
+function anyPublishRunning() {
+  return (state.jobs || []).some(j => PUBLISH_JOB_TYPES.includes(j.type));
+}
+
 function updatePublishRow(update) {
   if (!update || update.id == null) return;
   const rows = state.project && state.project.publish && state.project.publish.rows || [];
   const row = rows.find(r => String(r.id) === String(update.id));
   if (!row) return;
   Object.assign(row, update);
-  if (state.tab !== 6) return;
+  if (!PUBLISH_ROW_TABS.has(state.tab)) return;
   const el = publishRowElement(row.id);
   if (!el) return;
   el.querySelector('[data-publish-start]').textContent = row.startAt || '—';
@@ -437,12 +454,15 @@ function updatePublishRow(update) {
   el.querySelector('[data-publish-status]').innerHTML = badge(row.result || row.status || '排队', kindOf(row.result || row.status || '排队'))
     + (row.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(row.reason)}</div>` : '');
   el.classList.toggle('flag', row.result === '失败' || row.result === '校验未通过');
-  el.querySelector('[data-publish-action]').innerHTML = row.result && row.result !== '发布成功'
+  // 备用入口试发那一页**没有**「重跑」列（试发的失败原因要看日志，不该一键重发）——
+  // 所以这里必须先判存在，否则空指针会把整个进度刷新打断。
+  const action = el.querySelector('[data-publish-action]');
+  if (action) action.innerHTML = row.result && row.result !== '发布成功'
     ? `<button class="btn sm" data-act="pub:rerun" data-seq="${esc(row.seq)}">重跑</button>` : '';
 }
 
 function refreshPublishElapsed() {
-  if (state.tab !== 6 || document.hidden) return;
+  if (!PUBLISH_ROW_TABS.has(state.tab) || document.hidden) return;
   const rows = state.project && state.project.publish && state.project.publish.rows || [];
   for (const row of rows) {
     if (row.result || !row.startedAtMs) continue;
@@ -466,7 +486,7 @@ function refreshRunningElapsed() {
     if (!Number.isFinite(next)) continue;
     if (Math.abs(next - (Number(j.elapsedSec) || 0)) >= 0.5) { j.elapsedSec = next; touched = true; }
   }
-  if (touched && (state.tab === 3 || state.tab === 6)) refreshBatches();
+  if (touched && (state.tab === 3 || PUBLISH_ROW_TABS.has(state.tab))) refreshBatches();
 }
 
 /** 「AI 内容报告」：导入后直接发布，结果回写它的 B/C 列。 */
@@ -1532,7 +1552,8 @@ let deviceScanBusy = false;
 let deviceScanAt = 0;
 async function refreshDevices(manual = false) {
   if (!state.auth || (state.auth.requireLogin && !state.auth.user)) return;
-  if (deviceScanBusy || (state.jobs || []).some(j => ['publish.run', 'publish.rerun'].includes(j.type))) return;
+  // 发布中不扫设备：试发（publish.fallbackTest）同样在真机上跑，判据要一起认
+  if (deviceScanBusy || anyPublishRunning()) return;
   deviceScanBusy = true;
   deviceScanAt = Date.now();
   const button = document.querySelector('[data-act="pub:devScan"]');
@@ -1552,11 +1573,12 @@ async function refreshDevices(manual = false) {
       const failed = found.find(d => ['connect-failed', 'discovery-error', 'unauthorized'].includes(d.state));
       toast(count ? `已连接 ${count} 台设备，可直接加入并使用` : (failed ? '自动连接未完成，原因已显示在设备列表中' : (found.length ? '已发现模拟器，正在等待连接就绪，软件会自动重试' : '未发现运行中的模拟器，打开 MuMu 后软件会自动连接')), count ? 'ok' : '');
     }
-    if (state.tab === 6 && (changed || manual)) paintDevices();
+    // 设备表格在「模拟器发布」和「备用入口试发」两页都会画，刷新判据要一起认
+    if (PUBLISH_ROW_TABS.has(state.tab) && (changed || manual)) paintDevices();
   } catch (e) {
     state.devScanError = e.message;
     if (manual) toast('自动连接未完成：' + e.message, 'err');
-    if (state.tab === 6) paintDevices();
+    if (PUBLISH_ROW_TABS.has(state.tab)) paintDevices();
   } finally {
     deviceScanBusy = false;
     deviceScanAt = Date.now();
@@ -1611,7 +1633,7 @@ function devicesHtml() {
     <div class="row" style="margin-top:10px">
       <button class="btn sm primary" data-act="pub:devScan">扫描设备</button>
       <button class="btn sm" data-act="pub:probe">检查能不能发布</button>
-      <span class="chip">${(state.jobs || []).some(j => ['publish.run', 'publish.rerun'].includes(j.type)) ? '发布中，暂停刷新' : '自动发现已开启'}</span>
+      <span class="chip">${anyPublishRunning() ? '发布中，暂停刷新' : '自动发现已开启'}</span>
       <span class="hint" style="margin:0">自动发现 · 自动连接 · 每 10 秒刷新</span>
     </div>
     ${freshBox}${noneBox}${state.devScanError ? `<p class="hint">自动连接未完成：${esc(state.devScanError)}</p>` : ''}
@@ -1756,6 +1778,81 @@ TABS[13] = {
   render: () => updatePanelHtml() + window.releaseMotion.render()
 };
 
+/* ---------------- ⑭ 备用入口试发（只给指定账号） ----------------
+ * ★★ 2026-10-16 新增。为什么需要它：
+ *   本机这台账号的个人页有「主页」按钮 ⇒ 主入口永远能走通，备用入口（动态流相机）
+ *   在本机**没有真实触发条件**；而远端那些没有主页按钮的账号走的正是备用那一段。
+ *   光靠「本机发布一遍」证明不了备用入口，只能给一个显式的强制开关把它跑出来。
+ *
+ * 与「模拟器发布」的关系：**同一个 publisher.run、同一条发布链路**，只多一个
+ * `forceAlternateEntry`。不复制一份发布代码 —— 复制出来的一定会各自演化，
+ * 测出来的结论就不可信了（本来要验的就是线上那条备用入口）。
+ *
+ * ★ 这个开关的语义是**「假装这台账号没有『主页』按钮」**，不是「另走一条备用路线」：
+ *   导航那一段照常跑（先点「我」、停在个人页），到「主页」那一步无论按钮在不在都当找不到，
+ *   于是**生产环境里无主页账号触发回退的那段代码**自己接管（回首页 → 点动态 → 等提示结束 → 点相机）。
+ *   所以本页跑的整条命令序列，与真的没有主页按钮的账号逐条相同 —— 回归里有断言钉住这一点。
+ *
+ * 可见性有两层，缺一不可：
+ *   ① 这里把按钮藏起来（不给人添乱）；
+ *   ② 主进程 jobs.run 对 publish.fallbackTest 直接拒绝非指定账号 —— 改前端一行不算数。
+ * 免登录开发模式（auth.service 没启用）照常可见，否则本机没法自测这条链路。
+ */
+const FALLBACK_TEST_USER = 'shuo';
+function fallbackTestVisible() {
+  const a = state.auth || {};
+  if (!a.requireLogin) return true;                 // 免登录 / 开发模式
+  const u = a.user || null;
+  return !!u && String(u.username || '').trim().toLowerCase() === FALLBACK_TEST_USER;
+}
+
+TABS[14] = {
+  title: '备用入口试发',
+  fallbackTest: true,
+  desc: '只走「动态流相机」这一条备用入口的真实发布（与远端无主页按钮账号同一路径）',
+  actions: () => [
+    { act: 'sheet:importReport', label: '导入 AI 内容报告' },
+    { act: 'pub:stop', label: '停止', disabled: !running('publish.fallbackTest') },
+    { act: 'pub:fallbackRun', label: '开始试发', primary: true,
+      disabled: !(state.project.publish && state.project.publish.rows && state.project.publish.rows.length) }
+  ],
+  render() {
+    const cfg = state.config.publish || {};
+    const pub = state.project.publish || {};
+    const rows = pub.rows || [];
+    const okCount = rows.filter(r => r.result === '发布成功').length;
+    const runningNow = running('publish.fallbackTest');
+    return `
+      <div class="box">
+        <h3>这条模块做什么</h3>
+        <p class="hint" style="margin-top:0">正常发布时，程序先试「我 → 主页 → 发布新动态」；
+          这个账号没有「主页」按钮时，才退到动态流右上角的相机入口。
+          <b>本机账号两者都有</b>，所以平时永远测不到备用那一段。</p>
+        <p class="hint">这里的做法是<b>假装这个账号没有「主页」按钮</b>：照样先点「我」、停在个人页，
+          到「主页」那一步当作找不到，于是由<b>正式发布里那段回退代码</b>接管（回首页 → 点动态 → 点相机）。
+          素材清理、推送、索引、主图排序、选图、转场、填写、提交 <b>每一步都和正式发布一模一样</b>
+          —— 所以在这里发的，就是远端账号会走的路径，逐条命令相同。</p>
+      </div>
+      <div class="box">
+        ${reportBoxHtml()}
+        ${devicesHtml()}
+        ${runningNow ? progHtml(progFor('publish.fallbackTest')) : ''}
+        ${batchesHtml('publish.fallbackTest', '正在试发的批次')}
+      </div>
+      ${rows.length ? `<div class="tw publish-rows"><table>
+        <colgroup><col style="width:40px"><col style="width:260px"><col style="width:56px"><col style="width:56px"><col style="width:100px"><col style="width:80px"><col></colgroup>
+        <thead><tr><th>#</th><th>素材目录</th><th>好物</th><th>图片</th><th>开始时间</th><th>耗时</th><th>状态</th></tr></thead>
+        <tbody>${rows.map(r => `<tr data-publish-row="${esc(r.id)}" class="${r.result === '失败' || r.result === '校验未通过' ? 'flag' : ''}">
+          <td class="num">${r.seq}</td><td class="mono" title="${esc(r.dir)}">${esc(r.dir)}</td><td class="num">${n(r.goods)}</td><td class="num">${n(r.images)}</td>
+          <td data-publish-start>${esc(r.startAt || '—')}</td><td class="num" data-publish-elapsed>${publishElapsedText(r)}</td>
+          <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
+        </tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty">还没有发布队列，请先导入 AI 内容报告。</div>`}
+      <p class="hint">已提交 ${okCount} / ${rows.length} 条。这里是真实提交 —— 发出去的内容会出现在得物上，
+        和正式发布没有区别，只是入口固定走备用那一条。</p>`;
+  }
+};
+
 function syncUpdateNotice() {
   const available = ['available', 'downloading', 'downloaded'].includes(state.update?.status)
     || (state.update?.latestBuild > state.update?.build);
@@ -1817,7 +1914,8 @@ function renderBackground() {
 
 function renderAll() {
   syncUpdateNotice();
-  if (state.tab === 6 && !deviceScanBusy && Date.now() - deviceScanAt > 10000) setTimeout(() => refreshDevices(), 0);
+  // 「备用入口试发」页也有设备表（试发必须真机），进页时同样要自动扫描一次
+  if (PUBLISH_ROW_TABS.has(state.tab) && !deviceScanBusy && Date.now() - deviceScanAt > 10000) setTimeout(() => refreshDevices(), 0);
   syncAdminNav();   // 高级设置是管理员专属：先按权限把页签与当前页签都对齐，再渲染
   // ★ 页签 5「发布单」2026-10-03 已删 ⇒ 编号在 5 处留了空位。老配置里存过 tab=5、
   //   或按 Ctrl+5 按到空位时，必须兜回第 1 页 —— 否则 t 是 undefined，下面读 t.title 直接崩（整页白屏）。
@@ -2416,7 +2514,12 @@ function advBox(title, open, body, hint) {
 function syncAdminNav() {
   const ok = canAdmin();
   document.querySelectorAll('.nav[data-admin]').forEach(el => { el.hidden = !ok; });
-  if (TABS[state.tab] && (TABS[state.tab].hidden || (!ok && TABS[state.tab].admin))) state.tab = 1;
+  // 「备用入口试发」与管理员无关，它只对指定账号可见 —— 单独一条线，别和管理员权限混在一起
+  // （混在一起的话，哪天把那个账号设成管理员，普通成员反而看不到，理由也说不清）。
+  const ft = fallbackTestVisible();
+  document.querySelectorAll('.nav[data-fallback-test]').forEach(el => { el.hidden = !ft; });
+  if (TABS[state.tab] && (TABS[state.tab].hidden || (!ok && TABS[state.tab].admin)
+    || (TABS[state.tab].fallbackTest && !ft))) state.tab = 1;
 }
 
 /** 这个人能编辑哪些品牌：管理员=全部；成员=名下的（含已停用的，否则停用一个他连看都看不到） */
@@ -3232,6 +3335,19 @@ const ACTS = {
     }
     await runJob('publish.run', {});
   },
+  /**
+   * 「备用入口试发」→ 同一条发布链路，只多一个 forceAlternateEntry。
+   * ★ 这里**故意不弹**「模拟通道」确认框：试发要验的就是真实点击备用入口，
+   *   模拟通道根本不碰设备，跑了等于没跑。所以模拟通道**直接拒绝**，并说清下一步。
+   */
+  'pub:fallbackRun': async () => {
+    const pub = state.project.publish || {};
+    if ((pub.mode || 'mock') !== 'adb') {
+      toast('备用入口试发必须走真实设备：请先「连接模拟器」并点「检查能不能发布」通过', 'err');
+      return;
+    }
+    await runJob('publish.fallbackTest', {});
+  },
   'pub:exportLog': async () => {
     const batch = (state.project.publish || {}).batch || '';
     const r = await runJob('publish.exportLog', { batch });
@@ -3240,7 +3356,19 @@ const ACTS = {
       if (r.result.file) await appApi.reveal(r.result.file);
     }
   },
-  'pub:stop': async () => { const nGone = await appApi.cancel('publish.run'); toast(nGone ? '已请求停止，当前步骤结束后停下' : '当前没有在跑的发布任务', nGone ? '' : 'err'); renderAll(); },
+  /**
+   * ★★ 2026-10-16：新增「备用入口试发」页签之后，`pub:stop` 不能只盯着 `publish.run`。
+   *   原来这一句写死了 `cancel('publish.run')` ⇒ 试发那一页按「停止」会提示「当前没有在跑的发布任务」，
+   *   而任务其实还在跑（只能等它自己走完，或去「运行日志」页逐个取消）。这里改成：
+   *   先把所有发布类型挨个请求一遍，再把实际停到的数量一起说清楚（0 个才是真的没在跑）。
+   */
+  'pub:stop': async () => {
+    let nGone = 0;
+    for (const t of PUBLISH_JOB_TYPES) nGone += await appApi.cancel(t) || 0;
+    toast(nGone ? `已请求停止 ${nGone} 个发布任务，当前步骤结束后停下`
+      : '当前没有在跑的发布任务', nGone ? '' : 'err');
+    renderAll();
+  },
   'pub:rerun': async (el) => {
     const seq = el.dataset.seq;
     await runJob('publish.rerun', { seq });
@@ -3656,7 +3784,7 @@ function bind() {
     j.progress = Object.assign({}, p);
     j.elapsedSec = j.startedAt ? (Date.now() - j.startedAt) / 1000 : 0;
     updateProgress(p);
-    if (state.tab === 3 || state.tab === 6) refreshBatches();
+    if (state.tab === 3 || PUBLISH_ROW_TABS.has(state.tab)) refreshBatches();
   });
   appApi.onPublishRow(updatePublishRow);
   appApi.onJobDone(d => {
@@ -3692,7 +3820,7 @@ async function boot() {
 setInterval(() => {
   refreshPublishElapsed();
   refreshRunningElapsed();
-  if (state.tab === 6 && !document.hidden && Date.now() - deviceScanAt >= 10000) refreshDevices();
+  if (PUBLISH_ROW_TABS.has(state.tab) && !document.hidden && Date.now() - deviceScanAt >= 10000) refreshDevices();
 }, 1000);
 
 let cloudAuthCheckBusy = false;

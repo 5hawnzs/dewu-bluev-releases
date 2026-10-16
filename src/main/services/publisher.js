@@ -19,6 +19,7 @@ const emulators = require('./emulators');
 const uimap = require('./uimap');
 const topicinput = require('./topicinput');
 const mediapermission = require('./mediapermission');
+const entrydialogs = require('./entrydialogs');
 const verifySvc = require('./verify');
 const albumready = require('./albumready');
 const store = require('../store');
@@ -339,30 +340,119 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
 }
 
 // 商家主页可能没有 tvGoHomePage；使用首页动态流的相机入口，不依赖账号主页布局。
+async function tapReadyCamera(serial, ctx) {
+  const started = performance.now();
+  let stable = 0, lastBounds = '', why = '尚未读取页面';
+  const dismissed = new Set();
+  while (performance.now() - started < 30000) {
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    const page = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0 }, ctx);
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    // 无文字的备用抓取不能证明发布提示已消失，不能当成可点击。
+    if (!page.ok || page.via === 'dumpsys') {
+      stable = 0;
+      why = '无法完整核实当前页面及发布提示';
+    } else {
+      const nodes = uimap.parseNodes(page.xml);
+      const dialog = entrydialogs.inspect(nodes);
+      if (dialog && dialog.waiting) {
+        stable = 0;
+        lastBounds = '';
+        why = dialog.name;
+        if (ctx.log) ctx.log('备用入口：' + why + '（继续等待，未点击相机）', 'info');
+        await sleep(400, ctx.cancelled);
+        continue;
+      }
+      if (dialog) {
+        stable = 0;
+        lastBounds = '';
+        const dialogKey = [dialog.title, dialog.button.id, dialog.button.bounds].join('|');
+        if (!dismissed.has(dialogKey)) {
+          const result = await adb.tap(serial, dialog.button.center.x, dialog.button.center.y);
+          if (!result.ok) {
+            const error = new Error('未能关闭入口弹窗：' + dialog.name + '；未点击相机。');
+            error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+            throw error;
+          }
+          dismissed.add(dialogKey);
+          if (ctx.log) ctx.log('备用入口：已点击' + dialog.name + '的「' + (dialog.button.text || dialog.button.desc) + '」，等待确认关闭', 'info');
+        }
+        // 只有匹配到实际弹窗才走这一段；仍存在时不重复点，等回读确认。
+        await sleep(400, ctx.cancelled);
+        continue;
+      }
+      const camera = nodes.find(n => n.id === uimap.DEWU.entryId && n.enabled && n.center);
+      const hint = nodes.find(n => /^(?:正在(?:发布|上传)|(?:发布|上传)(?:中|成功|完成))(?:$|[\s！!。，,.…]|\d)/.test((n.text || n.desc).trim())
+        || /ProgressBar$/.test(n.cls));
+      if (hint || !camera) {
+        stable = 0;
+        why = hint ? '发布提示或进度仍显示，等待结束' : '相机入口尚未出现或尚不可用';
+      } else {
+        stable = camera.bounds === lastBounds ? stable + 1 : 1;
+        lastBounds = camera.bounds;
+        // 连续两次完整页面均无发布提示，且入口位置稳定，才使用本次坐标。
+        if (stable >= 2) {
+          const result = await adb.tap(serial, camera.center.x, camera.center.y);
+          if (!result.ok) throw new Error('相机点击命令失败，未确认进入发布流程');
+          return;
+        }
+        why = '等待相机入口及页面稳定';
+      }
+    }
+    if (ctx.log) ctx.log('备用入口：' + why + '（未点击相机）', 'info');
+    await sleep(400, ctx.cancelled);
+  }
+  const error = new Error('等待 30 秒仍未确认发布提示结束且相机可操作：' + why + '；未点击相机，本批停止。');
+  error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+  throw error;
+}
+
 async function openPublishEntry(serial, ctx = {}) {
   const home = await adb.ensureApp(serial, { pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity, judge: f => uimap.isHomeScreen(f), timeoutMs: 30000, allowForceStop: false });
   if (!home.ok) throw new Error('无法返回得物首页：' + (home.why || '未知原因'));
   await runStep(serial, { action: 'tapId', value: 'com.shizhuang.duapp:id/tab_trends', name: '备用发布入口 · 动态' }, {}, ctx);
   await sleep(400, ctx.cancelled);
-  await runStep(serial, { action: 'tapId', value: uimap.DEWU.entryId, name: '备用发布入口 · 相机' }, {}, ctx);
-  const end = Date.now() + 8000;
-  while (Date.now() < end) {
+  await tapReadyCamera(serial, ctx);
+  // 只点击一次，慢设备允许继续转场；命令回执不代表页面已进入。
+  const started = performance.now(), timeoutMs = 30000;
+  let focus = '', lastKnownFocus = '', warned = false;
+  while (performance.now() - started < timeoutMs) {
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
-    const focus = await adb.currentFocus(serial);
+    const remaining = Math.max(1, timeoutMs - (performance.now() - started));
+    focus = await adb.currentFocus(serial, { timeout: Math.min(3000, Math.ceil(remaining)) });
+    if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
+    if (focus) lastKnownFocus = focus;
     if (uimap.isPublishScreen(focus) || uimap.isDraftScreen(focus)) {
       ctx.publishEntryReady = true;
+      ctx.publishEntryRoute = 'camera';
       if (ctx.log) ctx.log('已通过动态流相机进入发布流程，跳过账号主页入口', 'info');
       return { ok: true, focus };
     }
-    await sleep(300, ctx.cancelled);
+    if (!warned && performance.now() - started >= 8000) {
+      warned = true;
+      if (ctx.log) ctx.log('备用入口跳转较慢，继续等待页面确认（最多 30 秒，不重复点击相机）', 'info');
+    }
+    await sleep(Math.min(300, Math.max(0, timeoutMs - (performance.now() - started))), ctx.cancelled);
   }
-  throw new Error('已点击动态流相机，但未进入发布流程，请查看当前屏幕或失败截图');
+  const observed = !focus ? '当前前台页面读不到' : uimap.isHomeScreen(focus)
+    ? '当前仍在得物首页，无法区分点击未生效还是跳转卡顿'
+    : `当前停在其他页面「${focus}」，可能被弹窗或其他应用阻挡`;
+  const error = new Error(`已点击动态流相机，等待 30 秒仍未确认进入相册或草稿箱；${observed}`
+    + (!focus && lastKnownFocus ? `；此前最后读到「${lastKnownFocus}」，不作为当前页面` : '')
+    + '。未选图、未提交，不重复点击；本批停止，请查看设备页面或失败截图。');
+  error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
+  throw error;
+}
+
+function isAccountEntryStep(step) {
+  return step.action === 'tapId' && /:(?:id)\/(?:tab_user|tvGoHomePage|rlPublish)$/.test(step.value || '')
+    || step.action === 'tapXY' && /^底部.*我/.test(step.name || '') && step.whenNotOn === 'com.shizhuang.duapp:id/rlPublish';
 }
 
 async function runStep(serial, step, data, ctx) {
   const checkCancelled = () => { if (ctx && ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消'); };
   checkCancelled();
-  if (ctx.publishEntryReady && step.action === 'tapId' && /:(?:id)\/(?:tvGoHomePage|rlPublish)$/.test(step.value || '')) return { skipped: true, why: '已由备用入口进入发布流程' };
+  if (ctx.publishEntryReady && isAccountEntryStep(step)) return { skipped: true, why: '已由备用入口进入发布流程' };
   // 离开话题输入段前先结束最后一个话题，必须早于点击关联好物或提交发布。
   if (!step.topicInput) await topicinput.finish(serial, ctx);
   checkCancelled();
@@ -375,6 +465,21 @@ async function runStep(serial, step, data, ctx) {
   const stepKey = (step && (step.name || (step.action + ':' + step.value))) || '';
   const animOffSteps = (ctx && ctx.animOffSteps) || null;
   const wantAnimOff = !!(animOffSteps && stepKey && animOffSteps[stepKey]);
+  // ★★ 「选图之后的转场」现在是**一等步骤**（action=transition，见 services/transition.js）。
+  //   这里仍然认一种**老表**的写法：`whenOn=edit_panel` 的守卫点击步（2026-10-16 之前发出去的
+  //   表就是那样写的）。把它**就地转成**转场语义 ⇒ 老用户不重新导入定位表也能拿到这个修复。
+  //   ★ 判据是「形状」，不是步骤名：名字是给用户看的，改名不该改变行为。
+  if (step.action === 'transition'
+    || (/^tap/.test(String(step.action || '')) && step.whenOn === 'com.shizhuang.duapp:id/edit_panel')) {
+    const spec = step.action === 'transition' ? step : {
+      name: '选图后的转场 · 等到标题填写页（旧表兼容）',
+      until: ['com.shizhuang.duapp:id/etTitle'],
+      from: ['com.shizhuang.duapp:id/flThumbSelect', 'com.shizhuang.duapp:id/edit_panel'],
+      maxClicks: 2,
+      timeout: 30000,
+    };
+    return require('./transition').run(serial, spec, ctx);
+  }
   let reusedXml = null;
   if (step && (step.whenOn || step.whenNotOn)) {
     const g = await screenGuard(serial, step, ctx, wantAnimOff);
@@ -454,7 +559,14 @@ async function runStep(serial, step, data, ctx) {
             + `（报告导入的老行可能没有）⇒ 改成固定数字，或先把素材重新扫一遍。`);
         }
         const exact = uimap.findNodes(nodes, cond).filter(x => x && x.center);
-        if (!exact.length && step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/tvGoHomePage') {
+        // ★★ 2026-10-16：`ctx.forceAlternateEntry`（只由「备用入口试发」模块传入）在这里
+        //   **假装账号没有「主页」按钮** —— 哪怕它真的在屏幕上，也当成没找到。
+        //   为什么是"假装找不到"而不是"另走一条路"：后面那段回退代码就是**线上无主页账号
+        //   真正走的那条路**（回首页 → 点动态 → 等提示结束 → 点相机）。让试发从同一个入口
+        //   进去，才谈得上"测的就是线上那条路"；自己另写一条，两条迟早各走各的。
+        if ((!exact.length || ctx.forceAlternateEntry) && step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/tvGoHomePage') {
+          // 浏览导航可能与素材推送重叠；备用入口必须留到相册就绪之后。
+          if (ctx.deferPublishEntry) return { deferred: true };
           if (ctx.log) ctx.log('当前账号页面没有「主页」按钮，切换动态流相机入口', 'info');
           await openPublishEntry(serial, ctx);
           return { alternateEntry: true };
@@ -859,6 +971,11 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
 
   // 只并行已知的浏览导航。自定义步骤、发布入口、草稿处置、输入均不跨越清理屏障。
   const preparedSteps=new Set(), navSteps=[], absentDialogs=[];
+  // ★★ 2026-10-16：强制备用入口（「备用入口试发」模块）时这段**照常收集、照常点「我」**。
+  //   为什么不跳过：线上无主页按钮的账号，正是先点「我」、停在个人页、在**那里**才发现没有主页按钮，
+  //   然后由 openPublishEntry 按返回键回首页再点「动态」。跳过「我」就等于把线上独有的一整截
+  //   （个人页 → 返回首页）从测试里删掉 —— 那样测出来的结论不能用。
+  //   强制只体现在**一个地方**：runStep 里把「主页」那一步当成找不到（见那段注释）。
   if (uimap.isHomeScreen(entryFocus)) {
     for(const step of steps) {
       if(step.action==='tapId'&&step.value==='com.shizhuang.duapp:id/tvCancel'&&step.whenOn===step.value) {
@@ -871,7 +988,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       navSteps.push(step);
     }
   }
-  let canOverlap=navSteps.length>0;
+  let canOverlap=navSteps.length>0 && ctx.publishEntryRoute !== 'camera';
   if(canOverlap&&absentDialogs.length) {
     const page=await adb.dumpEx(serial,{pkg:uimap.DEWU.pkg,retries:0,allowAnimOff:false});
     canOverlap=page.ok&&!/tvCancel|是否继续编辑|保存草稿|放弃编辑/.test(page.xml||'');
@@ -892,7 +1009,9 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       navigation=require('./diagnostics').isolatedPhase('准备个人主页',row.seq,async()=>{
         for(const step of navSteps) {
           if(branchCancelled())throw new Error('发布已取消');
-          await runStep(serial,step,{}, {...ctx,cancelled:branchCancelled});
+          const result = await runStep(serial,step,{}, {...ctx,cancelled:branchCancelled,deferPublishEntry:true});
+          // 延后的步骤不能标成已完成，主流程会在素材就绪后使用原 ctx 执行。
+          if (result && result.deferred) break;
           preparedSteps.add(step);
         }
         for(const step of absentDialogs)preparedSteps.add(step);
@@ -911,6 +1030,19 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     log(`${row.dir}：相册清理完成，个人主页导航已收敛，之后才进入发布入口`, 'info');
   } else preparation=await albumready.prepare(serial,item,row,{...ctx,publishConfig:c});
   const { remotes, remoteDir } = preparation;
+  // ★★ 2026-10-16：「备用入口试发」**没有**单独的开入口段 —— 上面那个
+  //   `(!exact.length || ctx.forceAlternateEntry)` 已经让「主页」那一步必走备用分支，
+  //   由 runStep → openPublishEntry 自己接管（与线上无主页账号同一个调用点、同一段代码）。
+  //   原来这里有一段「素材就绪后直接 openPublishEntry」，那会让试发变成一条**线上不存在的**捷径：
+  //   线上是"点了我 → 在个人页发现没有主页按钮 → 回首页 → 点动态 → 点相机"，
+  //   试发却是"素材好了 → 直接点相机"，中间那一截线上独有的路（个人页→回首页）根本没测到。
+  //   两段一对比就知道该删哪一段：测的是线上那条，就不能给测试留一条更短的路。
+  // 只复用本批已实际走通的入口；返回草稿箱时沿用它的出口，不绕回首页。
+  if (ctx.publishEntryRoute === 'camera' && !uimap.isDraftScreen(entryFocus)) {
+    require('./diagnostics').phase('备用发布入口', row.seq);
+    log('本批已确认备用入口可用，直接使用动态流相机入口', 'info');
+    await openPublishEntry(serial, ctx);
+  }
 
   // 2) 按 UI 定位表走真实界面。
   //    ★ 2026-10-02 用户实测：**图文和视频的发布位置是一样的**（入口、相册页签、编辑页同一套），
@@ -967,6 +1099,10 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   for (const raw of entrySteps) {
     if(preparedSteps.has(raw))continue;
     if (cancelled()) throw new Error('已取消');
+    if (ctx.publishEntryReady && isAccountEntryStep(raw)) {
+      log(`${row.dir}：跳过「${raw.name || raw.value}」（已由备用入口进入发布流程）`, 'info');
+      continue;
+    }
     let step = topicinput.mark(raw, uimap.fill(raw, data));
     // 老用户定位表同样升级，不能只改出厂表让已安装的机器继续跳过封面。
     if (isVideo && ((step.action === 'tapXY' && String(step.value).replace(/\s/g, '') === '820,1857')
@@ -984,7 +1120,12 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       log(`${row.dir}：跳过「${step.name || step.value}」（${why}）`, 'info');
       continue;
     }
-    row.status = step.name;
+    // 守卫步骤先检查页面；步骤名不能让用户误以为已经点击或放弃了草稿。
+    const stepLabel = step.whenOn === uimap.DEWU.draft.titleId && step.value === uimap.DEWU.draft.exitId
+      ? '检查草稿箱（出现时进入相册）'
+      : step.whenOn === uimap.DEWU.resumeDialog.dismissId && step.value === uimap.DEWU.resumeDialog.dismissId
+        ? '检查继续编辑提示（出现时放弃旧内容）' : step.name;
+    row.status = stepLabel;
     if (ctx.onRow) ctx.onRow(row);
     // ★ 交给 runStep 的 input 分支做回读校验（只有紧邻的上一步真是 tapId 才非空）
     ctx.inputCheckId = lastTapId;
@@ -992,7 +1133,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
     //   不靠推理，把每一步的**真实毫秒数**量出来。只有慢到会引起注意的（≥1.5s）才说，
     //   免得日志被一堆 0.1s 淹没。计时不含日志本身的开销（纯 runStep 前后取差值）。
     const tStep = Date.now();
-    require('./diagnostics').phase('界面步骤 ' + String(step.name || step.action).replace(/[^\u4e00-\u9fffA-Za-z0-9 ·_-]/g, '').slice(0, 45), row.seq);
+    require('./diagnostics').phase('界面步骤 ' + String(stepLabel || step.action).replace(/[^\u4e00-\u9fffA-Za-z0-9 ·_-]/g, '').slice(0, 45), row.seq);
     let rs;
     try {
       const submittingVideo = isVideo && (/^提交发布/.test(step.name || '') || step.submit === true
@@ -1096,6 +1237,15 @@ async function run(state, ctx = {}) {
 async function runBatch(state, ctx = {}) {
   // 返回页只属于当前批次；调用者复用 ctx 或换设备时必须重新观察入口。
   ctx.publishReturnFocus = '';
+  ctx.publishEntryRoute = '';
+  // ★★ 2026-10-16：**强制走备用入口**（动态流相机）。
+  //   为什么要有它：本机账号有「主页」按钮 ⇒ 主入口永远能走通，备用入口在本机**没有真实触发条件**。
+  //   只让发布器「先找主页、找不到才退备用」的话，本机永远测不到备用那一段 —— 而远端
+  //   （无主页按钮的账号）走的正是那一段。所以给一个显式开关，从调用方传进来，
+  //   **不改默认行为**：不传就是原来的两条路线自动挑。
+  //   ★ 它只影响「走哪个入口」，不影响后面任何一步：依然是真实 publisher.run、真实设备、真实点击，
+  //     所以用它测出来的结果可以直接用于判断备用入口本身有没有问题。
+  ctx.forceAlternateEntry = !!(state.publish && state.publish.forceAlternateEntry) || !!ctx.forceAlternateEntry;
   const log = ctx.log || (() => {});
   // ★ 2026-10-05 用户口径「给用户只看大结论」：`log`（= ctx.log）现在一律是**过程明细**，
   //   界面不显示；只有 `conclude`（= ctx.conclude）那几句会出现在用户眼前。
@@ -1129,6 +1279,16 @@ async function runBatch(state, ctx = {}) {
   //   ⇒ 让这个参数名副其实：调用方给了就用调用方的，没给才退回配置。
   //   （真机发布路径 src/main/jobs.js **不传** state.publish.uiMap ⇒ 行为与以前一字不差。）
   const map = (state.publish && state.publish.uiMap) || c.uiMap;
+
+  // 强制备用入口时先校验定位表里确实有备用入口要用到的步骤，缺了就当场说清楚，
+  // 不要跑到一半才发现没有那一跳。
+  if (mode === 'adb' && ctx.forceAlternateEntry) {
+    const hasTrends = (map.steps || []).some(s => s.action === 'tapId' && s.value === 'com.shizhuang.duapp:id/tab_trends');
+    if (map.steps && map.steps.length && !hasTrends) {
+      // 备用入口自己会点「动态」tab，定位表里那一步不是必需的 —— 这里只作提示，不拦。
+      log('强制备用入口：定位表里没有「动态」页签步骤，仍按内置的动态流相机入口走', 'info');
+    }
+  }
 
   if (mode === 'adb' && !(map && map.steps && map.steps.length)) {
     throw new Error('真实通道需要先配 UI 定位表：把模拟器停在得物发布页 —— 推荐走底部「我」→ 右上角「主页」→「发布新动态」（3 跳，入口都带文字，稳）；也可以点动态流右上角那个没文字的相机图标（1 跳），'
@@ -1213,6 +1373,7 @@ async function runBatch(state, ctx = {}) {
   let stoppedReason = '';
   let stoppedForAlbum = false;
   let stoppedForSubmission = false;
+  let stoppedForEntry = false;
 
   for (const row of todo) {
     if (cancelled()) break;
@@ -1280,6 +1441,7 @@ async function runBatch(state, ctx = {}) {
       stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED' || e.code === 'ALBUM_BUSY';
       if (e.code === 'ALBUM_BUSY') stoppedReason = '相册文件持续占用，自动恢复未解除；请处理设备占用后重新启动任务';
       if (e.code === 'UI_COORDINATES') stoppedReason = reason;
+      if (e.code === 'PUBLISH_ENTRY_UNCONFIRMED' || e.code === 'PUBLISH_TRANSITION_UNCONFIRMED') { stoppedReason = reason; stoppedForEntry = true; }
       // 持续文件占用是设备级故障，停止本批次，后续素材保留未执行。
       if (e.code === 'ALBUM_IO_INTERRUPTED') log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
       // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
@@ -1326,7 +1488,7 @@ async function runBatch(state, ctx = {}) {
     done++;
     progress({ done, total: todo.length, label: row.dir, succeeded: rows.filter(r => r.result === '发布成功').length });
     if (stoppedReason) {
-      conclude((stoppedForSubmission ? '本条提交尚未稳定' : stoppedForAlbum ? '相册持续占用' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
+      conclude((stoppedForEntry ? '发布入口尚未确认' : stoppedForSubmission ? '本条提交尚未稳定' : stoppedForAlbum ? '相册持续占用' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
       break;
     }
   }

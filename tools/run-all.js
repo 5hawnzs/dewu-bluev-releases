@@ -71,7 +71,11 @@ const SUITES = [
   ['adbtest', 'node', ['tools/adbtest.js']],
   ['mediaquerytest', 'node', ['tools/mediaquerytest.js']],
   ['publish-sequencetest', 'node', ['tools/publish-sequencetest.js']],
-  ['albumreadytest', 'node', ['tools/albumreadytest.js']],
+  // 转场模块 + 加固模块：依赖是注入的 ⇒ 判据不接设备就能验完，单列一套才看得出哪条判据塌了
+  ['transitiontest', 'node', ['tools/transitiontest.js']],
+  // ★ 这一套里有多条"如实失败"的用例要等满转场超时（每条 30s，实测整套约 250s）——
+  //   比默认的 240s 上限还长。**加时限，不加豁免**：超了照样算失败，只是不再冤枉它。
+  ['albumreadytest', 'node', ['tools/albumreadytest.js'], 420000],
   ['publishcontinuationtest', 'node', ['tools/publishcontinuationtest.js']],
   ['frontendstatetest', 'node', ['tools/frontendstatetest.js']],
   ['diagnosticstest', 'node', ['tools/diagnosticstest.js']],
@@ -143,11 +147,11 @@ console.log('回归开始（每改一处都要跑完这一套）\n');
 
 let failed = 0;
 let totalPass = 0;
-for (const [name, kind, args] of SUITES) {
+for (const [name, kind, args, timeoutMs] of SUITES) {
   if (FILTER && !name.includes(FILTER)) continue;
   const bin = kind === 'electron' ? ELECTRON : NODE;
   const argv = kind === 'electron' ? ELECTRON_FLAGS.concat(args) : args;
-  const r = spawnSync(bin, argv, { cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, timeout: 240000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(bin, argv, { cwd: ROOT, encoding: 'utf8', env: CHILD_ENV, timeout: timeoutMs || 240000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   const pass = (out.match(/^PASS/gm) || []).length;
   const fail = (out.match(/^FAIL/gm) || []).length;

@@ -109,6 +109,16 @@
         <span class="ic"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v5h5M8 13h8M8 16.5h5"/></svg></span>
         <span>运行日志</span>
       </button>
+      <!-- 备用入口试发：**只给指定账号（shuo）**用的测试模块，见 app.js 的 fallbackTestVisible()。
+           为什么要单开一页而不是往「模拟器发布」里塞按钮：那一页是日常发布入口，
+           多一个「强制走备用入口」的开关迟早会被人误点成正式发布。
+           编号接在最后（14）而不是插进「执行」组：插号要把已有的 6~13 全改一遍，
+           连带 Ctrl+N、跳页写法与一批测试断言都要跟着动，为一个隐藏页签不划算。
+           默认 hidden：不能靠渲染层「记得隐藏」——服务端（主进程）那边另有一道拒绝。 -->
+      <button class="nav" data-tab="14" data-fallback-test="1" hidden>
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v12H4z"/><circle cx="12" cy="13" r="3.6"/></svg></span>
+        <span>备用入口试发</span>
+      </button>
       <div class="grp">其他</div>
       <button class="nav" data-tab="7">
         <span class="ic"><svg viewBox="0 0 24 24"><path d="m9.5 3-.7 2.4-2 .9-2.3-.6-2 3.5 1.7 1.8v2l-1.7 1.8 2 3.5 2.3-.6 2 .9.7 2.4h4.9l.7-2.4 2-.9 2.3.6 2-3.5-1.7-1.8v-2l1.7-1.8-2-3.5-2.3.6-2-.9-.7-2.4z"/><circle cx="12" cy="12" r="3"/></svg></span>

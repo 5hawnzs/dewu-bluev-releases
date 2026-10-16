@@ -2202,8 +2202,8 @@ async function packages(serial, filter) {
  * 同一页同一窗口 id **8/8 全部抓到**。所以「抓不到」是**跟当前这一屏的状态有关**的，
  * 不写清停在哪一屏，用户只会以为工具坏了。
  */
-async function currentFocus(serial) {
-  const r = await shell(serial, 'dumpsys window | grep mCurrentFocus');
+async function currentFocus(serial, opts) {
+  const r = await shell(serial, 'dumpsys window | grep mCurrentFocus', opts);
   const s = String(r.stdout || '').trim();
   // ★★ 2026-10-04 实测修正：`mCurrentFocus` 有两种**真实**写法，老正则只认一种：
   //   · 发布页这类：`com.shizhuang.duapp/media.publish.activity.TotalPublishProcessActivity`（全类名）
