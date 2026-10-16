@@ -70,7 +70,7 @@ async function run(map, options = {}) {
   page(node('rlPublish',200),HOME);
   observe = command => {
     if (/input tap 200 100/.test(command)) page(node('ivProduct',650));
-    if (/input tap 650 100/.test(command)) later(()=>page(node('etTitle',600)+node('submit',400)),2000);
+    if (/input tap 650 100/.test(command)) later(()=>page(node('ivDelete',650)+node('etTitle',600)+node('submit',400)),2000);
     if (/input tap 400 100/.test(command)) page('',HOME);
   };
   const productReturn = await run({steps:[tap('rlPublish'),tap('ivProduct'),submit]});

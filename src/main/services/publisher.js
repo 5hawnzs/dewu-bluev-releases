@@ -918,8 +918,12 @@ async function runStep(serial, step, data, ctx) {
         if (d.ok && uimap.parseNodes(d.xml).some(n => String(n.id) === wantId)) return;
         const waited = Date.now() - t0;
         if (waited >= tmo) {
+        const visible = d.ok
+          ? uimap.parseNodes(d.xml).filter(n => n.text).slice(0, 10).map(n => n.text).join(' / ')
+          : '';
           throw new Error(`等了 ${(waited / 1000).toFixed(1)}s 也没等到「${wantId}」出现`
             + (d.ok ? '' : `（连界面结构都抓不到：${d.why}）`)
+          + (visible ? `；当前可见文本：${visible || '（空）'}` : '')
             + ' —— 要么前一屏那一下没点动，要么得物改版了。不硬点下一步。');
         }
         if (ctx && ctx.log) ctx.log(`等「${wantId}」出现…（已等 ${Math.round(waited / 1000)}s）`, 'info');
@@ -1305,14 +1309,13 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       rs = await runStep(serial, step, data, ctx);
       const pickedGoods = step.action === 'tapCardText'
         || step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/ivProduct';
-      const pickedGoodsStep = pickedGoods && /^好物\d+ · 选结果第 1 格/.test(step.name || '');
       if (!(rs && rs.skipped) && pickedGoods) {
         try {
-          if (pickedGoodsStep) {
-            // 选完好物后不能只等编辑页回来：得物可能点空、搜索为空、或识别结果把页面拉回。
-            // 先确认容器里重新出现 ivDelete（用户口径：没挂上就是没选上），再确认编辑页返回。
-            await runStep(serial, { name: '选择好物后校验确实挂上', action: 'waitId', value: 'com.shizhuang.duapp:id/ivDelete', timeout: 8000 }, {}, ctx);
-          }
+          // 选完好物后不能只等编辑页回来：得物可能点空、搜索为空、或识别结果把页面拉回。
+          // 先确认容器里重新出现 ivDelete（用户口径：没挂上就是没选上），再确认编辑页返回。
+          // 以前只有名字命中「好物N · 选结果第1格」才校验；旧表/改名后同样的点选会漏检，
+          // 表现还是卡到后面找不到 etTitle，必须对每一种已点选的好物步骤统一收紧。
+          await runStep(serial, { name: '选择好物后校验确实挂上', action: 'waitId', value: 'com.shizhuang.duapp:id/ivDelete', timeout: 8000 }, {}, ctx);
           await runStep(serial, { name: '选择好物后返回文案编辑页', action: 'waitId', value: 'com.shizhuang.duapp:id/etTitle', timeout: 30000 }, {}, ctx);
         } catch (error) {
           error.code = 'PUBLISH_TRANSITION_UNCONFIRMED';
