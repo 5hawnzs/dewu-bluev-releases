@@ -112,8 +112,11 @@ async function run(map, options = {}) {
       if (/input tap (?:600|400) 100|ADB_INPUT_TEXT/.test(command)) unsafe++;
     };
     const stalled = await run({steps:[tap('tab_user'),tap('tvGoHomePage'),tap('rlPublish'),tap('flThumbSelect'),{name:'选材后的转场',action:'transition',until:videoKind?'设置封面':D+'etTitle',from:D+'flThumbSelect',timeout:1200,maxClicks:2},tap('etTitle'),{name:'标题',action:'input',value:'${title}'},submit]}, {fallback,video:videoKind});
-    assert.equal(stalled.failCount,1); assert(stalled.stoppedReason); assert.equal(unsafe,0); assert.equal(clicked,1);
-    console.log(`PASS ${fallback?'备用':'主'}入口${videoKind?'视频':'图文'}未确认换屏时停止，不重复下一步、不填标题、不提交`);
+    assert.equal(stalled.failCount,1);
+    // ★★ 2026-10-17 口径：行级未确认不再停整批（只有现场收不回来才停）。
+    assert.equal(stalled.stoppedReason,'');
+    assert.equal(unsafe,0); assert.equal(clicked,1);
+    console.log(`PASS ${fallback?'备用':'主'}入口${videoKind?'视频':'图文'}未确认换屏时本条失败（不停批），不填标题、不提交`);
   }
   // 备用入口起手就是上一轮中断留下的「是否继续编辑」弹窗：必须点「放弃」再进动态。
   {

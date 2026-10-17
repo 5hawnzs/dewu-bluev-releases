@@ -20,6 +20,8 @@ const uimap = require('./uimap');
 const topicinput = require('./topicinput');
 const mediapermission = require('./mediapermission');
 const entrydialogs = require('./entrydialogs');
+// 转场模块：这里只用它的「分段编辑屏往前推一步」（advanceStage）与「唯一下一步」判据。
+const transitionSvc = require('./transition');
 const verifySvc = require('./verify');
 const albumready = require('./albumready');
 const store = require('../store');
@@ -33,7 +35,13 @@ function cfg() { return store.get('publish') || {}; }
 // 得物拉起后会经历桌面横屏到应用竖屏的转场；连续读到相同尺寸才允许固定坐标点击。
 async function stableCoordinates(serial, screen, ctx = {}) {
   const end = Date.now() + 6000;
-  let last = null, stable = 0;
+  // ★★ 2026-10-17 提速：把上一次已经确认过的尺寸**当作第一个样本**。
+  //   真机上每个 tapXY 步骤都要读一次屏幕尺寸，而「稳定」要求连续两次读到同一尺寸 ——
+  //   也就是每一步固定白读两次（实测 uiSize 一次 ~0.3-0.6s，一条内容五六个固定坐标步骤）。
+  //   拿上一次的结论当第一个样本后：尺寸没变 ⇒ 读一次就够；真转了屏 ⇒ 第一次读就与旧值不符，
+  //   stable 归 1、继续按老规矩等第二次相同读数，判据一点没放松。
+  let last = (ctx && ctx.uiSize && ctx.uiSize.known !== false && ctx.uiSize.w) ? ctx.uiSize : null;
+  let stable = last ? 1 : 0;
   while (Date.now() < end) {
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
     const live = await adb.uiSize(serial);
@@ -106,6 +114,16 @@ function gapSecFor(kind, c) {
   if (kind !== 'video') return base;
   const v = Number(c.videoIntervalSec);
   return Number.isFinite(v) && v > 0 ? v : base;
+}
+
+/**
+ * 入口这一段的等待上限（毫秒）：默认 30 秒。
+ * 为什么要能改：它是「点击回执 ≠ 页面已切换」的兜底等待，回归里必须能压到亚秒级，
+ * 否则一条「入口没确认」的用例要白等 30 秒（重试一次就是 60 秒）。产品路径不写这个键 ⇒ 仍是 30 秒。
+ */
+function entryWaitMs() {
+  const n = Number(cfg().entryWaitMs);
+  return Number.isFinite(n) && n > 0 ? n : 30000;
 }
 
 /* ---------------- 设备（一个设备 = 一个账号） ---------------- */
@@ -294,7 +312,7 @@ async function saveShot(serial, tag, ctx) {
  * 拿不到界面结构时**不许猜**：猜「大概不在草稿箱吧」的后果是漏点一步、然后卡在下一条，
  * 而报错会指向下一条步骤（离真正的原因很远）—— 所以这里当场说清楚是哪一步、缺什么。
  */
-async function screenGuard(serial, step, ctx, preferAnimOff) {
+async function screenGuard(serial, step, ctx, preferAnimOff, presetXml) {
   const ids = String(step.whenOn || '').split(',').map(s => s.trim()).filter(Boolean)
     .concat(String(step.whenNotOn || '').split(',').map(s => s.trim()).filter(Boolean));
   // ★★ 2026-10-04 提速实测：守卫的 dump 原来默认 `retries:1`（失败多等一轮），
@@ -303,7 +321,12 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
   //   ⇒ 守卫**不重试**（retries:0），并把「这一屏要不要关动画」交给**按步骤名学习**的缓存：
   //     同一个步骤名（定位表里写死的，不随数据变）第一次撞上就关动画抓、抓完记下来，
   //     后面每一条内容的同一步直接走「关动画」路径（实测关动画后 ~2s 就能抓到）。
-  const d = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: !!preferAnimOff }, ctx);
+  // ★★ 2026-10-17 提速（用户口径「减少重复观测」）：上一步被守卫跳过 = 一个像素都没碰，
+  //   这一屏的结构从那一刻起没变过 ⇒ 直接用它，不再抓第二次（一次 dump 真机 ~1-2s）。
+  //   只有「跳过」的那一步会把结构交给下一步（runReal 的 carryXml），有动作的步骤一律重新抓。
+  const d = (typeof presetXml === 'string' && presetXml)
+    ? { ok: true, xml: presetXml, why: '', via: 'reuse', animOff: false }
+    : await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: !!preferAnimOff }, ctx);
   if (!d.ok) {
     // ★★ 2026-10-04：**已经决定要抛错了**，这时候才附带一句「设备在不在线」——
     //   设备掉线时那串「dump 没有任何输出 / 备用通道也跑不起来」会把排查带偏到「页面不 idle」上，
@@ -342,9 +365,10 @@ async function screenGuard(serial, step, ctx, preferAnimOff) {
 // 商家主页可能没有 tvGoHomePage；使用首页动态流的相机入口，不依赖账号主页布局。
 async function tapReadyCamera(serial, ctx) {
   const started = performance.now();
+  const waitMs = entryWaitMs();
   let stable = 0, lastBounds = '', why = '尚未读取页面';
   const dismissed = new Set();
-  while (performance.now() - started < 30000) {
+  while (performance.now() - started < waitMs) {
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
     const page = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0 }, ctx);
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
@@ -402,7 +426,7 @@ async function tapReadyCamera(serial, ctx) {
     if (ctx.log) ctx.log('备用入口：' + why + '（未点击相机）', 'info');
     await sleep(400, ctx.cancelled);
   }
-  const error = new Error('等待 30 秒仍未确认发布提示结束且相机可操作：' + why + '；未点击相机，本批停止。');
+  const error = new Error(`等待 ${Number((waitMs / 1000).toFixed(1))} 秒仍未确认发布提示结束且相机可操作：` + why + '；未点击相机，本条按失败处理。');
   error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
   throw error;
 }
@@ -453,7 +477,7 @@ async function openPublishEntry(serial, ctx = {}) {
     {}, ctx, resumePage && resumePage.xml);
   const trendStarted = performance.now();
   let trendConfirmed = false;
-  while (performance.now() - trendStarted < 30000) {
+  while (performance.now() - trendStarted < entryWaitMs()) {
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
     const focus = await adb.currentFocus(serial, { timeout: 3000 });
     if (focus && uimap.isHomeScreen(focus)) { trendConfirmed = true; break; }
@@ -487,13 +511,13 @@ async function openPublishEntry(serial, ctx = {}) {
   }
   if (!trendConfirmed) {
     const focus = await adb.currentFocus(serial, { timeout: 3000 });
-    const error = new Error(`点击「动态」后等待 30 秒仍未确认回到动态流；当前页面${focus || '读不到'}。未点击相机、未进入发布流程，本批停止。`);
+    const error = new Error(`点击「动态」后等待 ${Number((entryWaitMs() / 1000).toFixed(1))} 秒仍未确认回到动态流；当前页面${focus || '读不到'}。未点击相机、未进入发布流程，本条按失败处理。`);
     error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
     throw error;
   }
   await tapReadyCamera(serial, ctx);
   // 只点击一次，慢设备允许继续转场；命令回执不代表页面已进入。
-  const started = performance.now(), timeoutMs = 30000;
+  const started = performance.now(), timeoutMs = entryWaitMs();
   let focus = '', lastKnownFocus = '', warned = false;
   while (performance.now() - started < timeoutMs) {
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
@@ -509,16 +533,16 @@ async function openPublishEntry(serial, ctx = {}) {
     }
     if (!warned && performance.now() - started >= 8000) {
       warned = true;
-      if (ctx.log) ctx.log('备用入口跳转较慢，继续等待页面确认（最多 30 秒，不重复点击相机）', 'info');
+      if (ctx.log) ctx.log(`备用入口跳转较慢，继续等待页面确认（最多 ${Number((timeoutMs / 1000).toFixed(1))} 秒，不重复点击相机）`, 'info');
     }
     await sleep(Math.min(300, Math.max(0, timeoutMs - (performance.now() - started))), ctx.cancelled);
   }
   const observed = !focus ? '当前前台页面读不到' : uimap.isHomeScreen(focus)
     ? '当前仍在得物首页，无法区分点击未生效还是跳转卡顿'
     : `当前停在其他页面「${focus}」，可能被弹窗或其他应用阻挡`;
-  const error = new Error(`已点击动态流相机，等待 30 秒仍未确认进入相册或草稿箱；${observed}`
+  const error = new Error(`已点击动态流相机，等待 ${Number((timeoutMs / 1000).toFixed(1))} 秒仍未确认进入相册或草稿箱；${observed}`
     + (!focus && lastKnownFocus ? `；此前最后读到「${lastKnownFocus}」，不作为当前页面` : '')
-    + '。未选图、未提交，不重复点击；本批停止，请查看设备页面或失败截图。');
+    + '。未选图、未提交，不重复点击；本条按失败处理，请查看设备页面或失败截图。');
   error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
   throw error;
 }
@@ -532,8 +556,9 @@ function isAccountEntryStep(step) {
 async function confirmAlbumEntry(serial, step, ctx) {
   const allowDraft = step.value !== uimap.DEWU.draft.exitId;
   const started = Date.now();
+  const waitMs = entryWaitMs();
   let focus = '';
-  while (Date.now() - started < 30000) {
+  while (Date.now() - started < waitMs) {
     if (ctx.cancelled && ctx.cancelled()) throw new Error('发布已取消');
     focus = await adb.currentFocus(serial, { timeout: 3000 });
     if (uimap.isPublishScreen(focus) || allowDraft && uimap.isDraftScreen(focus)) {
@@ -542,7 +567,7 @@ async function confirmAlbumEntry(serial, step, ctx) {
     }
     await sleep(300, ctx.cancelled);
   }
-  const error = new Error(`${step.name || step.value}：点击后等待 30 秒仍未确认进入相册${allowDraft ? '或草稿箱' : ''}；当前页面${focus || '读不到'}。未选材、未填写、未提交，停止本批次。`);
+  const error = new Error(`${step.name || step.value}：点击后等待 ${Number((waitMs / 1000).toFixed(1))} 秒仍未确认进入相册${allowDraft ? '或草稿箱' : ''}；当前页面${focus || '读不到'}。未选材、未填写、未提交，本条按失败处理。`);
   error.code = 'PUBLISH_ENTRY_UNCONFIRMED';
   throw error;
 }
@@ -585,7 +610,9 @@ async function runStep(serial, step, data, ctx, presetXml) {
   }
   let reusedXml = (typeof presetXml === 'string' && presetXml) ? presetXml : null;
   if (step && (step.whenOn || step.whenNotOn)) {
-    const g = await screenGuard(serial, step, ctx, wantAnimOff);
+    const g = await screenGuard(serial, step, ctx, wantAnimOff, reusedXml);
+    // 留给下一步：只有「这一步被跳过」时 runReal 才会把它交出去（见那边的 carryXml）。
+    if (ctx) ctx.lastGuardXml = g.xml || '';
     if (!g.ok) return { skipped: true, why: g.why };
     reusedXml = g.xml || null;
     // ★★ 2026-10-04：守卫这一屏是关着动画抓到的 ⇒ 记下这个步骤名，本批后面同一步直接走关动画
@@ -606,7 +633,9 @@ async function runStep(serial, step, data, ctx, presetXml) {
       let node = null, nodes = [], lastWhy = '', lastNoText = false;
       // ★ 「点前 N 个匹配」用的：want = 要一次点几个，hit = 这一屏实际找到几个
       let want = 1, hit = [], lastFound = -1;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      // 分段编辑屏（「1 / 5」+「下一步」）每推进一段都要多观察一轮 ⇒ 轮数跟着放宽（最多 12）。
+      let maxAttempts = 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         checkCancelled();
         // ★ 必须带包名：发布页是**动画页**，uiautomator 抓不到时只有带上包名才会退到 dumpsys。
         //   （以前这里不传 pkg ⇒ 备用通道永远走不到 ⇒ 真机上按 id 点「关联好物」直接失败；
@@ -728,6 +757,25 @@ async function runStep(serial, step, data, ctx, presetXml) {
           ? rawHit.map(h => uimap.cardOf(nodes, h, step.card)).filter(x => x && x.center)
           : rawHit);
         if (hit.length >= want) { node = hit[0]; break; }
+        // ★★ 2026-10-17 另一台设备的截图里，图片编辑页会盖一层「正在导出图片 90% / 请不要退出得物」；
+        //   遮罩期间点「下一步」会被吃掉（命令成功、页面不动）。等它消失再点，不打断导出。
+        //   遮罩只是可能成因之一：另一类「点了没反应」由转场里的同屏重试兜住。
+        if (transitionSvc.isBusy(nodes)) {
+          if (maxAttempts < 12) maxAttempts++;
+          if (ctx && ctx.log) ctx.log('页面正在导出/处理图片，等遮罩消失后再继续（不点击）', 'info');
+          await sleep(600, ctx && ctx.cancelled);
+          continue;
+        }
+        // ★★ 2026-10-17 转场自愈（另一台设备的真实卡点）：选完图会先落在**图片编辑页**，
+        //   屏上是「1 / 5」+「下一步」；老定位表/导入表那一步只写了「等 etTitle」，
+        //   于是停在编辑页，报「找不到 etTitle；当前可见文本：1 / 5 / 下一步」。
+        //   判据极窄（有 `i / N` 计数 + 恰好一颗「下一步」）才点，同一屏最多 3 次、间隔 ≥2.4s；
+        //   其余屏一个像素都不碰。
+        if (await transitionSvc.advanceStage(serial, nodes, ctx)) {
+          if (maxAttempts < 12) maxAttempts++;
+          await sleep(300);
+          continue;
+        }
         lastFound = hit.length;
         if (attempt < 2) {
           if (ctx && ctx.log) ctx.log(`还没看到「${step.value}」，等半秒再抓一次（第 ${attempt + 2} 次）`, 'info');
@@ -891,7 +939,7 @@ async function runStep(serial, step, data, ctx, presetXml) {
           if (read < 2) await sleep(300, ctx && ctx.cancelled);
         }
         if (!got.ok) {
-          const error = new Error(`「${step.name || '输入'}」有限重读后仍无法确认内容（${got.why}），停止批次并保留现场`);
+          const error = new Error(`「${step.name || '输入'}」有限重读后仍无法确认内容（${got.why}），本条按失败处理并保留现场`);
           error.code = 'PUBLISH_CONTENT_UNCONFIRMED'; throw error;
         } else {
           // 比对前**先把空白全部去掉**：正文是多行的（`\n`），而 dump 把换行渲染成什么形态
@@ -926,11 +974,28 @@ async function runStep(serial, step, data, ctx, presetXml) {
       const wantId = String(step.value || '').trim();
       if (!wantId) throw new Error('这一步（waitId）没写要等的 resource-id');
       const tmo = Math.max(1000, Number(step.timeout) || 10000);
-      const t0 = Date.now();
+      let t0 = Date.now();
+      let busyWait = 0;
       for (;;) {
         checkCancelled();
         const d = await mediapermission.dump(serial, { pkg: uimap.DEWU.pkg, retries: 0, preferAnimOff: wantAnimOff }, ctx);
-        if (d.ok && uimap.parseNodes(d.xml).some(n => String(n.id) === wantId)) return;
+        const seen = d.ok ? uimap.parseNodes(d.xml) : [];
+        if (seen.some(n => String(n.id) === wantId)) return;
+        // 导出遮罩期间不点、也不按普通超时算（最多额外等 60s，遮罩还在就如实失败）。
+        if (d.ok && transitionSvc.isBusy(seen) && busyWait < 120) {
+          busyWait++;
+          if (ctx && ctx.log && busyWait === 1) ctx.log('等着「' + wantId + '」时页面正在导出/处理图片，等它结束（不点击）', 'info');
+          await sleep(500, ctx && ctx.cancelled);
+          continue;
+        }
+        // ★★ 2026-10-17 转场自愈：图片编辑页（「1 / 5」+「下一步」）不在老表的来源屏里，
+        //   只写「等 etTitle」就会永远等不到（另一台设备的真实现场）。
+        //   同一屏点了没反应会隔 2.4s 重试（最多 3 次）；推进后重新计时，陌生屏仍然不点。
+        if (await transitionSvc.advanceStage(serial, seen, ctx)) {
+          t0 = Date.now();
+          await sleep(300, ctx && ctx.cancelled);
+          continue;
+        }
         const waited = Date.now() - t0;
         if (waited >= tmo) {
         const visible = d.ok
@@ -939,7 +1004,7 @@ async function runStep(serial, step, data, ctx, presetXml) {
           throw new Error(`等了 ${(waited / 1000).toFixed(1)}s 也没等到「${wantId}」出现`
             + (d.ok ? '' : `（连界面结构都抓不到：${d.why}）`)
           + (visible ? `；当前可见文本：${visible || '（空）'}` : '')
-            + ' —— 要么前一屏那一下没点动，要么得物改版了。不硬点下一步。');
+            + ' —— 编辑页那颗「下一步」已按上限重试仍未生效，或得物改版了。不盲点陌生屏。');
         }
         if (ctx && ctx.log) ctx.log(`等「${wantId}」出现…（已等 ${Math.round(waited / 1000)}s）`, 'info');
         await sleep(400, ctx && ctx.cancelled);
@@ -1088,6 +1153,8 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
   const draftEntry = steps.findIndex(step => step.action === 'tapId' && step.value === uimap.DEWU.draft.exitId
     && step.whenOn === uimap.DEWU.draft.titleId);
   let entryFocus = '';
+  // ★★ 2026-10-17 提速：上一步被守卫跳过时，把那一屏的结构交给下一步（同屏不重复抓）。
+  let carryXml = '';
   const pullHome = async () => {
     row.status = '回主线';
     if (ctx.onRow) ctx.onRow(row);
@@ -1323,7 +1390,7 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       const submittingVideo = isVideo && (/^提交发布/.test(step.name || '') || step.submit === true
         || (raw === steps[steps.length - 1] && step.action === 'tapText' && step.value === '发布'));
       if (submittingVideo) await require('./videocover').verify(serial, ctx);
-      rs = await runStep(serial, step, data, ctx);
+      rs = await runStep(serial, step, data, ctx, carryXml);
       const pickedGoods = step.action === 'tapCardText'
         || step.action === 'tapId' && step.value === 'com.shizhuang.duapp:id/ivProduct';
       if (!(rs && rs.skipped) && pickedGoods) {
@@ -1345,6 +1412,9 @@ async function runReal(row, item, copyRow, serial, map, ctx) {
       if (used >= 1500) {
         log(`${row.dir}：「${step.name || step.value}」耗时 ${(used / 1000).toFixed(1)}s`, 'info');
       }
+      // 被守卫跳过 = 这一屏没被碰过 ⇒ 下一步的守卫可以直接用这份结构（省一次 dump）。
+      carryXml = (rs && rs.skipped && !step.topicInput && rs.why !== '已由备用入口进入发布流程')
+        ? (ctx.lastGuardXml || '') : '';
     }
     // ★ 记下这一步**实际点成功**的输入框 id（被守卫跳过的不算），供紧随其后的 input 步回读校验
     //   ★★ 注意判据别写反：`runStep` 对 tapId/wait/input 这些分支是 `return;`（**返回 undefined**），
@@ -1431,6 +1501,87 @@ async function run(state, ctx = {}) {
     return await runBatch(state, ctx);
   }
   finally { if (serial) activeDevices.delete(serial); }
+}
+
+/**
+ * ★★ 2026-10-17（用户口径）：「一条内容的异常不许拖垮整批」。
+ *
+ * 这些错误的共同点：**只是这一条走不下去了**（入口没确认 / 转场没确认 / 内容没确认 /
+ * 找不到控件 / 相册被占），设备本身还在、下一条还能从头走一遍。以前它们一律 `stoppedReason` ⇒
+ * 后面的素材全部「未执行」，用户看到的是「一条没发成，剩下的一条都没发」。
+ * 现在改成：先收回现场重试一次，仍不行就把**这一条**记失败，收干净后继续下一条。
+ *
+ * 仍然会停整批的只剩两种（都属于「设备级、再试也是一样的结果」）：
+ *   · UI_COORDINATES：定位表坐标和当前屏幕不符，每条都会同样失败；
+ *   · 现场收不回来（发布页正在上传、或没有「不丢内容」的出口）——
+ *     这种情况下下一条的相册清理会打断正在上传的内容，绝不能硬来。
+ */
+/**
+ * 这一条失败后能不能收回现场再继续下一条？
+ *
+ * 除了「坐标整张表都对不上」（每条都会同样失败）和用户主动取消，**其余都按行级处理**：
+ * 没打错误码的步骤失败（找不到控件、点了没反应、输入回读不一致、提交按钮没点中……）
+ * 本质上都是「这一条走不下去了」，而不是设备坏了。收回现场失败才是停批条件（见 runBatch）。
+ * 为什么不在这里白名单收窄：漏掉一个新错误码的代价就是「一条失败、后面全不执行」，
+ * 而这正是用户明确不接受的行为。
+ */
+function rowRecoverable(error) {
+  if (!error) return false;
+  if (error.code === 'UI_COORDINATES') return false;
+  if (error.code === 'PUBLISH_CANCELLED' || /发布已取消/.test(String(error.message || ''))) return false;
+  return true;
+}
+
+/**
+ * 这一条失败后能不能「收回现场、重走一遍」？
+ *
+ * 比 rowRecoverable 更窄：相册/媒体清理类错误（ALBUM_*）只记这一条失败，**不重走**。
+ * 为什么（回归用例抓到的真问题）：第一次尝试里可能已经把 `.nomedia` 隔离标记写进去了，
+ * 第二次再跑时「隔离已确认 + 物理文件仍在」会被当成可接受状态直接放行 ——
+ * 等于把一个 rm 没删掉、还留在盘上的旧素材静默当成清干净了（以空库伪装清理成功）。
+ * 这类失败本身也不属于「页面没走到」，重走一遍不会让它变好。
+ */
+function rowRetryable(error) {
+  if (!rowRecoverable(error)) return false;
+  // 素材/相册就绪段（清理、推图、写库、排主图）自己打了 noRetry：见 albumready.noRetry。
+  if (error && error.noRetry) return false;
+  if (String((error && error.code) || '').startsWith('ALBUM_')) return false;
+  return true;
+}
+
+/** 一条内容最多走几次（默认 2：首轮 + 收回现场后重试一次）；`ctx.rowAttempts` 只给回归用 */
+function rowAttemptsOf(ctx, c) {
+  const raw = Number((ctx && ctx.rowAttempts) || (c && c.rowAttempts));
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(3, Math.floor(raw)) : 2;
+}
+
+/**
+ * 把设备收回到「能重新走一遍入口」的起点（首页或草稿箱）。
+ *
+ * 复用 adb.ensureApp：它内部会先认发布页自己的返回确认条，只点「保存并退出」这种
+ * 不丢内容的出口；正在上传时一个键都不按。所以这里成功 = 现场是干净的，
+ * 失败 = 真的不能继续（调用方必须停批，不能拿下一批素材去冒险）。
+ */
+async function recoverScene(serial, ctx, log, why) {
+  const c = cfg();
+  try {
+    const r = await adb.ensureApp(serial, {
+      pkg: uimap.DEWU.pkg, activity: uimap.DEWU.launchActivity, want: uimap.DEWU.homeActivity,
+      judge: f => uimap.isHomeScreen(f) || uimap.isDraftScreen(f),
+      allowForceStop: false,
+      onNote: m => log(m, 'warn'),
+      timeoutMs: Number(c.ensureAppTimeoutMs) > 0 ? Number(c.ensureAppTimeoutMs) : 30000
+    });
+    if (r.ok) {
+      // 下一条要重新观察入口/返回页，不能沿用失败那一条的缓存。
+      ctx.publishReturnFocus = '';
+      ctx.publishEntryRoute = '';
+      return { ok: true, focus: r.focus || '' };
+    }
+    return { ok: false, why: r.why || '未知原因' };
+  } catch (error) {
+    return { ok: false, why: error.message };
+  }
 }
 
 async function runBatch(state, ctx = {}) {
@@ -1571,9 +1722,8 @@ async function runBatch(state, ctx = {}) {
   const results = [];
   const settledRows = new Set();
   let stoppedReason = '';
-  let stoppedForAlbum = false;
+  let stoppedForScene = false;
   let stoppedForSubmission = false;
-  let stoppedForEntry = false;
 
   for (const row of todo) {
     if (cancelled()) break;
@@ -1613,11 +1763,14 @@ async function runBatch(state, ctx = {}) {
       }
     }
 
-    // ★★ 2026-10-03 用户要求：**发布失败不重试**。原来这里是 `maxTry = (c.retry||2)+1` 的循环，
-    //    失败后等 1.5 秒再试 1~3 次。现在只跑一次：失败就如实写「发布失败，原因xxx」交人工处理。
-    //    ★ 「重跑」不是重试：那是「模拟器发布」页行尾的一个**新任务**（publish.rerun），用户点它才算，
-    //      不会自己发生。⇒「失败重试次数」这个配置项与其读取点、失败恢复动作（recover）都已整块删除。
-    let success = false, reason = '';
+    // ★★ 2026-10-17 口径变更（用户：「一条没发成，后面的内容不能全受影响」）。
+    //   行级未确认（入口 / 转场 / 内容 / 相册占用）不再直接停批：
+    //     ① 先收回现场（首页或草稿箱）把**这一条**重走一遍（默认 2 次，见 rowAttemptsOf）；
+    //     ② 仍不行 ⇒ 这一条记失败、截图、收回现场，**继续下一条**；
+    //     ③ 只有「现场收不回来」（发布页正在上传 / 没有不丢内容的出口）才停批 ——
+    //        那种状态下清相册会打断正在上传的内容，硬来就是真事故。
+    //   仍然只跑一次就记失败的情况：非行级错误（例如设备掉线、定位表坐标不符）。
+    let success = false, reason = '', rowError = null, sceneBroken = '';
     const t0 = Date.now();
     row.startAt = new Date().toTimeString().slice(0, 8);
     row.startedAtMs = t0;
@@ -1626,28 +1779,59 @@ async function runBatch(state, ctx = {}) {
     row.reason = '';
     row.status = '准备发布';
     onRow(row);
-    try {
-      if (mode === 'adb') {
-        success = await runReal(row, item, copyById.get(row.id), serial, map, ctx);
-      } else {
-        const r = await runMock(row, ctx);
-        success = r === 'cancelled' ? false : !!r;
-        if (r === 'cancelled') reason = '任务已取消';
+    const attempts = rowAttemptsOf(ctx, c);
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        if (mode === 'adb') {
+          success = await runReal(row, item, copyById.get(row.id), serial, map, ctx);
+        } else {
+          const r = await runMock(row, ctx);
+          success = r === 'cancelled' ? false : !!r;
+          if (r === 'cancelled') reason = '任务已取消';
+        }
+        rowError = null;
+        if (success) break;
+      } catch (e) {
+        success = false;
+        rowError = e;
+        require('./diagnostics').fail();
+        reason = cancelled() ? '任务已取消' : e.message;
       }
-    } catch (e) {
-      success = false;
-      require('./diagnostics').fail();
-      reason = cancelled() ? '任务已取消' : e.message;
-      stoppedForAlbum = e.code === 'ALBUM_IO_INTERRUPTED' || e.code === 'ALBUM_BUSY';
-      if (e.code === 'ALBUM_BUSY') stoppedReason = '相册文件持续占用，自动恢复未解除；请处理设备占用后重新启动任务';
-      if (e.code === 'UI_COORDINATES') stoppedReason = reason;
-      if (e.code === 'PUBLISH_ENTRY_UNCONFIRMED' || e.code === 'PUBLISH_TRANSITION_UNCONFIRMED' || e.code === 'PUBLISH_CONTENT_UNCONFIRMED') { stoppedReason = reason; stoppedForEntry = true; }
-      // 持续文件占用是设备级故障，停止本批次，后续素材保留未执行。
-      if (e.code === 'ALBUM_IO_INTERRUPTED') log(`行 ${row.seq} 相册清理中断，跳过本条；下一条将重新清理并验证后再发布`, 'warn');
-      // 失败截图留一张：真机排查「崩在哪一屏」只能靠它。原来按第几次尝试命名，现在只跑一次。
-      if (mode === 'adb' && !stoppedForAlbum && !cancelled()) await saveShot(serial, `seq${row.seq}_fail`, ctx);
+      if (cancelled()) break;
+      // 不是「这一条自己走不下去」的错误 ⇒ 不重试，交给下面的设备级判断。
+      // 相册清理类（ALBUM_*）也在这里：重走一遍会把上一次写进去的隔离标记当成放行依据。
+      if (!rowRetryable(rowError)) break;
+      // 最后一次不在这里收现场：先让外面把失败截图留下来（现场还在），再收。
+      if (attempt >= attempts || mode !== 'adb') break;
+      const rec = await recoverScene(serial, ctx, log, `行 ${row.seq} 第 ${attempt}/${attempts} 次未确认`);
+      if (!rec.ok) { sceneBroken = rec.why; break; }
+      log(`行 ${row.seq} 第 ${attempt}/${attempts} 次未确认（${reason}）；已收回首页/草稿箱，重走一遍入口再试`, 'warn');
+      row.status = '重试中';
+      row.reason = reason;
+      onRow(row);
     }
-    if (success && ctx.submissionPending) { stoppedReason = ctx.submissionPending; stoppedForSubmission = true; }
+    if (rowError && rowError.code === 'UI_COORDINATES') stoppedReason = reason;
+    if (mode === 'adb' && !success && !cancelled() && !sceneBroken) await saveShot(serial, `seq${row.seq}_fail`, ctx);
+    if (!success && !cancelled() && rowRecoverable(rowError)) {
+      // 这一条已经判失败：把现场收到干净起点，好让下一条能从头走。
+      const rec = await recoverScene(serial, ctx, log, '本条失败后收回现场');
+      if (!rec.ok) sceneBroken = rec.why;
+      else conclude(`行 ${row.seq} 发布失败：${reason}；已自动收回现场，继续下一条`, 'warn');
+    }
+    if (sceneBroken) {
+      stoppedReason = (reason ? reason + '；' : '') + '自动收回现场失败：' + sceneBroken;
+      stoppedForScene = true;
+    }
+    if (success && ctx.submissionPending) {
+      // 提交点了、但当场没确认退出：先尝试收（上传中会被拒），收不回来才停批。
+      const rec = await recoverScene(serial, ctx, log, '提交后未确认退出');
+      if (!rec.ok) {
+        stoppedReason = ctx.submissionPending + '；自动收回现场失败：' + rec.why;
+        stoppedForSubmission = true;
+      } else {
+        conclude(`${row.dir}：已点击提交，但当场没确认退出编辑流程；已自动收回现场，继续下一条`, 'warn');
+      }
+    }
     require('./diagnostics').phase('条目结束');
     // ★★ 模拟通道**不许冒充真发布**：走模拟时结果记「模拟成功」。
     //   否则界面 / 台账 / 回写 Excel 全是绿的，而设备上什么都没发生（2026-10-03 实测踩到）。
@@ -1688,7 +1872,9 @@ async function runBatch(state, ctx = {}) {
     done++;
     progress({ done, total: todo.length, label: row.dir, succeeded: results.filter(r => r.result === '发布成功').length });
     if (stoppedReason) {
-      conclude((stoppedForEntry ? '发布流程自动恢复后仍未确认' : stoppedForSubmission ? '本条提交尚未稳定' : stoppedForAlbum ? '相册持续占用' : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
+      conclude((stoppedForScene ? '设备现场收不回来（不能在不丢内容的前提下离开发布页）'
+        : stoppedForSubmission ? '本条提交尚未稳定、无法确认能否继续'
+          : '设备屏幕配置变化') + '，本批次已停止；其余素材未执行：' + stoppedReason, 'warn');
       break;
     }
   }

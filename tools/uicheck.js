@@ -2786,23 +2786,28 @@ app.whenReady().then(async () => {
     const dateGroups = cards.length;
     const noBuildLabels = !document.querySelector('.release-journal').textContent.includes('构建');
     const latestDate = cards[0]?.querySelector('h2')?.textContent;
-    // ★ 2026-10-17：更新日志只对外给核心标题 —— 明细要点（li）不再展示，断言同步改成
-    //   「有时间、类型、标题，且没有任何明细节点」，这样明细一旦回流会立刻报警。
-    const titlesOnly = entries.every(e => e.querySelector('.journal-meta time') && e.querySelector('.journal-kind') && e.querySelector('h3') && !e.querySelector('li') && !e.querySelector('p'));
+    // ★ 2026-10-17（口径二次调整）：更新日志每条 = 一个核心标题 + 1~2 句说明。
+    //   明细要点（li）不再展示；说明（p）必须存在且短（≤140 字），一旦又写成一大段就报警。
+    const titlesOnly = entries.every(e => e.querySelector('.journal-meta time') && e.querySelector('.journal-kind') && e.querySelector('h3') && !e.querySelector('li'));
+    const shortSummary = entries.every(e => {
+      const p = e.querySelector('p');
+      const t = p ? String(p.textContent || '').trim() : '';
+      return t.length > 0 && t.length <= 140;
+    });
     const fits = entries.every(e => e.scrollWidth <= e.clientWidth);
     state.tab = 12; renderAll();
     if (!state.lex) await loadLexicon();
     const cells = [...document.querySelectorAll('.skeleton-table tbody td:nth-child(2)')];
     const namesFit = cells.length === 15 && cells.every(c => c.scrollWidth <= c.clientWidth);
     state.tab = 13; renderAll();
-    return { twoColumns, dateGroups, latestDate, noBuildLabels, titlesOnly, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
+    return { twoColumns, dateGroups, latestDate, noBuildLabels, titlesOnly, shortSummary, fits, namesFit, updatePanel: !!document.querySelector('#versionUpdate [data-act="update:check"]') };
   })()`);
   win.hide();
   // ★ 2026-10-15：日期断言改成「最新那天在最前面 + 至少三组」，不写死组数 ——
   //   之前写成 `=== 3 && 最新 = 10 月 14 日`，每加一条当天的更新日志这条就假红一次
   //   （断言拦的是「日志有没有被排序/分组」，不是「日志一共有几天」）。
-  ok('更新日志按日期分组且不显示构建信息，左侧时间和类型、右侧只给核心标题，无横向溢出',
-    releaseCheck.noBuildLabels && releaseCheck.twoColumns && releaseCheck.titlesOnly && releaseCheck.fits
+  ok('更新日志按日期分组且不显示构建信息，左侧时间和类型、右侧标题 + 1~2 句说明，无横向溢出',
+    releaseCheck.noBuildLabels && releaseCheck.twoColumns && releaseCheck.titlesOnly && releaseCheck.shortSummary && releaseCheck.fits
     && releaseCheck.dateGroups >= 3 && /^\d{4} 年 \d{1,2} 月 \d{1,2} 日$/.test(releaseCheck.latestDate || ''),
     JSON.stringify(releaseCheck));
   ok('句式名称完整显示、更新日志页提供检查更新', releaseCheck.namesFit && releaseCheck.updatePanel, JSON.stringify(releaseCheck));

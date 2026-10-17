@@ -57,6 +57,36 @@ const state = {
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+/**
+ * 发布表格里只显示一句话的失败原因。
+ *
+ * ★ 只改**前端显示**：运行日志、云端日志、回写报告里仍是完整原因（便于排查）。
+ * ★ 为什么要有它：完整原因常带控件 id / 当前页面 / 多段解释，长到把行高撑开，
+ *   一屏看不到几条。这里压成一句，完整内容放在悬停提示（title）里。
+ */
+function shortReason(text) {
+  const s = String(text || '').trim();
+  if (!s) return '';
+  if (/找不到「[^」]*(?:etTitle|tvTitle)[^」]*」/.test(s)) return '没进到标题页（转场没走完）';
+  const staged = /当前可见文本：\s*(\d+\s*\/\s*\d+)/.exec(s);
+  if (staged) return `图片编辑页没往下走（${staged[1].replace(/\s+/g, '')}）`;
+  if (/没能准备得物首页或草稿箱发布入口/.test(s)) return '发布入口没打开';
+  if (/正在上传|上传中|正在发布|当前停在可能含未完成内容的页面/.test(s)) return '页面正在上传或停在发布页，本条先停下';
+  if (/没能写进媒体库/.test(s)) return '素材没进相册（写库未确认）';
+  if (/上一条相册素材未清净|相册清理/.test(s)) return '相册没清干净，本条未推送';
+  if (/选材自动恢复未完成|只选到/.test(s)) return '选图数量不对，本条未提交';
+  if (/输入回读不一致|无法确认内容/.test(s)) return '标题/正文没填对，本条未提交';
+  if (/转场/.test(s) && /未确认/.test(s)) return '这一步没换到下一屏，本条未提交';
+  if (/发布已取消|任务已取消/.test(s)) return '已取消';
+  // 兜底：取第一句、去掉包名/控件 id，最多 30 个字 —— 保证行高不随原因变长。
+  const first = s.split(/[；。]/)[0].replace(/com\.shizhuang\.duapp[^\s」]*/g, '页面控件').trim();
+  return first.length > 30 ? first.slice(0, 30) + '…' : first;
+}
+/** 表格里的原因行：短句显示 + 悬停看完整原因（完整原因没被改写，日志/回写照旧）。 */
+function reasonHtml(text) {
+  if (!text) return '';
+  return `<div class="row-reason" title="${esc(text)}">${esc(shortReason(text))}</div>`;
+}
 function kb(b) { return b == null ? '—' : (b < 1024 * 1024 ? (b / 1024).toFixed(0) + ' KB' : (b / 1024 / 1024).toFixed(1) + ' MB'); }
 function n(v) { return v == null ? 0 : v; }
 let toastTimer = null;
@@ -452,7 +482,7 @@ function updatePublishRow(update) {
   el.querySelector('[data-publish-start]').textContent = row.startAt || '—';
   el.querySelector('[data-publish-elapsed]').textContent = publishElapsedText(row);
   el.querySelector('[data-publish-status]').innerHTML = badge(row.result || row.status || '排队', kindOf(row.result || row.status || '排队'))
-    + (row.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(row.reason)}</div>` : '');
+    + reasonHtml(row.reason);
   el.classList.toggle('flag', row.result === '失败' || row.result === '校验未通过');
   // 备用入口试发那一页**没有**「重跑」列（试发的失败原因要看日志，不该一键重发）——
   // 所以这里必须先判存在，否则空指针会把整个进度刷新打断。
@@ -847,7 +877,7 @@ ${publishSetupHtml()}
         <tbody>${rows.map(r => `<tr data-publish-row="${esc(r.id)}" class="${r.result === '失败' || r.result === '校验未通过' ? 'flag' : ''}">
           <td class="num">${r.seq}</td><td class="mono" title="${esc(r.dir)}">${esc(r.dir)}</td><td class="num">${n(r.goods)}</td><td class="num">${n(r.images)}</td>
           <td data-publish-start>${esc(r.startAt || '—')}</td><td class="num" data-publish-elapsed>${publishElapsedText(r)}</td>
-          <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
+          <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${reasonHtml(r.reason)}</td>
           <td data-publish-action>${(r.result && r.result !== '发布成功') ? `<button class="btn sm" data-act="pub:rerun" data-seq="${r.seq}">重跑</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">还没有发布队列，请先导入 AI 内容报告。</div>`}
@@ -1861,7 +1891,7 @@ TABS[14] = {
         <tbody>${rows.map(r => `<tr data-publish-row="${esc(r.id)}" class="${r.result === '失败' || r.result === '校验未通过' ? 'flag' : ''}">
           <td class="num">${r.seq}</td><td class="mono" title="${esc(r.dir)}">${esc(r.dir)}</td><td class="num">${n(r.goods)}</td><td class="num">${n(r.images)}</td>
           <td data-publish-start>${esc(r.startAt || '—')}</td><td class="num" data-publish-elapsed>${publishElapsedText(r)}</td>
-          <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${r.reason ? `<div style="font-size:11px;opacity:.8;margin-top:2px">${esc(r.reason)}</div>` : ''}</td>
+          <td data-publish-status>${badge(r.result || r.status || '排队', kindOf(r.result || r.status || '排队'))}${reasonHtml(r.reason)}</td>
         </tr>`).join('')}</tbody></table></div>`
         : `<div class="empty">还没有发布队列，请先导入 AI 内容报告。</div>`}
       <p class="hint">已提交 ${okCount} / ${rows.length} 条。这里是真实提交 —— 发出去的内容会出现在得物上，

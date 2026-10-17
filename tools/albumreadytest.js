@@ -352,13 +352,21 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
         &&calls().slice(delayedStart).filter(c=>c.endsWith('input tap 300 100')).length===1);
       const unchangedStart=calls().length, unchangedCtx={};
       const unchangedBatch=state();unchangedBatch.publish.rows.push({seq:2,id:'A',dir:'B',goods:1,result:''});
-      const unchanged=await publisher.run(unchangedBatch,unchangedCtx);
-      ok('相机已点击但页面没有进入发布流程时仍失败，不把点击回执当成功',unchanged.failCount===1
-        &&/等待 30 秒.*当前仍在得物首页/.test(unchanged.rows[0].reason)&&!unchangedCtx.publishEntryRoute
-        &&calls().slice(unchangedStart).filter(c=>c.endsWith('input tap 300 100')).length===1
+      // 入口守卫要连续两次读到同一颗可用相机才点；400ms 只够读一次 ⇒ 根本不会点击。
+      // 这条要验的是「点了相机但页面没换」⇒ 给足 1.2s，让它真的点下去再超时。
+      store.set({publish:{entryWaitMs:1200}});
+      let unchanged;
+      try { unchanged=await publisher.run(unchangedBatch,unchangedCtx); }
+      finally { store.set({publish:{entryWaitMs:30000}}); }
+      ok('相机已点击但页面没有进入发布流程时仍失败，不把点击回执当成功',unchanged.failCount===2
+        &&/等待 1\.2 秒.*当前仍在得物首页/.test(unchanged.rows[0].reason)&&!unchangedCtx.publishEntryRoute
+        &&calls().slice(unchangedStart).filter(c=>c.endsWith('input tap 300 100')).length>=2
         &&!calls().slice(unchangedStart).some(c=>/input tap (350|400) 100$/.test(c)));
-      ok('入口超时后停止本批，下一条不清理不推送且标记未执行',!!unchanged.stoppedReason
-        &&unchanged.rows[1].result==='未执行'&&calls().slice(unchangedStart).filter(c=>/\bpush /.test(c)).length===2);
+      // ★★ 2026-10-17 口径：入口未确认只是**这一条**失败；收回现场后下一条继续走（不再整批停）。
+      ok('入口超时只让这一条失败，后续条目仍继续执行（不再整批停止）',!!unchanged.stoppedReason===false
+        // 行级失败会先收回现场、重试这一条一次 ⇒ 两行各两次尝试，push 是 8 而不是 4；
+        // 这里只要求「第二条确实被执行过」，不把重试次数写死。
+        &&unchanged.rows[1].result!=='未执行'&&calls().slice(unchangedStart).filter(c=>/\bpush /.test(c)).length>=4);
       fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);
       observeCommand=args=>{if(String(args[args.length-1])==='input tap 300 100')fs.writeFileSync(path.join(dir,'FOCUS_UNREADABLE'),'1');};
       let unknownEntry;
@@ -401,12 +409,24 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
     store.set({publish:{uiMap:{steps:[
       {action:'tapId',value:'com.shizhuang.duapp:id/photo',name:'选择图片'},
       {action:'tapId',value:'com.shizhuang.duapp:id/albumNext',name:'相册下一步'},
-      {action:'tapXY',value:'985,1843',whenOn:'com.shizhuang.duapp:id/edit_panel',name:'图片编辑页下一步'},
+      {action:'transition',until:'com.shizhuang.duapp:id/etTitle',
+        from:['com.shizhuang.duapp:id/edit_panel'],
+        name:'图片编辑页下一步',timeout:2500,maxClicks:2},
       {action:'tapId',value:'com.shizhuang.duapp:id/etTitle',name:'点标题输入框'},
       {action:'tapId',value:'com.shizhuang.duapp:id/submit',name:'提交发布'}]}}});
     const timers=[], messages=[]; let abort=false;
+    // 行级失败会先「收回现场」：真机上在有内容的发布页按返回会弹「确定要返回编辑吗？」，
+    // 其中「保存并退出」是唯一不丢内容的出口。这里把这个真实行为补进假设备，
+    // 否则收回现场永远失败、整批停止，测不到「单条失败后继续」。
+    const exitXml='<hierarchy>'
+      +'<node resource-id="com.shizhuang.duapp:id/tvTip" text="确定要返回编辑吗？" enabled="true" bounds="[100,60][400,140]"/>'
+      +'<node resource-id="com.shizhuang.duapp:id/layoutSaveDraft" clickable="true" enabled="true" bounds="[420,50][560,150]"/>'
+      +'<node resource-id="com.shizhuang.duapp:id/tvSaveDraft" text="保存并退出" enabled="true" bounds="[430,60][550,140]"/>'
+      +'</hierarchy>';
     observeCommand=args=>{
       const cmd=String(args[args.length-1]);
+      if(cmd==='input keyevent 4') {fs.writeFileSync(xmlFile,exitXml);return;}
+      if(cmd==='input tap 490 100') {fs.writeFileSync(path.join(dir,'FOCUS'),homeFocus);fs.writeFileSync(xmlFile,initial);return;}
       if(cmd==='input tap 500 100') {
         fs.writeFileSync(path.join(dir,'FOCUS'),publishFocus);
         if(route!=='never')timers.push(setTimeout(()=>{
@@ -435,13 +455,19 @@ const quote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
     finally{observeCommand=null;timers.forEach(clearTimeout);}
     const trace=calls().slice(begin), taps=trace.filter(c=>/input tap /.test(c));
     if(['cancel','ambiguous'].includes(route))ok('图片转场取消或两个不同位置下一步时不猜坐标：'+route,r.cancelled&&!taps.some(c=>/input tap (650|680|700|400) 100/.test(c)));
-    else if(route==='stuck_editor')ok('转场时这一屏始终没变就不点第二下（第二下可能落到「发布」）：只失败一次、后续不执行',
-      r.failCount===1&&!!r.stoppedReason&&r.rows[1].result==='未执行'
-      &&taps.filter(c=>c.endsWith('input tap 650 100')).length===1
+    else if(route==='stuck_editor')ok('转场时这一屏始终没变：同一屏限次重试 3 次后本条失败，后续条目继续',
+      r.failCount===2&&!r.stoppedReason&&r.rows[1].result!=='未执行'
+      // 行级失败会重试这一条一次 ⇒ 两次尝试，每次最多 3 下（上限 6），不能无限连点。
+      &&taps.filter(c=>c.endsWith('input tap 650 100')).length>=2
+      &&taps.filter(c=>c.endsWith('input tap 650 100')).length<=6
       &&!taps.some(c=>/input tap (700|400) 100/.test(c)));
-    else if(['never','no_title'].includes(route))ok('图片转场未确认仅首条失败，次条不清理不推送且标记未执行：'+route,r.failCount===1&&!!r.stoppedReason
-      &&r.rows[1].result==='未执行'&&trace.filter(c=>/\bpush /.test(c)).length===2
-      &&taps.filter(c=>c.endsWith('input tap 650 100')).length===(route==='never'?0:1)
+    else if(['never','no_title'].includes(route))ok('图片转场未确认只让本条失败，后续条目仍继续：'+route,r.failCount===2&&!r.stoppedReason
+      &&r.rows[1].result!=='未执行'&&trace.filter(c=>/\bpush /.test(c)).length===8
+      // no_title：两次尝试，每次最多 3 下（上限 6）—— 重试是有限的，且每次尝试都重新抓屏。
+      &&(route==='never'
+        ?taps.filter(c=>c.endsWith('input tap 650 100')).length===0
+        :taps.filter(c=>c.endsWith('input tap 650 100')).length>=2
+          &&taps.filter(c=>c.endsWith('input tap 650 100')).length<=6)
       &&!taps.some(c=>/input tap (700|400) 100/.test(c)));
     else ok('旧定位表图片转场：'+route+'，仅确认标题页后继续、不盲点、不重复下一步',r.okCount===1
       &&taps.filter(c=>c.endsWith('input tap 650 100')).length===(route==='direct'?0:1)

@@ -68,6 +68,7 @@ if(['partial-selection','recover-selection'].includes(which)){
  if(which==='confirmed-title'){expect(submissions===1,'标题回读确认后只提交一次');expect(result.okCount===1,'这条照常发出去')}
  if(which==='unconfirmed-title')expect(submissions===0,'标题回读未确认时不得继续提交');
  if(which==='recover-selection'){expect(selected===3,'只选到 1 张时自动补选到 3 张');expect(submissions===1,'补齐后只提交一次');expect(result.okCount===1,'这条照常发出去')}
- if(which==='partial-selection'){expect(submissions===0,'补选两次仍仅 1 图时不得继续提交');expect(!!result.stoppedReason,'必须如实停批并说明原因');expect(logs.filter(m=>m.includes('选材自动恢复：')).length===2,'补选最多两次，不许无限重试')}
+ // ★★ 2026-10-17 口径：这一条失败不再停整批（stoppedReason 只在现场收不回来时才非空）。
+ if(which==='partial-selection'){expect(submissions===0,'补选两次仍仅 1 图时不得继续提交');expect(!result.stoppedReason,'本条失败但不停批');expect(logs.filter(m=>m.includes('选材自动恢复：')).length===2,'补选最多两次，不许无限重试')}
 })().catch(e=>{console.error('发布复核回归失败：'+e.message);process.exitCode=1});
 

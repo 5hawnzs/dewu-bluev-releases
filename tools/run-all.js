@@ -76,6 +76,8 @@ const SUITES = [
   ['publish-sequencetest', 'node', ['tools/publish-sequencetest.js']],
   ['publish-jobtest', 'node', ['tools/publish-jobtest.js']],
   ['publish-transitiontest', 'node', ['tools/publish-transitiontest.js']],
+  // 单条失败不许拖垮整批：持续失败/瞬时失败/现场收不回来三种场景走真实 publisher.run。
+  ['publish-rowcontinuationtest', 'node', ['tools/publish-rowcontinuationtest.js']],
   // 提交前复核与自动恢复：通过 publisher.run 验证主、备用入口。
   ...['recover-selection', 'partial-selection', 'recover-title', 'unconfirmed-title', 'confirmed-title', 'single-selection'].flatMap(kind =>
     ['main', 'fallback'].map(route => ['publish-content-' + kind + '-' + route, 'node', ['tools/publish-contenttest.js', kind, route]])),

@@ -31,7 +31,13 @@ const IMAGE_FROMS = [D + 'flThumbSelect', D + 'edit_panel'];
 const VIDEO_TARGET = '设置封面';                     // 封面页标题文字（videocover 的入口判据同款）
 const VIDEO_FROMS = [D + 'flThumbSelect', D + 'editVideoView'];
 
-/** 图文：选图之后的转场 —— 最多点两次「下一步」，认到标题页为止 */
+/**
+ * 图文：选图之后的转场 —— 认到标题页为止。
+ * ★ 2026-10-17：`maxClicks` 表示**要经过几屏**（相册→图片编辑页→标题页＝2），
+ *   不是「一张图点一次」。图片编辑页的「1 / 5」只是当前图片序号。
+ *   另一台设备真正的问题是编辑页那颗「下一步」点了一次没反应（页面还在处理/触摸被吞），
+ *   重试逻辑在 transition.run 里（同一屏最多 3 次、间隔 ≥2.4s，每次点前重新抓屏确认）。
+ */
 function imageTransition() {
   return {
     name: '选图后的转场 · 等到标题填写页',
@@ -42,8 +48,9 @@ function imageTransition() {
     timeout: 30000,
     hint: '★ 这一步取代了原来的「下一步 + 图片编辑页 · 下一步」两条盲点坐标。'
       + '得物的屏间转场是异步的：`input tap` 返回成功只代表命令发出去了，不代表页面已经换过去。'
-      + '所以这一步**先抓屏确认**有没有到标题页，没到才点那颗唯一的「下一步」，最多点两次；'
-      + '点完仍没到就如实报「转场未确认」并停下本批，绝不盲点第二下'
+      + '所以这一步**先抓屏确认**有没有到标题页，没到才点那颗唯一的「下一步」'
+      + '（同一屏点了没反应会隔 2.4s 重试，最多 3 次；每次都重新抓屏，绝不盲点）；'
+      + '点完仍没到就如实报「转场未确认」，本条失败、收回现场后继续下一条'
       + '（盲点会落在新屏的别的位置上，编辑页底部那颗是「发布」⇒ 误发）。'
   };
 }
@@ -55,7 +62,7 @@ function videoTransition() {
     action: 'transition',
     until: VIDEO_TARGET,
     from: VIDEO_FROMS.slice(),
-    maxClicks: 2,
+    maxClicks: 3,
     timeout: 30000,
     hint: '★ 这一步取代了原来的「下一步 + 固定 wait 1200 + 剪辑页下一步 + 固定 wait 1200」四步。'
       + '固定等待在慢设备上必然不够（真机实测这段转场 5.9–6.8s，而表里只等 1.2s），'
@@ -132,6 +139,20 @@ function harden(map) {
     if (firstInput < 0) continue;                                     // 表里没有输入步 ⇒ 不是一份能用的表，不动
     let anchor = -1;
     for (let i = 0; i < firstInput; i++) if (isSelectStep(list[i])) anchor = i;
+    // ★★ 2026-10-17 兜底锚点（另一台设备的卡点）：有些导入表里「选素材」那一步既没有
+    //   flThumbSelect、名字里也没有「选图」——按名字/id 认不出来，于是以前 harden() 直接跳过，
+    //   表里于是**没有转场**，多图时停在第 3 张的图片编辑页（「1 / 5」+「下一步」）。
+    //   改成按**目标屏那一步**反推：第一次输入之前、第一条指向编辑页目标（etTitle / edit_panel /
+    //   「设置封面」）的步骤，它前面那一步就是选素材。形状不变、不认名字。
+    if (anchor < 0) {
+      const targets = [IMAGE_TARGET, D + 'edit_panel', VIDEO_TARGET];
+      const t = list.findIndex((s, i) => i < firstInput && s && targets.includes(String(s.value || '').trim()));
+      if (t > 0) {
+        let j = t - 1;
+        while (j > 0 && (isBlindNext(list[j]) || isTransitionFiller(list[j]) || list[j].action === 'wait')) j--;
+        anchor = j;
+      }
+    }
     if (anchor < 0) continue;                                         // 找不到选素材那一步 ⇒ 一个字都不动
     // 只有选材后的转场才表示这段已加固，其他位置的自定义转场不能遮住它。
     if (list.slice(anchor + 1, firstInput).some(s => s && s.action === 'transition')) continue;

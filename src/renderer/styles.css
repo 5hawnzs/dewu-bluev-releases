@@ -216,7 +216,9 @@ button.btn.sm{padding:4px 10px;font-size:11.5px}
 .publish-rows td{height:42px;box-sizing:border-box}
 .publish-rows td:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .publish-rows [data-publish-status] .b{max-width:100%;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
-.publish-rows [data-publish-status]>div{overflow-wrap:anywhere}
+/* 失败原因只占两行，行高不随日志长短变化；完整原因在 title 里悬停可看 */
+.publish-rows [data-publish-status]>div{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.row-reason{font-size:11px;opacity:.8;margin-top:2px;line-height:1.45}
 table{border-collapse:collapse;width:100%;font-size:12.5px;background:var(--panel2)}
 th,td{border-bottom:1px solid var(--bd);padding:7px 10px;text-align:left;vertical-align:middle}
 th{background:var(--panel);font-size:11.5px;font-weight:600;color:var(--tx2);position:sticky;top:0;white-space:nowrap;z-index:1}

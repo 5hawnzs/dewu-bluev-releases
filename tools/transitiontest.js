@@ -54,6 +54,7 @@ const xStranger = '<hierarchy>' + node(D + 'someOtherScreen', '[0,0][1080,1920]'
 /** 假设备：screens 按**每轮抓屏**的顺序取，最后一屏会一直重复（模拟卡住） */
 function harness(screens, opts = {}) {
   let i = 0;
+  let current = '';
   const taps = [];
   return {
     taps,
@@ -61,12 +62,14 @@ function harness(screens, opts = {}) {
     deps: {
       dump: async () => {
         const s = screens[Math.min(i, screens.length - 1)];
+        current = s;
         i++;
         if (typeof s === 'string') return { ok: true, xml: s, why: '' };
         return Object.assign({ ok: false, why: opts.dumpWhy || '抓屏失败' }, s);
       },
       tap: async (serial, x, y) => {
         taps.push(x + ',' + y);
+        if (opts.onTap) opts.onTap(current);
         return opts.tapOk === false ? { ok: false, stderr: 'error: device offline' } : { ok: true };
       },
       sleep: async () => {},
@@ -100,9 +103,9 @@ const namesOf = steps => steps.map(s => String(s.name || s.action)).join(' → '
     ok('① 已经在标题页 ⇒ 立刻过，一个像素都不点', at.result && at.result.clicks === 0 && at.taps.length === 0,
       JSON.stringify({ clicks: at.result && at.result.clicks, taps: at.taps }));
 
-    // 坐标由这条按钮自己的 bounds 算出来：**[891,1794][1080,1892] 的中心 = (986,1843)**。
-    // ★ 注意别和文档里那个「985,1843」搞混 —— 那是**旧盲点写死的坐标**（真机量出来的近似值）；
-    //   现在不再用写死坐标，而是按当前这屏实际那颗按钮的中心点。两个值差 1 个像素，属正常。
+    // 坐标由这条按钮自己的 bounds 算出来：中心 (986,1843)。
+    // 另一台设备卡住的真因不是坐标（用户截图里的按钮位置与本机一致），
+    // 而是「正在导出图片 90%」遮罩吃掉了点击 —— 见下面「导出遮罩」用例。
     const one = await play([xAlbum, xForm], spec);
     ok('① 相册页那颗「下一步」是两层同坐标节点 ⇒ 去重后只点一次（按钮中心 986,1843）',
       one.result && one.result.clicks === 1 && one.taps.length === 1 && one.taps[0] === '986,1843',
@@ -119,11 +122,81 @@ const namesOf = steps => steps.map(s => String(s.name || s.action)).join(' → '
       slow.result && slow.result.clicks === 1 && slow.taps.length === 1 && slow.polls >= 5,
       JSON.stringify({ clicks: slow.result && slow.result.clicks, taps: slow.taps.length, polls: slow.polls }));
 
+    // ★★ 2026-10-17：另一台设备的真实症状就是「编辑页点了一次没反应」。
+    // 不能一次没反应就判失败；但也不能无限连点：同一屏最多 3 次、间隔 4 轮轮询。
     const stuck = await play([xAlbum], Object.assign({}, spec, { timeout: 30 }));
-    ok('① 这一屏始终没变 ⇒ 只点一次就如实报「转场未确认」，不点第二下',
-      stuck.error && stuck.error.code === 'PUBLISH_TRANSITION_UNCONFIRMED' && stuck.taps.length === 1
-      && /已点击下一步 1 次/.test(stuck.error.message),
+    ok('① 这一屏始终没变 ⇒ 有上限地重试「下一步」（3 次）后如实报「转场未确认」',
+      stuck.error && stuck.error.code === 'PUBLISH_TRANSITION_UNCONFIRMED' && stuck.taps.length === 3
+      && /已点击下一步 3 次/.test(stuck.error.message),
       stuck.error ? stuck.error.message.slice(0, 90) : '（居然没报错）');
+
+    // ★★ 另一台设备的现场：多图（5 张）选完落在图片编辑页，屏上是「1 / 5」+「下一步」。
+    //   「1 / 5」只是当前图片序号，**不是**要连点 5 次；正确路径是编辑页点一次就到标题页。
+    //   老表的 from 只写了相册（flThumbSelect），编辑页上没有这个 id ⇒ 旧逻辑一步都不点。
+    const xStage = '<hierarchy>' + node(D + 'edit_panel', '[0,1200][1080,1700]')
+      + node(D + 'tvImageIndex', '[480,1750][600,1790]', '1 / 5')
+      + node(NEXT_FL, '[891,1794][1080,1892]') + node(NEXT_TV, '[891,1794][1080,1892]', '下一步') + '</hierarchy>';
+    const oldFrom = await play([xAlbum, xStage, xForm],
+      { until: D + 'etTitle', from: [D + 'flThumbSelect'], timeout: 30, maxClicks: 2 });
+    ok('① 老表 from 只写相册：编辑页「1 / 5」+唯一「下一步」也认作可点来源，点一次就到标题页',
+      oldFrom.result && oldFrom.result.clicks === 2 && oldFrom.taps.length === 2,
+      JSON.stringify({ taps: oldFrom.taps, error: oldFrom.error && oldFrom.error.message }));
+
+    // ★★ 第二台设备的一次被吞：编辑页点了一下，屏上原地不动（图片还在处理/触摸被系统吃掉）。
+    //   旧逻辑「同一屏不点第二下」⇒ 白等到超时；现在隔 4 轮轮询重试一次，页面终于换过去。
+    const swallowed = await play([xAlbum, xStage, xStage, xStage, xStage, xStage, xStage, xStage, xStage, xForm],
+      { until: D + 'etTitle', from: [D + 'flThumbSelect'], timeout: 30, maxClicks: 2 });
+    ok('① 编辑页点一次没反应 ⇒ 2.4s 后重试，页面换过去就继续（总共 3 次点击）',
+      swallowed.result && swallowed.result.clicks === 3 && swallowed.taps.length === 3,
+      JSON.stringify({ taps: swallowed.taps, error: swallowed.error && swallowed.error.message }));
+
+    // 按钮在屏上但 enabled=false：页面还在处理，等它变可用；不算失败、也不点禁用节点。
+    const xStageBusy = '<hierarchy>' + node(D + 'tvImageIndex', '[480,1750][600,1790]', '1 / 5')
+      + `<node resource-id="${NEXT_FL}" text="" clickable="true" enabled="false" bounds="[891,1794][1080,1892]" />`
+      + '</hierarchy>';
+    const busy = await play([xStageBusy, xStageBusy, xStageBusy, xStage, xForm],
+      { until: D + 'etTitle', from: [D + 'flThumbSelect'], timeout: 30, maxClicks: 2 });
+    ok('① 「下一步」暂不可用 ⇒ 等它变可用再点，不点禁用节点、不误判失败',
+      busy.result && busy.result.clicks === 1 && busy.taps.length === 1,
+      JSON.stringify({ taps: busy.taps, error: busy.error && busy.error.message }));
+
+    // ★★ 2026-10-17 另一台设备的真实卡点（用户截图）：
+    //   编辑页盖着「正在导出图片 90% / 请不要退出得物」，「下一步」在遮罩下面。
+    //   遮罩期间点它＝命令成功、页面不动。必须等遮罩消失再点，且一次都不许点在遮罩上。
+    const xExporting = '<hierarchy>' + node(D + 'edit_panel', '[0,1200][1080,1700]')
+      + node(D + 'tvImageIndex', '[480,1750][600,1790]', '1 / 5')
+      + node(NEXT_FL, '[891,1794][1080,1892]') + node(NEXT_TV, '[891,1794][1080,1892]', '下一步')
+      + '<node text="正在导出图片" enabled="true" bounds="[420,900][660,940]" />'
+      + '<node text="请不要退出得物" enabled="true" bounds="[420,950][660,990]" />'
+      + '</hierarchy>';
+    let tapsWhileBusy = 0;
+    const exporting = await play([xAlbum, xExporting, xExporting, xExporting, xStage, xForm],
+      { until: D + 'etTitle', from: [D + 'flThumbSelect'], timeout: 30, maxClicks: 2 },
+      { onTap: s => { if (/正在导出图片/.test(String(s))) tapsWhileBusy++; } });
+    ok('① 编辑页「正在导出图片 90%」遮罩：等它消失再点，遮罩期间一次都不点',
+      exporting.result && exporting.result.clicks === 2 && exporting.taps.length === 2 && tapsWhileBusy === 0,
+      JSON.stringify({ taps: exporting.taps, tapsWhileBusy, error: exporting.error && exporting.error.message }));
+
+    // advanceStage 是 publisher 的兜底（老表只写「等/点 etTitle」）。同一屏也必须限次。
+    {
+      let now = 0;
+      const taps = [];
+      const ctx = { log: () => {} };
+      const deps = { now: () => now, tap: async () => { taps.push(1); return { ok: true }; } };
+      const nodes = uimap.parseNodes(xStage);
+      const r1 = await transition.advanceStage('FAKE', nodes, ctx, deps);
+      now += 1000;
+      const r2 = await transition.advanceStage('FAKE', nodes, ctx, deps);
+      now += 2400;
+      const r3 = await transition.advanceStage('FAKE', nodes, ctx, deps);
+      now += 2400;
+      const r4 = await transition.advanceStage('FAKE', nodes, ctx, deps);
+      now += 2400;
+      const r5 = await transition.advanceStage('FAKE', nodes, ctx, deps);
+      ok('① 兜底 advanceStage：2.4s 内不连点，同一屏最多 3 次后交回行级失败处理',
+        r1 === true && r2 === false && r3 === true && r4 === true && r5 === false && taps.length === 3,
+        JSON.stringify({ r: [r1, r2, r3, r4, r5], taps: taps.length }));
+    }
 
     const amb = await play([xAmbiguous], Object.assign({}, spec, { timeout: 30 }));
     ok('① 同一屏两颗不同位置的「下一步」⇒ 一颗都不点（点了就是拿猜的当判据）',
@@ -140,7 +213,7 @@ const namesOf = steps => steps.map(s => String(s.name || s.action)).join(' → '
     const noTitle = await play([xAlbum, xEditor, xEditor], Object.assign({}, spec, { timeout: 30 }));
     ok('① 点满了仍然没确认 ⇒ 报错里说清点过几次、当前可见内容是什么（不是一句「失败了」）',
       noTitle.error && noTitle.error.code === 'PUBLISH_TRANSITION_UNCONFIRMED'
-      && noTitle.taps.length === 2 && /当前可见内容/.test(noTitle.error.message)
+      && noTitle.taps.length >= 2 && noTitle.taps.length <= 6 && /当前可见内容/.test(noTitle.error.message)
       && /未填写、未提交/.test(noTitle.error.message),
       noTitle.error ? noTitle.error.message.slice(0, 110) : '（居然没报错）');
 

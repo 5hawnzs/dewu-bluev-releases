@@ -18,6 +18,19 @@ function clearedLandingRoot(ctx) {
   return adb.toMediaPath(managedalbum.ROOT);
 }
 
+/**
+ * 标记「素材/相册就绪这一段」的失败：这一条按失败记，但**不要收回现场重走一遍**。
+ *
+ * 为什么：这一段是设备侧的清理 / 推图 / 写库 / 排主图，重走一遍不会变好，而且第二次
+ * 可能把第一次写进去的隔离标记（`.nomedia`）当成放行依据 —— 等于把一个还留在盘上的旧素材
+ * 静默当成清干净了（回归用例：139 且库空但物理文件仍在）。页面侧的失败（入口/转场/内容）
+ * 仍然照常重试，两者不混。
+ */
+function noRetry(error) {
+  error.noRetry = true;
+  return error;
+}
+
 async function prepare(serial, item, row, ctx = {}) {
   const log = ctx.log || (() => {});
   const conclude = ctx.conclude || log;
@@ -61,7 +74,7 @@ async function prepare(serial, item, row, ctx = {}) {
   if (!cleared.ok) {
     const error = new Error('上一条相册素材未清净：' + (cleared.error || '未知原因'));
     error.code = cleared.code;
-    throw error;
+    throw noRetry(error);
   }
   checkCancelled();
   // ★★ 2026-10-15：必须把「已从相册移除」与「物理文件待回收」**分开说**（用户口径：不许造假成功）。
@@ -140,9 +153,9 @@ async function prepare(serial, item, row, ctx = {}) {
       checkCancelled();
       const mr = await adb.makeNewest(serial, remotes[idx], remotes);
       if (!mr.ok) {
-        throw new Error(`没能把主图「${pick.main.name}」排到相册第 1 格：${mr.error}`
+        throw noRetry(new Error(`没能把主图「${pick.main.name}」排到相册第 1 格：${mr.error}`
           + ' —— 相册第 1 格就是得物的内容主图，排不成就只能按「最后拍的那张」当主图'
-          + '（实测那就是你说的背面图）。这步靠设备端 touch + 重扫媒体库两步完成。');
+          + '（实测那就是你说的背面图）。这步靠设备端 touch + 重扫媒体库两步完成。'));
       }
       checkCancelled();
       const rescan = await adb.mediaScan(serial, remotes[idx]);
@@ -153,16 +166,16 @@ async function prepare(serial, item, row, ctx = {}) {
       const nw = await adb.mediaNewest(serial, remotes);
       if (!nw.ok) {
         const raw = String(rescan.raw || '').replace(/\s+/g, ' ').trim().slice(0, 180) || '无命令回显';
-        throw new Error(`主图「${pick.main.name}」重扫后没能从媒体库核实：${nw.error}`
+        throw noRetry(new Error(`主图「${pick.main.name}」重扫后没能从媒体库核实：${nw.error}`
           + `；扫描命令=${rescan.how || '未知'}（${raw}）`
-          + ' —— 读不到就不算排成，不会继续发布。');
+          + ' —— 读不到就不算排成，不会继续发布。'));
       }
       if (nw.newest !== adb.toMediaPath(remotes[idx])) {
         const times = remotes.map(p => `${p.split('/').pop()}=${nw.times && nw.times[adb.toMediaPath(p)]}`).join('，');
         const raw = String(rescan.raw || '').replace(/\s+/g, ' ').trim().slice(0, 140) || '无命令回显';
-        throw new Error(`排完主图后回读媒体库，最新的仍是「${nw.newest.split('/').pop()}」，`
+        throw noRetry(new Error(`排完主图后回读媒体库，最新的仍是「${nw.newest.split('/').pop()}」，`
           + `不是要当主图的「${pick.main.name}」（库内时间：${times}；扫描命令=${rescan.how || '未知'}：${raw}）`
-          + ' —— 这一条的主图会放错，先不发。');
+          + ' —— 这一条的主图会放错，先不发。'));
       }
       if (!rescan.ok) {
         const raw = String(rescan.raw || '').replace(/\s+/g, ' ').trim().slice(0, 180) || '无命令回显';
@@ -199,13 +212,13 @@ async function prepare(serial, item, row, ctx = {}) {
     onTick: s => { checkCancelled(); row.status = `写媒体库确认 ${s}s`; if (ctx.onRow) ctx.onRow(row); checkCancelled(); }
   });
   if (!w.ok) {
-    throw new Error(`${mediaWord}片已推到设备，但没能写进媒体库（得物相册里看不到它）：等了 ${w.waited}s`
-      + (w.error ? `，${w.error}` : ''));
+    throw noRetry(new Error(`${mediaWord}片已推到设备，但没能写进媒体库（得物相册里看不到它）：等了 ${w.waited}s`
+      + (w.error ? `，${w.error}` : '')));
   }
   checkCancelled();
   const exactAlbum = await adb.albumMatches(serial, remotes);
   checkCancelled();
-  if (!exactAlbum.ok) throw new Error(exactAlbum.error);
+  if (!exactAlbum.ok) throw noRetry(new Error(exactAlbum.error));
   log(`${row.dir}：已推 ${media.length} 个${mediaWord}片，并确认写进媒体库（${w.waited}s）`, 'info');
 
   // 推送与索引期间并行推进的主页导航必须在这里收敛；任一分支失败都不进发布入口。

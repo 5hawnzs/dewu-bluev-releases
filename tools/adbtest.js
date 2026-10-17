@@ -249,7 +249,8 @@ const state = {
         const continued = await publisher.run(interruptedState, ctx);
         if (allFail) {
           ok('持续清理失败：四条各尝试一次，如实失败且从未推图或点击发布', clearCount === 4
-            && continued.failCount === 4 && !continued.stoppedReason && !/push |input tap|screencap/.test(calls()));
+            // 失败截图（screencap）是只读取证，不是对 App 的操作；这里只禁推图与点击。
+            && continued.failCount === 4 && !continued.stoppedReason && !/push |input tap/.test(calls()));
         } else {
           ok('第三条清理失败，第四条重新清理通过后继续发布', clearCount === 4 && continued.results.length === 4
             && continued.rows[2].result === '失败' && continued.rows[3].result === '发布成功' && continued.okCount === 3);
@@ -589,7 +590,8 @@ const state = {
     const lg = [];
     const st = mkAlbumState(nImg);
     try {
-      await publisher.run(st, { log: (m, l) => lg.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {} });
+      // rowAttempts: 1 —— 这里只验「一次尝试里每个图格点几下」；单条重试由 publish-rowcontinuationtest 覆盖。
+      await publisher.run(st, { log: (m, l) => lg.push((l || 'info') + ': ' + m), progress: () => {}, cancelled: () => false, onRow: () => {}, rowAttempts: 1 });
     } catch (e) { st.publish.rows[0].reason = st.publish.rows[0].reason || ('抛出：' + e.message); }
     return { log: calls(), logs: lg, row: st.publish.rows[0] };
   };
